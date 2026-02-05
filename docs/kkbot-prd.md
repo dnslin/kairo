@@ -146,6 +146,7 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 **Feature 3: 消息提取器 (messageExtractor)**
 
 - 从 DOM 提取最近 N 条消息（发送方、时间、内容）
+- **识别会话类型**：通过 DOM 中 `group` 标识区分群聊/私聊
 - 规范化文本（去除空白、表情占位符）
 - 生成消息指纹（会话ID + 发送方 + 时间/序号 + 文本hash）
 
@@ -157,6 +158,7 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 **Feature 5: 策略引擎 (policyEngine)**
 
 - 白名单/黑名单会话过滤
+- **会话类型过滤**：支持按群聊/私聊类型过滤（DOM 中群聊带 `group` 标识）
 - 工作时间段控制
 - 节流：每会话最小间隔（60-180秒）、每日上限
 - 模式切换：草稿模式 / 自动模式
@@ -234,6 +236,19 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 - 脚本与客户端在同一 Windows 用户会话中运行
 - 不能以 Windows Service 方式运行（需要 UI 会话）
 
+### Technical Notes (重要发现)
+
+**会话类型区分：**
+- 群聊和私聊在 DOM 结构上有区别
+- 群聊会话的 DOM 元素中包含 `group` 关键字标识
+- 策略引擎需要支持按会话类型（群聊/私聊）过滤
+
+**消息通讯机制：**
+- KK9 客户端的消息收发**不通过 HTTP 请求**
+- 底层使用 TCP 长连接通讯，Network 面板几乎看不到消息相关请求
+- 只能通过 DOM 变化检测新消息，无法通过拦截网络请求
+- 这意味着必须依赖 DOM 轮询或 MutationObserver 方式监控消息
+
 ---
 
 ## MVP Scope & Phasing
@@ -305,6 +320,8 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 - **CDP**: Chrome DevTools Protocol，Chrome 远程调试协议
 - **Selector**: CSS 选择器，用于定位 DOM 元素
 - **消息指纹**: 消息的唯一标识（会话+发送方+时间+内容hash）
+- **群聊**: DOM 中带有 `group` 标识的会话类型
+- **私聊**: 非群聊的一对一会话
 
 ### Directory Structure
 
@@ -343,6 +360,7 @@ selectors:
 policy:
   whitelist: []
   blacklist: []
+  sessionTypes: ["private", "group"]  # 允许的会话类型：private=私聊, group=群聊
   workingHours: "09:00-18:00"
   throttle:
     perSessionMinIntervalSeconds: 60
