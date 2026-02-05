@@ -1,0 +1,72 @@
+# KKBot 配置示例
+# 复制此文件为 config.yaml 并修改配置
+
+cdp:
+  url: http://127.0.0.1:9222
+  reconnect:
+    maxRetries: 5
+    baseDelayMs: 1000
+    maxDelayMs: 30000
+
+page:
+  match: renderer.html
+
+selectors:
+  messageList: ".chat-message-list"
+  messageNode: ".message-item"
+  messageSender: ".sender-name"
+  messageTime: ".message-time"
+  messageContent: ".message-text"
+  inputBox: "#message-input"
+  sendButton: ".send-btn"
+  sessionList: ".session-list"
+  sessionItem: ".session-item"
+  sessionName: ".session-name"
+  unreadBadge: ".unread-badge"
+  groupIndicator: ".group-indicator"  # 群聊标识
+
+watcher:
+  intervalMs: 3000
+  maxMessages: 20
+
+policy:
+  whitelist: []
+  blacklist: []
+  sessionTypes:
+    - private
+    - group
+  workingHours: "09:00-18:00"
+  throttle:
+    perSessionMinIntervalSeconds: 60
+    dailyMaxPerSession: 50
+
+llm:
+  baseUrl: https://api.openai.com/v1
+  apiKey: ${LLM_API_KEY}
+  model: gpt-4o-mini
+  temperature: 0.7
+  timeout: 30000
+  maxTokens: 500
+  contextMessages: 5
+  systemPrompt: |
+    你是一个友好的客服助手。请根据用户的问题给出简洁、专业的回复。
+    注意事项：
+    - 保持礼貌和专业
+    - 回复简洁明了
+    - 如果不确定，建议用户咨询人工客服
+
+validation:
+  sensitiveWords:
+    - 密码
+    - 银行卡
+  maxReplyLength: 500
+
+mode: draft_only  # draft_only | auto_send
+
+ops:
+  port: 3000
+  host: 127.0.0.1
+
+logging:
+  level: info  # trace | debug | info | warn | error | fatal
+  pretty: true
