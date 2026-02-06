@@ -24,6 +24,16 @@ export interface MessageInfo {
   isMe: boolean;
 }
 
+export class DomLocatorError extends Error {
+  public readonly originalCause: Error | undefined;
+
+  constructor(message: string, originalCause?: Error) {
+    super(message);
+    this.name = 'DomLocatorError';
+    this.originalCause = originalCause;
+  }
+}
+
 export class DomLocator {
   constructor(
     private readonly connector: CdpConnector,
@@ -62,13 +72,18 @@ export class DomLocator {
       })()
     `;
 
-    const response = (await this.connector.evaluate(script)) as {
-      result?: { value?: SessionInfo[] };
-    };
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: SessionInfo[] };
+      };
 
-    const sessions = response.result?.value || [];
-    log.debug({ count: sessions.length }, 'Sessions retrieved');
-    return sessions;
+      const sessions = response.result?.value || [];
+      log.debug({ count: sessions.length }, 'Sessions retrieved');
+      return sessions;
+    } catch (error) {
+      log.error({ err: error }, 'Failed to get sessions');
+      throw new DomLocatorError('Failed to get sessions', error as Error);
+    }
   }
 
   async getCurrentSession(): Promise<SessionInfo | null> {
@@ -83,18 +98,18 @@ export class DomLocator {
           if (!el) return '';
           let result = '';
           el.childNodes.forEach(node => {
-            if (node.nodeType === 3) {
-              const text = node.textContent?.trim();
+            if (node.nodeType === Node.TEXT_NODE) {
+              const text = node.textContent;
               if (text) result += text;
-            } else if (node.nodeType === 1) {
+            } else if (node.nodeType === Node.ELEMENT_NODE) {
               const tag = node.tagName;
               if (tag === 'IMG') {
-                result += node.getAttribute('alt') || '[image]';
-              } else if (node.classList.contains('emoji-span')) {
+                result += node.getAttribute('emoji') || node.getAttribute('alt') || '[image]';
+              } else if (node.classList && node.classList.contains('emoji-span')) {
                 result += node.getAttribute('data-emoji') || '[emoji]';
-              } else if (node.classList.contains('emoticon')) {
+              } else if (node.classList && node.classList.contains('emoticon')) {
                 result += node.textContent || '[emoticon]';
-              } else if (node.classList.contains('sticker')) {
+              } else if (node.classList && node.classList.contains('sticker')) {
                 result += '[sticker]';
               } else {
                 result += extractContent(node);
@@ -130,13 +145,18 @@ export class DomLocator {
       })()
     `;
 
-    const response = (await this.connector.evaluate(script)) as {
-      result?: { value?: MessageInfo[] };
-    };
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: MessageInfo[] };
+      };
 
-    const messages = response.result?.value || [];
-    log.debug({ count: messages.length }, 'Messages retrieved');
-    return messages;
+      const messages = response.result?.value || [];
+      log.debug({ count: messages.length }, 'Messages retrieved');
+      return messages;
+    } catch (error) {
+      log.error({ err: error }, 'Failed to get messages');
+      throw new DomLocatorError('Failed to get messages', error as Error);
+    }
   }
 
   async getInputBox(): Promise<{ found: boolean; editable: boolean }> {
@@ -151,15 +171,25 @@ export class DomLocator {
       })()
     `;
 
-    const response = (await this.connector.evaluate(script)) as {
-      result?: { value?: { found: boolean; editable: boolean } };
-    };
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: { found: boolean; editable: boolean } };
+      };
 
-    return response.result?.value || { found: false, editable: false };
+      return response.result?.value || { found: false, editable: false };
+    } catch (error) {
+      log.error({ err: error }, 'Failed to get input box');
+      return { found: false, editable: false };
+    }
   }
 
   async setInputText(text: string): Promise<boolean> {
-    const escapedText = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+    const escapedText = text
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\n/g, '\\n')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
 
     const script = `
       (function() {
@@ -167,7 +197,7 @@ export class DomLocator {
         if (!inputBox) return false;
         
         inputBox.focus();
-        inputBox.innerHTML = '${escapedText}';
+        inputBox.textContent = '${escapedText}';
         
         inputBox.dispatchEvent(new Event('input', { bubbles: true }));
         inputBox.dispatchEvent(new Event('change', { bubbles: true }));
@@ -176,13 +206,18 @@ export class DomLocator {
       })()
     `;
 
-    const response = (await this.connector.evaluate(script)) as {
-      result?: { value?: boolean };
-    };
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: boolean };
+      };
 
-    const success = response.result?.value === true;
-    log.debug({ success, textLength: text.length }, 'Input text set');
-    return success;
+      const success = response.result?.value === true;
+      log.debug({ success, textLength: text.length }, 'Input text set');
+      return success;
+    } catch (error) {
+      log.error({ err: error }, 'Failed to set input text');
+      return false;
+    }
   }
 
   async clickSendButton(): Promise<boolean> {
@@ -196,19 +231,28 @@ export class DomLocator {
       })()
     `;
 
-    const response = (await this.connector.evaluate(script)) as {
-      result?: { value?: boolean };
-    };
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: boolean };
+      };
 
-    const success = response.result?.value === true;
-    log.debug({ success }, 'Send button clicked');
-    return success;
+      const success = response.result?.value === true;
+      log.debug({ success }, 'Send button clicked');
+      return success;
+    } catch (error) {
+      log.error({ err: error }, 'Failed to click send button');
+      return false;
+    }
   }
 
   async selectSession(sessionId: string): Promise<boolean> {
+    const escapedSessionId = sessionId.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
     const script = `
       (function() {
-        const item = document.querySelector('${this.selectors.sessionItem}[data-sesuuid="${sessionId}"]');
+        const targetId = '${escapedSessionId}';
+        const items = document.querySelectorAll('${this.selectors.sessionItem}');
+        const item = Array.from(items).find(el => el.getAttribute('data-sesuuid') === targetId);
         if (!item) return false;
         
         item.click();
@@ -216,12 +260,17 @@ export class DomLocator {
       })()
     `;
 
-    const response = (await this.connector.evaluate(script)) as {
-      result?: { value?: boolean };
-    };
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: boolean };
+      };
 
-    const success = response.result?.value === true;
-    log.debug({ success, sessionId }, 'Session selected');
-    return success;
+      const success = response.result?.value === true;
+      log.debug({ success, sessionId }, 'Session selected');
+      return success;
+    } catch (error) {
+      log.error({ err: error, sessionId }, 'Failed to select session');
+      return false;
+    }
   }
 }
