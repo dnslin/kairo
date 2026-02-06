@@ -12,7 +12,7 @@ export default [
       parserOptions: {
         ecmaVersion: 'latest',
         sourceType: 'module',
-        project: './tsconfig.json'
+        project: './tsconfig.json',
       },
       globals: {
         console: 'readonly',
@@ -21,11 +21,12 @@ export default [
         setTimeout: 'readonly',
         setInterval: 'readonly',
         clearTimeout: 'readonly',
-        clearInterval: 'readonly'
-      }
+        clearInterval: 'readonly',
+        fetch: 'readonly',
+      },
     },
     plugins: {
-      '@typescript-eslint': tseslint
+      '@typescript-eslint': tseslint,
     },
     rules: {
       ...tseslint.configs.recommended.rules,
@@ -36,8 +37,8 @@ export default [
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/await-thenable': 'error',
-      'no-console': 'off'
-    }
+      'no-console': 'off',
+    },
   },
-  prettier
+  prettier,
 ];
