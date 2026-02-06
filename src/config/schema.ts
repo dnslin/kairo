@@ -12,18 +12,26 @@ export interface PageConfig {
 }
 
 export interface SelectorsConfig {
-  messageList: string;
-  messageNode: string;
-  messageSender: string;
-  messageTime: string;
-  messageContent: string;
-  inputBox: string;
-  sendButton: string;
   sessionList: string;
   sessionItem: string;
+  sessionItemSelected: string;
   sessionName: string;
-  unreadBadge: string;
-  groupIndicator: string;
+  sessionTime: string;
+  sessionPreview: string;
+  sessionUnread: string;
+  groupAvatar: string;
+  discussAvatar: string;
+  privateAvatar: string;
+  messageContainer: string;
+  messageItem: string;
+  messageContent: string;
+  messageSender: string;
+  messageTime: string;
+  messageLeft: string;
+  messageRight: string;
+  editorArea: string;
+  inputBox: string;
+  sendButton: string;
 }
 
 export interface WatcherConfig {
