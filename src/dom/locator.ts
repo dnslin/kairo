@@ -304,12 +304,12 @@ export class DomLocator {
       };
       log.debug(
         { found: result.found, visible: result.visible, enabled: result.enabled },
-        'Send button located'
+        '发送按钮已定位'
       );
       return result;
     } catch (error) {
-      log.error({ err: error }, 'Failed to get send button');
-      throw new DomLocatorError('Failed to get send button', error as Error);
+      log.error({ err: error }, '获取发送按钮失败');
+      throw new DomLocatorError('获取发送按钮失败', error as Error);
     }
   }
 
