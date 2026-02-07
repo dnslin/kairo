@@ -24,6 +24,30 @@ export interface MessageInfo {
   isMe: boolean;
 }
 
+export interface ElementInfo {
+  found: boolean;
+  selector: string;
+}
+
+export interface MessageListInfo extends ElementInfo {
+  childCount: number;
+}
+
+export interface MessageNodeInfo {
+  id: string;
+  index: number;
+}
+
+export interface MessageNodesInfo extends ElementInfo {
+  count: number;
+  nodes: MessageNodeInfo[];
+}
+
+export interface SendButtonInfo extends ElementInfo {
+  visible: boolean;
+  enabled: boolean;
+}
+
 export class DomLocatorError extends Error {
   public readonly originalCause: Error | undefined;
 
@@ -37,7 +61,7 @@ export class DomLocatorError extends Error {
 export class DomLocator {
   constructor(
     private readonly connector: CdpConnector,
-    private readonly selectors: SelectorsConfig
+    private selectors: SelectorsConfig
   ) {}
 
   async getSessions(): Promise<SessionInfo[]> {
@@ -159,6 +183,38 @@ export class DomLocator {
     }
   }
 
+  async getMessageNodes(): Promise<MessageNodesInfo> {
+    const selector = this.selectors.messageItem;
+    const script = `
+      (function() {
+        const items = document.querySelectorAll('${selector}');
+        const nodes = Array.from(items).map((item, index) => ({
+          id: item.id || '',
+          index: index
+        }));
+        return {
+          found: items.length > 0,
+          selector: '${selector}',
+          count: items.length,
+          nodes: nodes
+        };
+      })()
+    `;
+
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: MessageNodesInfo };
+      };
+
+      const result = response.result?.value || { found: false, selector, count: 0, nodes: [] };
+      log.debug({ found: result.found, count: result.count }, '消息节点已定位');
+      return result;
+    } catch (error) {
+      log.error({ err: error }, '获取消息节点失败');
+      throw new DomLocatorError('Failed to get message nodes', error as Error);
+    }
+  }
+
   async getInputBox(): Promise<{ found: boolean; editable: boolean }> {
     const script = `
       (function() {
@@ -220,6 +276,43 @@ export class DomLocator {
     }
   }
 
+  async getSendButton(): Promise<SendButtonInfo> {
+    const selector = this.selectors.sendButton;
+    const script = `
+      (function() {
+        const btn = document.querySelector('${selector}');
+        if (!btn) return { found: false, selector: '${selector}', visible: false, enabled: false };
+        return {
+          found: true,
+          selector: '${selector}',
+          visible: btn.offsetParent !== null,
+          enabled: !btn.hasAttribute('disabled') && !btn.classList.contains('disabled')
+        };
+      })()
+    `;
+
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: SendButtonInfo };
+      };
+
+      const result = response.result?.value || {
+        found: false,
+        selector,
+        visible: false,
+        enabled: false,
+      };
+      log.debug(
+        { found: result.found, visible: result.visible, enabled: result.enabled },
+        '发送按钮已定位'
+      );
+      return result;
+    } catch (error) {
+      log.error({ err: error }, '获取发送按钮失败');
+      throw new DomLocatorError('获取发送按钮失败', error as Error);
+    }
+  }
+
   async clickSendButton(): Promise<boolean> {
     const script = `
       (function() {
@@ -271,6 +364,39 @@ export class DomLocator {
     } catch (error) {
       log.error({ err: error, sessionId }, 'Failed to select session');
       return false;
+    }
+  }
+
+  updateSelectors(selectors: SelectorsConfig): void {
+    log.info('Selectors configuration updated');
+    this.selectors = selectors;
+  }
+
+  async getMessageList(): Promise<MessageListInfo> {
+    const selector = this.selectors.messageContainer;
+    const script = `
+      (function() {
+        const el = document.querySelector('${selector}');
+        if (!el) return { found: false, selector: '${selector}', childCount: 0 };
+        return {
+          found: true,
+          selector: '${selector}',
+          childCount: el.children.length
+        };
+      })()
+    `;
+
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: MessageListInfo };
+      };
+
+      const result = response.result?.value || { found: false, selector, childCount: 0 };
+      log.debug({ found: result.found, childCount: result.childCount }, '消息列表已定位');
+      return result;
+    } catch (error) {
+      log.error({ err: error }, '获取消息列表失败');
+      throw new DomLocatorError('获取消息列表失败', error as Error);
     }
   }
 }
