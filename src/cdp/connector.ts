@@ -5,6 +5,8 @@ import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('cdp');
 
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+
 interface CdpTargetInfo {
   description: string;
   devtoolsFrontendUrl: string;
@@ -33,6 +35,7 @@ export type CdpConnectorEvents = {
   reconnecting: [attempt: number, maxRetries: number];
   heartbeat: [uptimeMs: number];
   error: [error: Error];
+  status_change: [status: ConnectionStatus, previousStatus: ConnectionStatus];
 };
 
 export class CdpConnectionError extends Error {
@@ -53,6 +56,9 @@ export class CdpConnector extends EventEmitter<CdpConnectorEvents> {
   private connectedAt: number | null = null;
   private isConnected = false;
   private messageId = 0;
+  private status: ConnectionStatus = 'disconnected';
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingCallbacks = new Map<
     number,
     {
@@ -68,7 +74,20 @@ export class CdpConnector extends EventEmitter<CdpConnectorEvents> {
     super();
   }
 
+  private setStatus(newStatus: ConnectionStatus): void {
+    const previousStatus = this.status;
+    if (previousStatus === newStatus) return;
+    this.status = newStatus;
+    log.info({ status: newStatus, previousStatus }, 'Connection status changed');
+    this.emit('status_change', newStatus, previousStatus);
+  }
+
+  getStatus(): ConnectionStatus {
+    return this.status;
+  }
+
   async connect(): Promise<CdpConnection> {
+    this.setStatus('connecting');
     log.info({ url: this.cdpConfig.url }, 'Connecting to CDP endpoint');
 
     try {
@@ -84,6 +103,8 @@ export class CdpConnector extends EventEmitter<CdpConnectorEvents> {
 
       this.connectedAt = Date.now();
       this.isConnected = true;
+      this.reconnectAttempts = 0;
+      this.setStatus('connected');
 
       log.info({ url: this.pageUrl }, 'Connected to renderer page');
       this.emit('connected');
@@ -97,6 +118,7 @@ export class CdpConnector extends EventEmitter<CdpConnectorEvents> {
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       log.error({ err }, 'Failed to connect to CDP');
+      this.setStatus('disconnected');
       throw new CdpConnectionError('Failed to connect to CDP', err);
     }
   }
@@ -233,7 +255,7 @@ export class CdpConnector extends EventEmitter<CdpConnectorEvents> {
   }
 
   private handleDisconnect(reason: string): void {
-    if (!this.isConnected) {
+    if (!this.isConnected && this.status !== 'connected') {
       return;
     }
 
@@ -241,11 +263,61 @@ export class CdpConnector extends EventEmitter<CdpConnectorEvents> {
     this.stopHeartbeat();
     log.warn({ reason }, 'Connection lost');
     this.emit('disconnected', reason);
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    const maxRetries = this.cdpConfig.reconnect.maxRetries;
+    const baseDelay = this.cdpConfig.reconnect.baseDelayMs;
+    const maxDelay = this.cdpConfig.reconnect.maxDelayMs;
+
+    if (this.reconnectAttempts >= maxRetries) {
+      log.error(
+        { attempts: this.reconnectAttempts, maxRetries },
+        'CDP connection failed after max retries - manual intervention required'
+      );
+      this.setStatus('disconnected');
+      this.emit('error', new CdpConnectionError(`Reconnect failed after ${maxRetries} attempts`));
+      return;
+    }
+
+    const delay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), maxDelay);
+    this.reconnectAttempts++;
+    this.setStatus('reconnecting');
+
+    log.info(
+      { attempt: this.reconnectAttempts, maxRetries, delayMs: delay },
+      'Scheduling reconnect'
+    );
+    this.emit('reconnecting', this.reconnectAttempts, maxRetries);
+
+    if (this.reconnectAttempts >= 5) {
+      log.error(
+        { attempts: this.reconnectAttempts },
+        'CDP reconnect attempts reached 5 - alerting'
+      );
+    }
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.connect().catch(err => {
+        log.warn({ err }, 'Reconnect attempt failed');
+      });
+    }, delay);
   }
 
   disconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.stopHeartbeat();
     this.isConnected = false;
+    this.reconnectAttempts = 0;
 
     if (this.ws) {
       try {
@@ -262,6 +334,7 @@ export class CdpConnector extends EventEmitter<CdpConnectorEvents> {
     }
 
     this.connectedAt = null;
+    this.setStatus('disconnected');
     log.info('Disconnected from CDP');
   }
 
