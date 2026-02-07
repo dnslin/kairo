@@ -295,10 +295,10 @@ export class CdpConnector extends EventEmitter<CdpConnectorEvents> {
     );
     this.emit('reconnecting', this.reconnectAttempts, maxRetries);
 
-    if (this.reconnectAttempts > 5) {
+    if (this.reconnectAttempts >= 5) {
       log.error(
         { attempts: this.reconnectAttempts },
-        'CDP reconnect attempts exceeded 5 - alerting'
+        'CDP reconnect attempts reached 5 - alerting'
       );
     }
 
