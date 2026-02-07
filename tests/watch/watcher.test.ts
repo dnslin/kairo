@@ -81,7 +81,7 @@ describe('MessageWatcher', () => {
     extractor.getRecentMessages.mockResolvedValue([createMessage()]);
     const onNewMessage = vi.fn();
 
-    await watcher.start(onNewMessage);
+    watcher.start(onNewMessage);
     watcher.start(onNewMessage);
     await vi.advanceTimersByTimeAsync(0);
 

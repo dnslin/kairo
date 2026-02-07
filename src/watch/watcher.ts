@@ -17,14 +17,13 @@ export class WatcherError extends Error {
 export class MessageWatcher {
   private running = false;
   private pendingTimeout: ReturnType<typeof setTimeout> | null = null;
+  // TODO(#17): store 模块实现后，从持久化加载已处理指纹并定期清理
   private knownFingerprints = new Set<string>();
 
   constructor(
     private readonly extractor: MessageExtractor,
     private readonly config: WatcherConfig
   ) {
-    void this.extractor;
-    void this.config;
     logger.debug('MessageWatcher 已初始化');
   }
 
