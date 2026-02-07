@@ -56,14 +56,16 @@ export class LlmClient {
         return null;
       }
 
-      if (this.containsSensitiveWords(content)) {
+      const cleanedContent = this.removeThinkingTags(content);
+
+      if (this.containsSensitiveWords(cleanedContent)) {
         log.warn({ reason: 'sensitive_words' }, '回复包含敏感词，已过滤');
         return null;
       }
 
-      const truncated = this.truncate(content, this.validation.maxReplyLength);
+      const truncated = this.truncate(cleanedContent, this.validation.maxReplyLength);
       log.debug(
-        { originalLength: content.length, truncatedLength: truncated.length },
+        { originalLength: cleanedContent.length, truncatedLength: truncated.length },
         '回复已生成'
       );
 
@@ -107,5 +109,9 @@ export class LlmClient {
       return text;
     }
     return text.slice(0, maxLength);
+  }
+
+  private removeThinkingTags(text: string): string {
+    return text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
   }
 }

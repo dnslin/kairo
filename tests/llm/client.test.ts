@@ -272,6 +272,44 @@ describe('LlmClient', () => {
     });
   });
 
+  describe('removeThinkingTags', () => {
+    it('移除 <think> 标签及其内容', () => {
+      const client = new LlmClient(config, validation);
+      const removeFn = (
+        client as unknown as { removeThinkingTags: (text: string) => string }
+      ).removeThinkingTags.bind(client);
+
+      const input = '<think>\n这是思考内容\n</think>\n\n这是实际回复';
+      const result = removeFn(input);
+
+      expect(result).toBe('这是实际回复');
+    });
+
+    it('无 <think> 标签时保持原样', () => {
+      const client = new LlmClient(config, validation);
+      const removeFn = (
+        client as unknown as { removeThinkingTags: (text: string) => string }
+      ).removeThinkingTags.bind(client);
+
+      const input = '这是普通回复';
+      const result = removeFn(input);
+
+      expect(result).toBe('这是普通回复');
+    });
+
+    it('处理多个 <think> 标签', () => {
+      const client = new LlmClient(config, validation);
+      const removeFn = (
+        client as unknown as { removeThinkingTags: (text: string) => string }
+      ).removeThinkingTags.bind(client);
+
+      const input = '<think>思考1</think>回复1<think>思考2</think>回复2';
+      const result = removeFn(input);
+
+      expect(result).toBe('回复1回复2');
+    });
+  });
+
   describe('generateReply', () => {
     it('正常返回 LLM 生成的回复', async () => {
       mockCreate.mockResolvedValue({
