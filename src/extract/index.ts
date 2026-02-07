@@ -1,0 +1,7 @@
+export {
+  MessageExtractor,
+  ExtractorError,
+  normalizeText,
+  generateFingerprint,
+} from './extractor.js';
+export type { Message } from './extractor.js';
