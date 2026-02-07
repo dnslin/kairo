@@ -4,6 +4,20 @@ import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('extract');
 
+export function normalizeText(text: string): string {
+  return text.trim();
+}
+
+export function generateFingerprint(
+  sessionId: string,
+  sender: string,
+  time: string,
+  content: string
+): string {
+  const data = `${sessionId}\x00${sender}\x00${time}\x00${content}`;
+  return createHash('sha256').update(data).digest('hex');
+}
+
 /**
  * 消息数据结构，包含会话信息和唯一指纹
  */
@@ -58,8 +72,8 @@ export class MessageExtractor {
     log.debug({ count: rawMessages.length, sessionId: session.id }, '提取原始消息');
 
     const messages: Message[] = rawMessages.map(raw => {
-      const content = this.normalizeText(raw.content);
-      const fingerprint = this.generateFingerprint(session.id, raw.sender, raw.time, content);
+      const content = normalizeText(raw.content);
+      const fingerprint = generateFingerprint(session.id, raw.sender, raw.time, content);
 
       return {
         sessionId: session.id,
@@ -72,25 +86,5 @@ export class MessageExtractor {
 
     log.debug({ count: messages.length }, '消息提取完成');
     return messages;
-  }
-
-  /**
-   * 规范化文本 (去除首尾空白)
-   */
-  private normalizeText(text: string): string {
-    return text.trim();
-  }
-
-  /**
-   * 生成消息指纹 (SHA-256)
-   */
-  private generateFingerprint(
-    sessionId: string,
-    sender: string,
-    time: string,
-    content: string
-  ): string {
-    const data = `${sessionId}|${sender}|${time}|${content}`;
-    return createHash('sha256').update(data).digest('hex');
   }
 }
