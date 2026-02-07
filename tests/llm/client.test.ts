@@ -308,6 +308,18 @@ describe('LlmClient', () => {
 
       expect(result).toBe('回复1回复2');
     });
+
+    it('处理大小写变体 <THINK>', () => {
+      const client = new LlmClient(config, validation);
+      const removeFn = (
+        client as unknown as { removeThinkingTags: (text: string) => string }
+      ).removeThinkingTags.bind(client);
+
+      const input = '<THINK>思考内容</THINK>回复';
+      const result = removeFn(input);
+
+      expect(result).toBe('回复');
+    });
   });
 
   describe('generateReply', () => {

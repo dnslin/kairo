@@ -112,6 +112,6 @@ export class LlmClient {
   }
 
   private removeThinkingTags(text: string): string {
-    return text.replace(/<think>[\s\S]*?<\/think>\s*/g, '').trim();
+    return text.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').trim();
   }
 }
