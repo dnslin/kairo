@@ -63,6 +63,9 @@ export class DomLocator {
     private readonly connector: CdpConnector,
     private selectors: SelectorsConfig
   ) {}
+  getConnector(): CdpConnector {
+    return this.connector;
+  }
 
   async getSessions(): Promise<SessionInfo[]> {
     const script = `
@@ -273,13 +276,18 @@ export class DomLocator {
     }
   }
   async simulatePaste(): Promise<void> {
+    const isMac = process.platform === 'darwin';
+    const modifierKey = isMac ? 'Meta' : 'Control';
+    const modifierCode = isMac ? 'MetaLeft' : 'ControlLeft';
+    const modifierKeyCode = isMac ? 91 : 17;
+    const modifierValue = isMac ? 8 : 2;
     await this.connector.sendCommand('Input.dispatchKeyEvent', {
       type: 'keyDown',
-      key: 'Control',
-      code: 'ControlLeft',
-      windowsVirtualKeyCode: 17,
-      nativeVirtualKeyCode: 17,
-      modifiers: 2,
+      key: modifierKey,
+      code: modifierCode,
+      windowsVirtualKeyCode: modifierKeyCode,
+      nativeVirtualKeyCode: modifierKeyCode,
+      modifiers: modifierValue,
     });
     await this.connector.sendCommand('Input.dispatchKeyEvent', {
       type: 'keyDown',
@@ -287,7 +295,7 @@ export class DomLocator {
       code: 'KeyV',
       windowsVirtualKeyCode: 86,
       nativeVirtualKeyCode: 86,
-      modifiers: 2,
+      modifiers: modifierValue,
     });
     await this.connector.sendCommand('Input.dispatchKeyEvent', {
       type: 'keyUp',
@@ -295,14 +303,14 @@ export class DomLocator {
       code: 'KeyV',
       windowsVirtualKeyCode: 86,
       nativeVirtualKeyCode: 86,
-      modifiers: 2,
+      modifiers: modifierValue,
     });
     await this.connector.sendCommand('Input.dispatchKeyEvent', {
       type: 'keyUp',
-      key: 'Control',
-      code: 'ControlLeft',
-      windowsVirtualKeyCode: 17,
-      nativeVirtualKeyCode: 17,
+      key: modifierKey,
+      code: modifierCode,
+      windowsVirtualKeyCode: modifierKeyCode,
+      nativeVirtualKeyCode: modifierKeyCode,
       modifiers: 0,
     });
   }

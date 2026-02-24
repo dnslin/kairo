@@ -1,8 +1,8 @@
 import type { DomLocator } from '../dom/locator.js';
 import type { SenderConfig } from '../config/schema.js';
 import { createChildLogger } from '../utils/logger.js';
-import { readFile } from 'fs/promises';
-
+import { readFile, stat } from 'fs/promises';
+import { lookup } from 'mime-types';
 
 const log = createChildLogger('sender');
 
@@ -23,6 +23,9 @@ export class SenderError extends Error {
 
 export class Sender {
   private readonly pollIntervalMs = 200;
+  private readonly CLIPBOARD_WRITE_DELAY_MS = 500;
+  private readonly PASTE_SETTLE_DELAY_MS = 1000;
+  private readonly MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 
   constructor(
     private readonly locator: DomLocator,
@@ -78,9 +81,25 @@ export class Sender {
       };
     }
   }
+
+  /**
+   * 发送图片消息
+   * @param imagePath - 图片文件的绝对或相对路径
+   * @returns 发送结果，包含成功状态和错误信息
+   */
   async sendImage(imagePath: string): Promise<SendResult> {
     log.info({ imagePath }, '开始发送图片');
     try {
+      // 验证文件存在性和大小
+      const stats = await stat(imagePath);
+      if (stats.size > this.MAX_IMAGE_SIZE_BYTES) {
+        log.warn({ size: stats.size }, '图片文件过大');
+        return {
+          success: false,
+          error: `图片文件过大 (>${this.MAX_IMAGE_SIZE_BYTES / 1024 / 1024}MB)`,
+        };
+      }
+
       const inputBox = await this.locator.getInputBox();
       if (!inputBox.found) {
         log.warn('输入框未找到');
@@ -90,34 +109,48 @@ export class Sender {
         log.warn('输入框不可编辑');
         return { success: false, error: '输入框不可编辑' };
       }
+
+      // 检测图片格式
+      const mimeType = lookup(imagePath) || 'image/png';
+      if (!mimeType.startsWith('image/')) {
+        log.warn({ mimeType }, '文件不是图片格式');
+        return { success: false, error: '文件不是图片格式' };
+      }
+
       const imageBuffer = await readFile(imagePath);
       const base64 = imageBuffer.toString('base64');
-      await this.writeImageToClipboard(base64);
+      await this.writeImageToClipboard(base64, mimeType);
       log.debug('图片已写入剪贴板');
+
       const focused = await this.locator.focusInputBox();
       if (!focused) {
         log.warn('聚焦输入框失败');
         return { success: false, error: '聚焦输入框失败' };
       }
-      await this.sleep(500);
+
+      await this.sleep(this.CLIPBOARD_WRITE_DELAY_MS);
       await this.locator.simulatePaste();
       log.debug('粘贴操作已完成');
-      await this.sleep(1000);
+
+      await this.sleep(this.PASTE_SETTLE_DELAY_MS);
       const sendButton = await this.locator.getSendButton();
       if (!sendButton.found) {
         log.warn('发送按钮未找到');
         return { success: false, error: '发送按钮未找到' };
       }
+
       const clicked = await this.locator.clickSendButton();
       if (!clicked) {
         log.warn('点击发送失败');
         return { success: false, error: '点击发送失败' };
       }
+
       const verified = await this.verifyImageSent();
       if (!verified) {
         log.warn('验证超时');
         return { success: false, error: '验证超时' };
       }
+
       log.info({ imagePath }, '图片发送成功');
       return { success: true };
     } catch (error) {
@@ -146,24 +179,29 @@ export class Sender {
 
     return false;
   }
-  private async writeImageToClipboard(base64: string): Promise<void> {
+
+  private async writeImageToClipboard(base64: string, mimeType: string): Promise<void> {
+    const escapedBase64 = base64.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const escapedMimeType = mimeType.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const script = `
       (async function() {
-        const base64 = '${base64}';
-        const blob = await fetch('data:image/png;base64,' + base64).then(r => r.blob());
+        const base64Data = '${escapedBase64}';
+        const mimeType = '${escapedMimeType}';
+        const blob = await fetch('data:' + mimeType + ';base64,' + base64Data).then(r => r.blob());
         await navigator.clipboard.write([
-          new ClipboardItem({ 'image/png': blob })
+          new ClipboardItem({ [mimeType]: blob })
         ]);
         return true;
       })()
     `;
-    await this.locator['connector'].evaluate(script);
+    await this.locator.getConnector().evaluate(script);
   }
+
   private async verifyImageSent(): Promise<boolean> {
     const startTime = Date.now();
     while (Date.now() - startTime < this.config.verifyTimeoutMs) {
       const messages = await this.locator.getMessages(5);
-      const found = messages.some(m => m.isMe && m.content === '[image]');
+      const found = messages.some(m => m.isMe && m.content.includes('[image]'));
       if (found) {
         return true;
       }
