@@ -251,6 +251,61 @@ export class DomLocator {
       return { found: false, editable: false };
     }
   }
+  async focusInputBox(): Promise<boolean> {
+    const script = `
+      (function() {
+        const inputBox = document.querySelector('${this.selectors.inputBox}');
+        if (!inputBox) return false;
+        inputBox.focus();
+        return true;
+      })()
+    `;
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: boolean };
+      };
+      const success = response.result?.value === true;
+      log.debug({ success }, 'Input box focused');
+      return success;
+    } catch (error) {
+      log.error({ err: error }, 'Failed to focus input box');
+      return false;
+    }
+  }
+  async simulatePaste(): Promise<void> {
+    await this.connector.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: 'Control',
+      code: 'ControlLeft',
+      windowsVirtualKeyCode: 17,
+      nativeVirtualKeyCode: 17,
+      modifiers: 2,
+    });
+    await this.connector.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: 'v',
+      code: 'KeyV',
+      windowsVirtualKeyCode: 86,
+      nativeVirtualKeyCode: 86,
+      modifiers: 2,
+    });
+    await this.connector.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'v',
+      code: 'KeyV',
+      windowsVirtualKeyCode: 86,
+      nativeVirtualKeyCode: 86,
+      modifiers: 2,
+    });
+    await this.connector.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'Control',
+      code: 'ControlLeft',
+      windowsVirtualKeyCode: 17,
+      nativeVirtualKeyCode: 17,
+      modifiers: 0,
+    });
+  }
 
   async setInputText(text: string): Promise<boolean> {
     const escapedText = text
