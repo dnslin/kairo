@@ -63,6 +63,9 @@ export class DomLocator {
     private readonly connector: CdpConnector,
     private selectors: SelectorsConfig
   ) {}
+  getConnector(): CdpConnector {
+    return this.connector;
+  }
 
   async getSessions(): Promise<SessionInfo[]> {
     const script = `
@@ -148,17 +151,30 @@ export class DomLocator {
         const lastItems = Array.from(items).slice(-${limit});
         
         lastItems.forEach(item => {
+          const isSysMsg = item.querySelector('.rcd-sys') !== null;
+          if (isSysMsg) return;
           const id = item.id || '';
           const contentEl = item.querySelector('${this.selectors.messageContent}');
           const senderEl = item.querySelector('${this.selectors.messageSender}');
           const timeEl = item.querySelector('${this.selectors.messageTime}');
           const isRight = item.querySelector('${this.selectors.messageRight}') !== null;
-          
+          let content = '';
           if (contentEl) {
+            content = extractContent(contentEl);
+          } else {
+            const isCard = item.classList.contains('is-card');
+            if (isCard) {
+              content = '[file]';
+            } else {
+              const img = item.querySelector('img.pictext-pic');
+              if (img) content = '[image]';
+            }
+          }
+          if (content) {
             messages.push({
               id: id,
               sender: senderEl ? senderEl.textContent.trim() : '',
-              content: extractContent(contentEl),
+              content: content,
               time: timeEl ? timeEl.textContent.trim() : '',
               isMe: isRight
             });
@@ -237,6 +253,66 @@ export class DomLocator {
       log.error({ err: error }, 'Failed to get input box');
       return { found: false, editable: false };
     }
+  }
+  async focusInputBox(): Promise<boolean> {
+    const script = `
+      (function() {
+        const inputBox = document.querySelector('${this.selectors.inputBox}');
+        if (!inputBox) return false;
+        inputBox.focus();
+        return true;
+      })()
+    `;
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: boolean };
+      };
+      const success = response.result?.value === true;
+      log.debug({ success }, 'Input box focused');
+      return success;
+    } catch (error) {
+      log.error({ err: error }, 'Failed to focus input box');
+      return false;
+    }
+  }
+  async simulatePaste(): Promise<void> {
+    const isMac = process.platform === 'darwin';
+    const modifierKey = isMac ? 'Meta' : 'Control';
+    const modifierCode = isMac ? 'MetaLeft' : 'ControlLeft';
+    const modifierKeyCode = isMac ? 91 : 17;
+    const modifierValue = isMac ? 8 : 2;
+    await this.connector.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: modifierKey,
+      code: modifierCode,
+      windowsVirtualKeyCode: modifierKeyCode,
+      nativeVirtualKeyCode: modifierKeyCode,
+      modifiers: modifierValue,
+    });
+    await this.connector.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: 'v',
+      code: 'KeyV',
+      windowsVirtualKeyCode: 86,
+      nativeVirtualKeyCode: 86,
+      modifiers: modifierValue,
+    });
+    await this.connector.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: 'v',
+      code: 'KeyV',
+      windowsVirtualKeyCode: 86,
+      nativeVirtualKeyCode: 86,
+      modifiers: modifierValue,
+    });
+    await this.connector.sendCommand('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: modifierKey,
+      code: modifierCode,
+      windowsVirtualKeyCode: modifierKeyCode,
+      nativeVirtualKeyCode: modifierKeyCode,
+      modifiers: 0,
+    });
   }
 
   async setInputText(text: string): Promise<boolean> {

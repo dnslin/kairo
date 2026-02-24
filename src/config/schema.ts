@@ -82,6 +82,11 @@ export interface LoggingConfig {
   pretty: boolean;
 }
 
+export interface SenderConfig {
+  verifyTimeoutMs: number;
+  logMasking: boolean;
+}
+
 export interface AppConfig {
   cdp: CdpConfig;
   page: PageConfig;
@@ -93,4 +98,5 @@ export interface AppConfig {
   mode: OperationMode;
   ops: OpsConfig;
   logging: LoggingConfig;
+  sender: SenderConfig;
 }

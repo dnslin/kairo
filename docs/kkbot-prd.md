@@ -17,7 +17,7 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 
 ## Problem Statement
 
-**Current Situation**:  
+**Current Situation**:
 
 - KK9 客户端无公开 API，客户端源码丢失，无法从内部埋点
 - 人工逐条回复消息耗时耗力，尤其在消息量大时效率低下
@@ -26,7 +26,7 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 **Proposed Solution**:  
 通过 CDP 远程调试协议连接 Electron 客户端，监控聊天消息变化，调用 LLM 生成智能回复，支持半自动（人工确认）和全自动两种模式，并提供 Web 控制台进行运维管理。
 
-**Business Impact**:  
+**Business Impact**:
 
 - 减少 50%+ 人工回复工作量
 - 7x24 小时稳定运行，无需持续人工盯守
@@ -38,11 +38,11 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 
 **Primary KPIs:**
 
-| 指标       | 目标值      | 测量方法                  |
-| -------- | -------- | --------------------- |
-| 人力成本节省   | ≥ 50%    | 对比使用前后每日人工回复时间        |
-| 系统稳定运行时长 | ≥ 8 小时/次 | 监控日志中无异常退出            |
-| 草稿采纳率    | ≥ 80%    | (直接发送数 / 总草稿数) × 100% |
+| 指标             | 目标值      | 测量方法                       |
+| ---------------- | ----------- | ------------------------------ |
+| 人力成本节省     | ≥ 50%       | 对比使用前后每日人工回复时间   |
+| 系统稳定运行时长 | ≥ 8 小时/次 | 监控日志中无异常退出           |
+| 草稿采纳率       | ≥ 80%       | (直接发送数 / 总草稿数) × 100% |
 
 **Validation**: 上线 1 周后统计日志数据，对比人工操作时间
 
@@ -217,7 +217,7 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 
 ### Integration
 
-- **KK9 客户端**: 通过 `--remote-debugging-port=9222` 启动
+- **KK9 客户端**: 通过 `--remote-debugging-port=9222 --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding` 启动
 - **LLM 服务**: 任意 OpenAI Compatible API（如 OpenAI、Azure OpenAI、Ollama、vLLM、LiteLLM 等）
 
 ### Technology Stack
@@ -239,11 +239,13 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 ### Technical Notes (重要发现)
 
 **会话类型区分：**
+
 - 群聊和私聊在 DOM 结构上有区别
 - 群聊会话的 DOM 元素中包含 `group` 关键字标识
 - 策略引擎需要支持按会话类型（群聊/私聊）过滤
 
 **消息通讯机制：**
+
 - KK9 客户端的消息收发**不通过 HTTP 请求**
 - 底层使用 TCP 长连接通讯，Network 面板几乎看不到消息相关请求
 - 只能通过 DOM 变化检测新消息，无法通过拦截网络请求
@@ -290,12 +292,12 @@ KKBot 是一个基于 CDP（Chrome DevTools Protocol）的外挂式自动回复�
 
 ## Risk Assessment
 
-| Risk                   | Probability | Impact | Mitigation Strategy      |
-| ---------------------- | ----------- | ------ | ------------------------ |
-| DOM 结构变化导致 selector 失效 | High        | High   | 多路 fallback + 配置热更新 + 告警 |
-| 客户端窗口最小化导致 DOM 不可靠     | Medium      | High   | 文档明确约束 + 状态检测 + 告警       |
-| LLM 生成不当回复             | Medium      | Medium | 敏感词过滤 + 人工确认模式           |
-| CDP 连接断开               | Medium      | Medium | 自动重连 + 断线告警              |
+| Risk                            | Probability | Impact | Mitigation Strategy               |
+| ------------------------------- | ----------- | ------ | --------------------------------- |
+| DOM 结构变化导致 selector 失效  | High        | High   | 多路 fallback + 配置热更新 + 告警 |
+| 客户端窗口最小化导致 DOM 不可靠 | Medium      | High   | 文档明确约束 + 状态检测 + 告警    |
+| LLM 生成不当回复                | Medium      | Medium | 敏感词过滤 + 人工确认模式         |
+| CDP 连接断开                    | Medium      | Medium | 自动重连 + 断线告警               |
 
 ---
 
@@ -352,31 +354,31 @@ page:
   match: renderer.html
 
 selectors:
-  messageList: "..."
-  messageNode: "..."
-  inputBox: "..."
-  sendButton: "..."
+  messageList: '...'
+  messageNode: '...'
+  inputBox: '...'
+  sendButton: '...'
 
 policy:
   whitelist: []
   blacklist: []
-  sessionTypes: ["private", "group"]  # 允许的会话类型：private=私聊, group=群聊
-  workingHours: "09:00-18:00"
+  sessionTypes: ['private', 'group'] # 允许的会话类型：private=私聊, group=群聊
+  workingHours: '09:00-18:00'
   throttle:
     perSessionMinIntervalSeconds: 60
     dailyMaxPerSession: 50
 
 llm:
-  baseUrl: https://api.openai.com/v1  # 或其他 OpenAI Compatible API
+  baseUrl: https://api.openai.com/v1 # 或其他 OpenAI Compatible API
   apiKey: sk-xxx
   model: gpt-4o-mini
   temperature: 0.7
   timeout: 30000
-  contextMessages: 5  # 携带最近 N 条历史消息作为上下文（0 = 不带）
+  contextMessages: 5 # 携带最近 N 条历史消息作为上下文（0 = 不带）
 
-mode: draft_only  # draft_only | auto_send
+mode: draft_only # draft_only | auto_send
 ```
 
 ---
 
-*This PRD was created through interactive requirements gathering with quality scoring to ensure comprehensive coverage of business, functional, UX, and technical dimensions.*
+_This PRD was created through interactive requirements gathering with quality scoring to ensure comprehensive coverage of business, functional, UX, and technical dimensions._

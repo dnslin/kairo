@@ -36,3 +36,4 @@ coverage/
 *.temp
 nul
 .sisyphus
+tmp/
