@@ -148,17 +148,30 @@ export class DomLocator {
         const lastItems = Array.from(items).slice(-${limit});
         
         lastItems.forEach(item => {
+          const isSysMsg = item.querySelector('.rcd-sys') !== null;
+          if (isSysMsg) return;
           const id = item.id || '';
           const contentEl = item.querySelector('${this.selectors.messageContent}');
           const senderEl = item.querySelector('${this.selectors.messageSender}');
           const timeEl = item.querySelector('${this.selectors.messageTime}');
           const isRight = item.querySelector('${this.selectors.messageRight}') !== null;
-          
+          let content = '';
           if (contentEl) {
+            content = extractContent(contentEl);
+          } else {
+            const isCard = item.classList.contains('is-card');
+            if (isCard) {
+              content = '[file]';
+            } else {
+              const img = item.querySelector('img.pictext-pic');
+              if (img) content = '[image]';
+            }
+          }
+          if (content) {
             messages.push({
               id: id,
               sender: senderEl ? senderEl.textContent.trim() : '',
-              content: extractContent(contentEl),
+              content: content,
               time: timeEl ? timeEl.textContent.trim() : '',
               isMe: isRight
             });
