@@ -70,3 +70,7 @@ ops:
 logging:
   level: info  # trace | debug | info | warn | error | fatal
   pretty: true
+
+store:
+  dbPath: ./data/kkbot.db
+  storeMessageContent: true  # 是否存储消息内容（敏感信息控制）

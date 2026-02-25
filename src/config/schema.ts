@@ -82,6 +82,11 @@ export interface LoggingConfig {
   pretty: boolean;
 }
 
+export interface StoreConfig {
+  dbPath: string;
+  storeMessageContent: boolean;
+}
+
 export interface SenderConfig {
   verifyTimeoutMs: number;
   logMasking: boolean;
@@ -99,4 +104,5 @@ export interface AppConfig {
   ops: OpsConfig;
   logging: LoggingConfig;
   sender: SenderConfig;
+  store: StoreConfig;
 }
