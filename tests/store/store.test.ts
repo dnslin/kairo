@@ -278,6 +278,94 @@ describe('Store', () => {
     });
   });
 
+
+  describe('草稿管理', () => {
+    const createDraft = () => ({
+      sessionId: 'ses-draft-1',
+      sessionName: '测试会话',
+      originalMessage: '你好，有问题想问',
+      originalSender: '张三',
+      draftContent: '您好，请问有什么可以帮助您的？',
+    });
+
+    it('保存草稿并返回 ID', () => {
+      const draftId = store.saveDraft(createDraft());
+      expect(draftId).toBeGreaterThan(0);
+    });
+
+    it('获取待确认草稿列表', () => {
+      store.saveDraft(createDraft());
+      store.saveDraft({ ...createDraft(), sessionId: 'ses-draft-2', sessionName: '测试会话2' });
+
+      const drafts = store.getPendingDrafts();
+      expect(drafts).toHaveLength(2);
+      expect(drafts[0]?.status).toBe('pending');
+      expect(drafts[0]?.sessionName).toBe('测试会话2');
+    });
+
+    it('根据 ID 获取草稿', () => {
+      const draftId = store.saveDraft(createDraft());
+      const draft = store.getDraftById(draftId);
+
+      expect(draft).not.toBeNull();
+      expect(draft?.sessionId).toBe('ses-draft-1');
+      expect(draft?.sessionName).toBe('测试会话');
+      expect(draft?.originalMessage).toBe('你好，有问题想问');
+      expect(draft?.originalSender).toBe('张三');
+      expect(draft?.draftContent).toBe('您好，请问有什么可以帮助您的？');
+      expect(draft?.status).toBe('pending');
+    });
+
+    it('获取不存在的草稿返回 null', () => {
+      expect(store.getDraftById(9999)).toBeNull();
+    });
+
+    it('更新草稿内容', () => {
+      const draftId = store.saveDraft(createDraft());
+      store.updateDraftContent(draftId, '修改后的回复');
+
+      const draft = store.getDraftById(draftId);
+      expect(draft?.draftContent).toBe('修改后的回复');
+      expect(draft?.updatedAt).toBeGreaterThanOrEqual(draft?.createdAt ?? 0);
+    });
+
+    it('更新草稿状态', () => {
+      const draftId = store.saveDraft(createDraft());
+      store.updateDraftStatus(draftId, 'sent');
+
+      const draft = store.getDraftById(draftId);
+      expect(draft?.status).toBe('sent');
+    });
+
+    it('已发送的草稿不出现在待确认列表', () => {
+      const id1 = store.saveDraft(createDraft());
+      store.saveDraft({ ...createDraft(), sessionId: 'ses-draft-2' });
+
+      store.updateDraftStatus(id1, 'sent');
+
+      const pending = store.getPendingDrafts();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]?.sessionId).toBe('ses-draft-2');
+    });
+
+    it('删除草稿', () => {
+      const draftId = store.saveDraft(createDraft());
+      store.deleteDraft(draftId);
+
+      expect(store.getDraftById(draftId)).toBeNull();
+    });
+
+    it('丢弃草稿更新状态', () => {
+      const draftId = store.saveDraft(createDraft());
+      store.updateDraftStatus(draftId, 'discarded');
+
+      const draft = store.getDraftById(draftId);
+      expect(draft?.status).toBe('discarded');
+
+      const pending = store.getPendingDrafts();
+      expect(pending).toHaveLength(0);
+    });
+  });
   describe('close', () => {
     it('关闭后操作抛出错误', () => {
       store.close();
