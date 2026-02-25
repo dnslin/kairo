@@ -19,8 +19,29 @@ export interface ProcessDecision {
  * 负责判断会话是否应该被处理
  */
 export class PolicyEngine {
+  private readonly regexCache = new Map<string, RegExp>();
+
   constructor(private readonly config: PolicyConfig) {
     log.debug('PolicyEngine 已初始化');
+    this.precompilePatterns();
+  }
+
+  /**
+   * 预编译所有通配符模式为正则表达式
+   */
+  private precompilePatterns(): void {
+    const allPatterns = [...this.config.whitelist, ...this.config.blacklist];
+    for (const pattern of allPatterns) {
+      if (pattern.includes('*')) {
+        const wildcardCount = (pattern.match(/\*/g) || []).length;
+        if (wildcardCount > 5) {
+          log.warn({ pattern }, '通配符数量超过限制(5)，跳过预编译');
+          continue;
+        }
+        const regexPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*?');
+        this.regexCache.set(pattern, new RegExp(`^${regexPattern}$`));
+      }
+    }
   }
 
   /**
@@ -87,17 +108,14 @@ export class PolicyEngine {
    * 例如：*测试* 匹配包含"测试"的任何字符串
    */
   private matchPattern(text: string, pattern: string): boolean {
-    // 精确匹配
-    if (pattern === text) {
-      return true;
-    }
+    if (pattern === text) return true;
 
-    // 通配符匹配
     if (pattern.includes('*')) {
-      const regexPattern = pattern
-        .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // 转义正则特殊字符
-        .replace(/\*/g, '.*'); // * 转换为 .*
-      const regex = new RegExp(`^${regexPattern}$`);
+      const regex = this.regexCache.get(pattern);
+      if (!regex) {
+        log.warn({ pattern }, '未预编译的模式，跳过匹配');
+        return false;
+      }
       return regex.test(text);
     }
 
@@ -108,7 +126,6 @@ export class PolicyEngine {
    * 检查当前时间是否在工作时间内
    */
   private isWithinWorkingHours(): boolean {
-    // 空字符串表示不限制时间
     if (!this.config.workingHours || this.config.workingHours.trim() === '') {
       return true;
     }
@@ -120,10 +137,23 @@ export class PolicyEngine {
     }
 
     const [, startHour, startMin, endHour, endMin] = match;
+    const sh = parseInt(startHour!, 10);
+    const sm = parseInt(startMin!, 10);
+    const eh = parseInt(endHour!, 10);
+    const em = parseInt(endMin!, 10);
+
+    if (sh > 23 || sm > 59 || eh > 23 || em > 59) {
+      log.warn(
+        { workingHours: this.config.workingHours },
+        '工作时间超出有效范围(0-23:0-59)，忽略限制'
+      );
+      return true;
+    }
+
     const now = new Date();
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
-    const startMinutes = parseInt(startHour!, 10) * 60 + parseInt(startMin!, 10);
-    const endMinutes = parseInt(endHour!, 10) * 60 + parseInt(endMin!, 10);
+    const startMinutes = sh * 60 + sm;
+    const endMinutes = eh * 60 + em;
     return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
   }
 

@@ -290,5 +290,44 @@ describe('PolicyEngine', () => {
         expect(decision.reason).toBe('blacklisted');
       });
     });
+    describe('ReDoS 防护', () => {
+      it('防止 ReDoS 攻击 - 多通配符模式', () => {
+        const config = createConfig({
+          blacklist: ['*a*a*a*a*a*a*a*a*a*a*b'],
+        });
+        const engine = new PolicyEngine(config);
+        const session = createSession({ name: 'aaaaaaaaaaaaaaaaaaaaac' });
+        const start = Date.now();
+        engine.shouldProcess(session);
+        const duration = Date.now() - start;
+        expect(duration).toBeLessThan(100);
+      });
+
+      it('通配符数量超过 5 个时跳过预编译', () => {
+        const config = createConfig({
+          blacklist: ['*a*b*c*d*e*f*g'],
+        });
+        const engine = new PolicyEngine(config);
+        const session = createSession({ name: 'abcdefg' });
+        const decision = engine.shouldProcess(session);
+        expect(decision.allowed).toBe(true);
+      });
+    });
+
+    describe('工作时间格式验证增强', () => {
+      it('拒绝无效小时 25:00-26:00', () => {
+        const config = createConfig({ workingHours: '25:00-26:00' });
+        const engine = new PolicyEngine(config);
+        const session = createSession();
+        expect(engine.shouldProcess(session).allowed).toBe(true);
+      });
+
+      it('拒绝无效分钟 10:60-11:70', () => {
+        const config = createConfig({ workingHours: '10:60-11:70' });
+        const engine = new PolicyEngine(config);
+        const session = createSession();
+        expect(engine.shouldProcess(session).allowed).toBe(true);
+      });
+    });
   });
 });
