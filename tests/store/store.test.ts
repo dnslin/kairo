@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { Store, StoreError } from '../../src/store/index.js';
@@ -28,6 +28,14 @@ describe('Store', () => {
   afterEach(() => {
     try {
       store.close();
+    } catch {
+      /* 忽略 */
+    }
+    // 清理测试 DB 文件
+    try {
+      rmSync(config.dbPath, { force: true });
+      rmSync(`${config.dbPath}-wal`, { force: true });
+      rmSync(`${config.dbPath}-shm`, { force: true });
     } catch {
       /* 忽略 */
     }

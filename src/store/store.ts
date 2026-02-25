@@ -1,11 +1,23 @@
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import type { Database as DatabaseType } from 'better-sqlite3';
+import type { Database as DatabaseType, Statement } from 'better-sqlite3';
 import type { StoreConfig } from '../config/schema.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('store');
+
+/**
+ * 保存消息的输入参数
+ */
+export interface SaveMessageInput {
+  /** 发送方名称 */
+  sender: string;
+  /** 消息内容 */
+  content: string;
+  /** 是否为自己发送 */
+  isFromSelf: boolean;
+}
 
 /**
  * 会话消息数据结构
@@ -49,11 +61,6 @@ export class StoreError extends Error {
 }
 
 /** SQLite 查询结果行类型 */
-interface ProcessedRow {
-  fingerprint: string;
-  processed_at: number;
-}
-
 interface SessionMessageRow {
   id: number;
   session_id: string;
@@ -70,6 +77,31 @@ interface EventRow {
   created_at: number;
 }
 
+/** 预编译 SQL 语句集合 */
+interface PreparedStatements {
+  isProcessed: Statement;
+  markProcessed: Statement;
+  getSessionHistory: Statement;
+  upsertSession: Statement;
+  insertMessage: Statement;
+  updateLastReply: Statement;
+  insertEvent: Statement;
+  getEventsByType: Statement;
+  getEventsAll: Statement;
+}
+
+/**
+ * 安全地将值序列化为 JSON 字符串
+ * 处理循环引用等异常情况
+ */
+function safeStringify(data: unknown): string {
+  try {
+    return JSON.stringify(data);
+  } catch {
+    return JSON.stringify({ _error: 'serialization_failed', _type: typeof data });
+  }
+}
+
 /**
  * 基于 SQLite 的数据存储层
  *
@@ -79,6 +111,14 @@ interface EventRow {
 export class Store {
   private readonly db: DatabaseType;
   private readonly storeMessageContent: boolean;
+  private readonly stmts: PreparedStatements;
+  private readonly saveTransaction: (
+    sessionId: string,
+    message: SaveMessageInput,
+    sessionName: string | null,
+    now: number,
+    contentToStore: string
+  ) => void;
 
   constructor(config: StoreConfig) {
     this.storeMessageContent = config.storeMessageContent;
@@ -103,6 +143,8 @@ export class Store {
       this.db.pragma('foreign_keys = ON');
 
       this.initTables();
+      this.stmts = this.prepareStatements();
+      this.saveTransaction = this.buildSaveTransaction();
       log.info({ dbPath: config.dbPath }, '数据存储层已初始化');
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -157,13 +199,88 @@ export class Store {
   }
 
   /**
+   * 预编译所有 SQL 语句（性能关键）
+   */
+  private prepareStatements(): PreparedStatements {
+    return {
+      isProcessed: this.db.prepare('SELECT 1 FROM processed_messages WHERE fingerprint = ?'),
+      markProcessed: this.db.prepare(
+        'INSERT OR IGNORE INTO processed_messages (fingerprint, processed_at) VALUES (?, ?)'
+      ),
+      getSessionHistory: this.db.prepare(
+        `SELECT id, session_id, sender, content, is_from_self, created_at
+         FROM session_messages
+         WHERE session_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?`
+      ),
+      upsertSession: this.db.prepare(
+        `INSERT INTO sessions (session_id, session_name, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(session_id) DO UPDATE SET
+           session_name = COALESCE(excluded.session_name, sessions.session_name)`
+      ),
+      insertMessage: this.db.prepare(
+        `INSERT INTO session_messages (session_id, sender, content, is_from_self, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ),
+      updateLastReply: this.db.prepare(
+        'UPDATE sessions SET last_reply_at = ? WHERE session_id = ?'
+      ),
+      insertEvent: this.db.prepare('INSERT INTO events (type, data, created_at) VALUES (?, ?, ?)'),
+      getEventsByType: this.db.prepare(
+        'SELECT id, type, data, created_at FROM events WHERE type = ? ORDER BY created_at DESC, id DESC LIMIT ?'
+      ),
+      getEventsAll: this.db.prepare(
+        'SELECT id, type, data, created_at FROM events ORDER BY created_at DESC, id DESC LIMIT ?'
+      ),
+    };
+  }
+
+  /**
+   * 预编译保存消息的事务
+   */
+  private buildSaveTransaction(): (
+    sessionId: string,
+    message: SaveMessageInput,
+    sessionName: string | null,
+    now: number,
+    contentToStore: string
+  ) => void {
+    return this.db.transaction(
+      (
+        sessionId: string,
+        message: SaveMessageInput,
+        sessionName: string | null,
+        now: number,
+        contentToStore: string
+      ) => {
+        // 确保会话记录存在（upsert）
+        this.stmts.upsertSession.run(sessionId, sessionName, now);
+
+        // 插入消息
+        this.stmts.insertMessage.run(
+          sessionId,
+          message.sender,
+          contentToStore,
+          message.isFromSelf ? 1 : 0,
+          now
+        );
+
+        // 如果是自己发送的消息，更新 last_reply_at
+        if (message.isFromSelf) {
+          this.stmts.updateLastReply.run(now, sessionId);
+        }
+      }
+    );
+  }
+
+  /**
    * 检查消息是否已处理
    */
   isProcessed(fingerprint: string): boolean {
     try {
-      const row = this.db
-        .prepare('SELECT fingerprint FROM processed_messages WHERE fingerprint = ?')
-        .get(fingerprint) as ProcessedRow | undefined;
+      const row = this.stmts.isProcessed.get(fingerprint) as Record<string, unknown> | undefined;
       return row !== undefined;
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -177,11 +294,7 @@ export class Store {
    */
   markProcessed(fingerprint: string): void {
     try {
-      this.db
-        .prepare(
-          'INSERT OR IGNORE INTO processed_messages (fingerprint, processed_at) VALUES (?, ?)'
-        )
-        .run(fingerprint, Date.now());
+      this.stmts.markProcessed.run(fingerprint, Date.now());
       log.debug({ fingerprint }, '消息已标记为已处理');
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -194,26 +307,22 @@ export class Store {
    * 获取会话历史消息
    *
    * @param sessionId - 会话 ID
-   * @param n - 最多返回的消息数量
+   * @param n - 最多返回的消息数量（必须 >= 0）
    * @returns 按时间正序排列的历史消息
    */
   getSessionHistory(sessionId: string, n: number): SessionMessage[] {
+    if (n <= 0) {
+      return [];
+    }
+
     try {
-      const rows = this.db
-        .prepare(
-          `SELECT id, session_id, sender, content, is_from_self, created_at
-           FROM session_messages
-           WHERE session_id = ?
-           ORDER BY created_at DESC, id DESC
-           LIMIT ?`
-        )
-        .all(sessionId, n) as SessionMessageRow[];
+      const rows = this.stmts.getSessionHistory.all(sessionId, n) as SessionMessageRow[];
 
       // 反转为正序（最旧的在前）
       const messages = rows.reverse().map(
         (row): SessionMessage => ({
           sender: row.sender,
-          content: this.storeMessageContent ? row.content : '[已隐藏]',
+          content: row.content || '[已隐藏]',
           isFromSelf: row.is_from_self === 1,
           createdAt: row.created_at,
         })
@@ -237,43 +346,12 @@ export class Store {
    * @param message - 消息数据
    * @param sessionName - 会话名称（可选，用于创建/更新会话记录）
    */
-  saveMessage(
-    sessionId: string,
-    message: { sender: string; content: string; isFromSelf: boolean },
-    sessionName?: string
-  ): void {
+  saveMessage(sessionId: string, message: SaveMessageInput, sessionName?: string): void {
     try {
       const now = Date.now();
       const contentToStore = this.storeMessageContent ? message.content : '';
 
-      const saveTransaction = this.db.transaction(() => {
-        // 确保会话记录存在（upsert）
-        this.db
-          .prepare(
-            `INSERT INTO sessions (session_id, session_name, created_at)
-             VALUES (?, ?, ?)
-             ON CONFLICT(session_id) DO UPDATE SET
-               session_name = COALESCE(excluded.session_name, sessions.session_name)`
-          )
-          .run(sessionId, sessionName ?? null, now);
-
-        // 插入消息
-        this.db
-          .prepare(
-            `INSERT INTO session_messages (session_id, sender, content, is_from_self, created_at)
-             VALUES (?, ?, ?, ?, ?)`
-          )
-          .run(sessionId, message.sender, contentToStore, message.isFromSelf ? 1 : 0, now);
-
-        // 如果是自己发送的消息，更新 last_reply_at
-        if (message.isFromSelf) {
-          this.db
-            .prepare('UPDATE sessions SET last_reply_at = ? WHERE session_id = ?')
-            .run(now, sessionId);
-        }
-      });
-
-      saveTransaction();
+      this.saveTransaction(sessionId, message, sessionName ?? null, now, contentToStore);
       log.debug({ sessionId, sender: message.sender }, '消息已保存');
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -286,14 +364,12 @@ export class Store {
    * 记录操作日志
    *
    * @param type - 事件类型（如 'message_sent', 'llm_call', 'error' 等）
-   * @param data - 事件附加数据（可选，会序列化为 JSON）
+   * @param data - 事件附加数据（可选，会序列化为 JSON，循环引用安全）
    */
   logEvent(type: string, data?: unknown): void {
     try {
-      const serializedData = data !== undefined ? JSON.stringify(data) : null;
-      this.db
-        .prepare('INSERT INTO events (type, data, created_at) VALUES (?, ?, ?)')
-        .run(type, serializedData, Date.now());
+      const serializedData = data !== undefined ? safeStringify(data) : null;
+      this.stmts.insertEvent.run(type, serializedData, Date.now());
       log.debug({ type }, '事件已记录');
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -311,18 +387,10 @@ export class Store {
    */
   getEvents(type?: string, limit = 100): EventRecord[] {
     try {
-      let rows: EventRow[];
-      if (type !== undefined) {
-        rows = this.db
-          .prepare(
-            'SELECT id, type, data, created_at FROM events WHERE type = ? ORDER BY created_at DESC, id DESC LIMIT ?'
-          )
-          .all(type, limit) as EventRow[];
-      } else {
-        rows = this.db
-          .prepare('SELECT id, type, data, created_at FROM events ORDER BY created_at DESC, id DESC LIMIT ?')
-          .all(limit) as EventRow[];
-      }
+      const rows =
+        type !== undefined
+          ? (this.stmts.getEventsByType.all(type, limit) as EventRow[])
+          : (this.stmts.getEventsAll.all(limit) as EventRow[]);
 
       return rows.map(
         (row): EventRecord => ({

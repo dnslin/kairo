@@ -118,14 +118,19 @@ async function main(): Promise<void> {
 
       check('成功提取真实消息', realMessages.length > 0);
 
+      // 获取原始 DOM 消息以获取 isMe 字段
+      const rawDomMessages = await locator.getMessages(10);
+
       // 存入 SQLite
-      for (const msg of realMessages) {
+      for (let i = 0; i < realMessages.length; i++) {
+        const msg = realMessages[i]!;
+        const rawMsg = rawDomMessages[i];
         store.saveMessage(
           targetSession.id,
           {
             sender: msg.sender || '(未知)',
             content: msg.content,
-            isFromSelf: msg.sender === '',
+            isFromSelf: rawMsg?.isMe ?? false,
           },
           targetSession.name
         );
