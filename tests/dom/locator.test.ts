@@ -246,8 +246,9 @@ describe('DomLocator', () => {
 
   describe('selectSession', () => {
     it('目标在当前 DOM 中时直接点击成功', async () => {
+      // init script → found in DOM
       connector.evaluate.mockResolvedValueOnce({
-        result: { value: true },
+        result: { value: { found: true } },
       });
 
       const result = await locator.selectSession('s1');
@@ -256,102 +257,91 @@ describe('DomLocator', () => {
       expect(connector.evaluate).toHaveBeenCalledTimes(1);
     });
 
-    it('目标不在 DOM 中时滚动查找并点击', async () => {
-      // Call 1: 直接查找 → 未找到，返回滚动信息
+    it('通过 scrollToItem 滚动后点击成功', async () => {
+      // Call 1: init → 未在 DOM 中找到，Vue 实例有目标在 index=5
       connector.evaluate.mockResolvedValueOnce({
-        result: {
-          value: {
-            found: false,
-            scrollHeight: 960,
-            clientHeight: 320,
-            scrollTop: 0,
-          },
-        },
+        result: { value: { found: false, hasVue: true, index: 5 } },
       });
 
-      // Call 2: 滚动到 320
-      connector.evaluate.mockResolvedValueOnce({ result: { value: 320 } });
-      // Call 3: 查找 → 未找到
+      // Call 2: scrollToItem → 成功
       connector.evaluate.mockResolvedValueOnce({
-        result: { value: { found: false, scrollTop: 320 } },
+        result: { value: true },
       });
 
-      // Call 4: 滚动到 640
-      connector.evaluate.mockResolvedValueOnce({ result: { value: 640 } });
-      // Call 5: 查找 → 找到并点击
+      // Call 3: click → 找到并点击
       connector.evaluate.mockResolvedValueOnce({
-        result: { value: { found: true } },
+        result: { value: true },
       });
 
       const result = await locator.selectSession('s-hidden');
 
       expect(result).toBe(true);
-      // init + 2*(scroll+find) = 5
-      expect(connector.evaluate).toHaveBeenCalledTimes(5);
+      // init + scroll + click = 3
+      expect(connector.evaluate).toHaveBeenCalledTimes(3);
     });
 
-    it('滚动到底部仍未找到时返回 false', async () => {
-      // Call 1: 直接查找 → 未找到
+    it('Vue 实例不可用时返回 false', async () => {
+      // init → 未在 DOM 中找到，无 Vue 实例
       connector.evaluate.mockResolvedValueOnce({
-        result: {
-          value: {
-            found: false,
-            scrollHeight: 640,
-            clientHeight: 320,
-            scrollTop: 0,
-          },
-        },
+        result: { value: { found: false, hasVue: false } },
       });
 
-      // Call 2: 滚动到 320
-      connector.evaluate.mockResolvedValueOnce({ result: { value: 320 } });
-      // Call 3: 查找 → 未找到
-      connector.evaluate.mockResolvedValueOnce({
-        result: { value: { found: false, scrollTop: 320 } },
-      });
+      const result = await locator.selectSession('s1');
 
-      // Call 4: 恢复滚动位置
+      expect(result).toBe(false);
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
+    });
+
+    it('目标不在 Vue items 中时返回 false', async () => {
+      // init → 未在 DOM 中找到，Vue 有但 index=-1
       connector.evaluate.mockResolvedValueOnce({
-        result: { value: true },
+        result: { value: { found: false, hasVue: true, index: -1 } },
       });
 
       const result = await locator.selectSession('not-exist');
 
       expect(result).toBe(false);
-      // init + 1*(scroll+find) + restore = 4
-      expect(connector.evaluate).toHaveBeenCalledTimes(4);
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
     });
 
-    it('滚动查找失败后恢复原始滚动位置', async () => {
-      // Call 1: 直接查找 → 未找到，scrollTop=100
+    it('scrollToItem 后 DOM 中仍未找到时返回 false', async () => {
+      // Call 1: init → Vue 有目标在 index=3
       connector.evaluate.mockResolvedValueOnce({
-        result: {
-          value: {
-            found: false,
-            scrollHeight: 640,
-            clientHeight: 320,
-            scrollTop: 100,
-          },
-        },
+        result: { value: { found: false, hasVue: true, index: 3 } },
       });
 
-      // Call 2: 滚动到 420
-      connector.evaluate.mockResolvedValueOnce({ result: { value: 420 } });
-      // Call 3: 查找 → 未找到
-      connector.evaluate.mockResolvedValueOnce({
-        result: { value: { found: false, scrollTop: 420 } },
-      });
-
-      // Call 4: 恢复
+      // Call 2: scrollToItem → 成功
       connector.evaluate.mockResolvedValueOnce({
         result: { value: true },
       });
 
-      await locator.selectSession('not-exist');
+      // Call 3: click → 未找到
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: false },
+      });
 
-      // 恢复是 calls[3]
-      const lastCall = connector.evaluate.mock.calls[3]?.[0] as string;
-      expect(lastCall).toContain('100');
+      const result = await locator.selectSession('s-missing');
+
+      expect(result).toBe(false);
+      expect(connector.evaluate).toHaveBeenCalledTimes(3);
+    });
+
+    it('scrollToItem 调用失败时返回 false', async () => {
+      // Call 1: init → Vue 有目标在 index=2
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: { found: false, hasVue: true, index: 2 } },
+      });
+
+      // Call 2: scrollToItem → 失败
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: false },
+      });
+
+      const result = await locator.selectSession('s-fail');
+
+      expect(result).toBe(false);
+      // init + scroll = 2 (不会进行 click)
+      expect(connector.evaluate).toHaveBeenCalledTimes(2);
     });
 
     it('evaluate 异常时返回 false', async () => {
