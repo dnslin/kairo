@@ -1,10 +1,11 @@
 /**
  * Store 模块交互验证脚本（真实 CDP 集成）
  *
- * 用法：npx tsx scripts/store-verify.ts
+ * 用法：npx tsx scripts/store-verify.ts [会话名关键字]
  *
  * 逐项验证 Issue #20 的功能验收标准
- * 连接真实 KK9 客户端，读取 int2024 会话消息并存入 SQLite
+ * 连接真实 KK9 客户端，读取指定会话消息并存入 SQLite
+ * 默认查找第一个会话，可通过命令行参数指定会话名关键字
  */
 
 // 静默 pino 日志，避免 Windows 终端中文乱码
@@ -15,6 +16,7 @@ import { rmSync, existsSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 
 const DB_PATH = './tmp/store-verify.db';
+const TARGET_NAME = process.argv[2] || '';
 
 // 清理上次验证残留
 try {
@@ -80,9 +82,9 @@ async function main(): Promise<void> {
   check('不同指纹互不影响', store.isProcessed('verify-fp-002') === false);
 
   // ────────────────────────────────────
-  // 3. 真实会话消息存取（CDP → int2024）
+  // 3. 真实会话消息存取
   // ────────────────────────────────────
-  section('\uD83D\uDCAC 3. 真实会话消息存取（int2024）');
+  section(`\uD83D\uDCAC 3. 真实会话消息存取${TARGET_NAME ? `（${TARGET_NAME}）` : ''}`);
 
   let connector: InstanceType<typeof CdpConnector> | null = null;
   try {
@@ -93,14 +95,16 @@ async function main(): Promise<void> {
     const extractor = new MessageExtractor(locator);
 
     await connector.connect();
-    console.log('  \u23F3 已连接，查找 int2024 会话...');
+    console.log(`  \u23F3 已连接，查找会话...`);
 
-    // 查找并选择 int2024 会话
-    const sessions = await locator.getSessions();
-    const targetSession = sessions.find(s => s.name.includes('int2024'));
+    // 查找目标会话：有参数时按关键字匹配，否则取第一个
+    const sessions = await locator.getAllSessions();
+    const targetSession = TARGET_NAME
+      ? sessions.find(s => s.name.includes(TARGET_NAME))
+      : sessions[0];
 
     if (!targetSession) {
-      console.log('  \u26A0\uFE0F  未找到 int2024 会话，跳过真实数据测试');
+      console.log(`  \u26A0\uFE0F  未找到${TARGET_NAME ? ` ${TARGET_NAME} ` : ''}会话，跳过真实数据测试`);
       console.log(`  可用会话: ${sessions.map(s => s.name).join(', ')}`);
     } else {
       console.log(`  \u23F3 找到会话: ${targetSession.name} (${targetSession.id})`);
@@ -156,7 +160,7 @@ async function main(): Promise<void> {
       }
 
       // 打印真实消息预览
-      console.log('\n  int2024 会话消息预览:');
+      console.log(`\n  ${targetSession.name} 会话消息预览:`);
       for (const msg of dbHistory) {
         const role = msg.isFromSelf ? '[Bot]' : '[User]';
         const preview = msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content;

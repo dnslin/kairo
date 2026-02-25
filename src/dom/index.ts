@@ -8,4 +8,5 @@ export type {
   MessageNodeInfo,
   MessageNodesInfo,
   SendButtonInfo,
+  GetAllSessionsOptions,
 } from './locator.js';

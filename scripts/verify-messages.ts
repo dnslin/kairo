@@ -10,7 +10,7 @@ async function verifyMessages(): Promise<void> {
   try {
     await connector.connect();
 
-    const sessions = await locator.getSessions();
+    const sessions = await locator.getAllSessions();
     const targetSession = sessions.find(s => s.name.includes('int2024'));
 
     if (!targetSession?.isSelected) {
