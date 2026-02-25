@@ -58,6 +58,14 @@ export class DomLocatorError extends Error {
   }
 }
 
+
+export interface GetAllSessionsOptions {
+  /** 每次滚动后等待 DOM 渲染的毫秒数 (默认 300) */
+  scrollDelayMs?: number;
+  /** 最大滚动步数，防止无限循环 (默认 50) */
+  maxScrollSteps?: number;
+}
+
 export class DomLocator {
   constructor(
     private readonly connector: CdpConnector,
@@ -110,6 +118,84 @@ export class DomLocator {
     } catch (error) {
       log.error({ err: error }, 'Failed to get sessions');
       throw new DomLocatorError('Failed to get sessions', error as Error);
+    }
+  }
+
+  async getAllSessions(options: GetAllSessionsOptions = {}): Promise<SessionInfo[]> {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { scrollDelayMs: _scrollDelayMs = 300, maxScrollSteps: _maxScrollSteps = 50 } = options;
+    const scrollerSel = this.selectors.sessionScroller;
+
+    try {
+      // 优先从 vue-recycle-scroller 的 Vue 实例直接读取全部会话数据
+      const script = `
+        (function() {
+          var scroller = document.querySelector('${scrollerSel}');
+          if (!scroller) return { scrollerNotFound: true };
+          var vue = scroller.__vue__;
+          if (!vue || !vue.items || !vue.items.length) return { vueNotFound: true };
+
+          var sessions = vue.items.map(function(item) {
+            var isGroup = item.type === 1 || item.type === 2;
+            var name = isGroup
+              ? item.typeName
+              : (item.creater === item.sesTypeID ? item.createrName : item.typeName);
+            var name = isGroup ? item.typeName : item.createrName;
+            var unread = item.userReadIndex < item.maxMessageIndex;
+
+            var lastMsg = '';
+            if (item.lastMessage) {
+              var msg = typeof item.lastMessage === 'string'
+                ? JSON.parse(item.lastMessage)
+                : item.lastMessage;
+              if (msg && msg.content && msg.content.length) {
+                lastMsg = msg.content.map(function(c) {
+                  if (c.text) return c.text;
+                  if (c.type === 1) return '[image]';
+                  return '';
+                }).join('');
+              }
+            }
+
+            return {
+              id: item.sesUUID || '',
+              name: name || '',
+              type: isGroup ? 'group' : 'private',
+              lastMessage: lastMsg,
+              time: '',
+              unread: unread,
+              isSelected: false
+            };
+          });
+
+          return { sessions: sessions };
+        })()
+      `;
+
+      const response = (await this.connector.evaluate(script)) as {
+        result?: {
+          value?: {
+            scrollerNotFound?: boolean;
+            vueNotFound?: boolean;
+            sessions?: SessionInfo[];
+          };
+        };
+      };
+
+      const data = response.result?.value;
+
+      // Vue 实例可用 → 直接返回全部会话
+      if (data && !data.scrollerNotFound && !data.vueNotFound && data.sessions) {
+        log.debug({ count: data.sessions.length }, '从 Vue 实例获取全部会话');
+        return data.sessions;
+      }
+
+      // 回退到普通 getSessions
+      log.warn('Vue 实例不可用，回退到 getSessions');
+      return this.getSessions();
+    } catch (error) {
+      log.error({ err: error }, '获取全部会话失败');
+      throw new DomLocatorError('Failed to get all sessions', error as Error);
     }
   }
 
@@ -416,29 +502,133 @@ export class DomLocator {
 
   async selectSession(sessionId: string): Promise<boolean> {
     const escapedSessionId = sessionId.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-
-    const script = `
-      (function() {
-        const targetId = '${escapedSessionId}';
-        const items = document.querySelectorAll('${this.selectors.sessionItem}');
-        const item = Array.from(items).find(el => el.getAttribute('data-sesuuid') === targetId);
-        if (!item) return false;
-        
-        item.click();
-        return true;
-      })()
-    `;
+    const scrollerSel = this.selectors.sessionScroller;
+    const itemSel = this.selectors.sessionItem;
 
     try {
-      const response = (await this.connector.evaluate(script)) as {
-        result?: { value?: boolean };
+      // 第一步：在当前 DOM 中查找并点击，找不到时返回滚动容器信息
+      const initScript = `
+        (function() {
+          var targetId = '${escapedSessionId}';
+          var items = document.querySelectorAll('${itemSel}');
+          var item = Array.from(items).find(function(el) { return el.getAttribute('data-sesuuid') === targetId; });
+          if (item) {
+            item.click();
+            return true;
+          }
+          var scroller = document.querySelector('${scrollerSel}');
+          if (!scroller) return { found: false, scrollHeight: 0, clientHeight: 0, scrollTop: 0 };
+          return {
+            found: false,
+            scrollHeight: scroller.scrollHeight,
+            clientHeight: scroller.clientHeight,
+            scrollTop: scroller.scrollTop
+          };
+        })()
+      `;
+
+      const initResponse = (await this.connector.evaluate(initScript)) as {
+        result?: {
+          value?:
+            | boolean
+            | {
+                found: boolean;
+                scrollHeight: number;
+                clientHeight: number;
+                scrollTop: number;
+              };
+        };
       };
 
-      const success = response.result?.value === true;
-      log.debug({ success, sessionId }, 'Session selected');
-      return success;
+      const initData = initResponse.result?.value;
+
+      // 直接命中
+      if (initData === true) {
+        log.debug({ sessionId }, '会话选中（直接命中）');
+        return true;
+      }
+
+      // 无滚动容器或不可滚动
+      if (
+        !initData ||
+        typeof initData !== 'object' ||
+        !initData.scrollHeight ||
+        initData.scrollHeight <= initData.clientHeight
+      ) {
+        log.debug({ sessionId }, '会话未找到且不可滚动');
+        return false;
+      }
+
+      const { scrollHeight, clientHeight, scrollTop: originalScrollTop } = initData;
+
+      // 第二步：滚动查找
+      let nextScrollTop = originalScrollTop + clientHeight;
+      const maxSteps = Math.ceil(scrollHeight / clientHeight);
+
+      for (let step = 0; step < maxSteps; step++) {
+        // 第一步：滚动并触发 scroll 事件
+        const scrollScript = `
+          (function() {
+            var scroller = document.querySelector('${scrollerSel}');
+            if (!scroller) return 0;
+            scroller.scrollTop = ${nextScrollTop};
+            scroller.dispatchEvent(new Event('scroll'));
+            return scroller.scrollTop;
+          })()
+        `;
+        await this.connector.evaluate(scrollScript);
+
+        // 等待 vue-recycle-scroller 渲染
+        await new Promise(resolve => setTimeout(resolve, 300));
+
+        // 第二步：在更新后的 DOM 中查找并点击
+        const findScript = `
+          (function() {
+            var items = document.querySelectorAll('${itemSel}');
+            var targetId = '${escapedSessionId}';
+            var item = Array.from(items).find(function(el) { return el.getAttribute('data-sesuuid') === targetId; });
+            if (item) {
+              item.click();
+              return { found: true };
+            }
+            var scroller = document.querySelector('${scrollerSel}');
+            return { found: false, scrollTop: scroller ? scroller.scrollTop : 0 };
+          })()
+        `;
+
+        const findResponse = (await this.connector.evaluate(findScript)) as {
+          result?: {
+            value?: { found: boolean; scrollTop?: number };
+          };
+        };
+
+        const findData = findResponse.result?.value;
+
+        if (findData?.found) {
+          log.debug({ sessionId }, '会话选中（滚动查找命中）');
+          return true;
+        }
+
+        nextScrollTop += clientHeight;
+        if (nextScrollTop >= scrollHeight) {
+          break;
+        }
+      }
+
+      // 未找到 → 恢复原始滚动位置
+      const restoreScript = `
+        (function() {
+          var scroller = document.querySelector('${scrollerSel}');
+          if (scroller) scroller.scrollTop = ${originalScrollTop};
+          return true;
+        })()
+      `;
+      await this.connector.evaluate(restoreScript);
+
+      log.debug({ sessionId }, '会话滚动查找未找到');
+      return false;
     } catch (error) {
-      log.error({ err: error, sessionId }, 'Failed to select session');
+      log.error({ err: error, sessionId }, '选择会话失败');
       return false;
     }
   }

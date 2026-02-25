@@ -4,7 +4,7 @@
  * 用法：npx tsx scripts/store-verify.ts
  *
  * 逐项验证 Issue #20 的功能验收标准
- * 连接真实 KK9 客户端，读取 int2024 会话消息并存入 SQLite
+ * 连接真实 KK9 客户端，读取 郭素红 会话消息并存入 SQLite
  */
 
 // 静默 pino 日志，避免 Windows 终端中文乱码
@@ -80,9 +80,9 @@ async function main(): Promise<void> {
   check('不同指纹互不影响', store.isProcessed('verify-fp-002') === false);
 
   // ────────────────────────────────────
-  // 3. 真实会话消息存取（CDP → int2024）
+  // 3. 真实会话消息存取（CDP → 郭素红）
   // ────────────────────────────────────
-  section('\uD83D\uDCAC 3. 真实会话消息存取（int2024）');
+  section('\uD83D\uDCAC 3. 真实会话消息存取（郭素红）');
 
   let connector: InstanceType<typeof CdpConnector> | null = null;
   try {
@@ -93,14 +93,14 @@ async function main(): Promise<void> {
     const extractor = new MessageExtractor(locator);
 
     await connector.connect();
-    console.log('  \u23F3 已连接，查找 int2024 会话...');
+    console.log('  \u23F3 已连接，查找 郭素红 会话...');
 
-    // 查找并选择 int2024 会话
-    const sessions = await locator.getSessions();
-    const targetSession = sessions.find(s => s.name.includes('int2024'));
+    // 查找并选择 郭素红 会话
+    const sessions = await locator.getAllSessions();
+    const targetSession = sessions.find(s => s.name.includes('郭素红'));
 
     if (!targetSession) {
-      console.log('  \u26A0\uFE0F  未找到 int2024 会话，跳过真实数据测试');
+      console.log('  \u26A0\uFE0F  未找到 郭素红 会话，跳过真实数据测试');
       console.log(`  可用会话: ${sessions.map(s => s.name).join(', ')}`);
     } else {
       console.log(`  \u23F3 找到会话: ${targetSession.name} (${targetSession.id})`);
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
       }
 
       // 打印真实消息预览
-      console.log('\n  int2024 会话消息预览:');
+      console.log('\n  郭素红 会话消息预览:');
       for (const msg of dbHistory) {
         const role = msg.isFromSelf ? '[Bot]' : '[User]';
         const preview = msg.content.length > 50 ? msg.content.slice(0, 50) + '...' : msg.content;

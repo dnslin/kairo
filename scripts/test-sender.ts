@@ -27,7 +27,7 @@ async function testSender(): Promise<void> {
     console.log('已连接!\n');
 
     console.log('获取会话列表...');
-    const sessions = await locator.getSessions();
+    const sessions = await locator.getAllSessions();
     console.log(`找到 ${sessions.length} 个会话\n`);
 
     const results: Array<{ name: string; success: boolean; error?: string; duration: number }> = [];

@@ -12,7 +12,7 @@ async function diagnoseMessages(): Promise<void> {
     await connector.connect();
     console.log('已连接!\n');
 
-    const sessions = await locator.getSessions();
+    const sessions = await locator.getAllSessions();
     const targetSession = sessions.find(s => s.name.includes('int2024'));
 
     if (!targetSession) {

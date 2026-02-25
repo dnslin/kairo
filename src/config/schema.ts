@@ -13,6 +13,7 @@ export interface PageConfig {
 
 export interface SelectorsConfig {
   sessionList: string;
+  sessionScroller: string;
   sessionItem: string;
   sessionItemSelected: string;
   sessionName: string;
