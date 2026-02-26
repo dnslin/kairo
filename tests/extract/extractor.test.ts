@@ -75,7 +75,7 @@ describe('MessageExtractor', () => {
   });
 
   describe('getRecentMessages', () => {
-    it('返回最近 n 条消息', async () => {
+    it('返回最近 n 条消息（过滤自消息）', async () => {
       mockLocator.getCurrentSession.mockResolvedValue({
         id: 'session-123',
         name: 'Test Session',
@@ -88,7 +88,7 @@ describe('MessageExtractor', () => {
 
       mockLocator.getMessages.mockResolvedValue([
         { id: 'msg-1', sender: 'Alice', content: '  Hello  ', time: '10:00', isMe: false },
-        { id: 'msg-2', sender: 'Bob', content: 'Hi there', time: '10:01', isMe: true },
+        { id: 'msg-2', sender: 'Bob', content: 'Hi there', time: '10:01', isMe: false },
       ]);
 
       const messages = await extractor.getRecentMessages(2);
@@ -99,6 +99,51 @@ describe('MessageExtractor', () => {
       expect(messages[0].content).toBe('Hello');
       expect(messages[0].time).toBe('10:00');
       expect(messages[0].fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(messages[0].isMe).toBe(false);
+    });
+
+    it('过滤掉 isMe === true 的自消息', async () => {
+      mockLocator.getCurrentSession.mockResolvedValue({
+        id: 'session-123',
+        name: 'Test Session',
+        type: 'private',
+        lastMessage: '',
+        time: '',
+        unread: false,
+        isSelected: true,
+      });
+
+      mockLocator.getMessages.mockResolvedValue([
+        { id: 'msg-1', sender: 'Alice', content: 'Hello', time: '10:00', isMe: false },
+        { id: 'msg-2', sender: '自己', content: '你好', time: '10:01', isMe: true },
+        { id: 'msg-3', sender: 'Bob', content: 'Hi', time: '10:02', isMe: false },
+      ]);
+
+      const messages = await extractor.getRecentMessages(3);
+
+      expect(messages).toHaveLength(2);
+      expect(messages[0].sender).toBe('Alice');
+      expect(messages[1].sender).toBe('Bob');
+    });
+
+    it('全部消息都是自消息时返回空数组', async () => {
+      mockLocator.getCurrentSession.mockResolvedValue({
+        id: 'session-123',
+        name: 'Test',
+        type: 'private',
+        lastMessage: '',
+        time: '',
+        unread: false,
+        isSelected: true,
+      });
+
+      mockLocator.getMessages.mockResolvedValue([
+        { id: 'msg-1', sender: '自己', content: '你好', time: '10:00', isMe: true },
+        { id: 'msg-2', sender: '自己', content: '再见', time: '10:01', isMe: true },
+      ]);
+
+      const messages = await extractor.getRecentMessages(2);
+      expect(messages).toHaveLength(0);
     });
 
     it('无会话时抛出 ExtractorError', async () => {
@@ -169,6 +214,7 @@ describe('MessageExtractor', () => {
       expect(msg).toHaveProperty('time', '下午3:00');
       expect(msg).toHaveProperty('fingerprint');
       expect(msg.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(msg).toHaveProperty('isMe', false);
     });
   });
 });

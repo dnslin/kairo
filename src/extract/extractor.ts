@@ -32,6 +32,8 @@ export interface Message {
   content: string;
   /** 消息唯一指纹 (SHA-256) */
   fingerprint: string;
+  /** 是否为自己发送的消息 */
+  isMe: boolean;
 }
 
 /**
@@ -71,18 +73,21 @@ export class MessageExtractor {
     const rawMessages = await this.locator.getMessages(n);
     log.debug({ count: rawMessages.length, sessionId: session.id }, '提取原始消息');
 
-    const messages: Message[] = rawMessages.map(raw => {
-      const content = normalizeText(raw.content);
-      const fingerprint = generateFingerprint(session.id, raw.sender, raw.time, content);
+    const messages: Message[] = rawMessages
+      .filter(raw => !raw.isMe)
+      .map(raw => {
+        const content = normalizeText(raw.content);
+        const fingerprint = generateFingerprint(session.id, raw.sender, raw.time, content);
 
-      return {
-        sessionId: session.id,
-        sender: raw.sender,
-        time: raw.time,
-        content,
-        fingerprint,
-      };
-    });
+        return {
+          sessionId: session.id,
+          sender: raw.sender,
+          time: raw.time,
+          content,
+          fingerprint,
+          isMe: raw.isMe,
+        };
+      });
 
     log.debug({ count: messages.length }, '消息提取完成');
     return messages;

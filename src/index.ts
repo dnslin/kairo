@@ -91,15 +91,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    // 跳过自己发送的消息
-    // 这里通过 getMessages 获取的 isMe 来判断更准确
-    const recentMsgs = await locator.getMessages(1);
-    const latestMsg = recentMsgs.find(m => m.content === msg.content && m.sender === msg.sender);
-    if (latestMsg?.isMe) {
-      log.debug({ fingerprint: msg.fingerprint }, '自己发送的消息，跳过');
-      return;
-    }
-
     // 策略检查
     const decision = policy.shouldProcess(currentSession);
     if (!decision.allowed) {
