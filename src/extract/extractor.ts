@@ -79,6 +79,7 @@ export class MessageExtractor {
         const content = normalizeText(raw.content);
         const fingerprint = generateFingerprint(session.id, raw.sender, raw.time, content);
 
+        // isMe 过滤后恒为 false，但保留字段供 P1 getMessagesFromSession() 等未来方法复用 Message 接口
         return {
           sessionId: session.id,
           sender: raw.sender,

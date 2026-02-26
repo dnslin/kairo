@@ -81,9 +81,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    // 标记已处理
-    store.markProcessed(msg.fingerprint);
-
     // 获取当前会话信息用于策略检查
     const currentSession = await locator.getCurrentSession();
     if (!currentSession) {
@@ -101,6 +98,9 @@ async function main(): Promise<void> {
       });
       return;
     }
+
+    // 所有前置检查通过后再标记已处理，避免检查失败时消息被静默丢弃
+    store.markProcessed(msg.fingerprint);
 
     // 保存接收到的消息
     store.saveMessage(
