@@ -10,6 +10,8 @@ import type { DomLocator } from '../../src/dom/index.js';
 const createMockLocator = () => ({
   getMessages: vi.fn(),
   getCurrentSession: vi.fn(),
+  getAllSessions: vi.fn(),
+  selectSession: vi.fn(),
 });
 
 describe('normalizeText', () => {
@@ -215,6 +217,67 @@ describe('MessageExtractor', () => {
       expect(msg).toHaveProperty('fingerprint');
       expect(msg.fingerprint).toMatch(/^[a-f0-9]{64}$/);
       expect(msg).toHaveProperty('isMe', false);
+    });
+  });
+
+  describe('getMessagesFromSession', () => {
+    it('切换会话并提取消息', async () => {
+      mockLocator.selectSession.mockResolvedValue(true);
+      mockLocator.getMessages.mockResolvedValue([
+        { id: 'msg-1', sender: 'Alice', content: 'Hello', time: '10:00', isMe: false },
+        { id: 'msg-2', sender: 'Bob', content: 'Hi', time: '10:01', isMe: false },
+      ]);
+
+      const messages = await extractor.getMessagesFromSession('session-456', 2, 0);
+
+      expect(mockLocator.selectSession).toHaveBeenCalledWith('session-456');
+      expect(messages).toHaveLength(2);
+      expect(messages[0].sessionId).toBe('session-456');
+      expect(messages[0].sender).toBe('Alice');
+      expect(messages[0].content).toBe('Hello');
+      expect(messages[0].fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    });
+
+    it('切换失败时抛出 ExtractorError', async () => {
+      mockLocator.selectSession.mockResolvedValue(false);
+
+      await expect(extractor.getMessagesFromSession('bad-session', 5)).rejects.toThrow(
+        ExtractorError,
+      );
+      await expect(extractor.getMessagesFromSession('bad-session', 5)).rejects.toThrow(
+        '切换会话失败: bad-session',
+      );
+    });
+
+    it('等待切换延迟', async () => {
+      vi.useFakeTimers();
+
+      mockLocator.selectSession.mockResolvedValue(true);
+      mockLocator.getMessages.mockResolvedValue([]);
+
+      const promise = extractor.getMessagesFromSession('session-789', 2, 300);
+
+      await vi.advanceTimersByTimeAsync(300);
+      const messages = await promise;
+
+      expect(messages).toHaveLength(0);
+
+      vi.useRealTimers();
+    });
+  });
+
+  describe('getAllSessions', () => {
+    it('委托给 locator', async () => {
+      const sessions = [
+        { id: 'ses-1', name: '会话1', type: 'private' as const, lastMessage: '', time: '', unread: false, isSelected: false },
+        { id: 'ses-2', name: '会话2', type: 'group' as const, lastMessage: '', time: '', unread: true, isSelected: false },
+      ];
+      mockLocator.getAllSessions.mockResolvedValue(sessions);
+
+      const result = await extractor.getAllSessions();
+
+      expect(mockLocator.getAllSessions).toHaveBeenCalled();
+      expect(result).toEqual(sessions);
     });
   });
 });
