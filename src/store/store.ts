@@ -48,6 +48,51 @@ export interface EventRecord {
 }
 
 /**
+ * 草稿状态类型
+ */
+export type DraftStatus = 'pending' | 'sent' | 'edited_sent' | 'discarded';
+
+/**
+ * 保存草稿的输入参数
+ */
+export interface SaveDraftInput {
+ /** 会话 ID */
+ sessionId: string;
+ /** 会话名称 */
+ sessionName: string;
+ /** 原始消息内容 */
+ originalMessage: string;
+ /** 原始消息发送者 */
+ originalSender: string;
+ /** LLM 生成的草稿内容 */
+ draftContent: string;
+}
+
+/**
+ * 草稿记录数据结构
+ */
+export interface DraftRecord {
+ /** 草稿 ID */
+ id: number;
+ /** 会话 ID */
+ sessionId: string;
+ /** 会话名称 */
+ sessionName: string;
+ /** 原始消息内容 */
+ originalMessage: string;
+ /** 原始消息发送者 */
+ originalSender: string;
+ /** 草稿内容 */
+ draftContent: string;
+ /** 草稿状态 */
+ status: DraftStatus;
+ /** 创建时间戳 (毫秒) */
+ createdAt: number;
+ /** 更新时间戳 (毫秒) */
+ updatedAt: number;
+}
+
+/**
  * 数据存储层错误
  */
 export class StoreError extends Error {
@@ -77,6 +122,18 @@ interface EventRow {
   created_at: number;
 }
 
+interface DraftRow {
+  id: number;
+  session_id: string;
+  session_name: string;
+  original_message: string;
+  original_sender: string;
+  draft_content: string;
+  status: string;
+  created_at: number;
+  updated_at: number;
+}
+
 /** 预编译 SQL 语句集合 */
 interface PreparedStatements {
   isProcessed: Statement;
@@ -88,6 +145,12 @@ interface PreparedStatements {
   insertEvent: Statement;
   getEventsByType: Statement;
   getEventsAll: Statement;
+  insertDraft: Statement;
+  getDraftsPending: Statement;
+  getDraftById: Statement;
+  updateDraftContent: Statement;
+  updateDraftStatus: Statement;
+  deleteDraft: Statement;
 }
 
 /**
@@ -193,6 +256,21 @@ export class Store {
         ON events(type);
       CREATE INDEX IF NOT EXISTS idx_processed_messages_at
         ON processed_messages(processed_at);
+
+      CREATE TABLE IF NOT EXISTS drafts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        session_name TEXT NOT NULL,
+        original_message TEXT NOT NULL,
+        original_sender TEXT NOT NULL,
+        draft_content TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_drafts_status
+        ON drafts(status);
     `);
 
     log.debug('数据库表结构已就绪');
@@ -233,6 +311,30 @@ export class Store {
       ),
       getEventsAll: this.db.prepare(
         'SELECT id, type, data, created_at FROM events ORDER BY created_at DESC, id DESC LIMIT ?'
+      ),
+      insertDraft: this.db.prepare(
+        `INSERT INTO drafts (session_id, session_name, original_message, original_sender, draft_content, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`
+      ),
+      getDraftsPending: this.db.prepare(
+        `SELECT id, session_id, session_name, original_message, original_sender, draft_content, status, created_at, updated_at
+         FROM drafts
+         WHERE status = 'pending'
+         ORDER BY created_at DESC, id DESC`
+      ),
+      getDraftById: this.db.prepare(
+        `SELECT id, session_id, session_name, original_message, original_sender, draft_content, status, created_at, updated_at
+         FROM drafts
+         WHERE id = ?`
+      ),
+      updateDraftContent: this.db.prepare(
+        'UPDATE drafts SET draft_content = ?, updated_at = ? WHERE id = ?'
+      ),
+      updateDraftStatus: this.db.prepare(
+        'UPDATE drafts SET status = ?, updated_at = ? WHERE id = ?'
+      ),
+      deleteDraft: this.db.prepare(
+        'DELETE FROM drafts WHERE id = ?'
       ),
     };
   }
@@ -407,6 +509,137 @@ export class Store {
     }
   }
 
+
+  /**
+ * 将 DraftRow 转换为 DraftRecord
+ */
+  private toDraftRecord(row: DraftRow): DraftRecord {
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      sessionName: row.session_name,
+      originalMessage: row.original_message,
+      originalSender: row.original_sender,
+      draftContent: row.draft_content,
+      status: row.status as DraftStatus,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /**
+   * 保存回复草稿
+   *
+   * @param input - 草稿输入数据
+   * @returns 新创建的草稿 ID
+   */
+  saveDraft(input: SaveDraftInput): number {
+    try {
+      const now = Date.now();
+      const result = this.stmts.insertDraft.run(
+        input.sessionId,
+        input.sessionName,
+        input.originalMessage,
+        input.originalSender,
+        input.draftContent,
+        now,
+        now
+      );
+      const draftId = Number(result.lastInsertRowid);
+      log.debug({ draftId, sessionId: input.sessionId }, '草稿已保存');
+      return draftId;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId: input.sessionId }, '保存草稿失败');
+      throw new StoreError('保存草稿失败', err);
+    }
+  }
+
+  /**
+   * 获取所有待确认草稿
+   *
+   * @returns 按时间倒序排列的待确认草稿列表
+   */
+  getPendingDrafts(): DraftRecord[] {
+    try {
+      const rows = this.stmts.getDraftsPending.all() as DraftRow[];
+      return rows.map(row => this.toDraftRecord(row));
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err }, '获取待确认草稿失败');
+      throw new StoreError('获取待确认草稿失败', err);
+    }
+  }
+
+  /**
+   * 根据 ID 获取草稿
+   *
+   * @param id - 草稿 ID
+   * @returns 草稿记录，不存在时返回 null
+   */
+  getDraftById(id: number): DraftRecord | null {
+    try {
+      const row = this.stmts.getDraftById.get(id) as DraftRow | undefined;
+      if (!row) {
+        return null;
+      }
+      return this.toDraftRecord(row);
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, draftId: id }, '获取草稿失败');
+      throw new StoreError('获取草稿失败', err);
+    }
+  }
+
+  /**
+   * 更新草稿内容（编辑后发送场景）
+   *
+   * @param id - 草稿 ID
+   * @param newContent - 新的草稿内容
+   */
+  updateDraftContent(id: number, newContent: string): void {
+    try {
+      this.stmts.updateDraftContent.run(newContent, Date.now(), id);
+      log.debug({ draftId: id }, '草稿内容已更新');
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, draftId: id }, '更新草稿内容失败');
+      throw new StoreError('更新草稿内容失败', err);
+    }
+  }
+
+  /**
+   * 更新草稿状态
+   *
+   * @param id - 草稿 ID
+   * @param status - 新状态
+   */
+  updateDraftStatus(id: number, status: DraftStatus): void {
+    try {
+      this.stmts.updateDraftStatus.run(status, Date.now(), id);
+      log.debug({ draftId: id, status }, '草稿状态已更新');
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, draftId: id }, '更新草稿状态失败');
+      throw new StoreError('更新草稿状态失败', err);
+    }
+  }
+
+  /**
+   * 删除草稿
+   *
+   * @param id - 草稿 ID
+   */
+  deleteDraft(id: number): void {
+    try {
+      this.stmts.deleteDraft.run(id);
+      log.debug({ draftId: id }, '草稿已删除');
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, draftId: id }, '删除草稿失败');
+      throw new StoreError('删除草稿失败', err);
+    }
+  }
   /**
    * 关闭数据库连接
    */

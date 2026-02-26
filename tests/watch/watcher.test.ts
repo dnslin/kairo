@@ -28,6 +28,7 @@ const createMessage = (overrides: Partial<Message> = {}): Message => ({
   time: '10:00',
   content: '你好',
   fingerprint: 'fp-1',
+  isMe: false,
   ...overrides,
 });
 
