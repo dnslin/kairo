@@ -37,3 +37,4 @@ coverage/
 nul
 .sisyphus
 tmp/
+.claude
