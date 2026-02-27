@@ -156,6 +156,40 @@ describe('Store', () => {
       expect(historyA[0]?.sender).toBe('A');
       expect(historyB[0]?.sender).toBe('B');
     });
+
+    it('getSessionHistory 不包含尚未保存的消息', () => {
+      // 读取尚无任何消息的会话 → 空数组
+      const before = store.getSessionHistory('ses-order', 10);
+      expect(before).toEqual([]);
+
+      // 写入一条消息
+      store.saveMessage('ses-order', { sender: 'User', content: '消息1', isFromSelf: false });
+
+      // 写入后再读 → 恰好 1 条
+      const after = store.getSessionHistory('ses-order', 10);
+      expect(after).toHaveLength(1);
+      expect(after[0]?.content).toBe('消息1');
+    });
+
+    it('bot 回复（isFromSelf: true）保存后出现在历史中', () => {
+      // 保存用户消息
+      store.saveMessage('ses-bot', { sender: '张三', content: '你好', isFromSelf: false });
+      // 保存 bot 回复
+      store.saveMessage('ses-bot', { sender: '自己', content: '您好，有什么可以帮您？', isFromSelf: true });
+
+      const history = store.getSessionHistory('ses-bot', 10);
+      expect(history).toHaveLength(2);
+
+      // 第一条：用户消息
+      expect(history[0]?.isFromSelf).toBe(false);
+      expect(history[0]?.sender).toBe('张三');
+      expect(history[0]?.content).toBe('你好');
+
+      // 第二条：bot 回复
+      expect(history[1]?.isFromSelf).toBe(true);
+      expect(history[1]?.sender).toBe('自己');
+      expect(history[1]?.content).toBe('您好，有什么可以帮您？');
+    });
   });
 
   describe('logEvent / getEvents', () => {

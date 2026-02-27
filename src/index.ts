@@ -102,7 +102,17 @@ async function main(): Promise<void> {
     // 所有前置检查通过后再标记已处理，避免检查失败时消息被静默丢弃
     store.markProcessed(msg.fingerprint);
 
-    // 保存接收到的消息
+    // 先读取历史，再保存当前消息，避免当前消息在 LLM 上下文中重复出现
+    const history = store.getSessionHistory(msg.sessionId, config.llm.contextMessages);
+    const historyAsMessageInfo: MessageInfo[] = history.map(h => ({
+      id: '',
+      sender: h.sender,
+      content: h.content,
+      time: '',
+      isMe: h.isFromSelf,
+    }));
+
+    // 保存接收到的消息（在读取历史之后）
     store.saveMessage(
       msg.sessionId,
       {
@@ -112,16 +122,6 @@ async function main(): Promise<void> {
       },
       currentSession.name
     );
-
-    // 获取会话历史用于 LLM 上下文
-    const history = store.getSessionHistory(msg.sessionId, config.llm.contextMessages);
-    const historyAsMessageInfo: MessageInfo[] = history.map(h => ({
-      id: '',
-      sender: h.sender,
-      content: h.content,
-      time: '',
-      isMe: h.isFromSelf,
-    }));
 
     // 将当前消息转为 MessageInfo 格式
     const currentMsgInfo: MessageInfo = {
@@ -169,6 +169,16 @@ async function main(): Promise<void> {
         sessionId: msg.sessionId,
         sessionName: currentSession.name,
       });
+      // 保存 bot 回复到会话历史，确保 LLM 上下文完整
+      store.saveMessage(
+        msg.sessionId,
+        {
+          sender: '自己',
+          content: reply,
+          isFromSelf: true,
+        },
+        currentSession.name
+      );
       log.info(
         { draftId, sessionId: msg.sessionId, sessionName: currentSession.name },
         '草稿已生成，等待确认'
