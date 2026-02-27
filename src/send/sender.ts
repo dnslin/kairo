@@ -111,7 +111,7 @@ export class Sender {
       }
 
       // 检测图片格式
-      const mimeType = lookup(imagePath) || 'image/png';
+      const mimeType = lookup(imagePath) || '';
       if (!mimeType.startsWith('image/')) {
         log.warn({ mimeType }, '文件不是图片格式');
         return { success: false, error: '文件不是图片格式' };
@@ -181,8 +181,8 @@ export class Sender {
   }
 
   private async writeImageToClipboard(base64: string, mimeType: string): Promise<void> {
-    const escapedBase64 = base64.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const escapedMimeType = mimeType.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const escapedBase64 = base64.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+    const escapedMimeType = mimeType.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r');
     const script = `
       (async function() {
         const base64Data = '${escapedBase64}';
