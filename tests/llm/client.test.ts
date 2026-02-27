@@ -191,45 +191,45 @@ describe('LlmClient', () => {
   });
 
   describe('containsSensitiveWords', () => {
-    it('检测到敏感词返回 true', () => {
+    it('检测到敏感词返回命中词数组', () => {
       const client = new LlmClient(config, validation);
       const checkFn = (
-        client as unknown as { containsSensitiveWords: (text: string) => boolean }
+        client as unknown as { containsSensitiveWords: (text: string) => string[] }
       ).containsSensitiveWords.bind(client);
 
-      expect(checkFn('这里有敏感词内容')).toBe(true);
-      expect(checkFn('违禁内容在这里')).toBe(true);
+      expect(checkFn('这里有敏感词内容')).toEqual(['敏感词']);
+      expect(checkFn('违禁内容在这里')).toEqual(['违禁']);
     });
 
-    it('无敏感词返回 false', () => {
+    it('无敏感词返回空数组', () => {
       const client = new LlmClient(config, validation);
       const checkFn = (
-        client as unknown as { containsSensitiveWords: (text: string) => boolean }
+        client as unknown as { containsSensitiveWords: (text: string) => string[] }
       ).containsSensitiveWords.bind(client);
 
-      expect(checkFn('正常的回复内容')).toBe(false);
-      expect(checkFn('你好，今天天气不错')).toBe(false);
+      expect(checkFn('正常的回复内容')).toEqual([]);
+      expect(checkFn('你好，今天天气不错')).toEqual([]);
     });
 
-    it('空敏感词列表时始终返回 false', () => {
+    it('空敏感词列表时始终返回空数组', () => {
       const noSensitiveConfig = createValidationConfig({ sensitiveWords: [] });
       const client = new LlmClient(config, noSensitiveConfig);
       const checkFn = (
-        client as unknown as { containsSensitiveWords: (text: string) => boolean }
+        client as unknown as { containsSensitiveWords: (text: string) => string[] }
       ).containsSensitiveWords.bind(client);
 
-      expect(checkFn('任何内容')).toBe(false);
+      expect(checkFn('任何内容')).toEqual([]);
     });
 
     it('敏感词大小写不敏感（如果配置）', () => {
       const mixedCaseConfig = createValidationConfig({ sensitiveWords: ['Sensitive'] });
       const client = new LlmClient(config, mixedCaseConfig);
       const checkFn = (
-        client as unknown as { containsSensitiveWords: (text: string) => boolean }
+        client as unknown as { containsSensitiveWords: (text: string) => string[] }
       ).containsSensitiveWords.bind(client);
 
       // 中文敏感词无大小写问题，英文敏感词测试
-      expect(checkFn('This is Sensitive content')).toBe(true);
+      expect(checkFn('This is Sensitive content')).toEqual(['Sensitive']);
     });
   });
 
@@ -355,7 +355,7 @@ describe('LlmClient', () => {
 
       expect(reply).toBeNull();
       expect(loggerWarnMock).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: 'sensitive_words' }),
+        expect.objectContaining({ reason: 'sensitive_words', matchedWords: ['敏感词'] }),
         expect.any(String)
       );
     });

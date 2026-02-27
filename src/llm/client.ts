@@ -58,8 +58,9 @@ export class LlmClient {
 
       const cleanedContent = this.removeThinkingTags(content);
 
-      if (this.containsSensitiveWords(cleanedContent)) {
-        log.warn({ reason: 'sensitive_words' }, '回复包含敏感词，已过滤');
+      const matchedWords = this.containsSensitiveWords(cleanedContent);
+      if (matchedWords.length > 0) {
+        log.warn({ reason: 'sensitive_words', matchedWords }, '回复包含敏感词，已过滤');
         return null;
       }
 
@@ -95,13 +96,13 @@ export class LlmClient {
     return messages;
   }
 
-  private containsSensitiveWords(text: string): boolean {
+  private containsSensitiveWords(text: string): string[] {
     if (this.validation.sensitiveWords.length === 0) {
-      return false;
+      return [];
     }
 
     const lowerText = text.toLowerCase();
-    return this.validation.sensitiveWords.some(word => lowerText.includes(word.toLowerCase()));
+    return this.validation.sensitiveWords.filter(word => lowerText.includes(word.toLowerCase()));
   }
 
   private truncate(text: string, maxLength: number): string {
