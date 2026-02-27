@@ -503,6 +503,101 @@ describe('Store', () => {
     });
   });
 
+  describe('会话分组查询', () => {
+    // 辅助函数：创建测试草稿
+    const createTestDraft = (sessionId: string, sessionName: string) => {
+      return store.saveDraft({
+        sessionId,
+        sessionName,
+        originalMessage: `来自 ${sessionName} 的消息`,
+        originalSender: sessionName,
+        draftContent: `回复 ${sessionName}`,
+      });
+    };
+
+    describe('getPendingDraftsBySession', () => {
+      it('按会话过滤待确认草稿', () => {
+        createTestDraft('ses-1', '张三');
+        createTestDraft('ses-1', '张三');
+        createTestDraft('ses-2', '李四');
+
+        const result = store.getPendingDraftsBySession('ses-1');
+        expect(result).toHaveLength(2);
+        expect(result.every(d => d.sessionId === 'ses-1')).toBe(true);
+      });
+
+      it('不返回已处理草稿', () => {
+        const id1 = createTestDraft('ses-1', '张三');
+        createTestDraft('ses-1', '张三');
+
+        store.updateDraftStatus(id1, 'sent');
+
+        const result = store.getPendingDraftsBySession('ses-1');
+        expect(result).toHaveLength(1);
+        expect(result[0]?.status).toBe('pending');
+      });
+
+      it('空会话返回空数组', () => {
+        const result = store.getPendingDraftsBySession('non-existent');
+        expect(result).toEqual([]);
+      });
+    });
+
+    describe('getSessionDraftCounts', () => {
+      it('返回各会话待处理草稿数', () => {
+        createTestDraft('ses-1', '张三');
+        createTestDraft('ses-1', '张三');
+        createTestDraft('ses-2', '李四');
+
+        const counts = store.getSessionDraftCounts();
+        expect(counts).toHaveLength(2);
+
+        const ses1 = counts.find(c => c.sessionId === 'ses-1');
+        expect(ses1?.count).toBe(2);
+        expect(ses1?.sessionName).toBe('张三');
+
+        const ses2 = counts.find(c => c.sessionId === 'ses-2');
+        expect(ses2?.count).toBe(1);
+      });
+
+      it('已处理草稿不计入', () => {
+        const id1 = createTestDraft('ses-1', '张三');
+        createTestDraft('ses-1', '张三');
+
+        store.updateDraftStatus(id1, 'discarded');
+
+        const counts = store.getSessionDraftCounts();
+        expect(counts).toHaveLength(1);
+        expect(counts[0]?.count).toBe(1);
+      });
+
+      it('无待处理草稿返回空数组', () => {
+        const counts = store.getSessionDraftCounts();
+        expect(counts).toEqual([]);
+      });
+    });
+
+    describe('getEventsBySessionId', () => {
+      it('按会话过滤事件', () => {
+        store.logEvent('draft_sent', { sessionId: 'ses-1', draftId: 1 });
+        store.logEvent('draft_sent', { sessionId: 'ses-2', draftId: 2 });
+        store.logEvent('draft_sent', { sessionId: 'ses-1', draftId: 3 });
+
+        const result = store.getEventsBySessionId('ses-1');
+        expect(result).toHaveLength(2);
+      });
+
+      it('limit 限制结果数量', () => {
+        for (let i = 0; i < 5; i++) {
+          store.logEvent('draft_sent', { sessionId: 'ses-1', draftId: i });
+        }
+
+        const result = store.getEventsBySessionId('ses-1', 2);
+        expect(result).toHaveLength(2);
+      });
+    });
+  });
+
   describe('close', () => {
     it('关闭后操作抛出错误', () => {
       store.close();

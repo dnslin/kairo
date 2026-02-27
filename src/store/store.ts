@@ -93,6 +93,18 @@ export interface DraftRecord {
 }
 
 /**
+ * 会话草稿计数
+ */
+export interface SessionDraftCount {
+  /** 会话 ID */
+  sessionId: string;
+  /** 会话名称 */
+  sessionName: string;
+  /** 待处理草稿数量 */
+  count: number;
+}
+
+/**
  * 会话摘要数据结构
  */
 export interface SessionSummary {
@@ -152,6 +164,12 @@ interface DraftRow {
   updated_at: number;
 }
 
+interface SessionDraftCountRow {
+  session_id: string;
+  session_name: string;
+  cnt: number;
+}
+
 interface SessionSummaryRow {
   id: number;
   session_id: string;
@@ -178,6 +196,9 @@ interface PreparedStatements {
   updateDraftContent: Statement;
   updateDraftStatus: Statement;
   deleteDraft: Statement;
+  getDraftsPendingBySession: Statement;
+  getSessionDraftCounts: Statement;
+  getEventsBySessionData: Statement;
   getLatestSummary: Statement;
   getMessageCountSince: Statement;
   saveSummary: Statement;
@@ -303,6 +324,9 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_drafts_status
         ON drafts(status);
 
+      CREATE INDEX IF NOT EXISTS idx_drafts_session_status
+        ON drafts(session_id, status);
+
       CREATE TABLE IF NOT EXISTS session_summaries (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -379,6 +403,26 @@ export class Store {
       ),
       deleteDraft: this.db.prepare(
         'DELETE FROM drafts WHERE id = ?'
+      ),
+      getDraftsPendingBySession: this.db.prepare(
+        `SELECT id, session_id, session_name, original_message, original_sender, draft_content, status, created_at, updated_at
+         FROM drafts
+         WHERE status = 'pending' AND session_id = ?
+         ORDER BY created_at DESC, id DESC`
+      ),
+      getSessionDraftCounts: this.db.prepare(
+        `SELECT session_id, session_name, COUNT(*) as cnt
+         FROM drafts
+         WHERE status = 'pending'
+         GROUP BY session_id
+         ORDER BY MAX(created_at) DESC`
+      ),
+      getEventsBySessionData: this.db.prepare(
+        `SELECT id, type, data, created_at
+         FROM events
+         WHERE json_extract(data, '$.sessionId') = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT ?`
       ),
       getLatestSummary: this.db.prepare(
         `SELECT id, session_id, summary_text, covered_up_to_id, token_count, created_at
@@ -629,6 +673,66 @@ export class Store {
       const err = error instanceof Error ? error : new Error(String(error));
       log.error({ err }, '获取待确认草稿失败');
       throw new StoreError('获取待确认草稿失败', err);
+    }
+  }
+
+  /**
+   * 按会话获取待确认草稿
+   *
+   * @param sessionId - 会话 ID
+   * @returns 按时间倒序排列的待确认草稿列表
+   */
+  getPendingDraftsBySession(sessionId: string): DraftRecord[] {
+    try {
+      const rows = this.stmts.getDraftsPendingBySession.all(sessionId) as DraftRow[];
+      return rows.map(row => this.toDraftRecord(row));
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '按会话获取待确认草稿失败');
+      throw new StoreError('按会话获取待确认草稿失败', err);
+    }
+  }
+
+  /**
+   * 获取各会话的待处理草稿计数
+   *
+   * @returns 按最新草稿时间倒序排列的会话草稿计数
+   */
+  getSessionDraftCounts(): SessionDraftCount[] {
+    try {
+      const rows = this.stmts.getSessionDraftCounts.all() as SessionDraftCountRow[];
+      return rows.map((row): SessionDraftCount => ({
+        sessionId: row.session_id,
+        sessionName: row.session_name,
+        count: row.cnt,
+      }));
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err }, '获取会话草稿计数失败');
+      throw new StoreError('获取会话草稿计数失败', err);
+    }
+  }
+
+  /**
+   * 按会话 ID 查询事件日志
+   *
+   * @param sessionId - 会话 ID
+   * @param limit - 最多返回条数
+   * @returns 按时间倒序排列的事件
+   */
+  getEventsBySessionId(sessionId: string, limit = 100): EventRecord[] {
+    try {
+      const rows = this.stmts.getEventsBySessionData.all(sessionId, limit) as EventRow[];
+      return rows.map((row): EventRecord => ({
+        id: row.id,
+        type: row.type,
+        data: row.data,
+        createdAt: row.created_at,
+      }));
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '按会话查询事件失败');
+      throw new StoreError('按会话查询事件失败', err);
     }
   }
 

@@ -117,6 +117,7 @@ export class OpsServer {
 
     // API 路由
     this.app.get('/api/status', this.handleGetStatus.bind(this));
+    this.app.get('/api/sessions', this.handleGetSessions.bind(this));
     this.app.get('/api/drafts', this.handleGetDrafts.bind(this));
     this.app.post('/api/drafts/:id/send', this.handleSendDraft.bind(this));
     this.app.post('/api/drafts/:id/edit', this.handleEditDraft.bind(this));
@@ -146,11 +147,27 @@ export class OpsServer {
   }
 
   /**
-   * GET /api/drafts - 获取待确认草稿列表
+   * GET /api/sessions - 获取各会话的待处理草稿计数
    */
-  private handleGetDrafts(_req: Request, res: Response): void {
+  private handleGetSessions(_req: Request, res: Response): void {
     try {
-      const drafts = this.ctx.store.getPendingDrafts();
+      const sessions = this.ctx.store.getSessionDraftCounts();
+      res.json(sessions);
+    } catch (error) {
+      log.error({ err: error }, '获取会话列表失败');
+      res.status(500).json({ error: '获取会话列表失败' });
+    }
+  }
+
+  /**
+   * GET /api/drafts - 获取待确认草稿列表（支持 ?sessionId= 按会话筛选）
+   */
+  private handleGetDrafts(req: Request, res: Response): void {
+    try {
+      const sessionId = req.query['sessionId'] as string | undefined;
+      const drafts = sessionId
+        ? this.ctx.store.getPendingDraftsBySession(sessionId)
+        : this.ctx.store.getPendingDrafts();
       res.json(drafts);
     } catch (error) {
       log.error({ err: error }, '获取草稿列表失败');
@@ -299,14 +316,22 @@ export class OpsServer {
   }
 
   /**
-   * GET /api/logs - 获取操作日志
+   * GET /api/logs - 获取操作日志（支持 ?sessionId= 按会话筛选）
    */
   private handleGetLogs(req: Request, res: Response): void {
     try {
       const limit = parseInt(req.query['limit'] as string, 10) || 50;
       const type = req.query['type'] as string | undefined;
-      const events = this.ctx.store.getEvents(type, Math.min(limit, 200));
-      res.json(events);
+      const sessionId = req.query['sessionId'] as string | undefined;
+      const clampedLimit = Math.min(limit, 200);
+
+      if (sessionId) {
+        const events = this.ctx.store.getEventsBySessionId(sessionId, clampedLimit);
+        res.json(events);
+      } else {
+        const events = this.ctx.store.getEvents(type, clampedLimit);
+        res.json(events);
+      }
     } catch (error) {
       log.error({ err: error }, '获取日志失败');
       res.status(500).json({ error: '获取日志失败' });
