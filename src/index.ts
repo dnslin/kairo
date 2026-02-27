@@ -23,6 +23,11 @@ async function tryGenerateSummary(
   llmClient: LlmClient,
   summaryIntervalMessages: number
 ): Promise<void> {
+  // 同一会话已有摘要生成任务在执行，跳过避免竞态
+  if (summaryInProgress.has(sessionId)) {
+    return;
+  }
+  summaryInProgress.add(sessionId);
   try {
     if (summaryIntervalMessages <= 0) {
       return;
@@ -60,11 +65,16 @@ async function tryGenerateSummary(
     log.info({ sessionId, summaryId, coveredUpToId }, '会话摘要已更新');
   } catch (error) {
     log.warn({ err: error, sessionId }, '会话摘要生成失败，已忽略');
+  } finally {
+    summaryInProgress.delete(sessionId);
   }
 }
 
 /** 全局暂停状态 */
 let paused = false;
+
+/** 正在生成摘要的会话集合，防止同一会话并发生成 */
+const summaryInProgress = new Set<string>();
 
 async function main(): Promise<void> {
   log.info('KKBot 启动中...');
