@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { DomLocator } from '../dom/index.js';
+import type { DomLocator, SessionInfo } from '../dom/index.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('extract');
@@ -92,5 +92,39 @@ export class MessageExtractor {
 
     log.debug({ count: messages.length }, '消息提取完成');
     return messages;
+  }
+
+  /** 获取全部会话列表（委托给 DomLocator） */
+  async getAllSessions(): Promise<SessionInfo[]> {
+    return this.locator.getAllSessions();
+  }
+
+  /** 切换到指定会话并提取消息 */
+  async getMessagesFromSession(sessionId: string, n: number, switchDelayMs = 500): Promise<Message[]> {
+    const selected = await this.locator.selectSession(sessionId);
+    if (!selected) {
+      throw new ExtractorError(`切换会话失败: ${sessionId}`);
+    }
+
+    // 等待 DOM 渲染
+    await new Promise(resolve => setTimeout(resolve, switchDelayMs));
+
+    const rawMessages = await this.locator.getMessages(n);
+    log.debug({ count: rawMessages.length, sessionId }, '从指定会话提取消息');
+
+    return rawMessages
+      .filter(raw => !raw.isMe)
+      .map(raw => {
+        const content = normalizeText(raw.content);
+        const fingerprint = generateFingerprint(sessionId, raw.sender, raw.time, content);
+        return {
+          sessionId,
+          sender: raw.sender,
+          time: raw.time,
+          content,
+          fingerprint,
+          isMe: raw.isMe,
+        };
+      });
   }
 }

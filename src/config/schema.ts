@@ -38,6 +38,8 @@ export interface SelectorsConfig {
 export interface WatcherConfig {
   intervalMs: number;
   maxMessages: number;
+  switchDelayMs: number;       // 会话切换延迟(毫秒)，默认 500
+  maxSessionsPerCycle: number; // 每轮最大处理会话数，默认 10
 }
 
 export interface ThrottleConfig {
