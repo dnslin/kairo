@@ -52,6 +52,8 @@ const createLlmConfig = (overrides: Partial<LlmConfig> = {}): LlmConfig => ({
   maxTokens: 1000,
   contextMessages: 5,
   systemPrompt: '你是一个友好的助手。',
+  summaryIntervalMessages: 0,
+  summaryPrompt: '请总结以下对话内容。',
   ...overrides,
 });
 
@@ -185,6 +187,39 @@ describe('LlmClient', () => {
       ).buildMessages(current, []);
 
       expect(messages).toHaveLength(2);
+      expect(messages[0]).toEqual({ role: 'system', content: config.systemPrompt });
+      expect(messages[1]).toEqual({ role: 'user', content: '你好' });
+    });
+
+    it('传入 summaryContext 时在 system 之后插入摘要消息', () => {
+      const client = new LlmClient(config, validation);
+      const current = createMessage({ content: '继续聊' });
+      const history = [createMessage({ content: '之前的消息', isMe: false })];
+
+      const messages = (
+        client as unknown as {
+          buildMessages: (c: MessageInfo, h: MessageInfo[], s?: string) => unknown[];
+        }
+      ).buildMessages(current, history, '这是之前的对话摘要');
+
+      expect(messages).toHaveLength(4); // system + summary + 1 history + current
+      expect(messages[0]).toEqual({ role: 'system', content: config.systemPrompt });
+      expect(messages[1]).toEqual({ role: 'system', content: '对话摘要：这是之前的对话摘要' });
+      expect(messages[2]).toEqual({ role: 'user', content: '之前的消息' });
+      expect(messages[3]).toEqual({ role: 'user', content: '继续聊' });
+    });
+
+    it('summaryContext 为 undefined 时不插入摘要消息', () => {
+      const client = new LlmClient(config, validation);
+      const current = createMessage({ content: '你好' });
+
+      const messages = (
+        client as unknown as {
+          buildMessages: (c: MessageInfo, h: MessageInfo[], s?: string) => unknown[];
+        }
+      ).buildMessages(current, [], undefined);
+
+      expect(messages).toHaveLength(2); // system + current
       expect(messages[0]).toEqual({ role: 'system', content: config.systemPrompt });
       expect(messages[1]).toEqual({ role: 'user', content: '你好' });
     });
@@ -322,6 +357,90 @@ describe('LlmClient', () => {
     });
   });
 
+  describe('generateSummary', () => {
+    it('正常生成摘要', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '这是一段对话摘要。' } }],
+      });
+
+      const summaryConfig = createLlmConfig({
+        summaryIntervalMessages: 10,
+        summaryPrompt: '请总结对话',
+      });
+      const client = new LlmClient(summaryConfig, validation);
+      const history = [
+        createMessage({ content: '你好', isMe: false }),
+        createMessage({ content: '你好！', isMe: true }),
+      ];
+
+      const summary = await client.generateSummary(history);
+
+      expect(summary).toBe('这是一段对话摘要。');
+      expect(mockCreate).toHaveBeenCalledWith({
+        model: summaryConfig.model,
+        messages: [
+          { role: 'system', content: '请总结对话' },
+          { role: 'user', content: 'user: 你好\nassistant: 你好！' },
+        ],
+        temperature: 0.3,
+        max_tokens: summaryConfig.maxTokens,
+      });
+    });
+
+    it('传入 existingSummary 时拼接已有摘要', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '更新后的摘要。' } }],
+      });
+
+      const client = new LlmClient(config, validation);
+      const history = [createMessage({ content: '新消息', isMe: false })];
+
+      const summary = await client.generateSummary(history, '旧的摘要内容');
+
+      expect(summary).toBe('更新后的摘要。');
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: [
+            { role: 'system', content: config.summaryPrompt },
+            { role: 'user', content: '已有摘要：\n旧的摘要内容\n\n新消息：\nuser: 新消息' },
+          ],
+        })
+      );
+    });
+
+    it('API 返回空内容时返回 null', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '' } }],
+      });
+
+      const client = new LlmClient(config, validation);
+      const summary = await client.generateSummary([createMessage()]);
+
+      expect(summary).toBeNull();
+    });
+
+    it('API 调用失败时抛出 LlmClientError', async () => {
+      mockCreate.mockRejectedValue(new Error('API Error'));
+
+      const client = new LlmClient(config, validation);
+
+      await expect(client.generateSummary([createMessage()])).rejects.toThrow(
+        '摘要生成 API 调用失败'
+      );
+    });
+
+    it('移除回复中的 think 标签', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '<think>内部思考</think>干净的摘要' } }],
+      });
+
+      const client = new LlmClient(config, validation);
+      const summary = await client.generateSummary([createMessage()]);
+
+      expect(summary).toBe('干净的摘要');
+    });
+  });
+
   describe('generateReply', () => {
     it('正常返回 LLM 生成的回复', async () => {
       mockCreate.mockResolvedValue({
@@ -408,6 +527,27 @@ describe('LlmClient', () => {
       const reply = await client.generateReply(message, []);
 
       expect(reply).toBeNull();
+    });
+
+    it('传入 summaryContext 时转发给 buildMessages', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '带摘要的回复' } }],
+      });
+
+      const client = new LlmClient(config, validation);
+      const message = createMessage({ content: '你好' });
+
+      const reply = await client.generateReply(message, [], '之前的摘要');
+
+      expect(reply).toBe('带摘要的回复');
+      expect(mockCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: expect.arrayContaining([
+            { role: 'system', content: config.systemPrompt },
+            { role: 'system', content: '对话摘要：之前的摘要' },
+          ]),
+        })
+      );
     });
   });
 

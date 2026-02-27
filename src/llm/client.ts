@@ -36,8 +36,8 @@ export class LlmClient {
     log.debug({ baseUrl: config.baseUrl, model: config.model }, 'LLM 客户端已初始化');
   }
 
-  async generateReply(message: MessageInfo, sessionHistory: MessageInfo[]): Promise<string | null> {
-    const messages = this.buildMessages(message, sessionHistory);
+  async generateReply(message: MessageInfo, sessionHistory: MessageInfo[], summaryContext?: string): Promise<string | null> {
+    const messages = this.buildMessages(message, sessionHistory, summaryContext);
 
     try {
       log.debug({ messageCount: messages.length }, '调用 LLM API');
@@ -77,8 +77,58 @@ export class LlmClient {
     }
   }
 
-  private buildMessages(current: MessageInfo, history: MessageInfo[]): ChatMessage[] {
+  /**
+   * 根据会话历史生成摘要
+   * @param sessionHistory - 需要摘要的会话历史
+   * @param existingSummary - 可选的已有摘要，用于增量更新
+   * @returns 生成的摘要文本，失败时返回 null
+   */
+  async generateSummary(sessionHistory: MessageInfo[], existingSummary?: string): Promise<string | null> {
+    const historyText = sessionHistory
+      .map(m => `${m.isMe ? 'assistant' : 'user'}: ${m.content}`)
+      .join('\n');
+
+    const userContent = existingSummary
+      ? `已有摘要：\n${existingSummary}\n\n新消息：\n${historyText}`
+      : historyText;
+
+    const messages: ChatMessage[] = [
+      { role: 'system', content: this.config.summaryPrompt },
+      { role: 'user', content: userContent },
+    ];
+
+    try {
+      log.debug({ historyLength: sessionHistory.length }, '生成会话摘要');
+
+      const response = await this.client.chat.completions.create({
+        model: this.config.model,
+        messages,
+        temperature: 0.3,
+        max_tokens: this.config.maxTokens,
+      });
+
+      const content = response.choices[0]?.message?.content;
+
+      if (!content) {
+        log.debug('摘要生成返回空内容');
+        return null;
+      }
+
+      const cleaned = this.removeThinkingTags(content);
+      log.debug({ summaryLength: cleaned.length }, '会话摘要已生成');
+      return cleaned;
+    } catch (error) {
+      log.error({ err: error }, '摘要生成 API 调用失败');
+      throw new LlmClientError('摘要生成 API 调用失败', error as Error);
+    }
+  }
+
+  private buildMessages(current: MessageInfo, history: MessageInfo[], summaryContext?: string): ChatMessage[] {
     const messages: ChatMessage[] = [{ role: 'system', content: this.config.systemPrompt }];
+
+    if (summaryContext) {
+      messages.push({ role: 'system', content: `对话摘要：${summaryContext}` });
+    }
 
     const contextCount = this.config.contextMessages;
     if (contextCount > 0 && history.length > 0) {

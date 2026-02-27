@@ -66,6 +66,10 @@ export interface LlmConfig {
   maxTokens: number;
   contextMessages: number;
   systemPrompt: string;
+  /** 触发摘要生成的消息间隔数（0 = 禁用） */
+  summaryIntervalMessages: number;
+  /** 摘要生成的系统提示词 */
+  summaryPrompt: string;
 }
 
 export interface ValidationConfig {
