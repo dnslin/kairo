@@ -93,6 +93,24 @@ export interface DraftRecord {
 }
 
 /**
+ * 会话摘要数据结构
+ */
+export interface SessionSummary {
+  /** 摘要 ID */
+  id: number;
+  /** 会话 ID */
+  sessionId: string;
+  /** 摘要文本 */
+  summaryText: string;
+  /** 覆盖到的消息 ID（含） */
+  coveredUpToId: number;
+  /** 估算 token 数 */
+  tokenCount: number;
+  /** 创建时间戳 (毫秒) */
+  createdAt: number;
+}
+
+/**
  * 数据存储层错误
  */
 export class StoreError extends Error {
@@ -134,6 +152,15 @@ interface DraftRow {
   updated_at: number;
 }
 
+interface SessionSummaryRow {
+  id: number;
+  session_id: string;
+  summary_text: string;
+  covered_up_to_id: number;
+  token_count: number;
+  created_at: number;
+}
+
 /** 预编译 SQL 语句集合 */
 interface PreparedStatements {
   isProcessed: Statement;
@@ -151,6 +178,10 @@ interface PreparedStatements {
   updateDraftContent: Statement;
   updateDraftStatus: Statement;
   deleteDraft: Statement;
+  getLatestSummary: Statement;
+  getMessageCountSince: Statement;
+  saveSummary: Statement;
+  getMaxMessageId: Statement;
 }
 
 /**
@@ -271,6 +302,19 @@ export class Store {
 
       CREATE INDEX IF NOT EXISTS idx_drafts_status
         ON drafts(status);
+
+      CREATE TABLE IF NOT EXISTS session_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        summary_text TEXT NOT NULL,
+        covered_up_to_id INTEGER NOT NULL,
+        token_count INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_summaries_session
+        ON session_summaries(session_id);
     `);
 
     log.debug('数据库表结构已就绪');
@@ -335,6 +379,23 @@ export class Store {
       ),
       deleteDraft: this.db.prepare(
         'DELETE FROM drafts WHERE id = ?'
+      ),
+      getLatestSummary: this.db.prepare(
+        `SELECT id, session_id, summary_text, covered_up_to_id, token_count, created_at
+         FROM session_summaries
+         WHERE session_id = ?
+         ORDER BY id DESC
+         LIMIT 1`
+      ),
+      getMessageCountSince: this.db.prepare(
+        `SELECT COUNT(*) as cnt FROM session_messages WHERE session_id = ? AND id > ?`
+      ),
+      saveSummary: this.db.prepare(
+        `INSERT INTO session_summaries (session_id, summary_text, covered_up_to_id, token_count, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      ),
+      getMaxMessageId: this.db.prepare(
+        `SELECT MAX(id) as max_id FROM session_messages WHERE session_id = ?`
       ),
     };
   }
@@ -640,6 +701,90 @@ export class Store {
       throw new StoreError('删除草稿失败', err);
     }
   }
+  /**
+   * 获取会话最新摘要
+   *
+   * @param sessionId - 会话 ID
+   * @returns 最新摘要，不存在时返回 null
+   */
+  getLatestSummary(sessionId: string): SessionSummary | null {
+    try {
+      const row = this.stmts.getLatestSummary.get(sessionId) as SessionSummaryRow | undefined;
+      if (!row) {
+        return null;
+      }
+      return {
+        id: row.id,
+        sessionId: row.session_id,
+        summaryText: row.summary_text,
+        coveredUpToId: row.covered_up_to_id,
+        tokenCount: row.token_count,
+        createdAt: row.created_at,
+      };
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '获取会话摘要失败');
+      throw new StoreError('获取会话摘要失败', err);
+    }
+  }
+
+  /**
+   * 获取指定消息 ID 之后的消息数量
+   *
+   * @param sessionId - 会话 ID
+   * @param sinceId - 起始消息 ID（不含）
+   * @returns 消息数量
+   */
+  getMessageCountSince(sessionId: string, sinceId: number): number {
+    try {
+      const row = this.stmts.getMessageCountSince.get(sessionId, sinceId) as { cnt: number } | undefined;
+      return row?.cnt ?? 0;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '获取消息计数失败');
+      throw new StoreError('获取消息计数失败', err);
+    }
+  }
+
+  /**
+   * 获取会话最大消息 ID
+   *
+   * @param sessionId - 会话 ID
+   * @returns 最大消息 ID，无消息时返回 0
+   */
+  getMaxMessageId(sessionId: string): number {
+    try {
+      const row = this.stmts.getMaxMessageId.get(sessionId) as { max_id: number | null } | undefined;
+      return row?.max_id ?? 0;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '获取最大消息 ID 失败');
+      throw new StoreError('获取最大消息 ID 失败', err);
+    }
+  }
+
+  /**
+   * 保存会话摘要
+   *
+   * @param sessionId - 会话 ID
+   * @param summaryText - 摘要文本
+   * @param coveredUpToId - 覆盖到的消息 ID
+   * @param tokenCount - 估算 token 数
+   * @returns 新创建的摘要 ID
+   */
+  saveSummary(sessionId: string, summaryText: string, coveredUpToId: number, tokenCount: number): number {
+    try {
+      const result = this.stmts.saveSummary.run(sessionId, summaryText, coveredUpToId, tokenCount, Date.now());
+      const summaryId = Number(result.lastInsertRowid);
+      log.debug({ summaryId, sessionId, coveredUpToId }, '会话摘要已保存');
+      return summaryId;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '保存会话摘要失败');
+      throw new StoreError('保存会话摘要失败', err);
+    }
+  }
+
   /**
    * 关闭数据库连接
    */

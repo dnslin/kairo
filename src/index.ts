@@ -14,6 +14,55 @@ import { createChildLogger } from './utils/logger.js';
 
 const log = createChildLogger('main');
 
+/**
+ * 尝试异步生成会话摘要（失败只记录日志，不影响主流程）
+ */
+async function tryGenerateSummary(
+  sessionId: string,
+  store: Store,
+  llmClient: LlmClient,
+  summaryIntervalMessages: number
+): Promise<void> {
+  try {
+    if (summaryIntervalMessages <= 0) {
+      return;
+    }
+
+    const latestSummary = store.getLatestSummary(sessionId);
+    const lastCoveredId = latestSummary?.coveredUpToId ?? 0;
+    const newMessageCount = store.getMessageCountSince(sessionId, lastCoveredId);
+    if (newMessageCount < summaryIntervalMessages) {
+      return;
+    }
+
+    const history = store.getSessionHistory(sessionId, newMessageCount);
+    if (history.length === 0) {
+      return;
+    }
+
+    const historyAsMessageInfo: MessageInfo[] = history.map(h => ({
+      id: '',
+      sender: h.sender,
+      content: h.content,
+      time: '',
+      isMe: h.isFromSelf,
+    }));
+
+    const summary = await llmClient.generateSummary(historyAsMessageInfo, latestSummary?.summaryText);
+    if (!summary) {
+      log.debug({ sessionId }, '会话摘要为空，跳过保存');
+      return;
+    }
+
+    const coveredUpToId = store.getMaxMessageId(sessionId);
+    const estimatedTokenCount = Math.ceil(summary.length / 4);
+    const summaryId = store.saveSummary(sessionId, summary, coveredUpToId, estimatedTokenCount);
+    log.info({ sessionId, summaryId, coveredUpToId }, '会话摘要已更新');
+  } catch (error) {
+    log.warn({ err: error, sessionId }, '会话摘要生成失败，已忽略');
+  }
+}
+
 /** 全局暂停状态 */
 let paused = false;
 
@@ -104,6 +153,8 @@ async function main(): Promise<void> {
 
     // 先读取历史，再保存当前消息，避免当前消息在 LLM 上下文中重复出现
     const history = store.getSessionHistory(msg.sessionId, config.llm.contextMessages);
+    const latestSummary = store.getLatestSummary(msg.sessionId);
+    const summaryContext = latestSummary?.summaryText;
     const historyAsMessageInfo: MessageInfo[] = history.map(h => ({
       id: '',
       sender: h.sender,
@@ -135,7 +186,7 @@ async function main(): Promise<void> {
     // 调用 LLM 生成回复
     let reply: string | null = null;
     try {
-      reply = await llmClient.generateReply(currentMsgInfo, historyAsMessageInfo);
+      reply = await llmClient.generateReply(currentMsgInfo, historyAsMessageInfo, summaryContext);
       store.logEvent('llm_call', {
         sessionId: msg.sessionId,
         hasReply: reply !== null,
@@ -179,6 +230,14 @@ async function main(): Promise<void> {
         },
         currentSession.name
       );
+      if (config.store.storeMessageContent && config.llm.summaryIntervalMessages > 0) {
+        void tryGenerateSummary(
+          msg.sessionId,
+          store,
+          llmClient,
+          config.llm.summaryIntervalMessages
+        );
+      }
       log.info(
         { draftId, sessionId: msg.sessionId, sessionName: currentSession.name },
         '草稿已生成，等待确认'
@@ -196,6 +255,14 @@ async function main(): Promise<void> {
           },
           currentSession.name
         );
+        if (config.store.storeMessageContent && config.llm.summaryIntervalMessages > 0) {
+          void tryGenerateSummary(
+            msg.sessionId,
+            store,
+            llmClient,
+            config.llm.summaryIntervalMessages
+          );
+        }
         store.logEvent('message_sent', {
           sessionId: msg.sessionId,
           sessionName: currentSession.name,

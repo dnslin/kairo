@@ -400,6 +400,109 @@ describe('Store', () => {
       expect(pending).toHaveLength(0);
     });
   });
+  describe('会话摘要', () => {
+    it('getLatestSummary 无摘要返回 null', () => {
+      expect(store.getLatestSummary('no-summary')).toBeNull();
+    });
+
+    it('saveSummary 保存并返回 ID', () => {
+      store.saveMessage('ses-sum', { sender: 'A', content: '你好', isFromSelf: false });
+      const id = store.saveSummary('ses-sum', '摘要内容', 1, 100);
+      expect(id).toBeGreaterThan(0);
+    });
+
+    it('getLatestSummary 返回最新摘要', () => {
+      store.saveMessage('ses-sum2', { sender: 'A', content: '消息1', isFromSelf: false });
+      store.saveSummary('ses-sum2', '第一次摘要', 1, 50);
+      store.saveSummary('ses-sum2', '第二次摘要', 2, 80);
+
+      const latest = store.getLatestSummary('ses-sum2');
+      expect(latest).not.toBeNull();
+      expect(latest!.summaryText).toBe('第二次摘要');
+      expect(latest!.coveredUpToId).toBe(2);
+      expect(latest!.tokenCount).toBe(80);
+    });
+
+    it('getLatestSummary 不同会话隔离', () => {
+      store.saveMessage('ses-iso-a', { sender: 'A', content: '消息A', isFromSelf: false });
+      store.saveMessage('ses-iso-b', { sender: 'B', content: '消息B', isFromSelf: false });
+      store.saveSummary('ses-iso-a', '摘要A', 1, 50);
+      store.saveSummary('ses-iso-b', '摘要B', 2, 60);
+
+      const summaryA = store.getLatestSummary('ses-iso-a');
+      const summaryB = store.getLatestSummary('ses-iso-b');
+      expect(summaryA!.summaryText).toBe('摘要A');
+      expect(summaryB!.summaryText).toBe('摘要B');
+    });
+
+    it('getMessageCountSince sinceId=0 返回全部消息', () => {
+      for (let i = 0; i < 5; i++) {
+        store.saveMessage('ses-cnt', { sender: 'U', content: `消息${String(i)}`, isFromSelf: false });
+      }
+      const count = store.getMessageCountSince('ses-cnt', 0);
+      expect(count).toBe(5);
+    });
+
+    it('getMessageCountSince 从指定 ID 开始计数', () => {
+      for (let i = 0; i < 5; i++) {
+        store.saveMessage('ses-cnt2', { sender: 'U', content: `消息${String(i)}`, isFromSelf: false });
+      }
+      // 取第3条消息后的 maxId
+      const allHistory = store.getSessionHistory('ses-cnt2', 5);
+      // getMaxMessageId 返回的是最大的，我们需要中间的
+      // 先获取全部5条的 maxId，然后用 maxId - 2 来模拟中间位置
+      const maxId = store.getMaxMessageId('ses-cnt2');
+      const sinceId = maxId - 2;
+      const count = store.getMessageCountSince('ses-cnt2', sinceId);
+      expect(count).toBe(2);
+    });
+
+    it('getMessageCountSince 空会话返回 0', () => {
+      expect(store.getMessageCountSince('no-exist', 0)).toBe(0);
+    });
+
+    it('getMaxMessageId 返回最大消息 ID', () => {
+      store.saveMessage('ses-max', { sender: 'A', content: '1', isFromSelf: false });
+      store.saveMessage('ses-max', { sender: 'B', content: '2', isFromSelf: false });
+      store.saveMessage('ses-max', { sender: 'C', content: '3', isFromSelf: false });
+      const maxId = store.getMaxMessageId('ses-max');
+      expect(maxId).toBeGreaterThan(0);
+    });
+
+    it('getMaxMessageId 空会话返回 0', () => {
+      expect(store.getMaxMessageId('no-msgs')).toBe(0);
+    });
+
+    it('saveSummary 字段完整性', () => {
+      store.saveMessage('ses-fields', { sender: 'A', content: '你好', isFromSelf: false });
+      const maxId = store.getMaxMessageId('ses-fields');
+      store.saveSummary('ses-fields', '完整性测试摘要', maxId, 200);
+
+      const summary = store.getLatestSummary('ses-fields');
+      expect(summary).not.toBeNull();
+      expect(summary!.sessionId).toBe('ses-fields');
+      expect(summary!.summaryText).toBe('完整性测试摘要');
+      expect(summary!.coveredUpToId).toBe(maxId);
+      expect(summary!.tokenCount).toBe(200);
+      expect(summary!.createdAt).toBeGreaterThan(0);
+      expect(summary!.id).toBeGreaterThan(0);
+    });
+
+    it('storeMessageContent=false 时摘要仍可保存', () => {
+      const secureConfig = createConfig({ storeMessageContent: false });
+      const secureStore = new Store(secureConfig);
+
+      secureStore.saveMessage('ses-secure', { sender: 'A', content: '敏感消息', isFromSelf: false });
+      const maxId = secureStore.getMaxMessageId('ses-secure');
+      secureStore.saveSummary('ses-secure', '安全摘要', maxId, 50);
+
+      const summary = secureStore.getLatestSummary('ses-secure');
+      expect(summary).not.toBeNull();
+      expect(summary!.summaryText).toBe('安全摘要');
+      secureStore.close();
+    });
+  });
+
   describe('close', () => {
     it('关闭后操作抛出错误', () => {
       store.close();
