@@ -129,6 +129,12 @@ describe('Store', () => {
       expect(history).toEqual([]);
     });
 
+    it('n<=0 时返回空数组（边界）', () => {
+      store.saveMessage('ses-boundary', { sender: 'A', content: '消息', isFromSelf: false });
+      expect(store.getSessionHistory('ses-boundary', 0)).toEqual([]);
+      expect(store.getSessionHistory('ses-boundary', -1)).toEqual([]);
+    });
+
     it('自动创建会话记录', () => {
       store.saveMessage(
         'ses-new',
@@ -248,6 +254,21 @@ describe('Store', () => {
       // 最新在前
       expect(JSON.parse(events[0]?.data ?? '{}')).toMatchObject({ seq: 3 });
       expect(JSON.parse(events[2]?.data ?? '{}')).toMatchObject({ seq: 1 });
+    });
+
+    it('循环引用数据可安全降级序列化', () => {
+      const circular: { self?: unknown } = {};
+      circular.self = circular;
+
+      expect(() => store.logEvent('circular', circular)).not.toThrow();
+      const events = store.getEvents('circular');
+      expect(events).toHaveLength(1);
+      expect(events[0]?.data).toBe(JSON.stringify({ _error: 'serialization_failed', _type: 'object' }));
+    });
+
+    it('数据库异常时 logEvent 不抛异常（非致命）', () => {
+      store.close();
+      expect(() => store.logEvent('after_close', { reason: 'db_closed' })).not.toThrow();
     });
   });
 
@@ -399,6 +420,15 @@ describe('Store', () => {
       const pending = store.getPendingDrafts();
       expect(pending).toHaveLength(0);
     });
+
+    it('编辑后发送状态会从待处理队列移除（状态转换）', () => {
+      const draftId = store.saveDraft(createDraft());
+      store.updateDraftStatus(draftId, 'edited_sent');
+
+      const draft = store.getDraftById(draftId);
+      expect(draft?.status).toBe('edited_sent');
+      expect(store.getPendingDrafts()).toEqual([]);
+    });
   });
   describe('会话摘要', () => {
     it('getLatestSummary 无摘要返回 null', () => {
@@ -500,6 +530,10 @@ describe('Store', () => {
       expect(summary).not.toBeNull();
       expect(summary!.summaryText).toBe('安全摘要');
       secureStore.close();
+    });
+
+    it('会话不存在时 saveSummary 抛出 StoreError（外键约束）', () => {
+      expect(() => store.saveSummary('no-session', '孤立摘要', 1, 10)).toThrow(StoreError);
     });
   });
 

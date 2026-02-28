@@ -580,8 +580,8 @@ export class Store {
       log.debug({ type }, '事件已记录');
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      log.error({ err, type }, '记录事件失败');
-      throw new StoreError('记录事件失败', err);
+      // 事件日志是旁路能力，失败时仅记录告警，避免阻断主流程。
+      log.warn({ err, type }, '记录事件失败，已降级为非致命');
     }
   }
 

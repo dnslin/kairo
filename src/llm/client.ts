@@ -163,6 +163,37 @@ export class LlmClient {
   }
 
   private removeThinkingTags(text: string): string {
-    return text.replace(/<think>[\s\S]*?<\/think>\s*/gi, '').trim();
+    const lowerText = text.toLowerCase();
+    const openTag = '<think>';
+    const closeTag = '</think>';
+    let result = '';
+    let index = 0;
+    let depth = 0;
+
+    while (index < text.length) {
+      if (lowerText.startsWith(openTag, index)) {
+        depth += 1;
+        index += openTag.length;
+        continue;
+      }
+
+      if (depth > 0 && lowerText.startsWith(closeTag, index)) {
+        depth -= 1;
+        index += closeTag.length;
+        if (depth === 0) {
+          while (index < text.length && /\s/.test(text.charAt(index))) {
+            index += 1;
+          }
+        }
+        continue;
+      }
+
+      if (depth === 0) {
+        result += text[index];
+      }
+      index += 1;
+    }
+
+    return result.trim();
   }
 }

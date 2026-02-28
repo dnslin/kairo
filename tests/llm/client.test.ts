@@ -41,7 +41,7 @@ vi.mock('../../src/utils/logger.js', () => ({
   }),
 }));
 
-import { LlmClient } from '../../src/llm/client.js';
+import { LlmClient, LlmClientError } from '../../src/llm/client.js';
 
 const createLlmConfig = (overrides: Partial<LlmConfig> = {}): LlmConfig => ({
   baseUrl: 'https://api.openai.com/v1',
@@ -344,6 +344,30 @@ describe('LlmClient', () => {
       expect(result).toBe('回复1回复2');
     });
 
+    it('处理嵌套 <think> 标签（大小写不敏感）', () => {
+      const client = new LlmClient(config, validation);
+      const removeFn = (
+        client as unknown as { removeThinkingTags: (text: string) => string }
+      ).removeThinkingTags.bind(client);
+
+      const input = '<ThInK>外层<tHINK>内层</THINK>外层补充</think>最终回复';
+      const result = removeFn(input);
+
+      expect(result).toBe('最终回复');
+    });
+
+    it('未闭合 <think> 时移除到结尾，避免推理泄露', () => {
+      const client = new LlmClient(config, validation);
+      const removeFn = (
+        client as unknown as { removeThinkingTags: (text: string) => string }
+      ).removeThinkingTags.bind(client);
+
+      const input = '用户可见前缀<think>内部推理未闭合';
+      const result = removeFn(input);
+
+      expect(result).toBe('用户可见前缀');
+    });
+
     it('处理大小写变体 <THINK>', () => {
       const client = new LlmClient(config, validation);
       const removeFn = (
@@ -429,6 +453,25 @@ describe('LlmClient', () => {
       );
     });
 
+    it('摘要 API 失败时保留 originalCause', async () => {
+      const cause = new Error('summary-timeout');
+      mockCreate.mockRejectedValue(cause);
+
+      const client = new LlmClient(config, validation);
+      let thrown: unknown;
+      try {
+        await client.generateSummary([createMessage()]);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(LlmClientError);
+      expect(thrown).toMatchObject({
+        message: '摘要生成 API 调用失败',
+        originalCause: cause,
+      });
+    });
+
     it('移除回复中的 think 标签', async () => {
       mockCreate.mockResolvedValue({
         choices: [{ message: { content: '<think>内部思考</think>干净的摘要' } }],
@@ -460,6 +503,45 @@ describe('LlmClient', () => {
         temperature: config.temperature,
         max_tokens: config.maxTokens,
       });
+    });
+
+    it('回复会先移除 think 标签再返回', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '<think>内部推理</think>这是给用户的回复' } }],
+      });
+
+      const client = new LlmClient(config, validation);
+      const reply = await client.generateReply(createMessage(), []);
+
+      expect(reply).toBe('这是给用户的回复');
+    });
+
+    it('回复含嵌套 think 标签时只保留可见内容', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [
+          {
+            message: {
+              content: '<think>外层<think>内层</think>外层补充</think>这是最终回复',
+            },
+          },
+        ],
+      });
+
+      const client = new LlmClient(config, validation);
+      const reply = await client.generateReply(createMessage(), []);
+
+      expect(reply).toBe('这是最终回复');
+    });
+
+    it('回复中 think 标签未闭合时移除后续内容', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '用户可见内容<think>未闭合内部推理' } }],
+      });
+
+      const client = new LlmClient(config, validation);
+      const reply = await client.generateReply(createMessage(), []);
+
+      expect(reply).toBe('用户可见内容');
     });
 
     it('回复包含敏感词时返回 null 并记录日志', async () => {
@@ -494,6 +576,18 @@ describe('LlmClient', () => {
       expect(reply!.length).toBe(validation.maxReplyLength);
     });
 
+    it('maxReplyLength=0 时返回空字符串（边界）', async () => {
+      mockCreate.mockResolvedValue({
+        choices: [{ message: { content: '任意回复' } }],
+      });
+
+      const zeroLimitValidation = createValidationConfig({ maxReplyLength: 0 });
+      const client = new LlmClient(config, zeroLimitValidation);
+      const reply = await client.generateReply(createMessage(), []);
+
+      expect(reply).toBe('');
+    });
+
     it('API 调用失败时抛出 LlmClientError', async () => {
       mockCreate.mockRejectedValue(new Error('API Error'));
 
@@ -501,6 +595,25 @@ describe('LlmClient', () => {
       const message = createMessage();
 
       await expect(client.generateReply(message, [])).rejects.toThrow('LLM API 调用失败');
+    });
+
+    it('API 调用失败时保留 originalCause', async () => {
+      const cause = new Error('network-timeout');
+      mockCreate.mockRejectedValue(cause);
+
+      const client = new LlmClient(config, validation);
+      let thrown: unknown;
+      try {
+        await client.generateReply(createMessage(), []);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(LlmClientError);
+      expect(thrown).toMatchObject({
+        message: 'LLM API 调用失败',
+        originalCause: cause,
+      });
     });
 
     it('LLM 返回空内容时返回 null', async () => {
