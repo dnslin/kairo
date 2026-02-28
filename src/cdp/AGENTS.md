@@ -2,27 +2,27 @@
 
 ## OVERVIEW
 
-CDP (Chrome DevTools Protocol) connection manager with auto-reconnect, heartbeat monitoring, and typed event emission.
+CDP (Chrome DevTools Protocol) 连接管理器，提供 WebSocket 连接、自动重连、心跳监控和类型化事件发射。
 
 ## KEY FILES
 
-| File | Lines | Purpose |
-| --- | --- | --- |
-| `connector.ts` | 359 | Main CdpConnector class |
-| `index.ts` | 3 | Re-export |
+| File           | Lines | Purpose         |
+| -------------- | ----- | --------------- |
+| `connector.ts` | 359   | CdpConnector 类 |
+| `index.ts`     | 3     | Re-export       |
 
 ## WHERE TO LOOK
 
-| Task | Location |
-| --- | --- |
-| Connect to CDP | `connector.ts:89` - `connect()` |
-| Target discovery | `connector.ts:127` - `discoverTarget()` |
-| WebSocket setup | `connector.ts:151` - `connectWebSocket()` |
-| Send CDP command | `connector.ts:183` - `sendCommand()` |
-| Evaluate JS | `connector.ts:212` - `evaluate()` |
-| Heartbeat | `connector.ts:225` - `startHeartbeat()` |
-| Handle disconnect | `connector.ts:257` - `handleDisconnect()` |
-| Reconnect logic | `connector.ts:269` - `scheduleReconnect()` |
+| Task           | Location                                   |
+| -------------- | ------------------------------------------ |
+| 连接 CDP       | `connector.ts:89` - `connect()`            |
+| 目标发现       | `connector.ts:127` - `discoverTarget()`    |
+| WebSocket 建立 | `connector.ts:151` - `connectWebSocket()`  |
+| 发送 CDP 命令  | `connector.ts:183` - `sendCommand()`       |
+| 执行 JS        | `connector.ts:212` - `evaluate()`          |
+| 心跳检测       | `connector.ts:225` - `startHeartbeat()`    |
+| 断连处理       | `connector.ts:257` - `handleDisconnect()`  |
+| 重连逻辑       | `connector.ts:269` - `scheduleReconnect()` |
 
 ## STATE MACHINE
 
@@ -36,27 +36,27 @@ disconnected → connecting → connected
 
 ## EVENTS
 
-| Event | Payload | When |
-| --- | --- | --- |
-| `connected` | - | WebSocket open, ready |
-| `disconnected` | `reason: string` | Connection lost |
-| `reconnecting` | `attempt, maxRetries` | Retry scheduled |
-| `heartbeat` | `uptimeMs` | Every 10s when connected |
-| `error` | `Error` | Max retries exceeded |
-| `status_change` | `status, previousStatus` | Any state transition |
+| Event           | Payload                  | When                     |
+| --------------- | ------------------------ | ------------------------ |
+| `connected`     | -                        | WebSocket open, ready    |
+| `disconnected`  | `reason: string`         | Connection lost          |
+| `reconnecting`  | `attempt, maxRetries`    | Retry scheduled          |
+| `heartbeat`     | `uptimeMs`               | Every 10s when connected |
+| `error`         | `Error`                  | Max retries exceeded     |
+| `status_change` | `status, previousStatus` | Any state transition     |
 
 ## RECONNECT CONFIG
 
-From `CdpConfig.reconnect`:
+从 `CdpConfig.reconnect` 读取：
 
-- `maxRetries`: default 5
-- `baseDelayMs`: exponential backoff base
-- `maxDelayMs`: cap on delay
+- `maxRetries`: 默认 5
+- `baseDelayMs`: 指数退避基数
+- `maxDelayMs`: 延迟上限
 
-Formula: `delay = min(baseDelay * 2^attempt, maxDelay)`
+公式：`delay = min(baseDelay * 2^attempt, maxDelay)`
 
 ## ANTI-PATTERNS
 
-- **Don't call `sendCommand()` without connection check** - throws CdpConnectionError
-- **Don't ignore `error` event** - indicates permanent failure
-- **5+ reconnect attempts triggers alert** - see line 298
+- **不要未检查连接状态就调用 `sendCommand()`** - 抛出 CdpConnectionError
+- **不要忽略 `error` 事件** - 表示永久失败
+- **5+ 次重连尝试会触发告警** - 见 connector.ts:298
