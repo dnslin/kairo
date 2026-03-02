@@ -123,6 +123,7 @@ export class OpsServer {
     this.app.post('/api/drafts/:id/edit', this.handleEditDraft.bind(this));
     this.app.delete('/api/drafts/:id', this.handleDeleteDraft.bind(this));
     this.app.get('/api/logs', this.handleGetLogs.bind(this));
+    this.app.get('/api/throttle', this.handleGetThrottle.bind(this));
     this.app.post('/api/control/pause', this.handlePause.bind(this));
     this.app.post('/api/control/resume', this.handleResume.bind(this));
   }
@@ -156,6 +157,19 @@ export class OpsServer {
     } catch (error) {
       log.error({ err: error }, '获取会话列表失败');
       res.status(500).json({ error: '获取会话列表失败' });
+    }
+  }
+
+  /**
+   * GET /api/throttle - 获取各会话的节流状态（当日回复数）
+   */
+  private handleGetThrottle(_req: Request, res: Response): void {
+    try {
+      const throttleStates = this.ctx.store.getAllThrottleStates();
+      res.json(throttleStates);
+    } catch (error) {
+      log.error({ err: error }, '获取节流状态失败');
+      res.status(500).json({ error: '获取节流状态失败' });
     }
   }
 
