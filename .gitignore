@@ -44,4 +44,5 @@ harness-progress.txt
 harness-tasks.json
 harness-tasks.json.bak
 harness-init.sh
+.harness-stop-counter
 .harness-active
