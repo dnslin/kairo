@@ -1,4 +1,6 @@
-import { getConfig } from './config/index.js';
+import { getConfig, watchConfig } from './config/index.js';
+import type { OperationMode } from './config/index.js';
+import { resolve } from 'node:path';
 import { CdpConnector } from './cdp/index.js';
 import { DomLocator } from './dom/index.js';
 import { MessageExtractor } from './extract/index.js';
@@ -81,6 +83,7 @@ async function main(): Promise<void> {
 
   // 1. 加载配置
   const config = getConfig();
+  let currentMode: OperationMode = config.mode;
 
   // 2. 初始化数据存储
   const store = new Store(config.store);
@@ -216,7 +219,7 @@ async function main(): Promise<void> {
     }
 
     // 根据运行模式处理回复
-    if (config.mode === 'draft_only') {
+    if (currentMode === 'draft_only') {
       // 草稿模式：保存草稿等待人工确认
       const draftId = store.saveDraft({
         sessionId: msg.sessionId,
@@ -289,12 +292,12 @@ async function main(): Promise<void> {
   };
 
   // 11. 初始化 Web 控制台
-  const opsServer = new OpsServer(config.ops, {
+  const opsCtx = {
     store,
     connector,
     sender,
     locator,
-    mode: config.mode,
+    mode: currentMode,
     isPaused: (): boolean => paused,
     setPaused: (value: boolean): void => {
       paused = value;
@@ -315,12 +318,28 @@ async function main(): Promise<void> {
       // 如果被拒绝且原因是工作时间，说明不在工作时间内
       return testDecision.reason !== 'outside_working_hours';
     },
+  };
+  const opsServer = new OpsServer(config.ops, opsCtx);
+
+  // 12. 启动配置热重载（mode + selectors）
+  const configPath = resolve(process.cwd(), 'config.yaml');
+  const stopConfigWatch = watchConfig(configPath, currentMode, {
+    onModeChange: (newMode: OperationMode) => {
+      currentMode = newMode;
+      opsCtx.mode = newMode;
+      log.info({ mode: newMode }, '运行模式已热重载');
+      store.logEvent('mode_changed', { mode: newMode });
+    },
+    onSelectorsChange: (selectors) => {
+      locator.updateSelectors(selectors);
+    },
   });
 
   // 优雅关闭
   const shutdown = async (): Promise<void> => {
     log.info('正在关闭...');
     watcher.stop();
+    stopConfigWatch();
     await opsServer.stop();
     connector.disconnect();
     store.logEvent('system_stop');
@@ -347,8 +366,8 @@ async function main(): Promise<void> {
     process.on('SIGTERM', () => void shutdown());
 
     log.info(
-      { mode: config.mode, port: config.ops.port },
-      'KKBot 已启动，运行模式: ' + config.mode
+      { mode: currentMode, port: config.ops.port },
+      'KKBot 已启动，运行模式: ' + currentMode
     );
   } catch (error) {
     log.error({ err: error }, 'KKBot 启动失败');
