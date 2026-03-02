@@ -261,4 +261,41 @@ describe('MessageAggregator', () => {
       expect(onFlush).toHaveBeenCalledTimes(1); // 不重复
     });
   });
+
+  describe('drain（安全排空）', () => {
+    it('排空所有 pending 桶并返回消息，不触发 onFlush', () => {
+      const aggregator = new MessageAggregator(config, onFlush);
+      const msg1 = createMessage({ sessionId: 'session-1', fingerprint: 'fp-1' });
+      const msg2 = createMessage({ sessionId: 'session-2', fingerprint: 'fp-2' });
+      const msg3 = createMessage({ sessionId: 'session-1', fingerprint: 'fp-3' });
+
+      aggregator.push('session-1', msg1);
+      aggregator.push('session-2', msg2);
+      aggregator.push('session-1', msg3);
+
+      const result = aggregator.drain();
+
+      expect(onFlush).not.toHaveBeenCalled();
+      expect(result.size).toBe(2);
+      expect(result.get('session-1')).toEqual([msg1, msg3]);
+      expect(result.get('session-2')).toEqual([msg2]);
+      expect(aggregator.pendingCount).toBe(0);
+    });
+
+    it('drain 后定时器不再触发', () => {
+      const aggregator = new MessageAggregator(config, onFlush);
+      aggregator.push('session-1', createMessage());
+
+      aggregator.drain();
+      vi.advanceTimersByTime(15000); // 超过 maxWaitMs
+
+      expect(onFlush).not.toHaveBeenCalled();
+    });
+
+    it('空桶 drain 返回空 Map', () => {
+      const aggregator = new MessageAggregator(config, onFlush);
+      const result = aggregator.drain();
+      expect(result.size).toBe(0);
+    });
+  });
 });

@@ -106,4 +106,19 @@ export class MessageAggregator {
       this.flush(sessionId);
     }
   }
+
+  /**
+   * 排空所有 pending 桶并返回消息，不触发 onFlush 回调。
+   * 用于 shutdown 时安全获取未处理消息（不启动异步流程）。
+   */
+  drain(): Map<string, Message[]> {
+    const result = new Map<string, Message[]>();
+    for (const [sessionId, bucket] of this.buckets) {
+      clearTimeout(bucket.windowTimer);
+      clearTimeout(bucket.maxTimer);
+      result.set(sessionId, bucket.messages);
+    }
+    this.buckets.clear();
+    return result;
+  }
 }

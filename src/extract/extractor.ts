@@ -34,6 +34,8 @@ export interface Message {
   fingerprint: string;
   /** 是否为自己发送的消息 */
   isMe: boolean;
+  /** 聚合前各原始消息的指纹（仅聚合消息携带） */
+  aggregatedFingerprints?: string[];
 }
 
 /**
