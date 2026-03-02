@@ -13,6 +13,7 @@ export type {
   OperationMode,
   ThrottleConfig,
   StoreConfig,
+  AggregationConfig,
 } from './schema.js';
 export { loadConfig, getConfig, reloadConfig } from './loader.js';
 export { watchSelectors, watchConfig } from './watcher.js';

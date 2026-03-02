@@ -105,6 +105,17 @@ export interface SenderConfig {
   sendCheck?: SendCheckConfig;
 }
 
+export interface AggregationConfig {
+  /** 是否启用聚合，默认 true */
+  enabled: boolean;
+  /** 滑动窗口时长(毫秒)，默认 5000 */
+  windowMs: number;
+  /** 最大等待时长(毫秒)，默认 15000 */
+  maxWaitMs: number;
+  /** 合并消息的分隔符，默认 '\n' */
+  separator: string;
+}
+
 export interface AppConfig {
   cdp: CdpConfig;
   page: PageConfig;
@@ -118,4 +129,5 @@ export interface AppConfig {
   logging: LoggingConfig;
   sender: SenderConfig;
   store: StoreConfig;
+  aggregation: AggregationConfig;
 }

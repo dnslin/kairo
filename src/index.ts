@@ -5,6 +5,7 @@ import { CdpConnector } from './cdp/index.js';
 import { DomLocator } from './dom/index.js';
 import { MessageExtractor } from './extract/index.js';
 import { MessageWatcher } from './watch/index.js';
+import { MessageAggregator } from './aggregator/index.js';
 import { PolicyEngine, checkThrottle } from './policy/index.js';
 import { LlmClient } from './llm/index.js';
 import { Sender } from './send/index.js';
@@ -12,6 +13,7 @@ import { Store } from './store/index.js';
 import { OpsServer } from './ops/index.js';
 import { dispatchReply } from './dispatch/index.js';
 import type { Message } from './extract/index.js';
+import { generateFingerprint } from './extract/index.js';
 import type { MessageInfo } from './dom/index.js';
 import { createChildLogger } from './utils/logger.js';
 
@@ -132,6 +134,42 @@ async function main(): Promise<void> {
   // 9. 初始化消息监听器
   const watcher = new MessageWatcher(extractor, config.watcher);
 
+  // 初始化消息聚合器（watcher → aggregator → processMessage）
+  const aggregator = new MessageAggregator(
+    config.aggregation,
+    (sessionId: string, messages: Message[]) => {
+      if (messages.length === 0) return;
+
+      if (messages.length === 1) {
+        // 单条消息直接透传
+        const single = messages[0];
+        if (single) void processMessage(single);
+        return;
+      }
+
+      // 多条消息：合并内容，携带原始指纹交给 processMessage 统一标记
+      const mergedContent = messages.map(m => m.content).join(config.aggregation.separator);
+      const last = messages.at(-1);
+      if (!last) return;
+      const aggregatedMsg: Message = {
+        sessionId,
+        sender: last.sender,
+        time: last.time,
+        content: mergedContent,
+        fingerprint: generateFingerprint(sessionId, last.sender, last.time, mergedContent),
+        isMe: false,
+        aggregatedFingerprints: messages.map(m => m.fingerprint),
+      };
+
+      log.info(
+        { sessionId, originalCount: messages.length, mergedLength: mergedContent.length },
+        '消息已聚合'
+      );
+
+      void processMessage(aggregatedMsg);
+    }
+  );
+
   // 10. 消息处理回调
   const processMessage = async (msg: Message): Promise<void> => {
     if (paused) {
@@ -176,6 +214,12 @@ async function main(): Promise<void> {
 
     // 所有前置检查通过后再标记已处理，避免检查失败时消息被静默丢弃
     store.markProcessed(msg.fingerprint);
+    // 聚合消息：同时标记所有原始指纹，防止重复触发
+    if (msg.aggregatedFingerprints) {
+      for (const fp of msg.aggregatedFingerprints) {
+        store.markProcessed(fp);
+      }
+    }
 
     // 先读取历史，再保存当前消息，避免当前消息在 LLM 上下文中重复出现
     const history = store.getSessionHistory(msg.sessionId, config.llm.contextMessages);
@@ -310,6 +354,13 @@ async function main(): Promise<void> {
   // 优雅关闭
   const shutdown = async (): Promise<void> => {
     log.info('正在关闭...');
+    // 排空聚合桶，不触发 processMessage（避免异步竞态）
+    const drained = aggregator.drain();
+    if (drained.size > 0) {
+      let totalMsgs = 0;
+      for (const msgs of drained.values()) totalMsgs += msgs.length;
+      log.info({ sessions: drained.size, messages: totalMsgs }, '聚合中的消息已排空，未标记已处理，重启后将重新处理');
+    }
     watcher.stop();
     stopConfigWatch();
     await opsServer.stop();
@@ -327,11 +378,11 @@ async function main(): Promise<void> {
     // 启动 Web 控制台
     await opsServer.start();
 
-    // 启动消息监听
+    // 启动消息监听（消息先经过聚合器再处理）
     watcher.start((msg: Message) => {
-      void processMessage(msg);
+      aggregator.push(msg.sessionId, msg);
     });
-    log.info('消息监听已启动');
+    log.info({ aggregation: config.aggregation.enabled }, '消息监听已启动');
 
     // 注册关闭信号
     process.on('SIGINT', () => void shutdown());
