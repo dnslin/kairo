@@ -74,8 +74,9 @@ export function checkThrottle(
     };
   }
 
-  // 跨日计数重置
-  const today = new Date().toISOString().slice(0, 10);
+  // 跨日计数重置（使用本地时区日期，确保 00:00 按用户本地时间重置）
+  const d = new Date(now);
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   let dailyCount = state.dailyReplyCount;
   if (state.dailyCountResetDate !== today) {
     provider.resetDailyCount(sessionId, today);

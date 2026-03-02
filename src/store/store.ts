@@ -123,9 +123,6 @@ export interface SessionSummary {
 }
 
 /**
- * 数据存储层错误
- */
-/**
  * 会话节流状态（含会话名称）
  */
 export interface SessionThrottleInfo {
@@ -510,7 +507,7 @@ export class Store {
          FROM sessions WHERE session_id = ?`
       ),
       incrementDailyReplyCount: this.db.prepare(
-        `UPDATE sessions SET daily_reply_count = daily_reply_count + 1, last_reply_at = ? WHERE session_id = ?`
+        `UPDATE sessions SET daily_reply_count = daily_reply_count + 1 WHERE session_id = ?`
       ),
       resetDailyCount: this.db.prepare(
         `UPDATE sessions SET daily_reply_count = 0, daily_count_reset_date = ? WHERE session_id = ?`
@@ -519,7 +516,8 @@ export class Store {
         `SELECT session_id, session_name, last_reply_at, daily_reply_count, daily_count_reset_date
          FROM sessions
          WHERE daily_reply_count > 0 OR last_reply_at > 0
-         ORDER BY last_reply_at DESC`
+         ORDER BY last_reply_at DESC
+         LIMIT 200`
       ),
     };
   }
@@ -994,13 +992,14 @@ export class Store {
   }
 
   /**
-   * 递增会话当日回复计数并更新 lastReplyAt
+   * 递增会话当日回复计数
+   * last_reply_at 由 saveMessage(isFromSelf=true) 的事务负责更新
    *
    * @param sessionId - 会话 ID
    */
   incrementDailyReplyCount(sessionId: string): void {
     try {
-      this.stmts.incrementDailyReplyCount.run(Date.now(), sessionId);
+      this.stmts.incrementDailyReplyCount.run(sessionId);
       log.debug({ sessionId }, '当日回复计数已递增');
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));

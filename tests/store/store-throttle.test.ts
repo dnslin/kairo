@@ -65,7 +65,7 @@ describe('Store — 节流相关方法', () => {
   });
 
   describe('incrementDailyReplyCount', () => {
-    it('递增 dailyReplyCount 并更新 lastReplyAt', () => {
+    it('递增 dailyReplyCount', () => {
       // 先创建会话
       store.saveMessage('session-1', {
         sender: 'Alice',
@@ -73,14 +73,36 @@ describe('Store — 节流相关方法', () => {
         isFromSelf: false,
       }, '测试会话');
 
-      const before = Date.now();
       store.incrementDailyReplyCount('session-1');
-      const after = Date.now();
 
       const state = store.getThrottleState('session-1');
       expect(state.dailyReplyCount).toBe(1);
-      expect(state.lastReplyAt).toBeGreaterThanOrEqual(before);
-      expect(state.lastReplyAt).toBeLessThanOrEqual(after);
+    });
+
+    it('lastReplyAt 由 saveMessage(isFromSelf=true) 负责更新', () => {
+      store.saveMessage('session-1', {
+        sender: 'Alice',
+        content: '你好',
+        isFromSelf: false,
+      }, '测试会话');
+
+      // incrementDailyReplyCount 不更新 lastReplyAt
+      store.incrementDailyReplyCount('session-1');
+      const stateAfterIncrement = store.getThrottleState('session-1');
+      expect(stateAfterIncrement.lastReplyAt).toBe(0);
+
+      // saveMessage(isFromSelf=true) 才更新 lastReplyAt
+      const before = Date.now();
+      store.saveMessage('session-1', {
+        sender: '自己',
+        content: '回复',
+        isFromSelf: true,
+      }, '测试会话');
+      const after = Date.now();
+
+      const stateAfterReply = store.getThrottleState('session-1');
+      expect(stateAfterReply.lastReplyAt).toBeGreaterThanOrEqual(before);
+      expect(stateAfterReply.lastReplyAt).toBeLessThanOrEqual(after);
     });
 
     it('多次调用递增计数', () => {

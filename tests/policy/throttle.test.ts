@@ -10,15 +10,19 @@ vi.mock('../../src/utils/logger.js', () => ({
   }),
 }));
 
-// checkThrottle 尚未实现，导入会失败（红灯阶段）
 import { checkThrottle } from '../../src/policy/throttle.js';
-import type { ThrottleResult, ThrottleStateProvider } from '../../src/policy/throttle.js';
+import type { ThrottleStateProvider } from '../../src/policy/throttle.js';
 
 const createConfig = (overrides: Partial<ThrottleConfig> = {}): ThrottleConfig => ({
   perSessionMinIntervalSeconds: 60,
   dailyMaxPerSession: 50,
   ...overrides,
 });
+
+/** 获取本地时区 YYYY-MM-DD 字符串 */
+function localDateStr(date: Date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
 
 function createMockProvider(overrides: {
   lastReplyAt?: number;
@@ -101,7 +105,7 @@ describe('checkThrottle', () => {
   describe('每日上限检查 (dailyMaxPerSession)', () => {
     it('当日回复数达到上限时拒绝', () => {
       const now = Date.now();
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDateStr();
       provider = createMockProvider({
         lastReplyAt: now - 120_000,
         dailyReplyCount: 50,
@@ -117,7 +121,7 @@ describe('checkThrottle', () => {
 
     it('当日回复数超过上限时拒绝', () => {
       const now = Date.now();
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDateStr();
       provider = createMockProvider({
         lastReplyAt: now - 120_000,
         dailyReplyCount: 100,
@@ -132,7 +136,7 @@ describe('checkThrottle', () => {
 
     it('当日回复数未达上限时允许', () => {
       const now = Date.now();
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDateStr();
       provider = createMockProvider({
         lastReplyAt: now - 120_000,
         dailyReplyCount: 49,
@@ -151,7 +155,7 @@ describe('checkThrottle', () => {
     it('日期变化时调用 resetDailyCount 并允许处理', () => {
       const now = Date.now();
       // dailyCountResetDate 是昨天
-      const yesterday = new Date(Date.now() - 86400_000).toISOString().slice(0, 10);
+      const yesterday = localDateStr(new Date(Date.now() - 86400_000));
       provider = createMockProvider({
         lastReplyAt: now - 120_000,
         dailyReplyCount: 50,
@@ -185,7 +189,7 @@ describe('checkThrottle', () => {
   describe('优先级', () => {
     it('最小间隔检查优先于每日上限检查', () => {
       const now = Date.now();
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDateStr();
       // 距上次回复仅 10 秒且已达每日上限
       provider = createMockProvider({
         lastReplyAt: now - 10_000,
