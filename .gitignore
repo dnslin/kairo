@@ -38,3 +38,10 @@ nul
 .sisyphus
 tmp/
 .claude
+
+# Harness
+harness-progress.txt
+harness-tasks.json
+harness-tasks.json.bak
+harness-init.sh
+.harness-active
