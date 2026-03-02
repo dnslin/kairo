@@ -5,7 +5,7 @@ import { CdpConnector } from './cdp/index.js';
 import { DomLocator } from './dom/index.js';
 import { MessageExtractor } from './extract/index.js';
 import { MessageWatcher } from './watch/index.js';
-import { PolicyEngine } from './policy/index.js';
+import { PolicyEngine, checkThrottle } from './policy/index.js';
 import { LlmClient } from './llm/index.js';
 import { Sender } from './send/index.js';
 import { Store } from './store/index.js';
@@ -162,6 +162,18 @@ async function main(): Promise<void> {
       return;
     }
 
+    // 节流检查（在 markProcessed 之前，被节流的消息下次轮询可重新处理）
+    const throttleResult = checkThrottle(msg.sessionId, store, config.policy.throttle);
+    if (!throttleResult.allowed) {
+      log.debug({ sessionId: msg.sessionId, reason: throttleResult.reason, detail: throttleResult.detail }, '节流拒绝处理');
+      store.logEvent('throttle_rejected', {
+        sessionId: msg.sessionId,
+        reason: throttleResult.reason,
+        detail: throttleResult.detail,
+      });
+      return;
+    }
+
     // 所有前置检查通过后再标记已处理，避免检查失败时消息被静默丢弃
     store.markProcessed(msg.fingerprint);
 
@@ -233,6 +245,9 @@ async function main(): Promise<void> {
     );
 
     if (dispatchResult.action !== 'send_failed') {
+      // 更新节流计数
+      store.incrementDailyReplyCount(msg.sessionId);
+
       if (config.store.storeMessageContent && config.llm.summaryIntervalMessages > 0) {
         void tryGenerateSummary(
           msg.sessionId,
