@@ -232,8 +232,12 @@ async function main(): Promise<void> {
     }
 
     // 根据运行模式处理回复
+    const dispatchDeps: Parameters<typeof dispatchReply>[0] = { store, sender, locator };
+    if (config.sender.sendCheck?.abortOnNewMessages !== undefined) {
+      dispatchDeps.abortOnNewMessages = config.sender.sendCheck.abortOnNewMessages;
+    }
     const dispatchResult = await dispatchReply(
-      { store, sender },
+      dispatchDeps,
       {
         mode: currentMode,
         reply,
@@ -244,7 +248,7 @@ async function main(): Promise<void> {
       }
     );
 
-    if (dispatchResult.action !== 'send_failed') {
+    if (dispatchResult.action !== 'send_failed' && dispatchResult.action !== 'send_check_failed') {
       // 更新节流计数
       store.incrementDailyReplyCount(msg.sessionId);
 

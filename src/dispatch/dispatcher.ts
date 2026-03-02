@@ -1,6 +1,8 @@
 import type { OperationMode } from '../config/schema.js';
 import type { Store } from '../store/index.js';
 import type { Sender } from '../send/index.js';
+import type { DomLocator } from '../dom/index.js';
+import { preSendCheck } from '../send/pre-send-check.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('dispatch');
@@ -8,6 +10,8 @@ const log = createChildLogger('dispatch');
 export interface DispatchDeps {
   store: Store;
   sender: Sender;
+  locator?: DomLocator;
+  abortOnNewMessages?: boolean;
 }
 
 export interface DispatchInput {
@@ -20,7 +24,7 @@ export interface DispatchInput {
 }
 
 export interface DispatchResult {
-  action: 'draft_created' | 'message_sent' | 'send_failed';
+  action: 'draft_created' | 'message_sent' | 'send_failed' | 'send_check_failed';
   draftId?: number;
   error?: string | undefined;
 }
@@ -32,7 +36,7 @@ export async function dispatchReply(
   deps: DispatchDeps,
   input: DispatchInput
 ): Promise<DispatchResult> {
-  const { store, sender } = deps;
+  const { store, sender, locator, abortOnNewMessages } = deps;
   const { mode, reply, sessionId, sessionName, originalMessage, originalSender } = input;
 
   if (mode === 'draft_only') {
@@ -49,7 +53,24 @@ export async function dispatchReply(
     return { action: 'draft_created', draftId };
   }
 
-  // auto_send 模式
+  // auto_send 模式：先执行发送前安全校验
+  if (locator) {
+    const checkResult = await preSendCheck(
+      locator,
+      { sessionId, content: originalMessage, sender: originalSender },
+      abortOnNewMessages ?? true
+    );
+    if (!checkResult.safe) {
+      store.logEvent('send_check_failed', {
+        sessionId,
+        reason: checkResult.reason,
+        detail: checkResult.detail,
+      });
+      log.warn({ sessionId, reason: checkResult.reason, detail: checkResult.detail }, '发送前安全校验失败，跳过发送');
+      return { action: 'send_check_failed', error: checkResult.reason };
+    }
+  }
+
   const result = await sender.send(reply);
   if (result.success) {
     store.saveMessage(sessionId, { sender: '自己', content: reply, isFromSelf: true }, sessionName);
