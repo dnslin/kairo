@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import yaml from 'js-yaml';
-import type { AppConfig } from './schema.js';
+import type { AppConfig, AggregationConfig } from './schema.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('config');
@@ -42,6 +42,15 @@ export function loadConfig(configPath?: string): AppConfig {
   const content = readFileSync(filePath, 'utf-8');
   const rawConfig = yaml.load(content) as Record<string, unknown>;
   const config = resolveEnvVariables(rawConfig) as AppConfig;
+
+  // 聚合配置默认值（向后兼容无 aggregation 字段的旧配置文件）
+  const defaultAggregation: AggregationConfig = {
+    enabled: true,
+    windowMs: 5000,
+    maxWaitMs: 15000,
+    separator: '\n',
+  };
+  config.aggregation = { ...defaultAggregation, ...config.aggregation };
 
   log.info({ mode: config.mode, cdpUrl: config.cdp.url }, 'Configuration loaded');
 
