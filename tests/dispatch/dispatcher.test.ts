@@ -13,6 +13,7 @@ import { dispatchReply } from '../../src/dispatch/dispatcher.js';
 import type { DispatchDeps, DispatchInput } from '../../src/dispatch/dispatcher.js';
 import type { Store } from '../../src/store/index.js';
 import type { Sender } from '../../src/send/index.js';
+import type { DomLocator } from '../../src/dom/index.js';
 
 function createMockStore(): Store {
   return {
@@ -26,6 +27,20 @@ function createMockSender(success = true, error?: string): Sender {
   return {
     send: vi.fn().mockResolvedValue({ success, error }),
   } as unknown as Sender;
+}
+
+function createMockLocator(overrides: {
+  activeSessionId?: string | null;
+  messageInDom?: boolean;
+  hasNewMessages?: boolean;
+} = {}): DomLocator {
+  return {
+    checkPreSendState: vi.fn().mockResolvedValue({
+      activeSessionId: 'activeSessionId' in overrides ? overrides.activeSessionId : 'session-1',
+      messageExists: overrides.messageInDom ?? true,
+      hasNewMessages: overrides.hasNewMessages ?? false,
+    }),
+  } as unknown as DomLocator;
 }
 
 function createInput(overrides: Partial<DispatchInput> = {}): DispatchInput {
@@ -142,6 +157,91 @@ describe('dispatchReply', () => {
         { sender: '自己', content: '你好，有什么可以帮你的？', isFromSelf: true },
         '测试会话'
       );
+    });
+
+    it('draft_only 模式不执行发送前校验', async () => {
+      const locator = createMockLocator({ activeSessionId: 'other-session' });
+      deps = { store, sender, locator };
+      const input = createInput({ mode: 'draft_only' });
+      const result = await dispatchReply(deps, input);
+
+      expect(result.action).toBe('draft_created');
+      expect(locator.checkPreSendState).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── 发送前安全校验 ──────────────────────────────────────────────
+
+  describe('发送前安全校验 (preSendCheck)', () => {
+    it('校验通过后正常发送', async () => {
+      const locator = createMockLocator();
+      deps = { store, sender, locator };
+      const input = createInput({ mode: 'auto_send' });
+
+      const result = await dispatchReply(deps, input);
+
+      expect(result.action).toBe('message_sent');
+      expect(sender.send).toHaveBeenCalled();
+    });
+
+    it('会话已切换时返回 send_check_failed', async () => {
+      const locator = createMockLocator({ activeSessionId: 'session-999' });
+      deps = { store, sender, locator };
+      const input = createInput({ mode: 'auto_send' });
+
+      const result = await dispatchReply(deps, input);
+
+      expect(result.action).toBe('send_check_failed');
+      expect(result.error).toBe('session_switched');
+      expect(sender.send).not.toHaveBeenCalled();
+      expect(store.logEvent).toHaveBeenCalledWith('send_check_failed', expect.objectContaining({
+        sessionId: 'session-1',
+        reason: 'session_switched',
+      }));
+    });
+
+    it('消息已消失时返回 send_check_failed', async () => {
+      const locator = createMockLocator({ messageInDom: false });
+      deps = { store, sender, locator };
+      const input = createInput({ mode: 'auto_send' });
+
+      const result = await dispatchReply(deps, input);
+
+      expect(result.action).toBe('send_check_failed');
+      expect(result.error).toBe('message_gone');
+      expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    it('有新消息且 abortOnNewMessages=true 时中止发送', async () => {
+      const locator = createMockLocator({ hasNewMessages: true });
+      deps = { store, sender, locator, abortOnNewMessages: true };
+      const input = createInput({ mode: 'auto_send' });
+
+      const result = await dispatchReply(deps, input);
+
+      expect(result.action).toBe('send_check_failed');
+      expect(result.error).toBe('new_messages');
+      expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    it('有新消息但 abortOnNewMessages=false 时继续发送', async () => {
+      const locator = createMockLocator({ hasNewMessages: true });
+      deps = { store, sender, locator, abortOnNewMessages: false };
+      const input = createInput({ mode: 'auto_send' });
+
+      const result = await dispatchReply(deps, input);
+
+      expect(result.action).toBe('message_sent');
+      expect(sender.send).toHaveBeenCalled();
+    });
+
+    it('未提供 locator 时跳过校验直接发送', async () => {
+      deps = { store, sender };
+      const input = createInput({ mode: 'auto_send' });
+
+      const result = await dispatchReply(deps, input);
+
+      expect(result.action).toBe('message_sent');
     });
   });
 });

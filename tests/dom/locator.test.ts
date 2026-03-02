@@ -246,7 +246,6 @@ describe('DomLocator', () => {
 
   describe('selectSession', () => {
     it('目标在当前 DOM 中时直接点击成功', async () => {
-      // init script → found in DOM
       connector.evaluate.mockResolvedValueOnce({
         result: { value: { found: true } },
       });
@@ -258,17 +257,12 @@ describe('DomLocator', () => {
     });
 
     it('通过 scrollToItem 滚动后点击成功', async () => {
-      // Call 1: init → 未在 DOM 中找到，Vue 实例有目标在 index=5
       connector.evaluate.mockResolvedValueOnce({
         result: { value: { found: false, hasVue: true, index: 5 } },
       });
-
-      // Call 2: scrollToItem → 成功
       connector.evaluate.mockResolvedValueOnce({
         result: { value: true },
       });
-
-      // Call 3: click → 找到并点击
       connector.evaluate.mockResolvedValueOnce({
         result: { value: true },
       });
@@ -276,12 +270,10 @@ describe('DomLocator', () => {
       const result = await locator.selectSession('s-hidden');
 
       expect(result).toBe(true);
-      // init + scroll + click = 3
       expect(connector.evaluate).toHaveBeenCalledTimes(3);
     });
 
     it('Vue 实例不可用时返回 false', async () => {
-      // init → 未在 DOM 中找到，无 Vue 实例
       connector.evaluate.mockResolvedValueOnce({
         result: { value: { found: false, hasVue: false } },
       });
@@ -293,7 +285,6 @@ describe('DomLocator', () => {
     });
 
     it('目标不在 Vue items 中时返回 false', async () => {
-      // init → 未在 DOM 中找到，Vue 有但 index=-1
       connector.evaluate.mockResolvedValueOnce({
         result: { value: { found: false, hasVue: true, index: -1 } },
       });
@@ -305,17 +296,12 @@ describe('DomLocator', () => {
     });
 
     it('scrollToItem 后 DOM 中仍未找到时返回 false', async () => {
-      // Call 1: init → Vue 有目标在 index=3
       connector.evaluate.mockResolvedValueOnce({
         result: { value: { found: false, hasVue: true, index: 3 } },
       });
-
-      // Call 2: scrollToItem → 成功
       connector.evaluate.mockResolvedValueOnce({
         result: { value: true },
       });
-
-      // Call 3: click → 未找到
       connector.evaluate.mockResolvedValueOnce({
         result: { value: false },
       });
@@ -327,12 +313,9 @@ describe('DomLocator', () => {
     });
 
     it('scrollToItem 调用失败时返回 false', async () => {
-      // Call 1: init → Vue 有目标在 index=2
       connector.evaluate.mockResolvedValueOnce({
         result: { value: { found: false, hasVue: true, index: 2 } },
       });
-
-      // Call 2: scrollToItem → 失败
       connector.evaluate.mockResolvedValueOnce({
         result: { value: false },
       });
@@ -340,7 +323,6 @@ describe('DomLocator', () => {
       const result = await locator.selectSession('s-fail');
 
       expect(result).toBe(false);
-      // init + scroll = 2 (不会进行 click)
       expect(connector.evaluate).toHaveBeenCalledTimes(2);
     });
 
@@ -350,6 +332,173 @@ describe('DomLocator', () => {
       const result = await locator.selectSession('s1');
 
       expect(result).toBe(false);
+    });
+  });
+
+  describe('getActiveSessionId', () => {
+    it('返回当前选中会话的 ID', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: 'session-abc-123' },
+      });
+
+      const result = await locator.getActiveSessionId();
+
+      expect(result).toBe('session-abc-123');
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
+    });
+
+    it('无选中会话时返回 null', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: null },
+      });
+
+      const result = await locator.getActiveSessionId();
+
+      expect(result).toBeNull();
+    });
+
+    it('evaluate 抛出异常时返回 null', async () => {
+      connector.evaluate.mockRejectedValueOnce(new Error('CDP断开'));
+
+      const result = await locator.getActiveSessionId();
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('isMessageInDom', () => {
+    it('匹配内容和发送者时返回 true', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: true },
+      });
+
+      const result = await locator.isMessageInDom('你好', '张三');
+
+      expect(result).toBe(true);
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
+    });
+
+    it('无匹配消息时返回 false', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: false },
+      });
+
+      const result = await locator.isMessageInDom('已删除的消息', '张三');
+
+      expect(result).toBe(false);
+    });
+
+    it('evaluate 抛出异常时返回 false', async () => {
+      connector.evaluate.mockRejectedValueOnce(new Error('CDP断开'));
+
+      const result = await locator.isMessageInDom('你好', '张三');
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('hasNewMessagesSince', () => {
+    it('目标消息后有新消息时返回 true', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: true },
+      });
+
+      const result = await locator.hasNewMessagesSince('你好', '张三');
+
+      expect(result).toBe(true);
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
+    });
+
+    it('目标消息是最后一条非自己消息时返回 false', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: false },
+      });
+
+      const result = await locator.hasNewMessagesSince('你好', '张三');
+
+      expect(result).toBe(false);
+    });
+
+    it('目标消息不存在时返回 false', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: { value: false },
+      });
+
+      const result = await locator.hasNewMessagesSince('不存在', '无人');
+
+      expect(result).toBe(false);
+    });
+
+    it('evaluate 抛出异常时返回 false', async () => {
+      connector.evaluate.mockRejectedValueOnce(new Error('CDP断开'));
+
+      const result = await locator.hasNewMessagesSince('你好', '张三');
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('checkPreSendState', () => {
+    it('返回全部三项校验结果', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: {
+          value: {
+            activeSessionId: 'session-abc',
+            messageExists: true,
+            hasNewMessages: false,
+          },
+        },
+      });
+
+      const result = await locator.checkPreSendState('你好', '张三', true);
+
+      expect(result.activeSessionId).toBe('session-abc');
+      expect(result.messageExists).toBe(true);
+      expect(result.hasNewMessages).toBe(false);
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
+    });
+
+    it('无选中会话时 activeSessionId 为 null', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: {
+          value: {
+            activeSessionId: null,
+            messageExists: false,
+            hasNewMessages: false,
+          },
+        },
+      });
+
+      const result = await locator.checkPreSendState('你好', '张三', false);
+
+      expect(result.activeSessionId).toBeNull();
+      expect(result.messageExists).toBe(false);
+    });
+
+    it('evaluate 抛出异常时返回安全默认值', async () => {
+      connector.evaluate.mockRejectedValueOnce(new Error('CDP断开'));
+
+      const result = await locator.checkPreSendState('你好', '张三', true);
+
+      expect(result.activeSessionId).toBeNull();
+      expect(result.messageExists).toBe(false);
+      expect(result.hasNewMessages).toBe(false);
+    });
+
+    it('单次 evaluate 调用完成全部检查', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: {
+          value: {
+            activeSessionId: 'session-1',
+            messageExists: true,
+            hasNewMessages: true,
+          },
+        },
+      });
+
+      await locator.checkPreSendState('消息', '发送者', true);
+
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
     });
   });
 });

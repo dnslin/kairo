@@ -94,9 +94,15 @@ export interface StoreConfig {
   storeMessageContent: boolean;
 }
 
+export interface SendCheckConfig {
+  /** 发送前检测到新消息时是否中止发送，默认 true */
+  abortOnNewMessages: boolean;
+}
+
 export interface SenderConfig {
   verifyTimeoutMs: number;
   logMasking: boolean;
+  sendCheck?: SendCheckConfig;
 }
 
 export interface AppConfig {

@@ -64,6 +64,34 @@ export interface GetAllSessionsOptions {
 }
 
 export class DomLocator {
+  /** extractContent JS 函数源码，供多个 DOM 脚本复用 */
+  private static readonly EXTRACT_CONTENT_FN = `
+    function extractContent(el) {
+      if (!el) return '';
+      var result = '';
+      el.childNodes.forEach(function(node) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          var text = node.textContent;
+          if (text) result += text;
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          var tag = node.tagName;
+          if (tag === 'IMG') {
+            result += node.getAttribute('emoji') || node.getAttribute('alt') || '[image]';
+          } else if (node.classList && node.classList.contains('emoji-span')) {
+            result += node.getAttribute('data-emoji') || '[emoji]';
+          } else if (node.classList && node.classList.contains('emoticon')) {
+            result += node.textContent || '[emoticon]';
+          } else if (node.classList && node.classList.contains('sticker')) {
+            result += '[sticker]';
+          } else {
+            result += extractContent(node);
+          }
+        }
+      });
+      return result.trim();
+    }
+  `;
+
   constructor(
     private readonly connector: CdpConnector,
     private selectors: SelectorsConfig
@@ -605,6 +633,183 @@ export class DomLocator {
   updateSelectors(selectors: SelectorsConfig): void {
     log.info('Selectors configuration updated');
     this.selectors = selectors;
+  }
+
+  /** 转义字符串用于嵌入 JS 字符串字面量 */
+  private escapeForScript(str: string): string {
+    return str
+      .replace(/\\/g, '\\\\')
+      .replace(/'/g, "\\'")
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r');
+  }
+
+  /** 获取当前激活会话的 ID（轻量查询，仅返回 ID 字符串） */
+  async getActiveSessionId(): Promise<string | null> {
+    const script = `
+      (function() {
+        var item = document.querySelector('${this.selectors.sessionItemSelected}');
+        if (!item) return null;
+        return item.getAttribute('data-sesuuid') || null;
+      })()
+    `;
+
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: string | null };
+      };
+      const sessionId = response.result?.value ?? null;
+      log.debug({ sessionId }, '获取激活会话 ID');
+      return sessionId;
+    } catch (error) {
+      log.error({ err: error }, '获取激活会话 ID 失败');
+      return null;
+    }
+  }
+
+  /** 检查指定内容和发送者的消息是否仍在 DOM 中（使用 extractContent 匹配） */
+  async isMessageInDom(content: string, sender: string): Promise<boolean> {
+    const escapedContent = this.escapeForScript(content);
+    const escapedSender = this.escapeForScript(sender);
+
+    const script = `
+      (function() {
+        ${DomLocator.EXTRACT_CONTENT_FN}
+        var targetContent = '${escapedContent}';
+        var targetSender = '${escapedSender}';
+        var items = document.querySelectorAll('${this.selectors.messageItem}');
+        for (var i = items.length - 1; i >= 0; i--) {
+          var item = items[i];
+          var contentEl = item.querySelector('${this.selectors.messageContent}');
+          var senderEl = item.querySelector('${this.selectors.messageSender}');
+          var c = contentEl ? extractContent(contentEl) : '';
+          var s = senderEl ? senderEl.textContent.trim() : '';
+          if (c === targetContent && s === targetSender) return true;
+        }
+        return false;
+      })()
+    `;
+
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: boolean };
+      };
+      const exists = response.result?.value === true;
+      log.debug({ exists, content: content.slice(0, 20) }, '检查消息是否在 DOM 中');
+      return exists;
+    } catch (error) {
+      log.error({ err: error }, '检查消息 DOM 存在性失败');
+      return false;
+    }
+  }
+
+  /** 检查指定消息之后是否有新的非自己发送的消息（使用 extractContent 匹配） */
+  async hasNewMessagesSince(content: string, sender: string): Promise<boolean> {
+    const escapedContent = this.escapeForScript(content);
+    const escapedSender = this.escapeForScript(sender);
+
+    const script = `
+      (function() {
+        ${DomLocator.EXTRACT_CONTENT_FN}
+        var targetContent = '${escapedContent}';
+        var targetSender = '${escapedSender}';
+        var items = document.querySelectorAll('${this.selectors.messageItem}');
+        var targetIndex = -1;
+        for (var i = items.length - 1; i >= 0; i--) {
+          var item = items[i];
+          var contentEl = item.querySelector('${this.selectors.messageContent}');
+          var senderEl = item.querySelector('${this.selectors.messageSender}');
+          var c = contentEl ? extractContent(contentEl) : '';
+          var s = senderEl ? senderEl.textContent.trim() : '';
+          if (c === targetContent && s === targetSender) {
+            targetIndex = i;
+            break;
+          }
+        }
+        if (targetIndex === -1) return false;
+        for (var j = targetIndex + 1; j < items.length; j++) {
+          var isRight = items[j].querySelector('${this.selectors.messageRight}') !== null;
+          var isSysMsg = items[j].querySelector('.rcd-sys') !== null;
+          if (!isRight && !isSysMsg) return true;
+        }
+        return false;
+      })()
+    `;
+
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: boolean };
+      };
+      const hasNew = response.result?.value === true;
+      log.debug({ hasNew, content: content.slice(0, 20) }, '检查是否有新消息');
+      return hasNew;
+    } catch (error) {
+      log.error({ err: error }, '检查新消息失败');
+      return false;
+    }
+  }
+
+  /** 单次 CDP 调用完成全部发送前校验（原子性、低延迟） */
+  async checkPreSendState(
+    content: string,
+    sender: string,
+    checkNewMessages: boolean
+  ): Promise<{ activeSessionId: string | null; messageExists: boolean; hasNewMessages: boolean }> {
+    const escapedContent = this.escapeForScript(content);
+    const escapedSender = this.escapeForScript(sender);
+    const selectedSel = this.selectors.sessionItemSelected;
+
+    const script = `
+      (function() {
+        ${DomLocator.EXTRACT_CONTENT_FN}
+        var result = { activeSessionId: null, messageExists: false, hasNewMessages: false };
+
+        var selectedItem = document.querySelector('${selectedSel}');
+        result.activeSessionId = selectedItem ? (selectedItem.getAttribute('data-sesuuid') || null) : null;
+
+        var targetContent = '${escapedContent}';
+        var targetSender = '${escapedSender}';
+        var items = document.querySelectorAll('${this.selectors.messageItem}');
+        var targetIndex = -1;
+        for (var i = items.length - 1; i >= 0; i--) {
+          var item = items[i];
+          var contentEl = item.querySelector('${this.selectors.messageContent}');
+          var senderEl = item.querySelector('${this.selectors.messageSender}');
+          var c = contentEl ? extractContent(contentEl) : '';
+          var s = senderEl ? senderEl.textContent.trim() : '';
+          if (c === targetContent && s === targetSender) {
+            targetIndex = i;
+            result.messageExists = true;
+            break;
+          }
+        }
+
+        if (${String(checkNewMessages)} && targetIndex !== -1) {
+          for (var j = targetIndex + 1; j < items.length; j++) {
+            var isRight = items[j].querySelector('${this.selectors.messageRight}') !== null;
+            var isSysMsg = items[j].querySelector('.rcd-sys') !== null;
+            if (!isRight && !isSysMsg) {
+              result.hasNewMessages = true;
+              break;
+            }
+          }
+        }
+
+        return result;
+      })()
+    `;
+
+    try {
+      const response = (await this.connector.evaluate(script)) as {
+        result?: { value?: { activeSessionId: string | null; messageExists: boolean; hasNewMessages: boolean } };
+      };
+      const state = response.result?.value ?? { activeSessionId: null, messageExists: false, hasNewMessages: false };
+      log.debug({ ...state, content: content.slice(0, 20) }, '发送前状态检查完成');
+      return state;
+    } catch (error) {
+      log.error({ err: error }, '发送前状态检查失败');
+      return { activeSessionId: null, messageExists: false, hasNewMessages: false };
+    }
   }
 
   async getMessageList(): Promise<MessageListInfo> {
