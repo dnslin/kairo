@@ -3,32 +3,31 @@ import { preSendCheck } from '../../src/send/pre-send-check.js';
 import type { DomLocator } from '../../src/dom/locator.js';
 import type { MessageContext, SendCheckResult } from '../../src/send/pre-send-check.js';
 
-const createMockLocator = () => ({
-  getActiveSessionId: vi.fn(),
-  isMessageInDom: vi.fn(),
-  hasNewMessagesSince: vi.fn(),
+const createMockLocator = (overrides: {
+  activeSessionId?: string | null;
+  messageExists?: boolean;
+  hasNewMessages?: boolean;
+} = {}) => ({
+  checkPreSendState: vi.fn().mockResolvedValue({
+    activeSessionId: 'activeSessionId' in overrides ? overrides.activeSessionId : 'session-001',
+    messageExists: overrides.messageExists ?? true,
+    hasNewMessages: overrides.hasNewMessages ?? false,
+  }),
 });
 
 describe('preSendCheck', () => {
-  let mockLocator: ReturnType<typeof createMockLocator>;
   const target: MessageContext = {
     sessionId: 'session-001',
     content: '你好，请问有什么可以帮你？',
     sender: '客户A',
   };
 
-  beforeEach(() => {
-    mockLocator = createMockLocator();
-  });
-
   afterEach(() => {
     vi.clearAllMocks();
   });
 
   it('全部校验通过时返回 safe=true', async () => {
-    mockLocator.getActiveSessionId.mockResolvedValue('session-001');
-    mockLocator.isMessageInDom.mockResolvedValue(true);
-    mockLocator.hasNewMessagesSince.mockResolvedValue(false);
+    const mockLocator = createMockLocator();
 
     const result: SendCheckResult = await preSendCheck(
       mockLocator as unknown as DomLocator,
@@ -37,10 +36,13 @@ describe('preSendCheck', () => {
 
     expect(result.safe).toBe(true);
     expect(result.reason).toBeUndefined();
+    expect(mockLocator.checkPreSendState).toHaveBeenCalledWith(
+      target.content, target.sender, true
+    );
   });
 
   it('会话已切换时返回 session_switched', async () => {
-    mockLocator.getActiveSessionId.mockResolvedValue('session-999');
+    const mockLocator = createMockLocator({ activeSessionId: 'session-999' });
 
     const result = await preSendCheck(
       mockLocator as unknown as DomLocator,
@@ -50,12 +52,10 @@ describe('preSendCheck', () => {
     expect(result.safe).toBe(false);
     expect(result.reason).toBe('session_switched');
     expect(result.detail).toContain('session-999');
-    // 短路：后续检查不执行
-    expect(mockLocator.isMessageInDom).not.toHaveBeenCalled();
   });
 
   it('获取会话 ID 失败时返回 session_switched', async () => {
-    mockLocator.getActiveSessionId.mockResolvedValue(null);
+    const mockLocator = createMockLocator({ activeSessionId: null });
 
     const result = await preSendCheck(
       mockLocator as unknown as DomLocator,
@@ -67,8 +67,7 @@ describe('preSendCheck', () => {
   });
 
   it('消息已消失时返回 message_gone', async () => {
-    mockLocator.getActiveSessionId.mockResolvedValue('session-001');
-    mockLocator.isMessageInDom.mockResolvedValue(false);
+    const mockLocator = createMockLocator({ messageExists: false });
 
     const result = await preSendCheck(
       mockLocator as unknown as DomLocator,
@@ -77,14 +76,10 @@ describe('preSendCheck', () => {
 
     expect(result.safe).toBe(false);
     expect(result.reason).toBe('message_gone');
-    // 短路：不检查新消息
-    expect(mockLocator.hasNewMessagesSince).not.toHaveBeenCalled();
   });
 
   it('有新消息且 abortOnNewMessages=true 时返回 new_messages', async () => {
-    mockLocator.getActiveSessionId.mockResolvedValue('session-001');
-    mockLocator.isMessageInDom.mockResolvedValue(true);
-    mockLocator.hasNewMessagesSince.mockResolvedValue(true);
+    const mockLocator = createMockLocator({ hasNewMessages: true });
 
     const result = await preSendCheck(
       mockLocator as unknown as DomLocator,
@@ -97,9 +92,7 @@ describe('preSendCheck', () => {
   });
 
   it('有新消息但 abortOnNewMessages=false 时返回 safe=true', async () => {
-    mockLocator.getActiveSessionId.mockResolvedValue('session-001');
-    mockLocator.isMessageInDom.mockResolvedValue(true);
-    mockLocator.hasNewMessagesSince.mockResolvedValue(true);
+    const mockLocator = createMockLocator({ hasNewMessages: true });
 
     const result = await preSendCheck(
       mockLocator as unknown as DomLocator,
@@ -112,9 +105,7 @@ describe('preSendCheck', () => {
   });
 
   it('abortOnNewMessages 默认为 true', async () => {
-    mockLocator.getActiveSessionId.mockResolvedValue('session-001');
-    mockLocator.isMessageInDom.mockResolvedValue(true);
-    mockLocator.hasNewMessagesSince.mockResolvedValue(true);
+    const mockLocator = createMockLocator({ hasNewMessages: true });
 
     const result = await preSendCheck(
       mockLocator as unknown as DomLocator,
@@ -125,9 +116,8 @@ describe('preSendCheck', () => {
     expect(result.reason).toBe('new_messages');
   });
 
-  it('abortOnNewMessages=false 时跳过新消息检查', async () => {
-    mockLocator.getActiveSessionId.mockResolvedValue('session-001');
-    mockLocator.isMessageInDom.mockResolvedValue(true);
+  it('abortOnNewMessages=false 时传递给 checkPreSendState', async () => {
+    const mockLocator = createMockLocator();
 
     await preSendCheck(
       mockLocator as unknown as DomLocator,
@@ -135,6 +125,19 @@ describe('preSendCheck', () => {
       false
     );
 
-    expect(mockLocator.hasNewMessagesSince).not.toHaveBeenCalled();
+    expect(mockLocator.checkPreSendState).toHaveBeenCalledWith(
+      target.content, target.sender, false
+    );
+  });
+
+  it('单次 CDP 调用（checkPreSendState 仅被调用一次）', async () => {
+    const mockLocator = createMockLocator();
+
+    await preSendCheck(
+      mockLocator as unknown as DomLocator,
+      target
+    );
+
+    expect(mockLocator.checkPreSendState).toHaveBeenCalledTimes(1);
   });
 });

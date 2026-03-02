@@ -35,9 +35,11 @@ function createMockLocator(overrides: {
   hasNewMessages?: boolean;
 } = {}): DomLocator {
   return {
-    getActiveSessionId: vi.fn().mockResolvedValue(overrides.activeSessionId ?? 'session-1'),
-    isMessageInDom: vi.fn().mockResolvedValue(overrides.messageInDom ?? true),
-    hasNewMessagesSince: vi.fn().mockResolvedValue(overrides.hasNewMessages ?? false),
+    checkPreSendState: vi.fn().mockResolvedValue({
+      activeSessionId: 'activeSessionId' in overrides ? overrides.activeSessionId : 'session-1',
+      messageExists: overrides.messageInDom ?? true,
+      hasNewMessages: overrides.hasNewMessages ?? false,
+    }),
   } as unknown as DomLocator;
 }
 
@@ -164,7 +166,7 @@ describe('dispatchReply', () => {
       const result = await dispatchReply(deps, input);
 
       expect(result.action).toBe('draft_created');
-      expect(locator.getActiveSessionId).not.toHaveBeenCalled();
+      expect(locator.checkPreSendState).not.toHaveBeenCalled();
     });
   });
 

@@ -437,4 +437,68 @@ describe('DomLocator', () => {
       expect(result).toBe(false);
     });
   });
+
+  describe('checkPreSendState', () => {
+    it('返回全部三项校验结果', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: {
+          value: {
+            activeSessionId: 'session-abc',
+            messageExists: true,
+            hasNewMessages: false,
+          },
+        },
+      });
+
+      const result = await locator.checkPreSendState('你好', '张三', true);
+
+      expect(result.activeSessionId).toBe('session-abc');
+      expect(result.messageExists).toBe(true);
+      expect(result.hasNewMessages).toBe(false);
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
+    });
+
+    it('无选中会话时 activeSessionId 为 null', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: {
+          value: {
+            activeSessionId: null,
+            messageExists: false,
+            hasNewMessages: false,
+          },
+        },
+      });
+
+      const result = await locator.checkPreSendState('你好', '张三', false);
+
+      expect(result.activeSessionId).toBeNull();
+      expect(result.messageExists).toBe(false);
+    });
+
+    it('evaluate 抛出异常时返回安全默认值', async () => {
+      connector.evaluate.mockRejectedValueOnce(new Error('CDP断开'));
+
+      const result = await locator.checkPreSendState('你好', '张三', true);
+
+      expect(result.activeSessionId).toBeNull();
+      expect(result.messageExists).toBe(false);
+      expect(result.hasNewMessages).toBe(false);
+    });
+
+    it('单次 evaluate 调用完成全部检查', async () => {
+      connector.evaluate.mockResolvedValueOnce({
+        result: {
+          value: {
+            activeSessionId: 'session-1',
+            messageExists: true,
+            hasNewMessages: true,
+          },
+        },
+      });
+
+      await locator.checkPreSendState('消息', '发送者', true);
+
+      expect(connector.evaluate).toHaveBeenCalledTimes(1);
+    });
+  });
 });

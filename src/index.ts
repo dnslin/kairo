@@ -232,12 +232,12 @@ async function main(): Promise<void> {
     }
 
     // 根据运行模式处理回复
-    const dispatchDeps: Parameters<typeof dispatchReply>[0] = { store, sender, locator };
-    if (config.sender.sendCheck?.abortOnNewMessages !== undefined) {
-      dispatchDeps.abortOnNewMessages = config.sender.sendCheck.abortOnNewMessages;
-    }
     const dispatchResult = await dispatchReply(
-      dispatchDeps,
+      {
+        store, sender, locator,
+        ...(config.sender.sendCheck?.abortOnNewMessages !== undefined
+          && { abortOnNewMessages: config.sender.sendCheck.abortOnNewMessages }),
+      },
       {
         mode: currentMode,
         reply,
