@@ -5,6 +5,7 @@ import { CdpConnector } from './cdp/index.js';
 import { DomLocator } from './dom/index.js';
 import { MessageExtractor } from './extract/index.js';
 import { MessageWatcher } from './watch/index.js';
+import { MessageAggregator } from './aggregator/index.js';
 import { PolicyEngine, checkThrottle } from './policy/index.js';
 import { LlmClient } from './llm/index.js';
 import { Sender } from './send/index.js';
@@ -12,6 +13,7 @@ import { Store } from './store/index.js';
 import { OpsServer } from './ops/index.js';
 import { dispatchReply } from './dispatch/index.js';
 import type { Message } from './extract/index.js';
+import { generateFingerprint } from './extract/extractor.js';
 import type { MessageInfo } from './dom/index.js';
 import { createChildLogger } from './utils/logger.js';
 
@@ -131,6 +133,45 @@ async function main(): Promise<void> {
 
   // 9. 初始化消息监听器
   const watcher = new MessageWatcher(extractor, config.watcher);
+
+  // 9.5 初始化消息聚合器（watcher → aggregator → processMessage）
+  const aggregator = new MessageAggregator(
+    config.aggregation,
+    (sessionId: string, messages: Message[]) => {
+      if (messages.length === 0) return;
+
+      if (messages.length === 1) {
+        // 单条消息直接透传
+        const single = messages[0];
+        if (single) void processMessage(single);
+        return;
+      }
+
+      // 多条消息：标记所有原始指纹为已处理，合并内容后投递
+      for (const m of messages) {
+        store.markProcessed(m.fingerprint);
+      }
+
+      const mergedContent = messages.map(m => m.content).join(config.aggregation.separator);
+      const last = messages.at(-1);
+      if (!last) return;
+      const aggregatedMsg: Message = {
+        sessionId,
+        sender: last.sender,
+        time: last.time,
+        content: mergedContent,
+        fingerprint: generateFingerprint(sessionId, last.sender, last.time, mergedContent),
+        isMe: false,
+      };
+
+      log.info(
+        { sessionId, originalCount: messages.length, mergedLength: mergedContent.length },
+        '消息已聚合'
+      );
+
+      void processMessage(aggregatedMsg);
+    }
+  );
 
   // 10. 消息处理回调
   const processMessage = async (msg: Message): Promise<void> => {
@@ -310,6 +351,7 @@ async function main(): Promise<void> {
   // 优雅关闭
   const shutdown = async (): Promise<void> => {
     log.info('正在关闭...');
+    aggregator.flushAll(); // 先 flush 聚合中的消息，不丢数据
     watcher.stop();
     stopConfigWatch();
     await opsServer.stop();
@@ -327,11 +369,11 @@ async function main(): Promise<void> {
     // 启动 Web 控制台
     await opsServer.start();
 
-    // 启动消息监听
+    // 启动消息监听（消息先经过聚合器再处理）
     watcher.start((msg: Message) => {
-      void processMessage(msg);
+      aggregator.push(msg.sessionId, msg);
     });
-    log.info('消息监听已启动');
+    log.info({ aggregation: config.aggregation.enabled }, '消息监听已启动');
 
     // 注册关闭信号
     process.on('SIGINT', () => void shutdown());
