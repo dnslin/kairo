@@ -15,4 +15,5 @@ export type {
   StoreConfig,
 } from './schema.js';
 export { loadConfig, getConfig, reloadConfig } from './loader.js';
-export { watchSelectors } from './watcher.js';
+export { watchSelectors, watchConfig } from './watcher.js';
+export type { WatchConfigCallbacks } from './watcher.js';

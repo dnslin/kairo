@@ -84,6 +84,18 @@ describe('OpsServer API', () => {
     }
   });
 
+  // ── GET /api/status ─────────────────────────────────────────────
+
+  describe('GET /api/status', () => {
+    it('默认返回 draft_only 模式', async () => {
+      const res = await fetch(`${baseUrl}/api/status`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { mode: string; paused: boolean };
+      expect(body.mode).toBe('draft_only');
+      expect(body.paused).toBe(false);
+    });
+  });
+
   // ── GET /api/sessions ──────────────────────────────────────────────
 
   describe('GET /api/sessions', () => {
@@ -258,5 +270,69 @@ describe('OpsServer API', () => {
       const body = (await res.json()) as unknown[];
       expect(body).toHaveLength(2);
     });
+  });
+});
+
+describe('OpsServer auto_send 模式', () => {
+  let store: Store;
+  let storeConfig: StoreConfig;
+  let opsServer: OpsServer;
+  let baseUrl: string;
+  let ctx: OpsContext;
+
+  beforeEach(async () => {
+    if (!existsSync(TEST_DIR)) {
+      mkdirSync(TEST_DIR, { recursive: true });
+    }
+    storeConfig = createStoreConfig();
+    store = new Store(storeConfig);
+
+    ctx = {
+      ...createMockContext(store),
+      mode: 'auto_send',
+    };
+    const opsConfig: OpsConfig = { port: 0, host: '127.0.0.1' };
+    opsServer = new OpsServer(opsConfig, ctx);
+    await opsServer.start();
+
+    const addr = getServerAddress(opsServer);
+    baseUrl = `http://127.0.0.1:${String(addr.port)}`;
+  });
+
+  afterEach(async () => {
+    await opsServer.stop();
+    try {
+      store.close();
+    } catch {
+      /* 忽略 */
+    }
+    try {
+      rmSync(storeConfig.dbPath, { force: true });
+      rmSync(`${storeConfig.dbPath}-wal`, { force: true });
+      rmSync(`${storeConfig.dbPath}-shm`, { force: true });
+    } catch {
+      /* 忽略 */
+    }
+  });
+
+  it('/api/status 返回 auto_send 模式', async () => {
+    const res = await fetch(`${baseUrl}/api/status`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { mode: string };
+    expect(body.mode).toBe('auto_send');
+  });
+
+  it('运行时动态切换 mode 后 /api/status 立即反映新值', async () => {
+    // 初始为 auto_send
+    let res = await fetch(`${baseUrl}/api/status`);
+    let body = (await res.json()) as { mode: string };
+    expect(body.mode).toBe('auto_send');
+
+    // 动态切换为 draft_only（模拟热重载写入 ctx.mode）
+    ctx.mode = 'draft_only';
+
+    res = await fetch(`${baseUrl}/api/status`);
+    body = (await res.json()) as { mode: string };
+    expect(body.mode).toBe('draft_only');
   });
 });
