@@ -126,6 +126,17 @@ export interface SessionSummary {
  * 数据存储层错误
  */
 /**
+ * 会话节流状态（含会话名称）
+ */
+export interface SessionThrottleInfo {
+  sessionId: string;
+  sessionName: string | null;
+  lastReplyAt: number;
+  dailyReplyCount: number;
+  dailyCountResetDate: string | null;
+}
+
+/**
  * 节流状态数据结构
  */
 export interface ThrottleState {
@@ -188,6 +199,14 @@ interface ThrottleStateRow {
   daily_count_reset_date: string | null;
 }
 
+interface SessionThrottleRow {
+  session_id: string;
+  session_name: string | null;
+  last_reply_at: number;
+  daily_reply_count: number;
+  daily_count_reset_date: string | null;
+}
+
 interface SessionSummaryRow {
   id: number;
   session_id: string;
@@ -224,6 +243,7 @@ interface PreparedStatements {
   getThrottleState: Statement;
   incrementDailyReplyCount: Statement;
   resetDailyCount: Statement;
+  getAllThrottleStates: Statement;
 }
 
 /**
@@ -494,6 +514,12 @@ export class Store {
       ),
       resetDailyCount: this.db.prepare(
         `UPDATE sessions SET daily_reply_count = 0, daily_count_reset_date = ? WHERE session_id = ?`
+      ),
+      getAllThrottleStates: this.db.prepare(
+        `SELECT session_id, session_name, last_reply_at, daily_reply_count, daily_count_reset_date
+         FROM sessions
+         WHERE daily_reply_count > 0 OR last_reply_at > 0
+         ORDER BY last_reply_at DESC`
       ),
     };
   }
@@ -997,6 +1023,28 @@ export class Store {
       const err = error instanceof Error ? error : new Error(String(error));
       log.error({ err, sessionId }, '重置回复计数失败');
       throw new StoreError('重置回复计数失败', err);
+    }
+  }
+
+  /**
+   * 获取所有有回复记录的会话节流状态
+   *
+   * @returns 按最后回复时间倒序排列的会话节流信息
+   */
+  getAllThrottleStates(): SessionThrottleInfo[] {
+    try {
+      const rows = this.stmts.getAllThrottleStates.all() as SessionThrottleRow[];
+      return rows.map((row): SessionThrottleInfo => ({
+        sessionId: row.session_id,
+        sessionName: row.session_name,
+        lastReplyAt: row.last_reply_at,
+        dailyReplyCount: row.daily_reply_count,
+        dailyCountResetDate: row.daily_count_reset_date,
+      }));
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err }, '获取全部节流状态失败');
+      throw new StoreError('获取全部节流状态失败', err);
     }
   }
 
