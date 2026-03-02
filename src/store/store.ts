@@ -125,6 +125,18 @@ export interface SessionSummary {
 /**
  * 数据存储层错误
  */
+/**
+ * 节流状态数据结构
+ */
+export interface ThrottleState {
+  /** 上次回复时间戳 (毫秒) */
+  lastReplyAt: number;
+  /** 当日回复计数 */
+  dailyReplyCount: number;
+  /** 计数重置日期 (YYYY-MM-DD) */
+  dailyCountResetDate: string | null;
+}
+
 export class StoreError extends Error {
   public readonly originalCause: Error | undefined;
 
@@ -170,6 +182,12 @@ interface SessionDraftCountRow {
   cnt: number;
 }
 
+interface ThrottleStateRow {
+  last_reply_at: number;
+  daily_reply_count: number;
+  daily_count_reset_date: string | null;
+}
+
 interface SessionSummaryRow {
   id: number;
   session_id: string;
@@ -203,6 +221,9 @@ interface PreparedStatements {
   getMessageCountSince: Statement;
   saveSummary: Statement;
   getMaxMessageId: Statement;
+  getThrottleState: Statement;
+  incrementDailyReplyCount: Statement;
+  resetDailyCount: Statement;
 }
 
 /**
@@ -282,6 +303,8 @@ export class Store {
         session_id TEXT PRIMARY KEY,
         session_name TEXT,
         last_reply_at INTEGER DEFAULT 0,
+        daily_reply_count INTEGER DEFAULT 0,
+        daily_count_reset_date TEXT,
         created_at INTEGER NOT NULL
       );
 
@@ -342,6 +365,27 @@ export class Store {
     `);
 
     log.debug('数据库表结构已就绪');
+
+    // 迁移：为已存在的 sessions 表添加节流字段
+    this.migrateThrottleColumns();
+  }
+
+  /**
+   * 迁移：为已存在的 sessions 表添加节流字段
+   * 使用 PRAGMA table_info 检测字段是否存在，兼容旧数据库
+   */
+  private migrateThrottleColumns(): void {
+    const columns = this.db.pragma('table_info(sessions)') as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('daily_reply_count')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN daily_reply_count INTEGER DEFAULT 0');
+      log.info('迁移：sessions 表已添加 daily_reply_count 字段');
+    }
+    if (!columnNames.has('daily_count_reset_date')) {
+      this.db.exec('ALTER TABLE sessions ADD COLUMN daily_count_reset_date TEXT');
+      log.info('迁移：sessions 表已添加 daily_count_reset_date 字段');
+    }
   }
 
   /**
@@ -440,6 +484,16 @@ export class Store {
       ),
       getMaxMessageId: this.db.prepare(
         `SELECT MAX(id) as max_id FROM session_messages WHERE session_id = ?`
+      ),
+      getThrottleState: this.db.prepare(
+        `SELECT last_reply_at, daily_reply_count, daily_count_reset_date
+         FROM sessions WHERE session_id = ?`
+      ),
+      incrementDailyReplyCount: this.db.prepare(
+        `UPDATE sessions SET daily_reply_count = daily_reply_count + 1, last_reply_at = ? WHERE session_id = ?`
+      ),
+      resetDailyCount: this.db.prepare(
+        `UPDATE sessions SET daily_reply_count = 0, daily_count_reset_date = ? WHERE session_id = ?`
       ),
     };
   }
@@ -886,6 +940,63 @@ export class Store {
       const err = error instanceof Error ? error : new Error(String(error));
       log.error({ err, sessionId }, '保存会话摘要失败');
       throw new StoreError('保存会话摘要失败', err);
+    }
+  }
+
+  /**
+   * 获取会话节流状态
+   *
+   * @param sessionId - 会话 ID
+   * @returns 节流状态（会话不存在时返回默认值）
+   */
+  getThrottleState(sessionId: string): ThrottleState {
+    try {
+      const row = this.stmts.getThrottleState.get(sessionId) as ThrottleStateRow | undefined;
+      if (!row) {
+        return { lastReplyAt: 0, dailyReplyCount: 0, dailyCountResetDate: null };
+      }
+      return {
+        lastReplyAt: row.last_reply_at,
+        dailyReplyCount: row.daily_reply_count,
+        dailyCountResetDate: row.daily_count_reset_date,
+      };
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '获取节流状态失败');
+      throw new StoreError('获取节流状态失败', err);
+    }
+  }
+
+  /**
+   * 递增会话当日回复计数并更新 lastReplyAt
+   *
+   * @param sessionId - 会话 ID
+   */
+  incrementDailyReplyCount(sessionId: string): void {
+    try {
+      this.stmts.incrementDailyReplyCount.run(Date.now(), sessionId);
+      log.debug({ sessionId }, '当日回复计数已递增');
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '递增回复计数失败');
+      throw new StoreError('递增回复计数失败', err);
+    }
+  }
+
+  /**
+   * 重置会话当日回复计数
+   *
+   * @param sessionId - 会话 ID
+   * @param todayStr - 今日日期字符串 (YYYY-MM-DD)
+   */
+  resetDailyCount(sessionId: string, todayStr: string): void {
+    try {
+      this.stmts.resetDailyCount.run(todayStr, sessionId);
+      log.debug({ sessionId, date: todayStr }, '当日回复计数已重置');
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId }, '重置回复计数失败');
+      throw new StoreError('重置回复计数失败', err);
     }
   }
 
