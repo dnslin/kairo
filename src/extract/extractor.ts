@@ -36,6 +36,8 @@ export interface Message {
   isMe: boolean;
   /** 聚合前各原始消息的指纹（仅聚合消息携带） */
   aggregatedFingerprints?: string[];
+  /** 聚合消息中最后一条原始消息的内容（用于 pre-send-check DOM 匹配） */
+  lastRawContent?: string;
 }
 
 /**

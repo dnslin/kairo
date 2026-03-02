@@ -159,6 +159,7 @@ async function main(): Promise<void> {
         fingerprint: generateFingerprint(sessionId, last.sender, last.time, mergedContent),
         isMe: false,
         aggregatedFingerprints: messages.map(m => m.fingerprint),
+        lastRawContent: last.content,
       };
 
       log.info(
@@ -289,6 +290,7 @@ async function main(): Promise<void> {
         sessionName: currentSession.name,
         originalMessage: msg.content,
         originalSender: msg.sender,
+        preSendContent: msg.lastRawContent,
       }
     );
 

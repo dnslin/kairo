@@ -191,7 +191,7 @@ describe('LlmClient', () => {
       expect(messages[1]).toEqual({ role: 'user', content: '你好' });
     });
 
-    it('传入 summaryContext 时在 system 之后插入摘要消息', () => {
+    it('传入 summaryContext 时合并到 system 消息中', () => {
       const client = new LlmClient(config, validation);
       const current = createMessage({ content: '继续聊' });
       const history = [createMessage({ content: '之前的消息', isMe: false })];
@@ -202,11 +202,13 @@ describe('LlmClient', () => {
         }
       ).buildMessages(current, history, '这是之前的对话摘要');
 
-      expect(messages).toHaveLength(4); // system + summary + 1 history + current
-      expect(messages[0]).toEqual({ role: 'system', content: config.systemPrompt });
-      expect(messages[1]).toEqual({ role: 'system', content: '对话摘要：这是之前的对话摘要' });
-      expect(messages[2]).toEqual({ role: 'user', content: '之前的消息' });
-      expect(messages[3]).toEqual({ role: 'user', content: '继续聊' });
+      // system(含摘要) + user(history + current 合并)
+      expect(messages).toHaveLength(2);
+      expect(messages[0]).toEqual({
+        role: 'system',
+        content: `${config.systemPrompt}\n\n对话摘要：这是之前的对话摘要`,
+      });
+      expect(messages[1]).toEqual({ role: 'user', content: '之前的消息\n继续聊' });
     });
 
     it('summaryContext 为 undefined 时不插入摘要消息', () => {
@@ -656,8 +658,7 @@ describe('LlmClient', () => {
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           messages: expect.arrayContaining([
-            { role: 'system', content: config.systemPrompt },
-            { role: 'system', content: '对话摘要：之前的摘要' },
+            { role: 'system', content: `${config.systemPrompt}\n\n对话摘要：之前的摘要` },
           ]),
         })
       );

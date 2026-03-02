@@ -124,24 +124,35 @@ export class LlmClient {
   }
 
   private buildMessages(current: MessageInfo, history: MessageInfo[], summaryContext?: string): ChatMessage[] {
-    const messages: ChatMessage[] = [{ role: 'system', content: this.config.systemPrompt }];
-
+    // 合并 system prompt 和摘要为单条 system 消息，避免 MiniMax 等 API 拒绝多 system 消息
+    let systemContent = this.config.systemPrompt;
     if (summaryContext) {
-      messages.push({ role: 'system', content: `对话摘要：${summaryContext}` });
+      systemContent += `\n\n对话摘要：${summaryContext}`;
     }
+    const messages: ChatMessage[] = [{ role: 'system', content: systemContent }];
 
     const contextCount = this.config.contextMessages;
     if (contextCount > 0 && history.length > 0) {
       const recentHistory = history.slice(-contextCount);
       for (const msg of recentHistory) {
-        messages.push({
-          role: msg.isMe ? 'assistant' : 'user',
-          content: msg.content,
-        });
+        const role: 'user' | 'assistant' = msg.isMe ? 'assistant' : 'user';
+        // 合并连续同角色消息，避免 API 拒绝
+        const last = messages[messages.length - 1];
+        if (last && last.role === role) {
+          last.content += `\n${msg.content}`;
+        } else {
+          messages.push({ role, content: msg.content });
+        }
       }
     }
 
-    messages.push({ role: 'user', content: current.content });
+    // 当前消息为 user，若上一条也是 user 则合并
+    const last = messages[messages.length - 1];
+    if (last && last.role === 'user') {
+      last.content += `\n${current.content}`;
+    } else {
+      messages.push({ role: 'user', content: current.content });
+    }
 
     return messages;
   }

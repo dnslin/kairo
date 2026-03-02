@@ -21,6 +21,8 @@ export interface DispatchInput {
   sessionName: string;
   originalMessage: string;
   originalSender: string;
+  /** 用于 pre-send-check 的消息内容（聚合消息时为最后一条原始内容），默认取 originalMessage */
+  preSendContent?: string | undefined;
 }
 
 export interface DispatchResult {
@@ -37,7 +39,7 @@ export async function dispatchReply(
   input: DispatchInput
 ): Promise<DispatchResult> {
   const { store, sender, locator, abortOnNewMessages } = deps;
-  const { mode, reply, sessionId, sessionName, originalMessage, originalSender } = input;
+  const { mode, reply, sessionId, sessionName, originalMessage, originalSender, preSendContent } = input;
 
   if (mode === 'draft_only') {
     const draftId = store.saveDraft({
@@ -57,7 +59,7 @@ export async function dispatchReply(
   if (locator) {
     const checkResult = await preSendCheck(
       locator,
-      { sessionId, content: originalMessage, sender: originalSender },
+      { sessionId, content: preSendContent ?? originalMessage, sender: originalSender },
       abortOnNewMessages ?? true
     );
     if (!checkResult.safe) {
