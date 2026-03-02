@@ -78,3 +78,9 @@ logging:
 store:
   dbPath: ./data/kkbot.db
   storeMessageContent: true  # 是否存储消息内容（敏感信息控制）
+
+sender:
+  verifyTimeoutMs: 3000
+  logMasking: false
+  sendCheck:
+    abortOnNewMessages: true  # 发送前检测到新消息时中止发送
