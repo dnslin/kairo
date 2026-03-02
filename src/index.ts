@@ -10,6 +10,7 @@ import { LlmClient } from './llm/index.js';
 import { Sender } from './send/index.js';
 import { Store } from './store/index.js';
 import { OpsServer } from './ops/index.js';
+import { dispatchReply } from './dispatch/index.js';
 import type { Message } from './extract/index.js';
 import type { MessageInfo } from './dom/index.js';
 import { createChildLogger } from './utils/logger.js';
@@ -219,30 +220,19 @@ async function main(): Promise<void> {
     }
 
     // 根据运行模式处理回复
-    if (currentMode === 'draft_only') {
-      // 草稿模式：保存草稿等待人工确认
-      const draftId = store.saveDraft({
+    const dispatchResult = await dispatchReply(
+      { store, sender },
+      {
+        mode: currentMode,
+        reply,
         sessionId: msg.sessionId,
         sessionName: currentSession.name,
         originalMessage: msg.content,
         originalSender: msg.sender,
-        draftContent: reply,
-      });
-      store.logEvent('draft_created', {
-        draftId,
-        sessionId: msg.sessionId,
-        sessionName: currentSession.name,
-      });
-      // 保存 bot 回复到会话历史，确保 LLM 上下文完整
-      store.saveMessage(
-        msg.sessionId,
-        {
-          sender: '自己',
-          content: reply,
-          isFromSelf: true,
-        },
-        currentSession.name
-      );
+      }
+    );
+
+    if (dispatchResult.action !== 'send_failed') {
       if (config.store.storeMessageContent && config.llm.summaryIntervalMessages > 0) {
         void tryGenerateSummary(
           msg.sessionId,
@@ -250,43 +240,6 @@ async function main(): Promise<void> {
           llmClient,
           config.llm.summaryIntervalMessages
         );
-      }
-      log.info(
-        { draftId, sessionId: msg.sessionId, sessionName: currentSession.name },
-        '草稿已生成，等待确认'
-      );
-    } else {
-      // 自动发送模式
-      const result = await sender.send(reply);
-      if (result.success) {
-        store.saveMessage(
-          msg.sessionId,
-          {
-            sender: '自己',
-            content: reply,
-            isFromSelf: true,
-          },
-          currentSession.name
-        );
-        if (config.store.storeMessageContent && config.llm.summaryIntervalMessages > 0) {
-          void tryGenerateSummary(
-            msg.sessionId,
-            store,
-            llmClient,
-            config.llm.summaryIntervalMessages
-          );
-        }
-        store.logEvent('message_sent', {
-          sessionId: msg.sessionId,
-          sessionName: currentSession.name,
-        });
-        log.info({ sessionId: msg.sessionId }, '消息已自动发送');
-      } else {
-        store.logEvent('send_failed', {
-          sessionId: msg.sessionId,
-          error: result.error,
-        });
-        log.error({ sessionId: msg.sessionId, error: result.error }, '自动发送失败');
       }
     }
   };
