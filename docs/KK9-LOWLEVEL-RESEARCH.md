@@ -103,12 +103,31 @@ toData('getConversations')
 - `sesTypeID`
 - `type`
 - `typeName`
+- `createrName`
+- `typeID`
 - `maxMessageIndex`
 - `userReadIndex`
 - `lastMessage`
 - `lastSender`
 - `lastMsgTime`
 - `userConfig`
+
+P2P 会话名需要做一层规范化，不能直接显示 `typeName`：
+
+```ts
+function getDisplayName(session, currentUserId) {
+  if (session.type === 0 && session.typeID === currentUserId) {
+    return session.createrName || session.typeName;
+  }
+  return session.typeName || session.createrName;
+}
+```
+
+原因：
+
+- `sessionsInfo` 更接近底层原始会话记录
+- 对于部分 P2P 会话，`typeID/typeName` 可能落在“自己”这一侧
+- 此时真正应该显示的联系人名称在 `createrName`
 
 结论：
 

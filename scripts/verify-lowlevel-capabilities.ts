@@ -31,23 +31,35 @@ interface PageMessage {
   content?: unknown;
 }
 
+interface CliOptions {
+  allSessions: boolean;
+}
+
 function printUsage(): void {
-  console.log('用法: pnpm exec tsx scripts/verify-lowlevel-capabilities.ts');
+  console.log('用法: pnpm exec tsx scripts/verify-lowlevel-capabilities.ts [--all-sessions]');
   console.log('说明: 只读验证 KK9 低层能力，不实际发送消息。');
 }
 
-function parseArgs(argv: string[]): void {
-  if (argv.length === 0) {
-    return;
+function parseArgs(argv: string[]): CliOptions {
+  const options: CliOptions = {
+    allSessions: false,
+  };
+
+  for (const arg of argv) {
+    if (arg === '--help' || arg === '-h') {
+      printUsage();
+      process.exit(0);
+    }
+
+    if (arg === '--all-sessions') {
+      options.allSessions = true;
+      continue;
+    }
+
+    throw new Error(`未知参数: ${arg}`);
   }
 
-  const arg = argv[0];
-  if (arg === '--help' || arg === '-h') {
-    printUsage();
-    process.exit(0);
-  }
-
-  throw new Error(`未知参数: ${arg}`);
+  return options;
 }
 
 async function evaluateValue<T>(
@@ -132,18 +144,29 @@ function getBridgePrelude(): string {
   `;
 }
 
-async function verifyConversations(connector: CdpConnector): Promise<CapabilityTestResult> {
+async function verifyConversations(
+  connector: CdpConnector,
+  allSessions: boolean
+): Promise<CapabilityTestResult> {
   const result = await evaluateValue<{
     ok: boolean;
     error?: string;
     code?: number;
     count?: number;
     dataKeys?: string[];
+    sessionPreview?: Array<Record<string, unknown>>;
     sample?: Record<string, unknown> | null;
   }>(
     connector,
     `(() => {
       ${getBridgePrelude()}
+      const currentUserId = getMainPageVm()?.userID || null;
+      function getDisplayName(item) {
+        if (item.type === 0 && currentUserId !== null && item.typeID === currentUserId) {
+          return item.createrName || item.typeName || '';
+        }
+        return item.typeName || item.createrName || '';
+      }
       return toData('getConversations').then(result => ({
         ok: result?.code === 0 && Array.isArray(result?.data?.sessionsInfo) && result.data.sessionsInfo.length > 0,
         error: result?.code === 0 ? undefined : (result?.message || result?.msg || 'getConversations 失败'),
@@ -152,12 +175,29 @@ async function verifyConversations(connector: CdpConnector): Promise<CapabilityT
         dataKeys: result?.data && typeof result.data === 'object' && !Array.isArray(result.data)
           ? Object.keys(result.data)
           : [],
+        sessionPreview: Array.isArray(result?.data?.sessionsInfo)
+          ? result.data.sessionsInfo.slice(0, ${allSessions ? 'result.data.sessionsInfo.length' : '10'}).map(item => ({
+              id: item.id,
+              sesUUID: item.sesUUID,
+              type: item.type,
+              displayName: getDisplayName(item),
+              typeName: item.typeName,
+              createrName: item.createrName,
+              typeID: item.typeID,
+              maxMessageIndex: item.maxMessageIndex,
+              userReadIndex: item.userReadIndex,
+              lastMsgTime: item.lastMsgTime,
+            }))
+          : [],
         sample: Array.isArray(result?.data?.sessionsInfo) && result.data.sessionsInfo.length > 0
           ? {
               id: result.data.sessionsInfo[0].id,
               sesUUID: result.data.sessionsInfo[0].sesUUID,
               type: result.data.sessionsInfo[0].type,
+              displayName: getDisplayName(result.data.sessionsInfo[0]),
               typeName: result.data.sessionsInfo[0].typeName,
+              createrName: result.data.sessionsInfo[0].createrName,
+              typeID: result.data.sessionsInfo[0].typeID,
               maxMessageIndex: result.data.sessionsInfo[0].maxMessageIndex,
               userReadIndex: result.data.sessionsInfo[0].userReadIndex,
             }
@@ -178,6 +218,7 @@ async function verifyConversations(connector: CdpConnector): Promise<CapabilityT
       code: result.code,
       count: result.count,
       dataKeys: result.dataKeys,
+      [allSessions ? 'sessions' : 'sessionPreview']: result.sessionPreview,
       sample: result.sample,
     },
   };
@@ -547,7 +588,7 @@ function printResult(result: CapabilityTestResult): void {
 }
 
 async function main(): Promise<void> {
-  parseArgs(process.argv.slice(2));
+  const options = parseArgs(process.argv.slice(2));
 
   const config = loadConfig();
   const connector = new CdpConnector(config.cdp, config.page);
@@ -558,7 +599,7 @@ async function main(): Promise<void> {
     console.log('已连接到 KK9 渲染页面。');
 
     const results = [
-      await verifyConversations(connector),
+      await verifyConversations(connector, options.allSessions),
       await verifyMessages(connector),
       await verifySingleMessage(connector),
       await verifyEventChain(connector),
