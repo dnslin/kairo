@@ -161,6 +161,9 @@ async function verifyConversations(
     `(() => {
       ${getBridgePrelude()}
       const currentUserId = getMainPageVm()?.userID || null;
+      const editorVm = getEditorVm();
+      const sortedSessions = Array.isArray(editorVm?.sortedSessions) ? editorVm.sortedSessions : [];
+      const sortedById = new Map(sortedSessions.map(item => [item.id, item]));
       function getDisplayName(item) {
         if (item.type === 0 && currentUserId !== null && item.typeID === currentUserId) {
           return item.createrName || item.typeName || '';
@@ -178,7 +181,7 @@ async function verifyConversations(
         sessionPreview: Array.isArray(result?.data?.sessionsInfo)
           ? result.data.sessionsInfo.slice(0, ${allSessions ? 'result.data.sessionsInfo.length' : '10'}).map(item => ({
               id: item.id,
-              sesUUID: item.sesUUID,
+              sesUUID: item.sesUUID || sortedById.get(item.id)?.sesUUID || '',
               type: item.type,
               displayName: getDisplayName(item),
               typeName: item.typeName,
@@ -192,7 +195,7 @@ async function verifyConversations(
         sample: Array.isArray(result?.data?.sessionsInfo) && result.data.sessionsInfo.length > 0
           ? {
               id: result.data.sessionsInfo[0].id,
-              sesUUID: result.data.sessionsInfo[0].sesUUID,
+              sesUUID: result.data.sessionsInfo[0].sesUUID || sortedById.get(result.data.sessionsInfo[0].id)?.sesUUID || '',
               type: result.data.sessionsInfo[0].type,
               displayName: getDisplayName(result.data.sessionsInfo[0]),
               typeName: result.data.sessionsInfo[0].typeName,

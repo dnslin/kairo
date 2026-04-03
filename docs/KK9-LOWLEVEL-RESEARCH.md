@@ -95,6 +95,7 @@ toData('getConversations')
   - `groupsInfo`
   - `sessionsInfo`
 - 真正的会话列表在 `data.sessionsInfo`
+- `sessionsInfo` 更接近原始会话记录，`sesUUID` 并不稳定直接出现在这里；如需 `sesUUID`，应与 `sortedSessions` 按 `id` 合并
 
 关键字段：
 
