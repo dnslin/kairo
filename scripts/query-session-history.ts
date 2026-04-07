@@ -36,7 +36,9 @@ interface MessageInfo {
 }
 
 function printUsage(): void {
-  console.log('用法: pnpm exec tsx scripts/query-session-history.ts (--session-id ID | --ses-uuid UUID | --name 名称) [--count 20] [--all]');
+  console.log(
+    '用法: pnpm exec tsx scripts/query-session-history.ts (--session-id ID | --ses-uuid UUID | --name 名称) [--count 20] [--all]'
+  );
   console.log('示例:');
   console.log('  pnpm exec tsx scripts/query-session-history.ts --session-id 539277 --count 20');
   console.log('  pnpm exec tsx scripts/query-session-history.ts --ses-uuid 0-7783 --all');
@@ -253,15 +255,15 @@ function formatMessageContent(message: MessageInfo): string {
     try {
       contentValue = JSON.parse(contentValue);
     } catch {
-      return contentValue;
+      return contentValue as string;
     }
   }
 
   const contentItems =
-    typeof contentValue === 'object'
-      && contentValue !== null
-      && 'content' in contentValue
-      && Array.isArray((contentValue as { content?: unknown[] }).content)
+    typeof contentValue === 'object' &&
+    contentValue !== null &&
+    'content' in contentValue &&
+    Array.isArray((contentValue as { content?: unknown[] }).content)
       ? (contentValue as { content: Array<Record<string, unknown>> }).content
       : [];
 
@@ -309,9 +311,13 @@ function resolveSession(sessions: SessionInfo[], options: CliOptions): SessionIn
   if (matches.length > 1) {
     const lines = matches
       .slice(0, 10)
-      .map(item => `id=${String(item.id)}, sesUUID=${item.sesUUID}, displayName=${item.displayName}`)
+      .map(
+        item => `id=${String(item.id)}, sesUUID=${item.sesUUID}, displayName=${item.displayName}`
+      )
       .join('；');
-    throw new Error(`名称 ${options.name} 存在多个会话，请改用 --session-id 或 --ses-uuid。候选：${lines}`);
+    throw new Error(
+      `名称 ${options.name} 存在多个会话，请改用 --session-id 或 --ses-uuid。候选：${lines}`
+    );
   }
   return matches[0];
 }
@@ -359,7 +365,12 @@ async function fetchHistory(
 
     const firstMsgIdx = Number(page[0]?.msgIdx);
     const nextEndIdx = Math.ceil(firstMsgIdx - 1);
-    if (page.length < pageSize || !Number.isFinite(nextEndIdx) || nextEndIdx < 1 || nextEndIdx >= endIdx) {
+    if (
+      page.length < pageSize ||
+      !Number.isFinite(nextEndIdx) ||
+      nextEndIdx < 1 ||
+      nextEndIdx >= endIdx
+    ) {
       break;
     }
 
@@ -379,7 +390,9 @@ function printSession(session: SessionInfo): void {
   console.log(`  createrName: ${session.createrName}`);
   console.log(`  maxMessageIndex: ${String(session.maxMessageIndex)}`);
   console.log(`  userReadIndex: ${String(session.userReadIndex)}`);
-  console.log(`  lastMsgTime: ${session.lastMsgTime ? formatTimestamp(session.lastMsgTime) : '未知'}`);
+  console.log(
+    `  lastMsgTime: ${session.lastMsgTime ? formatTimestamp(session.lastMsgTime) : '未知'}`
+  );
 }
 
 function printMessages(messages: MessageInfo[]): void {
@@ -387,7 +400,9 @@ function printMessages(messages: MessageInfo[]): void {
   console.log(`历史消息数: ${String(messages.length)}`);
   console.log('----------------------------------------');
   for (const message of messages) {
-    console.log(`[${String(message.msgIdx)}] ${formatTimestamp(message.sendTime)} ${message.senderName || message.sender}`);
+    console.log(
+      `[${String(message.msgIdx)}] ${formatTimestamp(message.sendTime)} ${message.senderName || message.sender}`
+    );
     console.log(`  ${formatMessageContent(message)}`);
   }
   console.log('----------------------------------------');
