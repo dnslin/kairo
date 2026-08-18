@@ -147,33 +147,82 @@ export class SessionOps {
       (async () => {
         const id = ${JSON.stringify(sessionId)};
 
-        // 1. 尝试直接在视口 DOM 查找并点击
+        // 1. 尝试直接在当前视口 DOM 查找并点击
         const domItems = document.querySelectorAll('${this.selectors.sessionItem}');
         for (const item of domItems) {
           const matchId = item.getAttribute('data-sesuuid') || item.getAttribute('data-session-id') || item.getAttribute('id');
           const title = item.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
           if (matchId === id || title === id || title?.includes(id)) {
             item.scrollIntoView({ block: 'nearest' });
-            item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            return { success: true, method: 'direct_click' };
+            if (typeof item.click === 'function') {
+              item.click();
+            } else {
+              item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            }
+            return { success: true, method: 'direct_dom_click' };
           }
         }
 
-        // 2. 若不在视口，尝试通过 Vue 实例 scrollToItem
+        // 2. 若不在当前视口，穿透 Vue 虚拟滚动实例
         const scroller = document.querySelector('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
         if (scroller && scroller.__vue__ && Array.isArray(scroller.__vue__.items)) {
-          const targetIndex = scroller.__vue__.items.findIndex(it => it.sesUUID === id || it.typeName === id || it.name === id || String(it.id) === id || it.typeName?.includes(id));
-          if (targetIndex >= 0 && typeof scroller.__vue__.scrollToItem === 'function') {
-            scroller.__vue__.scrollToItem(targetIndex);
+          const items = scroller.__vue__.items;
+          const targetIndex = items.findIndex(it =>
+            it.sesUUID === id ||
+            it.typeName === id ||
+            it.name === id ||
+            String(it.id) === id ||
+            (typeof it.typeName === 'string' && it.typeName.includes(id))
+          );
+
+          if (targetIndex >= 0) {
+            const targetItem = items[targetIndex];
+
+            // 2.1 优先尝试调用父级 Vue 组件的会话切换方法
+            const parentVue = scroller.__vue__.$parent;
+            if (parentVue) {
+              if (typeof parentVue.toggleSession === 'function') {
+                try {
+                  parentVue.toggleSession(targetItem);
+                  return { success: true, method: 'vue_toggleSession' };
+                } catch {}
+              }
+              if (typeof parentVue.focusSession === 'function') {
+                try {
+                  parentVue.focusSession(targetItem);
+                  return { success: true, method: 'vue_focusSession' };
+                } catch {}
+              }
+              if (typeof parentVue.chatWith === 'function') {
+                try {
+                  parentVue.chatWith(targetItem);
+                  return { success: true, method: 'vue_chatWith' };
+                } catch {}
+              }
+            }
+
+            // 2.2 驱动虚拟滚动组件滚动并触发重排
+            const itemSize = scroller.__vue__.itemSize || 64;
+            if (typeof scroller.__vue__.scrollToItem === 'function') {
+              scroller.__vue__.scrollToItem(targetIndex);
+            }
+            scroller.scrollTop = targetIndex * itemSize;
+            scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+
             // 等待渲染刷新
-            await new Promise(r => setTimeout(r, 300));
-            // 再次在 DOM 中查找
+            await new Promise(r => setTimeout(r, 400));
+
+            // 2.3 再次在挂载的 DOM 中查找并点击
             const updatedItems = document.querySelectorAll('${this.selectors.sessionItem}');
             for (const it of updatedItems) {
               const mId = it.getAttribute('data-sesuuid') || it.getAttribute('data-session-id') || it.getAttribute('id');
               const t = it.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
-              if (mId === id || t === id || t?.includes(id)) {
-                it.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+              if (mId === id || mId === targetItem.sesUUID || t === id || (t && t.includes(id))) {
+                if (typeof it.click === 'function') {
+                  it.click();
+                } else {
+                  it.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                }
                 return { success: true, method: 'scroll_and_click' };
               }
             }
