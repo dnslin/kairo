@@ -16,7 +16,8 @@
     "build": "tsc",
     "dev": "tsx watch src/index.ts",
     "verify": "tsx examples/verify.ts",
-    "diagnose": "tsx examples/diagnose.ts"
+    "diagnose": "tsx examples/diagnose.ts",
+    "e2e": "tsx examples/e2e-real-test.ts"
   },
   "dependencies": {
     "mime-types": "^3.0.2",

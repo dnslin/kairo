@@ -1,19 +1,19 @@
 import type { SelectorsConfig } from '../types/index.js';
 
 export const DEFAULT_SELECTORS: SelectorsConfig = {
-  sessionList: '.session-list',
-  sessionItem: '.session-item',
-  sessionTitle: '.session-name',
-  sessionUnreadBadge: '.unread-badge',
-  activeSession: '.session-item.active, .session-item.selected',
-  messageList: '.chat-message-list, .message-container',
-  messageItem: '.message-item, .chat-item',
-  messageContent: '.message-text, .content',
-  messageSender: '.sender-name, .nickname',
-  messageTime: '.message-time, .time',
-  messageIsMe: '.message-right, .is-me',
-  inputBox: '#message-input, .input-editor, .chat-input',
-  sendButton: '.send-btn, .btn-send',
+  sessionList: '.chatlist-wrap, .session-list',
+  sessionItem: '.chat-item, .session-item',
+  sessionTitle: '.chat-item-username, .session-name',
+  sessionUnreadBadge: '.unread-badge, .badge, .chat-item-avatar .badge',
+  activeSession: '.chat-item.chat-selected, .chat-item.active, .session-item.active',
+  messageList: '.chat-content, .chat-message-list, .message-container',
+  messageItem: '.record-item, .message-item, .chat-item',
+  messageContent: '.pictext-text.js-highlight, .pictext-text, .msg-text, .message-text',
+  messageSender: '.rcd-basic-name .username, .username, .sender-name',
+  messageTime: '.rcd-time, .message-time, .time',
+  messageIsMe: '.rcd-msg-right, .message-right, .is-me',
+  inputBox: '.chat-sendArea, .chat-editor [contenteditable="true"], [contenteditable="true"]',
+  sendButton: '.sendMsg-btn a.button, .sendMsg-btn, .send-btn',
   virtualScroller: '.vue-recycle-scroller',
 };
 

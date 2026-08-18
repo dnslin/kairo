@@ -27,23 +27,40 @@ export class SessionOps {
               if (item.lastMessage) {
                 try {
                   const parsed = typeof item.lastMessage === 'string' ? JSON.parse(item.lastMessage) : item.lastMessage;
-                  lastMsg = parsed.content || parsed.text || '';
-                  lastTime = parsed.time || '';
+                  if (Array.isArray(parsed?.content)) {
+                    lastMsg = parsed.content.map(c => c.text || (c.type === 1 ? '[图片]' : '')).filter(Boolean).join('');
+                  } else if (typeof parsed?.content === 'string') {
+                    lastMsg = parsed.content;
+                  } else if (parsed?.text) {
+                    lastMsg = String(parsed.text);
+                  } else {
+                    lastMsg = String(item.lastMessage);
+                  }
                 } catch {
                   lastMsg = String(item.lastMessage);
                 }
               }
 
-              const type = (item.type === 2 || item.typeName === 'group' || item.isGroup) ? 'group' : 'private';
+              if (item.lastMsgTime) {
+                try {
+                  lastTime = new Date(item.lastMsgTime).toLocaleTimeString();
+                } catch {
+                  lastTime = '';
+                }
+              }
+
+              const type = (item.type === 1 || item.type === 2 || item.isGroup) ? 'group' : 'private';
               const unread = Boolean(
                 item.unread ||
                 (typeof item.userReadIndex === 'number' && typeof item.maxMessageIndex === 'number' && item.userReadIndex < item.maxMessageIndex) ||
                 (typeof item.unreadCount === 'number' && item.unreadCount > 0)
               );
 
+              const sessionName = String(item.typeName || item.name || item.title || item.senderName || '未命名会话');
+
               return {
                 id: String(item.sesUUID || item.id || item.sessionId || ''),
-                name: String(item.name || item.title || item.nickName || '未命名会话'),
+                name: sessionName,
                 type: type,
                 unread: unread,
                 unreadCount: Number(item.unreadCount || 0),
@@ -133,9 +150,9 @@ export class SessionOps {
         // 1. 尝试直接在视口 DOM 查找并点击
         const domItems = document.querySelectorAll('${this.selectors.sessionItem}');
         for (const item of domItems) {
-          const matchId = item.getAttribute('data-session-id') || item.getAttribute('id');
+          const matchId = item.getAttribute('data-sesuuid') || item.getAttribute('data-session-id') || item.getAttribute('id');
           const title = item.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
-          if (matchId === id || title === id) {
+          if (matchId === id || title === id || title?.includes(id)) {
             item.scrollIntoView({ block: 'nearest' });
             item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
             return { success: true, method: 'direct_click' };
@@ -145,7 +162,7 @@ export class SessionOps {
         // 2. 若不在视口，尝试通过 Vue 实例 scrollToItem
         const scroller = document.querySelector('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
         if (scroller && scroller.__vue__ && Array.isArray(scroller.__vue__.items)) {
-          const targetIndex = scroller.__vue__.items.findIndex(it => (it.sesUUID || it.id || it.name) === id);
+          const targetIndex = scroller.__vue__.items.findIndex(it => it.sesUUID === id || it.typeName === id || it.name === id || String(it.id) === id || it.typeName?.includes(id));
           if (targetIndex >= 0 && typeof scroller.__vue__.scrollToItem === 'function') {
             scroller.__vue__.scrollToItem(targetIndex);
             // 等待渲染刷新
@@ -153,9 +170,9 @@ export class SessionOps {
             // 再次在 DOM 中查找
             const updatedItems = document.querySelectorAll('${this.selectors.sessionItem}');
             for (const it of updatedItems) {
-              const mId = it.getAttribute('data-session-id') || it.getAttribute('id');
+              const mId = it.getAttribute('data-sesuuid') || it.getAttribute('data-session-id') || it.getAttribute('id');
               const t = it.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
-              if (mId === id || t === id) {
+              if (mId === id || t === id || t?.includes(id)) {
                 it.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
                 return { success: true, method: 'scroll_and_click' };
               }

@@ -75,11 +75,16 @@ export class SendOps {
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
 
-        const sendBtn = document.querySelector('${this.selectors.sendButton}');
-        if (!sendBtn) return { success: false, error: '未找到发送按钮' };
-
-        sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-        return { success: true };
+        const sendBtn = document.querySelector('${this.selectors.sendButton}') || document.querySelector('.sendMsg-btn a.button') || document.querySelector('.sendMsg-btn');
+        if (sendBtn) {
+          if (typeof sendBtn.click === 'function') {
+            sendBtn.click();
+          } else {
+            sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          }
+          return { success: true };
+        }
+        return { success: false, error: '未找到发送按钮' };
       })()
     `;
 
@@ -137,10 +142,17 @@ export class SendOps {
     const startTime = Date.now();
 
     try {
+      // 0. 将渲染窗口置于前台激活
+      await this.cdp.bringToFront();
+
       // 1. 写入渲染进程剪贴板
       const clipScript = `
         (async () => {
           try {
+            window.focus();
+            const input = document.querySelector('${this.selectors.inputBox}');
+            if (input) input.focus();
+
             const byteCharacters = atob('${base64Data}');
             const byteNumbers = new Array(byteCharacters.length);
             for (let i = 0; i < byteCharacters.length; i++) {
@@ -152,9 +164,6 @@ export class SendOps {
             await navigator.clipboard.write([
               new ClipboardItem({ ['${mimeType}']: blob })
             ]);
-
-            const input = document.querySelector('${this.selectors.inputBox}');
-            if (input) input.focus();
             return { success: true };
           } catch (e) {
             return { success: false, error: String(e) };
@@ -187,14 +196,16 @@ export class SendOps {
       });
 
       // 3. 等待图片富文本渲染沉淀
-      await new Promise((r) => setTimeout(r, 800));
-
       // 4. 点击发送按钮
       const sendScript = `
         (() => {
-          const sendBtn = document.querySelector('${this.selectors.sendButton}');
+          const sendBtn = document.querySelector('${this.selectors.sendButton}') || document.querySelector('.sendMsg-btn a.button') || document.querySelector('.sendMsg-btn');
           if (!sendBtn) return { success: false, error: '未找到发送按钮' };
-          sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          if (typeof sendBtn.click === 'function') {
+            sendBtn.click();
+          } else {
+            sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          }
           return { success: true };
         })()
       `;
@@ -223,8 +234,8 @@ export class SendOps {
           const items = document.querySelectorAll('${this.selectors.messageItem}');
           const lastFew = Array.from(items).slice(-5);
           return lastFew.some(item => {
-            const isMe = item.matches('${this.selectors.messageIsMe}') || item.classList.contains('message-right');
-            const content = item.querySelector('${this.selectors.messageContent}')?.textContent || '';
+            const isMe = item.matches('${this.selectors.messageIsMe}') || item.classList.contains('rcd-msg-right') || item.querySelector('.rcd-msg-right') !== null;
+            const content = item.querySelector('${this.selectors.messageContent}')?.textContent || item.textContent || '';
             return isMe && content.includes(${JSON.stringify(prefix)});
           });
         })()

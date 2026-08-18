@@ -146,6 +146,14 @@ export class CdpClient extends EventEmitter {
 
     return res.result?.value as T;
   }
+  public async bringToFront(): Promise<void> {
+    try {
+      await this.sendCommand('Page.bringToFront');
+    } catch {
+      // 忽略部分不支持 Page.bringToFront 的渲染目标
+    }
+  }
+
 
   public async dispatchKeyEvent(params: {
     type: 'keyDown' | 'keyUp' | 'rawKeyDown' | 'char';
