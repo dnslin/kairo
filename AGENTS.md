@@ -36,52 +36,57 @@ kkbot/
 
 ## WHERE TO LOOK
 
-| Task | Location | Notes |
-| --- | --- | --- |
-| CDP connection | `src/cdp/connector.ts` | WebSocket, reconnect, heartbeat, evaluate() |
-| DOM queries | `src/dom/locator.ts` | getSessions(), getMessages(), clickSendButton(), setInputText() |
-| Config schema | `src/config/schema.ts` | Plain TS interfaces (NOT Zod) - AppConfig is root type |
-| Config loading | `src/config/loader.ts` | YAML parse, env var resolution `${VAR}`, singleton getConfig() |
-| Config hot-reload | `src/config/watcher.ts` | chokidar file watcher for selector changes |
-| Message extraction | `src/extract/extractor.ts` | MessageExtractor wraps DomLocator, adds fingerprint |
-| Polling loop | `src/watch/watcher.ts` | MessageWatcher polls at configurable interval |
-| Policy decisions | `src/policy/engine.ts` | PolicyEngine.shouldProcess() - whitelist > blacklist > type > hours |
-| LLM integration | `src/llm/client.ts` | OpenAI SDK, strips `<think>` tags, sensitive word filter |
-| Send messages | `src/send/sender.ts` | Text via setInputText(), images via clipboard paste |
-| SQLite storage | `src/store/store.ts` | Fingerprint dedup, session history, event log |
-| Web console | `src/ops/server.ts` | Express API + React SPA dashboard (127.0.0.1:3000) |
-| Entry point | `src/index.ts` | CdpConnector init, event wiring, graceful shutdown |
-| Verify CDP | `scripts/phase0-verify.ts` | Manual verification script |
-| Dev standards | `docs/DEVELOPMENT.md` | Code conventions, git workflow, test standards |
-| KK9 startup | `docs/KK9-STARTUP.md` | CDP launch flags, troubleshooting |
+
+| Task               | Location                   | Notes                                                                        |
+| ------------------ | -------------------------- | ---------------------------------------------------------------------------- |
+| CDP connection     | `src/cdp/connector.ts`     | WebSocket, reconnect, heartbeat, evaluate()                                  |
+| DOM queries        | `src/dom/locator.ts`       | getSessions(), getMessages(), clickSendButton(), setInputText()              |
+| Config schema      | `src/config/schema.ts`     | Plain TS interfaces (NOT Zod) - AppConfig is root type                       |
+| Config loading     | `src/config/loader.ts`     | YAML parse, env var resolution `${VAR}`, singleton getConfig()               |
+| Config hot-reload  | `src/config/watcher.ts`    | chokidar file watcher for selector changes                                   |
+| Message extraction | `src/extract/extractor.ts` | MessageExtractor wraps DomLocator, adds fingerprint                          |
+| Polling loop       | `src/watch/watcher.ts`     | MessageWatcher polls at configurable interval                                |
+| Policy decisions   | `src/policy/engine.ts`     | PolicyEngine.shouldProcess() - whitelist &gt; blacklist &gt; type &gt; hours |
+| LLM integration    | `src/llm/client.ts`        | OpenAI SDK, strips `<think>` tags, sensitive word filter                     |
+| Send messages      | `src/send/sender.ts`       | Text via setInputText(), images via clipboard paste                          |
+| SQLite storage     | `src/store/store.ts`       | Fingerprint dedup, session history, event log                                |
+| Web console        | `src/ops/server.ts`        | Express API + React SPA dashboard (127.0.0.1:3000)                           |
+| Entry point        | `src/index.ts`             | CdpConnector init, event wiring, graceful shutdown                           |
+| Verify CDP         | `scripts/phase0-verify.ts` | Manual verification script                                                   |
+| Dev standards      | `docs/DEVELOPMENT.md`      | Code conventions, git workflow, test standards                               |
+| KK9 startup        | `docs/KK9-STARTUP.md`      | CDP launch flags, troubleshooting                                            |
+
 
 ## CODE MAP
 
-| Symbol | Type | Location | Role |
-| --- | --- | --- | --- |
-| `CdpConnector` | class | `src/cdp/connector.ts:51` | CDP connection + reconnect + evaluate |
-| `DomLocator` | class | `src/dom/locator.ts:66` | All DOM queries via CDP Runtime.evaluate |
-| `MessageExtractor` | class | `src/extract/extractor.ts:56` | Wraps DomLocator, adds fingerprint dedup |
-| `MessageWatcher` | class | `src/watch/watcher.ts:17` | Polling loop, calls extractor on interval |
-| `PolicyEngine` | class | `src/policy/engine.ts:21` | Whitelist/blacklist/type/hours filter |
-| `LlmClient` | class | `src/llm/client.ts:23` | OpenAI chat completion + summary + validation |
-| `Sender` | class | `src/send/sender.ts:24` | Text + image send via DOM |
-| `Store` | class | `src/store/store.ts:111` | SQLite storage layer (905 lines) |
-| `OpsServer` | class | `src/ops/server.ts:52` | Express web console + REST API |
-| `AppConfig` | interface | `src/config/schema.ts:102` | Root config type (12 sub-configs) |
-| `SessionInfo` | interface | `src/dom/locator.ts:9` | Chat session metadata |
-| `MessageInfo` | interface | `src/dom/locator.ts:19` | Single message data |
-| `Message` | interface | `src/extract/extractor.ts:24` | Extracted message with fingerprint |
-| `ProcessDecision` | interface | `src/policy/engine.ts:10` | Policy allow/deny result |
-| `OpsContext` | interface | `src/ops/server.ts:27` | Runtime dependencies for web console |
-| `getConfig` | function | `src/config/loader.ts:53` | Singleton config accessor |
-| `reloadConfig` | function | `src/config/loader.ts:60` | Force config reload |
-| `watchSelectors` | function | `src/config/watcher.ts:8` | Hot-reload selectors on file change |
-| `createChildLogger` | function | `src/utils/logger.ts:21` | pino child logger factory |
+
+| Symbol              | Type      | Location                      | Role                                          |
+| ------------------- | --------- | ----------------------------- | --------------------------------------------- |
+| `CdpConnector`      | class     | `src/cdp/connector.ts:51`     | CDP connection + reconnect + evaluate         |
+| `DomLocator`        | class     | `src/dom/locator.ts:66`       | All DOM queries via CDP Runtime.evaluate      |
+| `MessageExtractor`  | class     | `src/extract/extractor.ts:56` | Wraps DomLocator, adds fingerprint dedup      |
+| `MessageWatcher`    | class     | `src/watch/watcher.ts:17`     | Polling loop, calls extractor on interval     |
+| `PolicyEngine`      | class     | `src/policy/engine.ts:21`     | Whitelist/blacklist/type/hours filter         |
+| `LlmClient`         | class     | `src/llm/client.ts:23`        | OpenAI chat completion + summary + validation |
+| `Sender`            | class     | `src/send/sender.ts:24`       | Text + image send via DOM                     |
+| `Store`             | class     | `src/store/store.ts:111`      | SQLite storage layer (905 lines)              |
+| `OpsServer`         | class     | `src/ops/server.ts:52`        | Express web console + REST API                |
+| `AppConfig`         | interface | `src/config/schema.ts:102`    | Root config type (12 sub-configs)             |
+| `SessionInfo`       | interface | `src/dom/locator.ts:9`        | Chat session metadata                         |
+| `MessageInfo`       | interface | `src/dom/locator.ts:19`       | Single message data                           |
+| `Message`           | interface | `src/extract/extractor.ts:24` | Extracted message with fingerprint            |
+| `ProcessDecision`   | interface | `src/policy/engine.ts:10`     | Policy allow/deny result                      |
+| `OpsContext`        | interface | `src/ops/server.ts:27`        | Runtime dependencies for web console          |
+| `getConfig`         | function  | `src/config/loader.ts:53`     | Singleton config accessor                     |
+| `reloadConfig`      | function  | `src/config/loader.ts:60`     | Force config reload                           |
+| `watchSelectors`    | function  | `src/config/watcher.ts:8`     | Hot-reload selectors on file change           |
+| `createChildLogger` | function  | `src/utils/logger.ts:21`      | pino child logger factory                     |
+
 
 ## CONVENTIONS
 
 **TypeScript:**
+
 - Strict mode ALL checks enabled (see tsconfig.json - 15 strict flags)
 - NO `any` - eslint `@typescript-eslint/no-explicit-any: error`
 - `.js` extension required in imports (ESM NodeNext)
@@ -89,12 +94,14 @@ kkbot/
 - `import type` for type-only imports
 
 **Module Pattern (every module follows this):**
+
 - `index.ts` re-exports public API
 - Custom `XxxError extends Error` with `originalCause: Error | undefined`
 - `const log = createChildLogger('module-name')` at top
 - Chinese log messages and JSDoc comments
 
 **Naming:**
+
 - Files: kebab-case (`cdp-connector.ts`)
 - Classes: PascalCase (`CdpConnector`)
 - Functions/vars: camelCase (`getMessage`)
@@ -137,7 +144,7 @@ pnpm typecheck    # tsc --noEmit
 
 ---
 
-## INITIALIZATION & RUNTIME FLOW
+## INITIALIZATION &amp; RUNTIME FLOW
 
 ### 初始化顺序 (src/index.ts:79-361)
 
@@ -220,6 +227,7 @@ CdpConnector (WebSocket 连接)
 ```
 
 **关键连接点：**
+
 - `CdpConnector.evaluate(script)` 是所有 DOM 操作的基础
 - `DomLocator` 包装 CDP 调用，提供高级 API
 - `MessageExtractor` 在 DomLocator 基础上添加指纹去重
@@ -339,6 +347,7 @@ shutdown() 函数:
 ### 关键数据流
 
 **消息指纹去重：**
+
 ```
 Message 唯一性 = SHA-256(sessionId + sender + time + content)
   ↓
@@ -348,6 +357,7 @@ store.markProcessed(fingerprint) 标记
 ```
 
 **会话历史上下文：**
+
 ```
 store.getSessionHistory(sessionId, n)
   ├─ 从 SQLite 读取最近 n 条消息 (按时间倒序)
@@ -356,6 +366,7 @@ store.getSessionHistory(sessionId, n)
 ```
 
 **会话摘要上下文：**
+
 ```
 store.getLatestSummary(sessionId)
   ├─ 从 SQLite 读取最新摘要
@@ -365,6 +376,7 @@ store.getLatestSummary(sessionId)
 ### 错误处理和恢复
 
 **CDP 连接失败：**
+
 ```
 connector.connect() 失败
   ├─ 抛出 CdpConnectionError
@@ -374,6 +386,7 @@ connector.connect() 失败
 ```
 
 **CDP 连接丢失：**
+
 ```
 WebSocket 'close' 事件
   ├─ handleDisconnect(reason)
@@ -387,6 +400,7 @@ WebSocket 'close' 事件
 ```
 
 **消息处理失败：**
+
 ```
 processMessage() 异常
   ├─ LLM 调用失败 → 记录事件 → 返回 (不发送)
@@ -412,3 +426,129 @@ src/config/watcher.ts:8 - watchSelectors()
   └─ 不需要重启应用
 ```
 
+
+
+
+
+## Architecture Design  
+  
+- Do not add compatibility layers, fallback paths, or migrations for unconfirmed  
+  compatibility requirements. If the task involves public APIs, persisted data,  
+  external consumers, or rolling deployments, first identify the actual  
+  compatibility constraints. If none exist, remove obsolete paths directly.  
+  
+- Choose the simplest implementation that fully satisfies the current  
+  requirements and acceptance criteria. Avoid speculative abstractions,  
+  configuration, extension points, and indirection.  
+  
+- Grow the system in layers. Start from the smallest version that works  
+  end to end, and add each new capability on top of a product that already  
+  works. Never trade a working product for unfinished complexity.  
+  
+- Keep components modular and concerns clearly separated.  
+  
+- Introduce an abstraction only when it solves a concrete problem already  
+  present in the code, such as repeated behavior or multiple real  
+  implementations.  
+  
+- Prefer established, well-maintained libraries when they reduce overall  
+  complexity or improve reliability. Do not reimplement common functionality  
+  without a clear reason.  
+  
+- Lean on dependencies already present in the project before writing a custom  
+  implementation or adding new packages. Do not assume a library lacks a  
+  capability without checking its documentation, types, and existing usage  
+  in the codebase.  
+  
+- For module boundaries, data models, and dependency directions that must be  
+  decided now, choose designs that can remain valid long term. Do not accept  
+  stopgap implementations that are knowingly meant to be replaced later, but  
+  do not build extension frameworks for hypothetical future requirements.  
+  
+- Before designing a new product interaction, public interface, protocol, or  
+  architectural pattern, study how established products solve the same  
+  problem. Prefer proven patterns and conventions over inventing an approach  
+  from scratch. Do not perform unrelated research for local fixes or problems  
+  already covered by clear project conventions.  
+  
+- Simplicity must not come at the expense of correctness, security,  
+  testability, or explicitly required operational behavior.  
+  
+  
+## Working Method  
+  
+- Before modifying code, read the relevant implementation, tests, type  
+  definitions, configuration, and call paths. Do not start implementing based  
+  only on file names, isolated snippets, or assumptions.  
+  
+- Follow the project's existing directory structure, naming conventions,  
+  error-handling patterns, and testing conventions. Introduce a new convention  
+  only when the existing ones cannot satisfy the requirement.  
+  
+- Change only the code required to complete the current task. Do not  
+  opportunistically refactor unrelated modules, rename unrelated symbols,  
+  reformat unrelated files, or solve problems outside the requested scope.  
+  
+- If you discover a problem outside the task scope, report the problem and its  
+  impact, but do not modify it unless it blocks the requested work.  
+  
+- When a requirement is ambiguous, first determine whether the ambiguity affects  
+  external behavior, persisted data, public interfaces, or architectural  
+  boundaries. Ask the user when the decision has meaningful consequences.  
+  Otherwise, use the smallest reasonable assumption and state it explicitly.  
+  
+  
+## Verification  
+  
+- When behavior changes, add or update tests that verify the changed behavior.  
+  Prefer testing externally observable behavior over internal implementation  
+  details.  
+  
+- After making changes, run the tests, type checks, static analysis, and build  
+  commands directly relevant to the modification.  
+  
+- Never claim that tests pass, the build succeeds, or an issue is fixed unless  
+  the corresponding verification was actually run.  
+  
+- Report the commands that were actually run, their results, and anything that  
+  remains unverified.  
+:  
+- Do not make checks pass by hardcoding test data, bypassing validation,  
+  weakening assertions, suppressing errors, or deleting failing tests.  
+  
+- Do not swallow errors or use silent fallbacks to hide failures. Preserve  
+  enough error context for the problem to be diagnosed.  
+  
+  
+## Communication Style  
+  
+When explaining work to the user:  
+  
+- Use natural, direct Chinese by default.  
+  
+- Give the conclusion first, followed by the reasons and relevant details.  
+  
+- Do not explain one abstract concept using another abstract concept.  
+  
+- Keep each sentence focused on one main judgment whenever possible.  
+  
+- Keep each paragraph focused on one purpose.  
+  
+- When introducing a technical term for the first time, immediately explain it  
+  in plain Chinese.  
+  
+- Prefer concrete examples involving files, commands, data flows, or operations  
+  over purely theoretical explanations.  
+  
+- Do not repeat context merely for completeness.  
+  
+- Do not expand the user's request without a clear reason.  
+  
+- When a process is complex, clearly explain:  
+  1. what step is currently being performed;  
+  2. why this step is necessary;  
+  3. what result this step will produce;  
+  4. what the user needs to do next.  
+  
+- Unless explicitly requested, avoid stiff academic language, marketing  
+  language, and unnatural translated phrasing.
