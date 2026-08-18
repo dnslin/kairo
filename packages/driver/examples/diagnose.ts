@@ -225,22 +225,37 @@ Emoji: 👍🎉🚀🤖🔥
 
     case 'presend-guard': {
       await driver.connect();
-      console.log('--- 开始测试防串线安全拦截 ---');
-      console.log('1. 切换到其他会话 (如: 张梅英)...');
-      await driver.selectSession('张梅英');
-      const cur = await driver.getCurrentSession();
-      console.log(`当前激活会话为: ${cur?.name} (${cur?.id})`);
+      console.log('=== 开始测试防串线安全拦截 (PreSendCheck) ===');
+      console.log('💡 说明: 此测试会临时将窗口切离目标以模拟串线场景，测试完毕后会自动切回！\n');
 
-      console.log('2. 尝试向 int2024 (0-3585) 发送敏感文本 (期望被拦截)...');
-      const res = await driver.sendText('绝密内容: 绝不应该发给张梅英', { targetSessionId: '0-3585' });
+      const initialSession = await driver.getCurrentSession();
+      const initialTarget = initialSession?.name || 'int2024';
+      console.log(`0. 记录当前原始会话: ${initialTarget} (${initialSession?.id})`);
 
-      if (!res.success && res.error?.includes('发送前检查未通过')) {
-        console.log(`\n🛡️ 完美拦截！系统成功拒绝发送: "${res.error}"`);
-        console.log('✅ 防串线安全校验测试 100% 成功！');
-      } else {
-        console.error('❌ 安全校验失效！消息被异常放行！', res);
+      try {
+        console.log('1. [模拟误操作] 故意临时切换到其他会话 (如: 工单异常联络群)...');
+        await driver.selectSession('工单异常联络群');
+        const tempCur = await driver.getCurrentSession();
+        console.log(`   当前临时处于: ${tempCur?.name} (${tempCur?.id})`);
+
+        console.log('2. [触发安全红线] 尝试向 int2024 (0-3585) 发送敏感文本 (期望被拦截)...');
+        const res = await driver.sendText('【绝密内容】这是一条绝对不应该发给其他人的敏感消息', {
+          targetSessionId: '0-3585',
+        });
+
+        if (!res.success && res.error?.includes('发送前检查未通过')) {
+          console.log(`\n🛡️ 拦截成功！系统安全拒绝发送: "${res.error}"`);
+          console.log('✅ 防串线安全校验测试 100% 成功！绝密内容未发生泄露！');
+        } else {
+          console.error('❌ 安全校验失效！消息被异常放行！', res);
+        }
+      } finally {
+        console.log(`\n3. [自动恢复] 正在自动切回原会话: ${initialTarget} ...`);
+        await driver.selectSession(initialTarget);
+        const restored = await driver.getCurrentSession();
+        console.log(`   ✅ 恢复完成！当前会话已还原为: ${restored?.name} (${restored?.id})`);
+        await driver.disconnect();
       }
-      await driver.disconnect();
       break;
     }
 
