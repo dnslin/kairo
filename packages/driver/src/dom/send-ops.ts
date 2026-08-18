@@ -22,19 +22,54 @@ export class SendOps {
   public async checkPreSendState(expectedSessionId: string, _triggerMessageFingerprint?: string): Promise<PreSendCheckResult> {
     const script = `
       (() => {
-        // 1. 检查当前会话一致性
-        const activeItem = document.querySelector('${this.selectors.activeSession}');
-        const activeTitle = activeItem?.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim() || '';
-        const activeId = activeItem?.getAttribute('data-session-id') || activeItem?.getAttribute('id') || activeTitle;
+        const expected = ${JSON.stringify(expectedSessionId)};
 
-        if (activeId !== ${JSON.stringify(expectedSessionId)} && activeTitle !== ${JSON.stringify(expectedSessionId)}) {
-          return { canSend: false, reason: 'session_switched', details: '当前活跃会话与目标会话不一致' };
+        // 1. 检查当前活跃节点
+        const activeItem = document.querySelector('.chat-item.chat-selected') ||
+          document.querySelector('${this.selectors.activeSession}');
+        const activeTitle = activeItem?.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim() || '';
+        const activeId = activeItem?.getAttribute('data-sesuuid') ||
+          activeItem?.getAttribute('data-session-id') ||
+          activeItem?.getAttribute('id') ||
+          '';
+
+        // 2. 检查右侧聊天面板标题栏
+        const headerTitle = document.querySelector('.chat-header, .chat-title, .head-title')?.textContent?.trim() || '';
+
+        // 3. 尝试从 Vue 实例获取目标信息
+        let expectedName = expected;
+        let expectedUuid = expected;
+        const scroller = document.querySelector('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
+        if (scroller && scroller.__vue__ && Array.isArray(scroller.__vue__.items)) {
+          const item = scroller.__vue__.items.find(it => it.sesUUID === expected || it.typeName === expected || it.name === expected);
+          if (item) {
+            expectedName = item.typeName || item.name || expectedName;
+            expectedUuid = item.sesUUID || expectedUuid;
+          }
+        }
+
+        // 4. 多重综合比对
+        const isMatch =
+          activeId === expected ||
+          activeId === expectedUuid ||
+          activeTitle === expected ||
+          activeTitle === expectedName ||
+          (activeTitle && expectedName && activeTitle.includes(expectedName)) ||
+          (activeTitle && expected && activeTitle.includes(expected)) ||
+          headerTitle.includes(expected) ||
+          headerTitle.includes(expectedName);
+
+        if (!isMatch) {
+          return {
+            canSend: false,
+            reason: 'session_switched',
+            details: '当前活跃会话 [' + (activeTitle || activeId || '未知') + '] 与目标会话 [' + expected + '] 不一致',
+          };
         }
 
         return { canSend: true };
       })()
     `;
-
     try {
       const res = await this.cdp.evaluate<PreSendCheckResult>(script);
       return res || { canSend: true };
