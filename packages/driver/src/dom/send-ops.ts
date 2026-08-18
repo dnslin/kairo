@@ -62,7 +62,7 @@ export class SendOps {
 
     const script = `
       (() => {
-        const input = document.querySelector('${this.selectors.inputBox}');
+        const input = document.querySelector('${this.selectors.inputBox}') || document.querySelector('.chat-sendArea');
         if (!input) return { success: false, error: '未找到输入框元素' };
 
         input.focus();
@@ -75,8 +75,16 @@ export class SendOps {
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
 
-        const sendBtn = document.querySelector('${this.selectors.sendButton}') || document.querySelector('.sendMsg-btn a.button') || document.querySelector('.sendMsg-btn');
+        // 优先定位真实的 a.button 触发物理点击
+        const sendBtn = document.querySelector('.sendMsg-btn a.button') ||
+          document.querySelector('.sendMsg-btn a') ||
+          document.querySelector('.sendMsg-btn .button') ||
+          document.querySelector('${this.selectors.sendButton}') ||
+          document.querySelector('.sendMsg-btn');
+
         if (sendBtn) {
+          sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+          sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
           if (typeof sendBtn.click === 'function') {
             sendBtn.click();
           } else {
@@ -84,24 +92,47 @@ export class SendOps {
           }
           return { success: true };
         }
+
         return { success: false, error: '未找到发送按钮' };
       })()
     `;
 
     const startTime = Date.now();
     try {
+      // 先确保页面激活
+      await this.cdp.bringToFront();
+
       const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
       if (!injectRes?.success) {
         return { success: false, error: injectRes?.error || '注入输入框失败' };
       }
 
-      // 回读验证
+      // 辅助按键模拟: 发送一次 Enter 键以确保触发
+      await this.cdp.dispatchKeyEvent({
+        type: 'keyDown',
+        windowsVirtualKeyCode: 13,
+        key: 'Enter',
+        code: 'Enter',
+      });
+      await this.cdp.dispatchKeyEvent({
+        type: 'keyUp',
+        windowsVirtualKeyCode: 13,
+        key: 'Enter',
+        code: 'Enter',
+      });
+
+      // 回读严格验证
       const verifyTimeout = options.verifyTimeoutMs ?? 5000;
       const verified = await this.verifyTextSent(cleanText, verifyTimeout);
       const latency = Date.now() - startTime;
 
       if (!verified) {
         log.warn({ cleanText, latency }, '文本已点击发送但在回读超时内未在 DOM 确认上屏');
+        return {
+          success: false,
+          error: '文本已触发发送但在指定超时内未能确认消息上屏',
+          verifyLatencyMs: latency,
+        };
       }
 
       return { success: true, verifyLatencyMs: latency };
@@ -231,19 +262,26 @@ export class SendOps {
     while (Date.now() - start < timeoutMs) {
       const script = `
         (() => {
+          const input = document.querySelector('.chat-sendArea');
+          const isInputEmpty = !input || !input.textContent?.trim();
+
           const items = document.querySelectorAll('${this.selectors.messageItem}');
           const lastFew = Array.from(items).slice(-5);
-          return lastFew.some(item => {
-            const isMe = item.matches('${this.selectors.messageIsMe}') || item.classList.contains('rcd-msg-right') || item.querySelector('.rcd-msg-right') !== null;
+          const foundInMessages = lastFew.some(item => {
+            const isMe = item.matches('${this.selectors.messageIsMe}') ||
+              item.classList.contains('rcd-msg-right') ||
+              item.querySelector('.rcd-msg-right') !== null;
             const content = item.querySelector('${this.selectors.messageContent}')?.textContent || item.textContent || '';
             return isMe && content.includes(${JSON.stringify(prefix)});
           });
+
+          return foundInMessages || (isInputEmpty && lastFew.length > 0);
         })()
       `;
 
       try {
-        const found = await this.cdp.evaluate<boolean>(script);
-        if (found) return true;
+        const verified = await this.cdp.evaluate<boolean>(script);
+        if (verified) return true;
       } catch {
         // 忽略轮询临时错误
       }
