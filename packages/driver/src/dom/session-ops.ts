@@ -147,89 +147,95 @@ export class SessionOps {
       (async () => {
         const id = ${JSON.stringify(sessionId)};
 
-        // 1. 尝试直接在当前视口 DOM 查找并点击
-        const domItems = document.querySelectorAll('${this.selectors.sessionItem}');
-        for (const item of domItems) {
-          const matchId = item.getAttribute('data-sesuuid') || item.getAttribute('data-session-id') || item.getAttribute('id');
-          const title = item.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
-          if (matchId === id || title === id || title?.includes(id)) {
-            item.scrollIntoView({ block: 'nearest' });
-            if (typeof item.click === 'function') {
-              item.click();
-            } else {
-              item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-            }
-            return { success: true, method: 'direct_dom_click' };
-          }
-        }
-
-        // 2. 若不在当前视口，穿透 Vue 虚拟滚动实例
+        // 1. 获取目标会话的核心标识与索引
         const scroller = document.querySelector('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
+        let targetSesUUID = id;
+        let targetName = id;
+        let targetIndex = -1;
+
         if (scroller && scroller.__vue__ && Array.isArray(scroller.__vue__.items)) {
           const items = scroller.__vue__.items;
-          const targetIndex = items.findIndex(it =>
+          targetIndex = items.findIndex(it =>
             it.sesUUID === id ||
             it.typeName === id ||
             it.name === id ||
             String(it.id) === id ||
             (typeof it.typeName === 'string' && it.typeName.includes(id))
           );
-
           if (targetIndex >= 0) {
-            const targetItem = items[targetIndex];
+            targetSesUUID = items[targetIndex].sesUUID || targetSesUUID;
+            targetName = items[targetIndex].typeName || items[targetIndex].name || targetName;
+          }
+        }
 
-            // 2.1 优先尝试调用父级 Vue 组件的会话切换方法
-            const parentVue = scroller.__vue__.$parent;
-            if (parentVue) {
-              if (typeof parentVue.toggleSession === 'function') {
-                try {
-                  parentVue.toggleSession(targetItem);
-                  return { success: true, method: 'vue_toggleSession' };
-                } catch {}
+        // 2. 辅助函数: 在当前 DOM 查找并点击匹配项
+        function tryClickVisibleDom() {
+          const domItems = document.querySelectorAll('${this.selectors.sessionItem}');
+          for (const item of domItems) {
+            const matchId = item.getAttribute('data-sesuuid') || item.getAttribute('data-session-id') || item.getAttribute('id');
+            const title = item.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
+            if (matchId === targetSesUUID || matchId === id || title === targetName || title === id || (title && title.includes(id))) {
+              item.scrollIntoView({ block: 'nearest' });
+              if (typeof item.click === 'function') {
+                item.click();
+              } else {
+                item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
               }
-              if (typeof parentVue.focusSession === 'function') {
-                try {
-                  parentVue.focusSession(targetItem);
-                  return { success: true, method: 'vue_focusSession' };
-                } catch {}
-              }
-              if (typeof parentVue.chatWith === 'function') {
-                try {
-                  parentVue.chatWith(targetItem);
-                  return { success: true, method: 'vue_chatWith' };
-                } catch {}
-              }
+              return true;
             }
+          }
+          return false;
+        }
 
-            // 2.2 驱动虚拟滚动组件滚动并触发重排
-            const itemSize = scroller.__vue__.itemSize || 64;
-            if (typeof scroller.__vue__.scrollToItem === 'function') {
-              scroller.__vue__.scrollToItem(targetIndex);
-            }
-            scroller.scrollTop = targetIndex * itemSize;
-            scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+        // 3. 辅助函数: 验证当前高亮会话是否已是目标会话
+        function isTargetActive() {
+          const selected = document.querySelector('${this.selectors.activeSession}') || document.querySelector('.chat-item.chat-selected');
+          if (!selected) return false;
+          const selectedUuid = selected.getAttribute('data-sesuuid');
+          const selectedName = selected.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
+          return (
+            selectedUuid === targetSesUUID ||
+            selectedUuid === id ||
+            selectedName === targetName ||
+            selectedName === id ||
+            (selectedName && selectedName.includes(id))
+          );
+        }
 
-            // 等待渲染刷新
+        // 先检查当前是否已经处于该会话
+        if (isTargetActive()) {
+          return { success: true, method: 'already_active' };
+        }
+
+        // 4. 尝试在当前视口内直接点击
+        if (tryClickVisibleDom()) {
+          await new Promise(r => setTimeout(r, 300));
+          if (isTargetActive()) {
+            return { success: true, method: 'direct_dom_click' };
+          }
+        }
+
+        // 5. 若在视口外且在 Vue 虚拟滚动列表中，执行精准滚动重排
+        if (scroller && targetIndex >= 0) {
+          const itemSize = scroller.__vue__?.itemSize || 64;
+          if (typeof scroller.__vue__?.scrollToItem === 'function') {
+            scroller.__vue__.scrollToItem(targetIndex);
+          }
+          scroller.scrollTop = targetIndex * itemSize;
+          scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+          // 等待虚拟滚动 DOM 节点挂载
+          await new Promise(r => setTimeout(r, 400));
+
+          if (tryClickVisibleDom()) {
             await new Promise(r => setTimeout(r, 400));
-
-            // 2.3 再次在挂载的 DOM 中查找并点击
-            const updatedItems = document.querySelectorAll('${this.selectors.sessionItem}');
-            for (const it of updatedItems) {
-              const mId = it.getAttribute('data-sesuuid') || it.getAttribute('data-session-id') || it.getAttribute('id');
-              const t = it.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
-              if (mId === id || mId === targetItem.sesUUID || t === id || (t && t.includes(id))) {
-                if (typeof it.click === 'function') {
-                  it.click();
-                } else {
-                  it.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                }
-                return { success: true, method: 'scroll_and_click' };
-              }
+            if (isTargetActive()) {
+              return { success: true, method: 'scroller_scroll_and_click' };
             }
           }
         }
 
-        return { success: false, method: 'not_found' };
+        return { success: false, method: 'activation_verification_failed' };
       })()
     `;
 
