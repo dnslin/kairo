@@ -53,7 +53,7 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
 
     wss.on('connection', (ws) => {
       ws.on('message', (data) => {
-        const msg = JSON.parse(data.toString());
+        const msg = JSON.parse(typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : (data as Buffer).toString('utf-8'));
         if (msg.method === 'Runtime.evaluate') {
           if (msg.params?.expression === 'throw new Error("mock error")') {
             ws.send(

@@ -9,11 +9,13 @@ import { createChildLogger } from './utils/logger.js';
 
 const log = createChildLogger('kk9-driver');
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export declare interface KK9Driver {
   on<U extends keyof DriverEvents>(event: U, listener: DriverEvents[U]): this;
   emit<U extends keyof DriverEvents>(event: U, ...args: Parameters<DriverEvents[U]>): boolean;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare
 export class KK9Driver extends EventEmitter {
   private readonly cdp: CdpClient;
   private readonly selectors: SelectorsConfig;
@@ -90,7 +92,7 @@ export class KK9Driver extends EventEmitter {
     this.isPolling = true;
     log.info(pollConfig, '启动消息智能轮询器');
 
-    const pollLoop = async () => {
+    const pollLoop = async (): Promise<void> => {
       if (!this.isPolling) return;
 
       try {
@@ -102,7 +104,9 @@ export class KK9Driver extends EventEmitter {
       }
 
       if (this.isPolling) {
-        this.pollTimer = setTimeout(pollLoop, pollConfig.intervalMs);
+        this.pollTimer = setTimeout(() => {
+          void pollLoop();
+        }, pollConfig.intervalMs);
       }
     };
 
@@ -163,8 +167,8 @@ export class KK9Driver extends EventEmitter {
   }
 
   private wireCdpEvents(): void {
-    this.cdp.on('status', (status) => this.emit('status', status));
-    this.cdp.on('heartbeat', (uptime) => this.emit('heartbeat', uptime));
-    this.cdp.on('error', (err) => this.emit('error', err));
+    this.cdp.on('status', (status: ConnectionStatus) => this.emit('status', status));
+    this.cdp.on('heartbeat', (uptime: number) => this.emit('heartbeat', uptime));
+    this.cdp.on('error', (err: Error) => this.emit('error', err));
   }
 }

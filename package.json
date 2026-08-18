@@ -18,8 +18,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint packages/*/src",
-    "format": "prettier --write \"packages/*/src/**/*.ts\""
+    "lint": "eslint \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\"",
+    "format": "prettier --write \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\""
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",

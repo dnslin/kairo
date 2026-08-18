@@ -15,6 +15,6 @@ export const logger = pino({
       : undefined,
 });
 
-export function createChildLogger(name: string) {
+export function createChildLogger(name: string): pino.Logger {
   return logger.child({ module: name });
 }

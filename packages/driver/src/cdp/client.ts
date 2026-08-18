@@ -96,6 +96,7 @@ export class CdpClient extends EventEmitter {
 
     this.setStatus('disconnected');
     log.info('CDP 客户端已主动断开');
+    await Promise.resolve();
   }
 
   public async sendCommand<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -220,7 +221,7 @@ export class CdpClient extends EventEmitter {
   private setupWsHandlers(ws: WebSocket): void {
     ws.on('message', (data: WebSocket.RawData) => {
       try {
-        const text = data.toString('utf-8');
+        const text = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : Array.isArray(data) ? Buffer.concat(data).toString('utf-8') : Buffer.from(data).toString('utf-8');
         const res = JSON.parse(text) as CdpResponse;
         if (res.id && this.pending.has(res.id)) {
           const { resolve, reject, timer } = this.pending.get(res.id)!;
@@ -278,13 +279,11 @@ export class CdpClient extends EventEmitter {
     this.setStatus('reconnecting');
     log.info({ attempt: this.reconnectAttempts, delayMs: delay }, '计划执行 CDP 重连');
 
-    this.reconnectTimer = setTimeout(async () => {
+    this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      try {
-        await this.connect();
-      } catch {
+      void this.connect().catch(() => {
         // scheduleReconnect 已在 connect catch 中触发
-      }
+      });
     }, delay);
   }
 
@@ -299,15 +298,17 @@ export class CdpClient extends EventEmitter {
     this.stopHeartbeat();
     const interval = this.config.heartbeatIntervalMs ?? 10000;
 
-    this.heartbeatTimer = setInterval(async () => {
-      try {
-        await this.evaluate('1');
-        const uptime = this.getUptimeMs();
-        this.emit('heartbeat', uptime);
-      } catch (err) {
-        log.warn({ err: String(err) }, '心跳检测失败');
-        this.handleDisconnect('Heartbeat check failed');
-      }
+    this.heartbeatTimer = setInterval(() => {
+      void (async (): Promise<void> => {
+        try {
+          await this.evaluate('1');
+          const uptime = this.getUptimeMs();
+          this.emit('heartbeat', uptime);
+        } catch (err) {
+          log.warn({ err: String(err) }, '心跳检测失败');
+          this.handleDisconnect('Heartbeat check failed');
+        }
+      })();
     }, interval);
   }
 

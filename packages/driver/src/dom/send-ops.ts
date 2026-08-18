@@ -5,6 +5,7 @@ import type { CdpClient } from '../cdp/client.js';
 import type { PreSendCheckResult, SelectorsConfig, SendResult } from '../types/index.js';
 import { SendError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
+import { VUE_SCROLLER_HELPERS_SCRIPT } from './helpers.js';
 
 const log = createChildLogger('send-ops');
 
@@ -17,11 +18,12 @@ export class SendOps {
   ) {}
 
   /**
-   * 发送前原子状态安全校验（防串线、防撤回）
+   * 发送前原子状态安全校验（防串线）
    */
-  public async checkPreSendState(expectedSessionId: string, _triggerMessageFingerprint?: string): Promise<PreSendCheckResult> {
+  public async checkPreSendState(expectedSessionId: string): Promise<PreSendCheckResult> {
     const script = `
       (() => {
+        ${VUE_SCROLLER_HELPERS_SCRIPT}
         const expected = ${JSON.stringify(expectedSessionId)};
 
         // 1. 检查当前活跃节点
@@ -37,17 +39,10 @@ export class SendOps {
         const headerTitle = document.querySelector('.chat-header, .chat-title, .head-title')?.textContent?.trim() || '';
 
         // 3. 尝试从 Vue 实例获取目标信息
-        let expectedName = expected;
-        let expectedUuid = expected;
-        const scroller = document.querySelector('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
-        if (scroller && scroller.__vue__ && Array.isArray(scroller.__vue__.items)) {
-          const item = scroller.__vue__.items.find(it => it.sesUUID === expected || it.typeName === expected || it.name === expected);
-          if (item) {
-            expectedName = item.typeName || item.name || expectedName;
-            expectedUuid = item.sesUUID || expectedUuid;
-          }
-        }
-
+        const scrollerItems = getVueScrollerItems('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
+        const { item: matchedItem } = findVueSessionItem(scrollerItems, expected);
+        const expectedName = matchedItem?.typeName || matchedItem?.name || expected;
+        const expectedUuid = matchedItem?.sesUUID || expected;
         // 4. 多重综合比对
         const isMatch =
           activeId === expected ||

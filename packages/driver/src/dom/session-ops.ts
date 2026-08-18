@@ -2,9 +2,9 @@ import type { CdpClient } from '../cdp/client.js';
 import type { KK9Session, SelectorsConfig } from '../types/index.js';
 import { DomError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
+import { VUE_SCROLLER_HELPERS_SCRIPT } from './helpers.js';
 
 const log = createChildLogger('session-ops');
-
 export class SessionOps {
   constructor(
     private readonly cdp: CdpClient,
@@ -17,12 +17,13 @@ export class SessionOps {
   public async getSessions(): Promise<KK9Session[]> {
     const script = `
       (() => {
+        ${VUE_SCROLLER_HELPERS_SCRIPT}
+
         // 1. 尝试穿透 Vue 虚拟滚动实例
         try {
-          const scroller = document.querySelector('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
-          if (scroller && scroller.__vue__ && Array.isArray(scroller.__vue__.items)) {
-            return scroller.__vue__.items.map(item => {
-              let lastMsg = '';
+          const items = getVueScrollerItems('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
+          if (items) {
+            return items.map(item => {
               let lastTime = '';
               if (item.lastMessage) {
                 try {
@@ -152,29 +153,16 @@ export class SessionOps {
   public async selectSession(sessionId: string): Promise<boolean> {
     const script = `
       (async () => {
+        ${VUE_SCROLLER_HELPERS_SCRIPT}
         const id = ${JSON.stringify(sessionId)};
 
         // 1. 获取目标会话的核心标识与索引
         const scroller = document.querySelector('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
-        let targetSesUUID = id;
-        let targetName = id;
-        let targetIndex = -1;
+        const scrollerItems = getVueScrollerItems('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
+        const { index: targetIndex, item: targetItem } = findVueSessionItem(scrollerItems, id);
 
-        if (scroller && scroller.__vue__ && Array.isArray(scroller.__vue__.items)) {
-          const items = scroller.__vue__.items;
-          targetIndex = items.findIndex(it =>
-            it.sesUUID === id ||
-            it.typeName === id ||
-            it.name === id ||
-            String(it.id) === id ||
-            (typeof it.typeName === 'string' && it.typeName.includes(id))
-          );
-          if (targetIndex >= 0) {
-            targetSesUUID = items[targetIndex].sesUUID || targetSesUUID;
-            targetName = items[targetIndex].typeName || items[targetIndex].name || targetName;
-          }
-        }
-
+        let targetSesUUID = targetItem?.sesUUID || id;
+        let targetName = targetItem?.typeName || targetItem?.name || id;
         // 2. 辅助函数: 在当前 DOM 查找并点击匹配项
         function tryClickVisibleDom() {
           const domItems = document.querySelectorAll('${this.selectors.sessionItem}');
