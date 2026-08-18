@@ -71,7 +71,6 @@ export class CdpClient extends EventEmitter {
       this.setStatus('disconnected');
       const error = err instanceof Error ? err : new Error(String(err));
       log.error({ err: error.message }, 'CDP 连接失败');
-      this.scheduleReconnect();
       throw new CdpError(`CDP 连接失败: ${error.message}`, error);
     }
   }
