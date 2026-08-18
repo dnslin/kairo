@@ -111,14 +111,31 @@ async function main() {
     }
 
     case 'send': {
-      const text = args.join(' ');
+      let target = 'int2024';
+      let text = '';
+      if (args.length >= 2) {
+        target = args[0];
+        text = args.slice(1).join(' ');
+      } else {
+        text = args[0] || '';
+      }
+
       if (!text) {
-        console.error('用法: pnpm diagnose send <发送文本>');
+        console.error('用法: pnpm diagnose send [目标会话=int2024] <发送文本>');
         process.exit(1);
       }
+
       await driver.connect();
+      console.log(`正在确保切换到目标会话: ${target} ...`);
+      const switched = await driver.selectSession(target);
+      if (!switched) {
+        console.error(`❌ 切换到目标会话 ${target} 失败，为防误发已安全中止！`);
+        await driver.disconnect();
+        process.exit(1);
+      }
+
       const current = await driver.getCurrentSession();
-      console.log(`目标会话: ${current ? `${current.name} (${current.id})` : '未识别当前会话'}`);
+      console.log(`当前激活会话: ${current?.name} (${current?.id})`);
       console.log(`正在发送文本: "${text}" ...`);
       const res = await driver.sendText(text);
       if (res.success) {
@@ -131,14 +148,31 @@ async function main() {
     }
 
     case 'image': {
-      const imgPath = args[0];
+      let target = 'int2024';
+      let imgPath = '';
+      if (args.length >= 2) {
+        target = args[0];
+        imgPath = args[1];
+      } else {
+        imgPath = args[0] || '';
+      }
+
       if (!imgPath) {
-        console.error('用法: pnpm diagnose image <图片文件路径>');
+        console.error('用法: pnpm diagnose image [目标会话=int2024] <图片文件路径>');
         process.exit(1);
       }
+
       await driver.connect();
+      console.log(`正在确保切换到目标会话: ${target} ...`);
+      const switched = await driver.selectSession(target);
+      if (!switched) {
+        console.error(`❌ 切换到目标会话 ${target} 失败，为防误发已安全中止！`);
+        await driver.disconnect();
+        process.exit(1);
+      }
+
       const current = await driver.getCurrentSession();
-      console.log(`目标会话: ${current ? `${current.name} (${current.id})` : '未识别当前会话'}`);
+      console.log(`当前激活会话: ${current?.name} (${current?.id})`);
       console.log(`正在发送图片: ${imgPath} ...`);
       const res = await driver.sendImage(imgPath);
       if (res.success) {

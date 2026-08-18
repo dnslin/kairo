@@ -44,8 +44,8 @@ async function runRealDeviceE2ETest() {
     console.log(`  👥 群聊会话数: ${groupSessions.length} 个\n`);
 
     // 3. 目标会话切换定位
-    const targetSessionId = '0-11067'; // 董仕林
-    console.log(`Step 3: 测试会话切换与定位 (目标: ${targetSessionId})...`);
+    const targetSessionId = '0-3585'; // 专用测试用户: int2024
+    console.log(`Step 3: 测试会话切换与定位 (目标: int2024 / ${targetSessionId})...`);
     const switched = await driver.selectSession(targetSessionId);
     if (!switched) {
       throw new Error(`切换到会话 ${targetSessionId} 失败`);

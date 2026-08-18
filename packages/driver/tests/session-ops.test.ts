@@ -50,10 +50,13 @@ describe('SessionOps 会话管理与虚拟滚动穿透测试', () => {
 
   it('getCurrentSession 应优先返回激活会话', async () => {
     const mockCdp = {
-      evaluate: vi.fn().mockResolvedValue([
-        { id: 'ses_1', name: '李四', type: 'private', unread: false, active: false },
-        { id: 'ses_2', name: '王五', type: 'private', unread: false, active: true },
-      ]),
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({ id: 'ses_2', name: '王五' })
+        .mockResolvedValueOnce([
+          { id: 'ses_1', name: '李四', type: 'private', unread: false, active: false },
+          { id: 'ses_2', name: '王五', type: 'private', unread: false, active: true },
+        ]),
     } as unknown as CdpClient;
 
     const ops = new SessionOps(mockCdp, DEFAULT_SELECTORS);

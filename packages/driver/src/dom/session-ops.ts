@@ -112,28 +112,35 @@ export class SessionOps {
    * 获取当前处于激活状态的会话
    */
   public async getCurrentSession(): Promise<KK9Session | null> {
-    const sessions = await this.getSessions();
-    const active = sessions.find((s) => s.active);
-    if (active) return active;
-
-    // 备用：直接查找 active 样式节点
     const script = `
       (() => {
-        const el = document.querySelector('${this.selectors.activeSession}');
+        const el = document.querySelector('.chat-item.chat-selected') ||
+          document.querySelector('${this.selectors.activeSession}');
         if (!el) return null;
         const titleEl = el.querySelector('${this.selectors.sessionTitle}');
-        return {
-          id: el.getAttribute('data-session-id') || el.getAttribute('id') || titleEl?.textContent?.trim() || '',
-          name: titleEl?.textContent?.trim() || '当前会话',
-          type: 'private',
-          unread: false,
-          active: true
-        };
+        const id = el.getAttribute('data-sesuuid') || el.getAttribute('data-session-id') || el.getAttribute('id') || '';
+        const name = titleEl?.textContent?.trim() || '';
+        return { id, name };
       })()
     `;
 
     try {
-      return await this.cdp.evaluate<KK9Session | null>(script);
+      const activeDom = await this.cdp.evaluate<{ id: string; name: string } | null>(script);
+      if (activeDom && (activeDom.id || activeDom.name)) {
+        const sessions = await this.getSessions();
+        const matched = sessions.find((s) => s.id === activeDom.id || s.name === activeDom.name || (activeDom.id && s.id.includes(activeDom.id)));
+        if (matched) {
+          return { ...matched, active: true };
+        }
+        return {
+          id: activeDom.id,
+          name: activeDom.name || '当前会话',
+          type: 'private',
+          unread: false,
+          active: true,
+        };
+      }
+      return null;
     } catch {
       return null;
     }

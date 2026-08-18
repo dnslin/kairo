@@ -225,13 +225,42 @@ export class SendOps {
         key: 'v',
         code: 'KeyV',
       });
+      // 3. 等待图片在输入框富文本中完成渲染挂载 (最多等待 3 秒)
+      const waitImgScript = `
+        (async () => {
+          const start = Date.now();
+          while (Date.now() - start < 3000) {
+            const input = document.querySelector('.chat-sendArea, .chat-editor');
+            const img = input?.querySelector('img');
+            if (img) {
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.dispatchEvent(new Event('change', { bubbles: true }));
+              return { ready: true };
+            }
+            await new Promise(r => setTimeout(r, 100));
+          }
+          return { ready: false };
+        })()
+      `;
 
-      // 3. 等待图片富文本渲染沉淀
+      const waitRes = await this.cdp.evaluate<{ ready: boolean }>(waitImgScript);
+      if (!waitRes?.ready) {
+        log.warn('图片粘贴后在输入框渲染超时');
+      }
+
       // 4. 点击发送按钮
       const sendScript = `
         (() => {
-          const sendBtn = document.querySelector('${this.selectors.sendButton}') || document.querySelector('.sendMsg-btn a.button') || document.querySelector('.sendMsg-btn');
+          const sendBtn = document.querySelector('.sendMsg-btn a.button') ||
+            document.querySelector('.sendMsg-btn a') ||
+            document.querySelector('.sendMsg-btn .button') ||
+            document.querySelector('${this.selectors.sendButton}') ||
+            document.querySelector('.sendMsg-btn');
+
           if (!sendBtn) return { success: false, error: '未找到发送按钮' };
+
+          sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+          sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
           if (typeof sendBtn.click === 'function') {
             sendBtn.click();
           } else {
@@ -246,13 +275,63 @@ export class SendOps {
         return { success: false, error: `点击发送图片失败: ${sendRes?.error}` };
       }
 
+      // 辅助按键: 发送一次 Enter
+      await this.cdp.dispatchKeyEvent({
+        type: 'keyDown',
+        windowsVirtualKeyCode: 13,
+        key: 'Enter',
+        code: 'Enter',
+      });
+      await this.cdp.dispatchKeyEvent({
+        type: 'keyUp',
+        windowsVirtualKeyCode: 13,
+        key: 'Enter',
+        code: 'Enter',
+      });
+
+      // 5. 严格回读确认: 检查输入框清空
+      const verifyTimeout = options.verifyTimeoutMs ?? 5000;
+      const verified = await this.verifyImageSent(verifyTimeout);
       const latency = Date.now() - startTime;
+
+      if (!verified) {
+        log.warn({ latency }, '图片已点击发送但在回读超时内未能确认输入框清空与上屏');
+        return {
+          success: false,
+          error: '图片已触发发送但在指定超时内未能确认消息上屏',
+          verifyLatencyMs: latency,
+        };
+      }
+
       return { success: true, verifyLatencyMs: latency };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error({ err: errorMsg }, '发送图片异常');
       throw new SendError(`发送图片异常: ${errorMsg}`, err instanceof Error ? err : undefined);
     }
+  }
+
+  private async verifyImageSent(timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const script = `
+        (() => {
+          const input = document.querySelector('.chat-sendArea');
+          const hasImgInInput = Boolean(input?.querySelector('img'));
+          return !hasImgInInput;
+        })()
+      `;
+
+      try {
+        const empty = await this.cdp.evaluate<boolean>(script);
+        if (empty) return true;
+      } catch {
+        // 忽略轮询临时错误
+      }
+
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return false;
   }
 
   private async verifyTextSent(text: string, timeoutMs: number): Promise<boolean> {
