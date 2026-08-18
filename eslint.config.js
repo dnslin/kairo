@@ -6,7 +6,7 @@ import prettier from 'eslint-config-prettier';
 export default [
   eslint.configs.recommended,
   {
-    files: ['src/**/*.ts', 'tests/**/*.ts'],
+    files: ['packages/*/src/**/*.ts', 'packages/*/tests/**/*.ts', 'packages/*/examples/**/*.ts'],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
@@ -23,6 +23,7 @@ export default [
         clearTimeout: 'readonly',
         clearInterval: 'readonly',
         fetch: 'readonly',
+        NodeJS: 'readonly',
       },
     },
     plugins: {
@@ -38,6 +39,18 @@ export default [
       '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/await-thenable': 'error',
       'no-console': 'off',
+    },
+  },
+  {
+    files: ['packages/*/tests/**/*.ts', 'packages/*/examples/**/*.ts'],
+    rules: {
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/explicit-function-return-type': 'off',
     },
   },
   prettier,
