@@ -114,7 +114,7 @@ async function main() {
       let target = 'int2024';
       let text = '';
       if (args.length >= 2) {
-        target = args[0];
+        target = args[0] || 'int2024';
         text = args.slice(1).join(' ');
       } else {
         text = args[0] || '';
@@ -151,8 +151,8 @@ async function main() {
       let target = 'int2024';
       let imgPath = '';
       if (args.length >= 2) {
-        target = args[0];
-        imgPath = args[1];
+        target = args[0] || 'int2024';
+        imgPath = args[1] || '';
       } else {
         imgPath = args[0] || '';
       }
@@ -201,6 +201,91 @@ async function main() {
       await driver.disconnect();
       break;
     }
+    case 'special': {
+      const target = 'int2024';
+      const specialText = `【特殊符号测试】
+换行 1
+换行 2: <script>alert("xss")</script> & 'single' "double"
+Emoji: 👍🎉🚀🤖🔥
+特殊公式: a < b && b > c || x & y`;
+
+      await driver.connect();
+      console.log(`正在确保切换到目标会话: ${target} ...`);
+      await driver.selectSession(target);
+      console.log('正在发送特殊符号与多行富文本...');
+      const res = await driver.sendText(specialText, { targetSessionId: '0-3585' });
+      if (res.success) {
+        console.log(`✅ 特殊字符文本发送并确认成功！耗时: ${res.verifyLatencyMs}ms`);
+      } else {
+        console.error(`❌ 发送失败: ${res.error}`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'presend-guard': {
+      await driver.connect();
+      console.log('--- 开始测试防串线安全拦截 ---');
+      console.log('1. 切换到其他会话 (如: 张梅英)...');
+      await driver.selectSession('张梅英');
+      const cur = await driver.getCurrentSession();
+      console.log(`当前激活会话为: ${cur?.name} (${cur?.id})`);
+
+      console.log('2. 尝试向 int2024 (0-3585) 发送敏感文本 (期望被拦截)...');
+      const res = await driver.sendText('绝密内容: 绝不应该发给张梅英', { targetSessionId: '0-3585' });
+
+      if (!res.success && res.error?.includes('发送前检查未通过')) {
+        console.log(`\n🛡️ 完美拦截！系统成功拒绝发送: "${res.error}"`);
+        console.log('✅ 防串线安全校验测试 100% 成功！');
+      } else {
+        console.error('❌ 安全校验失效！消息被异常放行！', res);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'stress': {
+      const count = parseInt(args[0] || '5', 10);
+      const target = 'int2024';
+      await driver.connect();
+      console.log(`正在切换到目标会话: ${target} ...`);
+      await driver.selectSession(target);
+      console.log(`\n🚀 开始连续高频发送 ${count} 条消息...`);
+
+      let successCount = 0;
+      const start = Date.now();
+      for (let i = 1; i <= count; i++) {
+        const msg = `[高频压测 #${i}/${count}] 时序测试 ${Date.now()}`;
+        process.stdout.write(`- 发送第 ${i} 条... `);
+        const res = await driver.sendText(msg, { targetSessionId: '0-3585' });
+        if (res.success) {
+          console.log(`✅ 成功 (${res.verifyLatencyMs}ms)`);
+          successCount++;
+        } else {
+          console.log(`❌ 失败: ${res.error}`);
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      const totalTime = Date.now() - start;
+      console.log(`\n📊 压测总结: 成功 ${successCount}/${count} 条，总耗时: ${(totalTime / 1000).toFixed(2)}s`);
+      await driver.disconnect();
+      break;
+    }
+
+    case 'heartbeat': {
+      let count = 0;
+      driver.on('status', (s) => console.log(`[状态] => ${s}`));
+      driver.on('heartbeat', (uptime) => {
+        count++;
+        console.log(`[心跳 #${count}] 连接正常保活，累计在线: ${(uptime / 1000).toFixed(1)}s`);
+      });
+      await driver.connect();
+      console.log('✅ 已连接，正在连续观察 15 秒心跳保活机制...');
+      await new Promise((r) => setTimeout(r, 15000));
+      await driver.disconnect();
+      console.log(`✅ 心跳测试完成，共收到 ${count} 次心跳事件`);
+      break;
+    }
 
     case 'help':
     default: {
@@ -210,14 +295,22 @@ async function main() {
 使用方式:
   pnpm --filter @kkbot/driver run diagnose <command> [args...]
 
-可用命令:
-  status               探测本地 CDP 端口与 Target 状态
-  sessions             读取并打印会话列表 (Vue 虚拟滚动穿透)
-  messages [count=10]  读取当前会话最近消息列表
-  listen               启动实时消息轮询与自消息过滤监听
-  send <text>          向当前激活会话注入并发送文本 (带 DOM 回读)
-  image <path>         向当前激活会话注入并发送图片 (系统剪贴板 + 按键模拟)
-  switch <id/name>     切换到指定会话 (支持虚拟滚动滚动定位)
+【基础探测与会话】
+  status                探测本地 CDP 端口与 Target 状态
+  sessions              读取并打印 128+ 全量会话列表 (Vue 虚拟滚动穿透)
+  messages [count=10]   读取当前会话最近消息列表
+  switch <id/name>      精准切换到指定会话 (支持虚拟滚动自动定位)
+
+【消息收发与监听】
+  send [target] <text>  向目标会话发送文本 (默认: int2024, 带 DOM 回读)
+  image [target] <path> 向目标会话发送图片 (默认: int2024, 剪贴板注入 + 按键粘贴)
+  listen                启动实时消息轮询与自消息过滤监听
+
+【高级专项与安全测试】
+  special               特殊字符/多行排版/HTML/Emoji 富文本发送测试
+  presend-guard         防串线原子校验测试 (验证会话不一致时 100% 拦截)
+  stress [count=5]      高频连续发送稳定性与时序压测
+  heartbeat             连续观察 15 秒 CDP 心跳保活状态
 `);
       break;
     }
