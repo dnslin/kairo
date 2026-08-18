@@ -1,28 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { CdpClient } from '../src/cdp/client.js';
 import { DEFAULT_SELECTORS } from '../src/dom/selectors.js';
 import { SessionOps } from '../src/dom/session-ops.js';
-import type { CdpClient } from '../src/cdp/client.js';
 
 describe('SessionOps 会话管理与虚拟滚动穿透测试', () => {
-  it('getSessions 应正确解析 Vue 虚拟滚动列表数据', async () => {
+  it('getSessions 应正确解析 Vue 虚拟滚动列表数据并识别 unreadAt 与群聊', async () => {
     const mockCdp = {
       evaluate: vi.fn().mockResolvedValue([
         {
           id: 'ses_1',
-          name: '技术交流群',
+          name: '测试123',
           type: 'group',
           unread: true,
           unreadCount: 3,
-          lastMessage: '大家好',
+          unreadAt: true,
+          lastMessage: '[@有人@我] 紧急需求请看下',
           lastMessageTime: '12:00',
           active: false,
         },
         {
           id: 'ses_2',
-          name: '张三',
+          name: 'init2024',
           type: 'private',
           unread: false,
           unreadCount: 0,
+          unreadAt: false,
           lastMessage: '收到了',
           lastMessageTime: '11:30',
           active: true,
@@ -36,14 +38,16 @@ describe('SessionOps 会话管理与虚拟滚动穿透测试', () => {
     expect(sessions).toHaveLength(2);
     expect(sessions[0]).toEqual({
       id: 'ses_1',
-      name: '技术交流群',
+      name: '测试123',
       type: 'group',
       unread: true,
       unreadCount: 3,
-      lastMessage: '大家好',
+      unreadAt: true,
+      lastMessage: '[@有人@我] 紧急需求请看下',
       lastMessageTime: '12:00',
       active: false,
     });
+    expect(sessions[0]?.unreadAt).toBe(true);
     expect(sessions[1]?.active).toBe(true);
     expect(mockCdp.evaluate).toHaveBeenCalledOnce();
   });

@@ -5,6 +5,7 @@ import { createChildLogger } from '../utils/logger.js';
 import { VUE_SCROLLER_HELPERS_SCRIPT } from './helpers.js';
 
 const log = createChildLogger('session-ops');
+
 export class SessionOps {
   constructor(
     private readonly cdp: CdpClient,
@@ -24,6 +25,7 @@ export class SessionOps {
           const items = getVueScrollerItems('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
           if (items) {
             return items.map(item => {
+              let lastMsg = '';
               let lastTime = '';
               if (item.lastMessage) {
                 try {
@@ -50,11 +52,30 @@ export class SessionOps {
                 }
               }
 
-              const type = (item.type === 1 || item.type === 2 || item.isGroup) ? 'group' : 'private';
+              const isGroup = Boolean(
+                item.type === 1 ||
+                item.type === 2 ||
+                item.sesTypeID === 1 ||
+                item.sesTypeID === 2 ||
+                item.isGroup ||
+                item.groupInfo
+              );
+              const type = isGroup ? 'group' : 'private';
+
               const unread = Boolean(
                 item.unread ||
                 (typeof item.userReadIndex === 'number' && typeof item.maxMessageIndex === 'number' && item.userReadIndex < item.maxMessageIndex) ||
                 (typeof item.unreadCount === 'number' && item.unreadCount > 0)
+              );
+
+              const unreadAt = Boolean(
+                item.atState > 0 ||
+                item.hasAtMe ||
+                item.hasAtAll ||
+                item.unreadAt ||
+                lastMsg.includes('[@有人@我]') ||
+                lastMsg.includes('[@全体成员]') ||
+                lastMsg.includes('[@有人提到我]')
               );
 
               const sessionName = String(item.typeName || item.name || item.title || item.senderName || '未命名会话');
@@ -65,6 +86,7 @@ export class SessionOps {
                 type: type,
                 unread: unread,
                 unreadCount: Number(item.unreadCount || 0),
+                unreadAt: unreadAt,
                 lastMessage: lastMsg,
                 lastMessageTime: lastTime,
                 active: Boolean(item.isActive || item.selected)
@@ -81,17 +103,29 @@ export class SessionOps {
         for (const item of items) {
           const titleEl = item.querySelector('${this.selectors.sessionTitle}');
           const unreadEl = item.querySelector('${this.selectors.sessionUnreadBadge}');
-          const id = item.getAttribute('data-session-id') || item.getAttribute('id') || titleEl?.textContent?.trim() || '';
+          const id = item.getAttribute('data-sesuuid') || item.getAttribute('data-session-id') || item.getAttribute('id') || titleEl?.textContent?.trim() || '';
           const name = titleEl?.textContent?.trim() || '未命名会话';
           const unread = unreadEl !== null && window.getComputedStyle(unreadEl).display !== 'none';
-          const active = item.classList.contains('active') || item.classList.contains('selected');
+          const active = item.classList.contains('active') || item.classList.contains('selected') || item.classList.contains('chat-selected');
+
+          const hasAtBadge = item.querySelector('.badge-at, .at-tips, [class*="at-tips"], [class*="badge-at"], [class*="at-badge"], .is-at') !== null;
+          const previewText = item.querySelector('.last-msg, .chat-item-msg, .desc')?.textContent?.trim() || '';
+          const unreadAt = hasAtBadge || previewText.includes('[@有人@我]') || previewText.includes('[@全体成员]');
+
+          const isGroupDom = item.classList.contains('group-session') ||
+            item.querySelector('.group-avatar, .discuss-avatar, [class*="group"]') !== null ||
+            item.getAttribute('data-type') === '1' ||
+            item.getAttribute('data-type') === '2';
+          const type = isGroupDom ? 'group' : 'private';
 
           if (id) {
             results.push({
               id,
               name,
-              type: 'private',
+              type,
               unread,
+              unreadAt,
+              lastMessage: previewText,
               active
             });
           }
@@ -105,7 +139,10 @@ export class SessionOps {
       return Array.isArray(sessions) ? sessions : [];
     } catch (err) {
       log.error({ err: String(err) }, '获取会话列表失败');
-      throw new DomError(`获取会话列表失败: ${err instanceof Error ? err.message : String(err)}`, err instanceof Error ? err : undefined);
+      throw new DomError(
+        `获取会话列表失败: ${err instanceof Error ? err.message : String(err)}`,
+        err instanceof Error ? err : undefined
+      );
     }
   }
 
@@ -129,7 +166,12 @@ export class SessionOps {
       const activeDom = await this.cdp.evaluate<{ id: string; name: string } | null>(script);
       if (activeDom && (activeDom.id || activeDom.name)) {
         const sessions = await this.getSessions();
-        const matched = sessions.find((s) => s.id === activeDom.id || s.name === activeDom.name || (activeDom.id && s.id.includes(activeDom.id)));
+        const matched = sessions.find(
+          s =>
+            s.id === activeDom.id ||
+            s.name === activeDom.name ||
+            (activeDom.id && s.id.includes(activeDom.id))
+        );
         if (matched) {
           return { ...matched, active: true };
         }
@@ -163,6 +205,7 @@ export class SessionOps {
 
         let targetSesUUID = targetItem?.sesUUID || id;
         let targetName = targetItem?.typeName || targetItem?.name || id;
+
         // 2. 辅助函数: 在当前 DOM 查找并点击匹配项
         function tryClickVisibleDom() {
           const domItems = document.querySelectorAll('${this.selectors.sessionItem}');
