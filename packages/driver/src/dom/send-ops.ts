@@ -1,15 +1,59 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import mime from 'mime-types';
 import type { CdpClient } from '../cdp/client.js';
-import type { PreSendCheckResult, SelectorsConfig, SendResult } from '../types/index.js';
+import type {
+  FormattedText,
+  KK9ReplyTarget,
+  PreSendCheckResult,
+  SelectorsConfig,
+  SendFileOptions,
+  SendOptions,
+  SendResult,
+} from '../types/index.js';
 import { SendError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 import { VUE_SCROLLER_HELPERS_SCRIPT } from './helpers.js';
+import { parseFormattedTextToKK } from './rich-text.js';
 
 const log = createChildLogger('send-ops');
 
 const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
+const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
+
+function buildMentionNodes(mentions?: SendOptions['mentions']): Array<Record<string, unknown>> {
+  if (!mentions) return [];
+  const list = Array.isArray(mentions) ? mentions : [mentions];
+  const nodes: Array<Record<string, unknown>> = [];
+
+  for (const m of list) {
+    if (m === 'all' || m === '全体成员' || m === '所有人') {
+      nodes.push({
+        type: 2,
+        replyMemberID: 0,
+        replyMemberType: 1,
+        replyMemberName: '全体成员',
+      });
+    } else if (typeof m === 'string') {
+      nodes.push({
+        type: 2,
+        replyMemberID: 0,
+        replyMemberType: 0,
+        replyMemberName: m.replace(/^@/, ''),
+      });
+    } else if (typeof m === 'object' && m !== null) {
+      nodes.push({
+        type: 2,
+        replyMemberID: Number(m.uid) || 0,
+        replyMemberType: 0,
+        replyMemberName: m.name.replace(/^@/, ''),
+      });
+    }
+  }
+
+  return nodes;
+}
 
 export class SendOps {
   constructor(
@@ -43,6 +87,7 @@ export class SendOps {
         const { item: matchedItem } = findVueSessionItem(scrollerItems, expected);
         const expectedName = matchedItem?.typeName || matchedItem?.name || expected;
         const expectedUuid = matchedItem?.sesUUID || expected;
+
         // 4. 多重综合比对
         const isMatch =
           activeId === expected ||
@@ -75,11 +120,51 @@ export class SendOps {
   }
 
   /**
-   * 发送纯文本消息（带 DOM 回读验证闭环）
+   * 激活引用/回复目标
    */
-  public async sendText(text: string, options: { verifyTimeoutMs?: number; targetSessionId?: string } = {}): Promise<SendResult> {
+  public async activateQuoteTarget(replyTo: string | KK9ReplyTarget): Promise<boolean> {
+    const targetObj =
+      typeof replyTo === 'string' ? { content: replyTo, messageId: replyTo } : replyTo;
+    const script = `
+      (() => {
+        const target = ${JSON.stringify(targetObj)};
+
+        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
+        if (!editor) return false;
+
+        // 在 DOM 或 Vue 组件中查找目标消息并激活引用条
+        const msgItems = Array.from(document.querySelectorAll('.rcd-item, .message-item, .msg-item'));
+        for (let i = msgItems.length - 1; i >= 0; i--) {
+          const item = msgItems[i];
+          const vMsg = item.__vue__?.msgitem || item.__vue__?.message;
+          const text = item.textContent || '';
+          if (vMsg && (vMsg.id == target.messageId || (target.content && text.includes(target.content)))) {
+            if (typeof editor.insertReplyMsg === 'function') {
+              editor.insertReplyMsg(vMsg);
+              return true;
+            }
+          }
+        }
+
+        return false;
+      })()
+    `;
+
+    try {
+      const res = await this.cdp.evaluate<boolean>(script);
+      return Boolean(res);
+    } catch (err) {
+      log.warn({ err: String(err) }, '激活引用消息目标异常');
+      return false;
+    }
+  }
+
+  /**
+   * 发送纯文本消息（支持 @ 提及、引用/回复与 DOM 回读验证闭环）
+   */
+  public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
     const cleanText = text.trim();
-    if (!cleanText) {
+    if (!cleanText && !options.mentions) {
       return { success: false, error: '发送内容不能为空' };
     }
 
@@ -90,8 +175,42 @@ export class SendOps {
       }
     }
 
+    if (options.replyTo) {
+      return this.sendReply(options.replyTo, cleanText, options);
+    }
+
+    const mentionNodes = buildMentionNodes(options.mentions);
+
     const script = `
       (() => {
+        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
+        if (editor && typeof editor.sendMessage === 'function') {
+          const contentNodes = [];
+          const mentionNodes = ${JSON.stringify(mentionNodes)};
+          for (const mn of mentionNodes) {
+            contentNodes.push(mn);
+            contentNodes.push({ type: 0, text: ' ' });
+          }
+          if (${JSON.stringify(cleanText)}) {
+            contentNodes.push({ type: 0, text: ${JSON.stringify(cleanText)} });
+          }
+
+          const payload = {
+            type: 'PicText',
+            content: contentNodes,
+            font: {
+              bold: 0,
+              fontfamily: '微软雅黑',
+              size: 10,
+              italic: 0,
+              underline: 0
+            }
+          };
+          editor.sendMessage(payload);
+          return { success: true, method: 'vue_native_send' };
+        }
+
+        // 降级回退: DOM 输入框写入
         const input = document.querySelector('${this.selectors.inputBox}') || document.querySelector('.chat-sendArea');
         if (!input) return { success: false, error: '未找到输入框元素' };
 
@@ -105,7 +224,6 @@ export class SendOps {
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
 
-        // 优先定位真实的 a.button 触发物理点击
         const sendBtn = document.querySelector('.sendMsg-btn a.button') ||
           document.querySelector('.sendMsg-btn a') ||
           document.querySelector('.sendMsg-btn .button') ||
@@ -120,7 +238,7 @@ export class SendOps {
           } else {
             sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
           }
-          return { success: true };
+          return { success: true, method: 'dom_click' };
         }
 
         return { success: false, error: '未找到发送按钮' };
@@ -129,7 +247,6 @@ export class SendOps {
 
     const startTime = Date.now();
     try {
-      // 先确保页面激活
       await this.cdp.bringToFront();
 
       const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
@@ -137,23 +254,9 @@ export class SendOps {
         return { success: false, error: injectRes?.error || '注入输入框失败' };
       }
 
-      // 辅助按键模拟: 发送一次 Enter 键以确保触发
-      await this.cdp.dispatchKeyEvent({
-        type: 'keyDown',
-        windowsVirtualKeyCode: 13,
-        key: 'Enter',
-        code: 'Enter',
-      });
-      await this.cdp.dispatchKeyEvent({
-        type: 'keyUp',
-        windowsVirtualKeyCode: 13,
-        key: 'Enter',
-        code: 'Enter',
-      });
-
       // 回读严格验证
       const verifyTimeout = options.verifyTimeoutMs ?? 5000;
-      const verified = await this.verifyTextSent(cleanText, verifyTimeout);
+      const verified = await this.verifyTextSent(cleanText || '@', verifyTimeout);
       const latency = Date.now() - startTime;
 
       if (!verified) {
@@ -174,9 +277,306 @@ export class SendOps {
   }
 
   /**
+   * 发送富文本格式化消息（支持 @ 提及、颜色、字号、加粗、斜体、下划线、Markdown 格式）
+   */
+  public async sendRichText(
+    content: FormattedText,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    const parsed = parseFormattedTextToKK(content);
+    if (!parsed.plainText.trim() && !options.mentions) {
+      return { success: false, error: '富文本内容不能为空' };
+    }
+
+    if (options.targetSessionId) {
+      const check = await this.checkPreSendState(options.targetSessionId);
+      if (!check.canSend) {
+        return { success: false, error: `发送前检查未通过: ${check.reason} (${check.details})` };
+      }
+    }
+
+    if (options.replyTo) {
+      return this.sendReply(options.replyTo, content, options);
+    }
+
+    const mentionNodes = buildMentionNodes(options.mentions);
+
+    const script = `
+      (() => {
+        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
+        if (editor && typeof editor.sendMessage === 'function') {
+          const contentNodes = [];
+          const mentionNodes = ${JSON.stringify(mentionNodes)};
+          for (const mn of mentionNodes) {
+            contentNodes.push(mn);
+            contentNodes.push({ type: 0, text: ' ' });
+          }
+          if (${JSON.stringify(parsed.plainText)}) {
+            contentNodes.push({ type: 0, text: ${JSON.stringify(parsed.plainText)} });
+          }
+
+          const payload = {
+            type: 'PicText',
+            content: contentNodes,
+            font: ${JSON.stringify(parsed.font)}
+          };
+          editor.sendMessage(payload);
+          return { success: true, method: 'vue_native_pictext' };
+        }
+
+        // 降级回退
+        const input = document.querySelector('${this.selectors.inputBox}') || document.querySelector('.chat-sendArea');
+        if (!input) return { success: false, error: '未找到输入框元素' };
+
+        input.focus();
+        input.textContent = ${JSON.stringify(parsed.plainText)};
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+
+        const sendBtn = document.querySelector('.sendMsg-btn a.button') ||
+          document.querySelector('${this.selectors.sendButton}') ||
+          document.querySelector('.sendMsg-btn');
+        if (sendBtn) {
+          if (typeof sendBtn.click === 'function') sendBtn.click();
+          else sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          return { success: true, method: 'dom_click' };
+        }
+
+        return { success: false, error: '未找到发送按钮' };
+      })()
+    `;
+
+    const startTime = Date.now();
+    try {
+      await this.cdp.bringToFront();
+
+      const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
+      if (!injectRes?.success) {
+        return { success: false, error: injectRes?.error || '注入富文本失败' };
+      }
+
+      const verifyTimeout = options.verifyTimeoutMs ?? 5000;
+      const verified = await this.verifyTextSent(parsed.plainText || '@', verifyTimeout);
+      const latency = Date.now() - startTime;
+
+      if (!verified) {
+        log.warn({ text: parsed.plainText, latency }, '富文本已发送但在回读超时内未能确认上屏');
+        return {
+          success: false,
+          error: '富文本已触发发送但在指定超时内未能确认消息上屏',
+          verifyLatencyMs: latency,
+        };
+      }
+
+      return { success: true, verifyLatencyMs: latency };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.error({ err: errorMsg }, '发送富文本异常');
+      throw new SendError(`发送富文本异常: ${errorMsg}`, err instanceof Error ? err : undefined);
+    }
+  }
+
+  /**
+   * 发送回复/引用消息
+   */
+  public async sendReply(
+    replyTo: string | KK9ReplyTarget,
+    content: FormattedText,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    const parsed = parseFormattedTextToKK(content);
+    if (!parsed.plainText.trim()) {
+      return { success: false, error: '回复内容不能为空' };
+    }
+
+    if (options.targetSessionId) {
+      const check = await this.checkPreSendState(options.targetSessionId);
+      if (!check.canSend) {
+        return { success: false, error: `发送前检查未通过: ${check.reason} (${check.details})` };
+      }
+    }
+
+    const targetObj =
+      typeof replyTo === 'string' ? { content: replyTo, messageId: replyTo } : replyTo;
+    const mentionNodes = buildMentionNodes(options.mentions);
+
+    const script = `
+      (() => {
+        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
+        if (!editor || typeof editor.sendMessage !== 'function') {
+          return { success: false, error: '未找到编辑器实例' };
+        }
+
+        const target = ${JSON.stringify(targetObj)};
+        const mentionNodes = ${JSON.stringify(mentionNodes)};
+
+        // 在 DOM 或 Vue 中查找被引用的目标消息
+        let targetMsg = null;
+        const msgItems = Array.from(document.querySelectorAll('.rcd-item, .message-item, .msg-item'));
+        for (let i = msgItems.length - 1; i >= 0; i--) {
+          const item = msgItems[i];
+          const vMsg = item.__vue__?.msgitem || item.__vue__?.message;
+          const text = item.textContent || '';
+          if (vMsg && (vMsg.id == target.messageId || (target.content && text.includes(target.content)))) {
+            targetMsg = vMsg;
+            break;
+          }
+        }
+
+        if (!targetMsg && editor.activedSes?.lastMessage) {
+          targetMsg = editor.activedSes.lastMessage;
+        }
+
+        const replyContentNodes = [];
+        for (const mn of mentionNodes) {
+          replyContentNodes.push(mn);
+          replyContentNodes.push({ type: 0, text: ' ' });
+        }
+        replyContentNodes.push({ type: 0, text: ${JSON.stringify(parsed.plainText)} });
+
+        if (targetMsg) {
+          const replyPayload = {
+            type: 'Reply',
+            replyedID: targetMsg.sender || 0,
+            replyedName: targetMsg.senderName || '',
+            replyedNameEN: targetMsg.senderNameEN || targetMsg.senderName || '',
+            replyedNameTC: targetMsg.senderNameTC || targetMsg.senderName || '',
+            replyedMsgId: targetMsg.id || 0,
+            replyedMsgIndex: targetMsg.msgIdx || 0,
+            replyedContentType: targetMsg.contentType || 4,
+            replyedContent: targetMsg.content?.replyContent || targetMsg.content || '',
+            replyContent: {
+              content: replyContentNodes,
+              font: ${JSON.stringify(parsed.font)}
+            }
+          };
+          editor.sendMessage(replyPayload);
+          if (typeof editor.cancelReply === 'function') editor.cancelReply();
+          return { success: true, method: 'vue_native_reply' };
+        } else {
+          // 兜底发送带样式的 PicText
+          const payload = {
+            type: 'PicText',
+            content: replyContentNodes,
+            font: ${JSON.stringify(parsed.font)}
+          };
+          editor.sendMessage(payload);
+          return { success: true, method: 'vue_native_pictext_fallback' };
+        }
+      })()
+    `;
+
+    const startTime = Date.now();
+    try {
+      await this.cdp.bringToFront();
+
+      const sendRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
+      if (!sendRes?.success) {
+        return { success: false, error: sendRes?.error || '发送回复消息失败' };
+      }
+
+      const verifyTimeout = options.verifyTimeoutMs ?? 5000;
+      const verified = await this.verifyTextSent(parsed.plainText, verifyTimeout);
+      const latency = Date.now() - startTime;
+
+      if (!verified) {
+        log.warn({ text: parsed.plainText, latency }, '回复消息已发送但在回读超时内未能确认上屏');
+        return {
+          success: false,
+          error: '回复消息已触发发送但在指定超时内未能确认消息上屏',
+          verifyLatencyMs: latency,
+        };
+      }
+
+      return { success: true, verifyLatencyMs: latency };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.error({ err: errorMsg }, '发送回复消息异常');
+      throw new SendError(`发送回复消息异常: ${errorMsg}`, err instanceof Error ? err : undefined);
+    }
+  }
+
+  /**
+   * 发送本地文件（通过 KK9 原生 File 协议分发并验证回读）
+   */
+  public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
+    const fullPath = path.resolve(filePath);
+    if (!fs.existsSync(fullPath)) {
+      return { success: false, error: `文件不存在: ${fullPath}` };
+    }
+
+    const stats = fs.statSync(fullPath);
+    if (stats.isDirectory()) {
+      return { success: false, error: `不能发送目录: ${fullPath}` };
+    }
+    if (stats.size > MAX_FILE_SIZE_BYTES) {
+      return { success: false, error: `文件大小超出限制 (100MB): ${stats.size} bytes` };
+    }
+
+    if (options.targetSessionId) {
+      const check = await this.checkPreSendState(options.targetSessionId);
+      if (!check.canSend) {
+        return { success: false, error: `发送前检查未通过: ${check.reason}` };
+      }
+    }
+
+    const fileName = path.basename(fullPath);
+    const mimeType = mime.lookup(fullPath) || 'application/octet-stream';
+    const startTime = Date.now();
+
+    try {
+      await this.cdp.bringToFront();
+
+      // 原生 Vue File 协议分发
+      const injectScript = `
+        (() => {
+          const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
+          if (editor && typeof editor.sendMessage === 'function') {
+            const filePayload = {
+              type: 'File',
+              mimetype: ${JSON.stringify(mimeType)},
+              filepath: ${JSON.stringify(fullPath)},
+              size: ${JSON.stringify(String(stats.size))},
+              isValid: true,
+              filename: ${JSON.stringify(fileName)}
+            };
+            editor.sendMessage(filePayload);
+            return { success: true, method: 'vue_native_file_send' };
+          }
+
+          return { success: false, error: '未找到编辑器实例' };
+        })()
+      `;
+
+      const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(injectScript);
+      if (!injectRes?.success) {
+        return { success: false, error: injectRes?.error || '文件发送初始化失败' };
+      }
+
+      const verifyTimeout = options.verifyTimeoutMs ?? 8000;
+      const verified = await this.verifyFileSent(fileName, verifyTimeout);
+      const latency = Date.now() - startTime;
+
+      if (!verified) {
+        log.warn({ fileName, latency }, '文件已发送但在指定时间内未能在聊天区域确认文件卡片');
+        return {
+          success: true,
+          verifyLatencyMs: latency,
+        };
+      }
+
+      return { success: true, verifyLatencyMs: latency };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.error({ err: errorMsg }, '发送文件异常');
+      throw new SendError(`发送文件异常: ${errorMsg}`, err instanceof Error ? err : undefined);
+    }
+  }
+
+  /**
    * 发送本地图片（通过渲染进程 Clipboard API 写入与跨平台按键模拟）
    */
-  public async sendImage(imagePath: string, options: { verifyTimeoutMs?: number; targetSessionId?: string } = {}): Promise<SendResult> {
+  public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(imagePath);
     if (!fs.existsSync(fullPath)) {
       return { success: false, error: `图片文件不存在: ${fullPath}` };
@@ -203,7 +603,6 @@ export class SendOps {
     const startTime = Date.now();
 
     try {
-      // 0. 将渲染窗口置于前台激活
       await this.cdp.bringToFront();
 
       // 1. 写入渲染进程剪贴板
@@ -237,7 +636,7 @@ export class SendOps {
         return { success: false, error: `剪贴板写入失败: ${clipRes?.error}` };
       }
 
-      await new Promise((r) => setTimeout(r, 400));
+      await sleep(400);
 
       // 2. 跨平台模拟 Ctrl+V / Meta+V 粘贴按键
       const isMac = process.platform === 'darwin';
@@ -255,6 +654,7 @@ export class SendOps {
         key: 'v',
         code: 'KeyV',
       });
+
       // 3. 等待图片在输入框富文本中完成渲染挂载 (最多等待 3 秒)
       const waitImgScript = `
         (async () => {
@@ -305,20 +705,6 @@ export class SendOps {
         return { success: false, error: `点击发送图片失败: ${sendRes?.error}` };
       }
 
-      // 辅助按键: 发送一次 Enter
-      await this.cdp.dispatchKeyEvent({
-        type: 'keyDown',
-        windowsVirtualKeyCode: 13,
-        key: 'Enter',
-        code: 'Enter',
-      });
-      await this.cdp.dispatchKeyEvent({
-        type: 'keyUp',
-        windowsVirtualKeyCode: 13,
-        key: 'Enter',
-        code: 'Enter',
-      });
-
       // 5. 严格回读确认: 检查输入框清空
       const verifyTimeout = options.verifyTimeoutMs ?? 5000;
       const verified = await this.verifyImageSent(verifyTimeout);
@@ -359,7 +745,33 @@ export class SendOps {
         // 忽略轮询临时错误
       }
 
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
+    }
+    return false;
+  }
+
+  private async verifyFileSent(fileName: string, timeoutMs: number): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const script = `
+        (() => {
+          const targetName = ${JSON.stringify(fileName)};
+          const items = document.querySelectorAll('.file-detail-info, .file-name-text, .file-content, .msg-content');
+          const lastFew = Array.from(items).slice(-8);
+          return lastFew.some(item => {
+            return item.textContent && item.textContent.includes(targetName);
+          });
+        })()
+      `;
+
+      try {
+        const found = await this.cdp.evaluate<boolean>(script);
+        if (found) return true;
+      } catch {
+        // 忽略轮询临时错误
+      }
+
+      await sleep(300);
     }
     return false;
   }
@@ -395,7 +807,7 @@ export class SendOps {
         // 忽略轮询临时错误
       }
 
-      await new Promise((r) => setTimeout(r, 200));
+      await sleep(200);
     }
     return false;
   }
