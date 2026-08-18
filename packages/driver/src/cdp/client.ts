@@ -99,7 +99,10 @@ export class CdpClient extends EventEmitter {
     await Promise.resolve();
   }
 
-  public async sendCommand<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  public async sendCommand<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {}
+  ): Promise<T> {
     if (this.status !== 'connected' || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new CdpError(`CDP 未连接 (当前状态: ${this.status})`);
     }
@@ -120,7 +123,7 @@ export class CdpClient extends EventEmitter {
         timer,
       });
 
-      this.ws!.send(payload, (err) => {
+      this.ws!.send(payload, err => {
         if (err) {
           clearTimeout(timer);
           this.pending.delete(id);
@@ -155,7 +158,6 @@ export class CdpClient extends EventEmitter {
     }
   }
 
-
   public async dispatchKeyEvent(params: {
     type: 'keyDown' | 'keyUp' | 'rawKeyDown' | 'char';
     modifiers?: number;
@@ -178,17 +180,24 @@ export class CdpClient extends EventEmitter {
       }
       const targets = (await response.json()) as CdpTarget[];
       const matched = targets.find(
-        (t) => (t.type === 'page' || t.type === 'webview' || t.type === 'app') && t.url.includes(this.config.pageMatch)
+        t =>
+          (t.type === 'page' || t.type === 'webview' || t.type === 'app') &&
+          t.url.includes(this.config.pageMatch)
       );
 
       if (!matched) {
-        const available = targets.map((t) => `[${t.type}] ${t.title} (${t.url})`).join(', ');
-        throw new Error(`未找到匹配 "${this.config.pageMatch}" 的目标页面。当前可用页面: ${available}`);
+        const available = targets.map(t => `[${t.type}] ${t.title} (${t.url})`).join(', ');
+        throw new Error(
+          `未找到匹配 "${this.config.pageMatch}" 的目标页面。当前可用页面: ${available}`
+        );
       }
 
       return matched;
     } catch (err) {
-      throw new CdpError(`探测 CDP 目标失败: ${err instanceof Error ? err.message : String(err)}`, err instanceof Error ? err : undefined);
+      throw new CdpError(
+        `探测 CDP 目标失败: ${err instanceof Error ? err.message : String(err)}`,
+        err instanceof Error ? err : undefined
+      );
     }
   }
 
@@ -206,7 +215,7 @@ export class CdpClient extends EventEmitter {
         }
       });
 
-      ws.on('error', (err) => {
+      ws.on('error', err => {
         if (!settled) {
           settled = true;
           reject(err);
@@ -221,7 +230,14 @@ export class CdpClient extends EventEmitter {
   private setupWsHandlers(ws: WebSocket): void {
     ws.on('message', (data: WebSocket.RawData) => {
       try {
-        const text = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : Array.isArray(data) ? Buffer.concat(data).toString('utf-8') : Buffer.from(data).toString('utf-8');
+        const text =
+          typeof data === 'string'
+            ? data
+            : Buffer.isBuffer(data)
+              ? data.toString('utf-8')
+              : Array.isArray(data)
+                ? Buffer.concat(data).toString('utf-8')
+                : Buffer.from(data).toString('utf-8');
         const res = JSON.parse(text) as CdpResponse;
         if (res.id && this.pending.has(res.id)) {
           const { resolve, reject, timer } = this.pending.get(res.id)!;
