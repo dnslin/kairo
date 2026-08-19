@@ -44,3 +44,17 @@ export class NotFoundError extends StoreError {
     this.name = 'NotFoundError';
   }
 }
+
+export class MediaStorageError extends StoreError {
+  constructor(message: string, originalCause?: Error) {
+    super(message, 'MEDIA_STORAGE_ERROR', originalCause);
+    this.name = 'MediaStorageError';
+  }
+}
+
+export class InvalidPathError extends StoreError {
+  constructor(message: string) {
+    super(message, 'INVALID_PATH_ERROR');
+    this.name = 'InvalidPathError';
+  }
+}
