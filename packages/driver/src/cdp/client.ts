@@ -101,7 +101,8 @@ export class CdpClient extends EventEmitter {
 
   public async sendCommand<T = unknown>(
     method: string,
-    params: Record<string, unknown> = {}
+    params: Record<string, unknown> = {},
+    customTimeoutMs?: number
   ): Promise<T> {
     if (this.status !== 'connected' || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new CdpError(`CDP 未连接 (当前状态: ${this.status})`);
@@ -111,12 +112,11 @@ export class CdpClient extends EventEmitter {
     const payload = JSON.stringify({ id, method, params });
 
     return new Promise<T>((resolve, reject) => {
-      const timeoutMs = this.config.timeoutMs ?? 5000;
+      const timeoutMs = customTimeoutMs ?? this.config.timeoutMs ?? 5000;
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new CdpError(`CDP 指令执行超时 (${method}, id=${id}, 超时=${timeoutMs}ms)`));
       }, timeoutMs);
-
       this.pending.set(id, {
         resolve: resolve as (val: unknown) => void,
         reject,
@@ -133,15 +133,19 @@ export class CdpClient extends EventEmitter {
     });
   }
 
-  public async evaluate<T = unknown>(expression: string): Promise<T> {
+  public async evaluate<T = unknown>(expression: string, timeoutMs?: number): Promise<T> {
     const res = await this.sendCommand<{
       result?: { type: string; value?: T; description?: string };
       exceptionDetails?: { text: string; exception?: { description?: string } };
-    }>('Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    });
+    }>(
+      'Runtime.evaluate',
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      timeoutMs
+    );
 
     if (res.exceptionDetails) {
       const msg = res.exceptionDetails.exception?.description || res.exceptionDetails.text;
