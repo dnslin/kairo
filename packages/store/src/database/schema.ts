@@ -5,7 +5,8 @@ import { createChildLogger } from '../utils/logger.js';
 const log = createChildLogger('schema');
 
 /**
- * 组织架构三表 DDL 建表脚本
+ * 数据库完整 DDL 建表与索引脚本
+ * 包含组织架构三表与会话消息历史表
  */
 export const SCHEMA_SQL = `
 -- 部门表（支持树形层级与路径索引）
@@ -24,11 +25,12 @@ CREATE INDEX IF NOT EXISTS idx_org_departments_parent_id ON org_departments(pare
 CREATE INDEX IF NOT EXISTS idx_org_departments_path ON org_departments(path);
 CREATE INDEX IF NOT EXISTS idx_org_departments_level ON org_departments(level);
 
--- 员工档案表（支持工号、姓名、手机号等维度检索）
+-- 员工档案表（支持工号、姓名、拼音首字母、手机号等多维度检索）
 CREATE TABLE IF NOT EXISTS org_employees (
   id TEXT PRIMARY KEY,
   login_name TEXT NOT NULL,
   name TEXT NOT NULL,
+  pinyin_abbr TEXT,
   phone TEXT,
   email TEXT,
   region TEXT,
@@ -38,9 +40,10 @@ CREATE TABLE IF NOT EXISTS org_employees (
 
 CREATE INDEX IF NOT EXISTS idx_org_employees_login_name ON org_employees(login_name);
 CREATE INDEX IF NOT EXISTS idx_org_employees_name ON org_employees(name);
+CREATE INDEX IF NOT EXISTS idx_org_employees_pinyin_abbr ON org_employees(pinyin_abbr);
 CREATE INDEX IF NOT EXISTS idx_org_employees_phone ON org_employees(phone);
 CREATE INDEX IF NOT EXISTS idx_org_employees_email ON org_employees(email);
-
+CREATE INDEX IF NOT EXISTS idx_org_employees_region ON org_employees(region);
 -- 员工与部门任职关系中间表（支持主职、多部门兼职与部门负责人关系）
 CREATE TABLE IF NOT EXISTS org_employee_departments (
   employee_id TEXT NOT NULL,
@@ -77,6 +80,27 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_employee ON sessions(employee_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_msg ON sessions(last_message_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode);
+-- 会话消息历史持久化表（支持原生 ID 精准撤回与多模态载荷）
+CREATE TABLE IF NOT EXISTS session_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  message_id TEXT,
+  sender TEXT NOT NULL,
+  sender_id TEXT,
+  content TEXT NOT NULL,
+  message_type TEXT NOT NULL DEFAULT 'text',
+  raw_payload TEXT,
+  reply_target_id TEXT,
+  is_from_self INTEGER NOT NULL DEFAULT 0,
+  is_recalled INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_messages_message_id ON session_messages(message_id);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session_created ON session_messages(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session_recalled ON session_messages(session_id, is_recalled, created_at);
 `;
 
 /**
