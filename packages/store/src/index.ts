@@ -9,3 +9,6 @@ export * from './utils/logger.js';
 export * from './database/schema.js';
 export * from './database/connection.js';
 export * from './repository/org-repository.js';
+export * from './repository/message-repository.js';
+export * from './media/media-storage.js';
+export * from './store.js';

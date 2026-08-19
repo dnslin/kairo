@@ -5,7 +5,8 @@ import { createChildLogger } from '../utils/logger.js';
 const log = createChildLogger('schema');
 
 /**
- * 组织架构三表 DDL 建表脚本
+ * 数据库完整 DDL 建表与索引脚本
+ * 包含组织架构三表与会话消息历史表
  */
 export const SCHEMA_SQL = `
 -- 部门表（支持树形层级与路径索引）
@@ -56,6 +57,28 @@ CREATE TABLE IF NOT EXISTS org_employee_departments (
 CREATE INDEX IF NOT EXISTS idx_org_emp_dept_dept_id ON org_employee_departments(dept_id);
 CREATE INDEX IF NOT EXISTS idx_org_emp_dept_emp_id ON org_employee_departments(employee_id);
 CREATE INDEX IF NOT EXISTS idx_org_emp_dept_primary ON org_employee_departments(employee_id, is_primary);
+
+-- 会话消息历史持久化表（支持原生 ID 精准撤回与多模态载荷）
+CREATE TABLE IF NOT EXISTS session_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  message_id TEXT,
+  sender TEXT NOT NULL,
+  sender_id TEXT,
+  content TEXT NOT NULL,
+  message_type TEXT NOT NULL DEFAULT 'text',
+  raw_payload TEXT,
+  reply_target_id TEXT,
+  is_from_self INTEGER NOT NULL DEFAULT 0,
+  is_recalled INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_messages_message_id ON session_messages(message_id);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session_created ON session_messages(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_session_messages_session_recalled ON session_messages(session_id, is_recalled, created_at);
 `;
 
 /**
@@ -64,12 +87,12 @@ CREATE INDEX IF NOT EXISTS idx_org_emp_dept_primary ON org_employee_departments(
  */
 export function initSchema(db: Database.Database): void {
   try {
-    log.debug('开始执行组织架构三表 DDL 初始化...');
+    log.debug('开始执行数据库 DDL 初始化...');
     db.exec(SCHEMA_SQL);
-    log.debug('组织架构三表 DDL 初始化完成');
+    log.debug('数据库 DDL 初始化完成');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    log.error({ err }, '初始化组织架构表结构失败');
-    throw new SchemaInitError('初始化组织架构表结构失败', err);
+    log.error({ err }, '初始化数据库表结构失败');
+    throw new SchemaInitError('初始化数据库表结构失败', err);
   }
 }
