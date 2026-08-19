@@ -282,11 +282,39 @@ export class KK9Driver extends EventEmitter {
   }
 
   private async setupCancelMessageHook(): Promise<void> {
+    try {
+      await this.cdp.sendCommand('Runtime.enable');
+      await this.cdp.sendCommand('Runtime.addBinding', { name: '__kkbot_on_recalled' }).catch(() => {});
+
+      this.cdp.on('Runtime.bindingCalled', (rawParams: unknown) => {
+        const params = rawParams as { name?: string; payload?: string };
+        if (params?.name === '__kkbot_on_recalled' && typeof params?.payload === 'string') {
+          try {
+            const evt = JSON.parse(params.payload) as KK9RecalledEvent;
+            this.handleRecalledEvent(evt);
+          } catch {
+            // 忽略解析异常
+          }
+        }
+      });
+    } catch {
+      // 忽略 CDP binding 异常
+    }
+
     const hookScript = `
       (() => {
         if (window.__kkbot_cancel_hooked) return true;
         window.__kkbot_cancel_hooked = true;
         window.__kkbot_recalled_events = window.__kkbot_recalled_events || [];
+
+        function notifyRecalled(evt) {
+          window.__kkbot_recalled_events.push(evt);
+          if (typeof window.__kkbot_on_recalled === 'function') {
+            try {
+              window.__kkbot_on_recalled(JSON.stringify(evt));
+            } catch {}
+          }
+        }
 
         const getMainPageVm = () => document.querySelector('.main-page, #app, .app-container')?.__vue__;
         const getEditorVm = () => document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
@@ -296,7 +324,7 @@ export class KK9Driver extends EventEmitter {
         if (bus && typeof bus.$on === 'function') {
           bus.$on('CancelMessage', (data) => {
             if (data && (data.msgID || data.msgId || data.id)) {
-              window.__kkbot_recalled_events.push({
+              notifyRecalled({
                 messageId: String(data.msgID || data.msgId || data.id),
                 sessionId: String(data.sessionID || data.sessionId || ''),
                 sender: String(data.sender || data.senderName || ''),
@@ -307,7 +335,7 @@ export class KK9Driver extends EventEmitter {
           });
           bus.$on('receive-message', (data) => {
             if (data && (data.event === 'CancelMessage' || data.type === 'CancelMessage')) {
-              window.__kkbot_recalled_events.push({
+              notifyRecalled({
                 messageId: String(data.msgID || data.msgId || data.id || ''),
                 sessionId: String(data.sessionID || data.sessionId || ''),
                 sender: String(data.sender || data.senderName || ''),

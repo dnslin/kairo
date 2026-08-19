@@ -238,7 +238,7 @@ export class CdpClient extends EventEmitter {
               : Array.isArray(data)
                 ? Buffer.concat(data).toString('utf-8')
                 : Buffer.from(data).toString('utf-8');
-        const res = JSON.parse(text) as CdpResponse;
+        const res = JSON.parse(text) as CdpResponse & { method?: string; params?: Record<string, unknown> };
         if (res.id && this.pending.has(res.id)) {
           const { resolve, reject, timer } = this.pending.get(res.id)!;
           clearTimeout(timer);
@@ -249,6 +249,9 @@ export class CdpClient extends EventEmitter {
           } else {
             resolve(res.result);
           }
+        } else if (!res.id && res.method) {
+          this.emit('event', res.method, res.params);
+          this.emit(res.method, res.params);
         }
       } catch (err) {
         log.warn({ err: String(err) }, '解析 CDP 消息失败');
