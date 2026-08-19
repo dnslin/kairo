@@ -136,6 +136,27 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
         if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
       }
     });
+    it('文件发送后回读超时未确认文件卡片时应返回失败', async () => {
+      const tempFilePath = path.resolve('tmp_timeout_file.txt');
+      fs.writeFileSync(tempFilePath, '测试超时内容');
+
+      try {
+        const mockCdp = {
+          evaluate: vi
+            .fn()
+            .mockResolvedValueOnce({ success: true, method: 'vue_native_file_send' })
+            .mockResolvedValueOnce(false), // verifyFileSent times out
+          bringToFront: vi.fn().mockResolvedValue(undefined),
+        } as unknown as CdpClient;
+
+        const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
+        const res = await ops.sendFile(tempFilePath, { verifyTimeoutMs: 50 });
+        expect(res.success).toBe(false);
+        expect(res.error).toContain('未能确认文件卡片上屏');
+      } finally {
+        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+      }
+    });
   });
 
   describe('sendImage', () => {

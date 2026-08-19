@@ -163,117 +163,7 @@ export class SendOps {
    * 发送纯文本消息（支持 @ 提及、引用/回复与 DOM 回读验证闭环）
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
-    const cleanText = text.trim();
-    if (!cleanText && !options.mentions) {
-      return { success: false, error: '发送内容不能为空' };
-    }
-
-    if (options.targetSessionId) {
-      const check = await this.checkPreSendState(options.targetSessionId);
-      if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason} (${check.details})` };
-      }
-    }
-
-    if (options.replyTo) {
-      return this.sendReply(options.replyTo, cleanText, options);
-    }
-
-    const mentionNodes = buildMentionNodes(options.mentions);
-
-    const script = `
-      (() => {
-        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
-        if (editor && typeof editor.sendMessage === 'function') {
-          const contentNodes = [];
-          const mentionNodes = ${JSON.stringify(mentionNodes)};
-          for (const mn of mentionNodes) {
-            contentNodes.push(mn);
-            contentNodes.push({ type: 0, text: ' ' });
-          }
-          if (${JSON.stringify(cleanText)}) {
-            contentNodes.push({ type: 0, text: ${JSON.stringify(cleanText)} });
-          }
-
-          const payload = {
-            type: 'PicText',
-            content: contentNodes,
-            font: {
-              bold: 0,
-              fontfamily: '微软雅黑',
-              size: 10,
-              italic: 0,
-              underline: 0
-            }
-          };
-          editor.sendMessage(payload);
-          return { success: true, method: 'vue_native_send' };
-        }
-
-        // 降级回退: DOM 输入框写入
-        const input = document.querySelector('${this.selectors.inputBox}') || document.querySelector('.chat-sendArea');
-        if (!input) return { success: false, error: '未找到输入框元素' };
-
-        input.focus();
-        if (input.isContentEditable) {
-          input.textContent = ${JSON.stringify(cleanText)};
-        } else {
-          input.value = ${JSON.stringify(cleanText)};
-        }
-
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-
-        const sendBtn = document.querySelector('.sendMsg-btn a.button') ||
-          document.querySelector('.sendMsg-btn a') ||
-          document.querySelector('.sendMsg-btn .button') ||
-          document.querySelector('${this.selectors.sendButton}') ||
-          document.querySelector('.sendMsg-btn');
-
-        if (sendBtn) {
-          sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-          sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-          if (typeof sendBtn.click === 'function') {
-            sendBtn.click();
-          } else {
-            sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          }
-          return { success: true, method: 'dom_click' };
-        }
-
-        return { success: false, error: '未找到发送按钮' };
-      })()
-    `;
-
-    const startTime = Date.now();
-    try {
-      await this.cdp.bringToFront();
-
-      const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
-      if (!injectRes?.success) {
-        return { success: false, error: injectRes?.error || '注入输入框失败' };
-      }
-
-      // 回读严格验证
-      const verifyTimeout = options.verifyTimeoutMs ?? 5000;
-      const verified = await this.verifyTextSent(cleanText || '@', verifyTimeout);
-      const latency = Date.now() - startTime;
-
-      if (!verified) {
-        log.warn({ cleanText, latency }, '文本已点击发送但在回读超时内未在 DOM 确认上屏');
-        return {
-          success: false,
-          error: '文本已触发发送但在指定超时内未能确认消息上屏',
-          verifyLatencyMs: latency,
-        };
-      }
-
-      return { success: true, verifyLatencyMs: latency };
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送文本异常');
-      throw new SendError(`发送文本异常: ${errorMsg}`, err instanceof Error ? err : undefined);
-    }
+    return this.sendRichText(text, options);
   }
 
   /**
@@ -560,7 +450,8 @@ export class SendOps {
       if (!verified) {
         log.warn({ fileName, latency }, '文件已发送但在指定时间内未能在聊天区域确认文件卡片');
         return {
-          success: true,
+          success: false,
+          error: '文件已触发发送但在指定超时内未能确认文件卡片上屏',
           verifyLatencyMs: latency,
         };
       }

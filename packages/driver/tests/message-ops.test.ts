@@ -106,6 +106,44 @@ describe('MessageOps 消息指纹与解析测试', () => {
       expect(msg.id).toHaveLength(64);
     });
 
+    it('群聊中他人互相@时，atMe应为false，避免错误触发@事件', async () => {
+      const mockRawMessages = [
+        {
+          sender: '张三',
+          senderId: 'user_111',
+          time: '14:30',
+          content: '@李四 请查收文件',
+          isMe: false,
+          messageType: 'text',
+          atMe: false,
+          atAll: false,
+          mentions: {
+            isAtMe: false,
+            isAtAll: false,
+            mentionedUsers: ['李四'],
+          },
+        },
+      ];
+
+      const mockCdp = {
+        evaluate: vi.fn().mockResolvedValue(mockRawMessages),
+      } as unknown as CdpClient;
+
+      const ops = new MessageOps(mockCdp, DEFAULT_SELECTORS);
+      const messages = await ops.getRecentMessages(5, {
+        id: 'group_999',
+        name: '测试群',
+        type: 'group',
+        unread: true,
+      });
+
+      expect(messages).toHaveLength(1);
+      const msg = messages[0]!;
+      expect(msg.atMe).toBe(false);
+      expect(msg.mentions?.isAtMe).toBe(false);
+      expect(msg.mentions?.mentionedUsers).toEqual(['李四']);
+    });
+
     it('应正确解析图文混排与单图片消息详情', async () => {
       const mockRawMessages = [
         {

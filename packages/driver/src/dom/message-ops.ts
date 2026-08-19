@@ -195,7 +195,8 @@ export class MessageOps {
           const hasAtAllDom = Boolean(item.querySelector('.at-all, span[data-at="all"], .is-at-all'));
           const textAtAll = /@(全体成员|所有人|all)/i.test(content);
           const atAll = hasAtAllDom || textAtAll;
-          const atMe = hasAtMeDom || (mentionedUsers.length > 0 && !isMe);
+          const hasAtMeVue = Boolean(vueMsg && (vueMsg.atState === 2 || (Array.isArray(vueMsg.atMemberIDList) && window.loginID && vueMsg.atMemberIDList.includes(window.loginID))));
+          const atMe = !isMe && (hasAtMeDom || hasAtMeVue);
 
           const mentions = {
             isAtMe: atMe,
