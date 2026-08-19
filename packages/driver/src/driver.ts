@@ -2,6 +2,7 @@ import EventEmitter from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CdpClient } from './cdp/client.js';
 import { MessageOps } from './dom/message-ops.js';
+import { OrgOps } from './dom/org-ops.js';
 import { resolveSelectors } from './dom/selectors.js';
 import { SendOps } from './dom/send-ops.js';
 import { SessionOps } from './dom/session-ops.js';
@@ -10,6 +11,7 @@ import type {
   DriverConfig,
   DriverEvents,
   FormattedText,
+  KK9Employee,
   KK9Message,
   KK9ReplyTarget,
   KK9Session,
@@ -36,7 +38,7 @@ export class KK9Driver extends EventEmitter {
   private readonly sessionOps: SessionOps;
   private readonly messageOps: MessageOps;
   private readonly sendOps: SendOps;
-
+  private readonly orgOps: OrgOps;
   private isPolling = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private readonly knownFingerprints = new Set<string>();
@@ -48,7 +50,7 @@ export class KK9Driver extends EventEmitter {
     this.sessionOps = new SessionOps(this.cdp, this.selectors);
     this.messageOps = new MessageOps(this.cdp, this.selectors);
     this.sendOps = new SendOps(this.cdp, this.selectors);
-
+    this.orgOps = new OrgOps(this.cdp);
     this.wireCdpEvents();
   }
 
@@ -122,6 +124,20 @@ export class KK9Driver extends EventEmitter {
    */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     return this.sendOps.sendImage(imagePath, options);
+  }
+
+  /**
+   * 从 KK9 客户端抽取企业全量员工档案名录
+   */
+  public async getOrgEmployees(timeoutMs?: number): Promise<KK9Employee[]> {
+    return this.orgOps.getEmployees(timeoutMs);
+  }
+
+  /**
+   * 按 UID 精确单点查询员工档案
+   */
+  public async getUserProfile(userId: number | string): Promise<KK9Employee | null> {
+    return this.orgOps.getUserProfile(userId);
   }
 
   /**

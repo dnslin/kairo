@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { KK9Driver } from '../src/driver.js';
-import type { KK9Message, KK9Session, SendResult } from '../src/types/index.js';
+import type { KK9Employee, KK9Message, KK9Session, SendResult } from '../src/types/index.js';
 
 interface DriverInternal {
   messageOps: {
@@ -12,6 +12,10 @@ interface DriverInternal {
     sendReply: (replyTo: unknown, content: unknown, options?: unknown) => Promise<SendResult>;
     sendFile: (filePath: string, options?: unknown) => Promise<SendResult>;
     sendImage: (imagePath: string, options?: unknown) => Promise<SendResult>;
+  };
+  orgOps: {
+    getEmployees: () => Promise<KK9Employee[]>;
+    getUserProfile: (userId: number | string) => Promise<KK9Employee | null>;
   };
   collectAndEmitMessages: (session: KK9Session, limit: number) => Promise<void>;
 }
@@ -155,5 +159,36 @@ describe('KK9Driver 端到端事件驱动测试', () => {
     const resFile = await driver.sendFile('./test.pdf');
     expect(resFile.success).toBe(true);
     expect(internal.sendOps.sendFile).toHaveBeenCalled();
+  });
+
+  it('转发调用 getOrgEmployees 与 getUserProfile', async () => {
+    const driver = new KK9Driver({
+      cdp: {
+        url: 'http://127.0.0.1:9222',
+        pageMatch: 'renderer.html',
+      },
+    });
+
+    const mockEmployee: KK9Employee = {
+      id: 'emp_001',
+      loginName: 'E001',
+      name: '张三',
+      position: '工程师',
+      updatedAt: Date.now(),
+    };
+
+    const internal = driver as unknown as DriverInternal;
+    internal.orgOps.getEmployees = vi.fn().mockResolvedValue([mockEmployee]);
+    internal.orgOps.getUserProfile = vi.fn().mockResolvedValue(mockEmployee);
+
+    const employees = await driver.getOrgEmployees();
+    expect(employees).toHaveLength(1);
+    expect(employees[0]?.name).toBe('张三');
+    expect(internal.orgOps.getEmployees).toHaveBeenCalled();
+
+    const profile = await driver.getUserProfile('emp_001');
+    expect(profile).not.toBeNull();
+    expect(profile?.loginName).toBe('E001');
+    expect(internal.orgOps.getUserProfile).toHaveBeenCalledWith('emp_001');
   });
 });
