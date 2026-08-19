@@ -257,7 +257,10 @@ export class SendOps {
           verifyLatencyMs: latency,
         };
       }
-      const messageId = (await this.fetchLastSentMessageId()) || `msg_${Date.now()}`;
+      const messageId =
+        (await this.fetchLastSentMessageId(parsed.plainText)) ||
+        (await this.fetchLastSentMessageId()) ||
+        `msg_${Date.now()}`;
       return {
         success: true,
         messageId,
@@ -382,7 +385,10 @@ export class SendOps {
           verifyLatencyMs: latency,
         };
       }
-      const messageId = (await this.fetchLastSentMessageId()) || `msg_${Date.now()}`;
+      const messageId =
+        (await this.fetchLastSentMessageId(parsed.plainText)) ||
+        (await this.fetchLastSentMessageId()) ||
+        `msg_${Date.now()}`;
       return {
         success: true,
         messageId,
@@ -694,23 +700,20 @@ export class SendOps {
     while (Date.now() - start < timeoutMs) {
       const script = `
         (() => {
-          const input = document.querySelector('.chat-sendArea');
-          const isInputEmpty = !input || !input.textContent?.trim();
-
           const items = document.querySelectorAll('${this.selectors.messageItem}');
-          const lastFew = Array.from(items).slice(-5);
-          const foundInMessages = lastFew.some(item => {
+          const lastFew = Array.from(items).slice(-6);
+          return lastFew.some(item => {
             const isMe = item.matches('${this.selectors.messageIsMe}') ||
               item.classList.contains('rcd-msg-right') ||
+              item.classList.contains('is-me') ||
               item.querySelector('.rcd-msg-right') !== null;
-            const content = item.querySelector('${this.selectors.messageContent}')?.textContent || item.textContent || '';
-            return isMe && content.includes(${JSON.stringify(prefix)});
+            const textContent = item.textContent || '';
+            const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
+            const rawContent = typeof vueMsg?.content === 'string' ? vueMsg.content : JSON.stringify(vueMsg?.content || '');
+            return isMe && (textContent.includes(${JSON.stringify(prefix)}) || rawContent.includes(${JSON.stringify(prefix)}));
           });
-
-          return foundInMessages || (isInputEmpty && lastFew.length > 0);
         })()
       `;
-
       try {
         const verified = await this.cdp.evaluate<boolean>(script);
         if (verified) return true;
@@ -726,9 +729,10 @@ export class SendOps {
   /**
    * 获取最后一条自己发送的消息 ID 或指纹
    */
-  private async fetchLastSentMessageId(): Promise<string | undefined> {
+  private async fetchLastSentMessageId(matchingText?: string): Promise<string | undefined> {
     const script = `
       (() => {
+        const targetText = ${JSON.stringify(matchingText ? matchingText.slice(0, 30) : '')};
         const items = document.querySelectorAll('${this.selectors.messageItem}');
         for (let i = items.length - 1; i >= 0; i--) {
           const item = items[i];
@@ -738,9 +742,12 @@ export class SendOps {
             item.classList.contains('is-me') ||
             item.querySelector('${this.selectors.messageIsMe}') !== null;
           if (isMe) {
-            const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
-            const rawId = vueMsg?.id || vueMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id') || item.getAttribute('data-id');
-            if (rawId) return String(rawId);
+            const content = item.querySelector('${this.selectors.messageContent}')?.textContent || item.textContent || '';
+            if (!targetText || content.includes(targetText)) {
+              const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
+              const rawId = vueMsg?.id || vueMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id') || item.getAttribute('data-id');
+              if (rawId) return String(rawId).replace(/^msg-/, '');
+            }
           }
         }
         return null;
@@ -753,7 +760,6 @@ export class SendOps {
       return undefined;
     }
   }
-
   /**
    * 消息撤回 (Recall / CancelMessage)
    * 包含所有权校验与 120 秒时效守卫
@@ -837,16 +843,9 @@ export class SendOps {
 
       // 2. 执行底层原生撤回 (CancelMessage)
       const recallScript = `
-        (() => {
+        (async () => {
           const targetId = ${JSON.stringify(messageId)};
           const targetSessionId = ${JSON.stringify(sessionId || '')};
-
-          const getMainPageVm = () => document.querySelector('.main-page, #app, .app-container')?.__vue__;
-          const getEditorVm = () => document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
-          const getChatContentVm = () => document.querySelector('.chat-content, .message-content-box')?.__vue__;
-
-          const bus = getMainPageVm()?.$bus || getEditorVm()?.$bus || getChatContentVm()?.$bus || (window.vueBus || window.$bus);
-          const chatContent = getChatContentVm();
 
           const items = document.querySelectorAll('${this.selectors.messageItem}');
           let matchedItem = null;
@@ -856,55 +855,83 @@ export class SendOps {
             const item = items[i];
             const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
             const rawId = vueMsg?.id || vueMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id') || item.getAttribute('data-id');
-            if (targetId && (rawId === targetId || item.id === targetId || String(targetId).includes(String(rawId)) || (rawId && String(rawId).includes(String(targetId))))) {
+            const cleanRawId = rawId ? String(rawId).replace(/^msg-/, '') : '';
+            const cleanTargetId = String(targetId).replace(/^msg-/, '');
+
+            if (targetId && (rawId === targetId || cleanRawId === cleanTargetId || item.id === targetId || item.id === ('msg-' + targetId))) {
               matchedItem = item;
               matchedVueMsg = vueMsg;
               break;
             }
           }
 
-          if (chatContent && matchedVueMsg) {
-            if (typeof chatContent.onCancelMessage === 'function') {
-              chatContent.onCancelMessage(matchedVueMsg);
-              return { success: true, method: 'chat_content_onCancelMessage' };
-            }
-            if (typeof chatContent.cancelMessage === 'function') {
-              chatContent.cancelMessage(matchedVueMsg);
-              return { success: true, method: 'chat_content_cancelMessage' };
-            }
-          }
+          const app = document.querySelector('#app')?.__vue__;
+          const main = document.querySelector('.main-page')?.__vue__;
+          const bus = main?.$bus || app?.$bus;
+          const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
+          const sesUUID = editor?.activedSes?.sesUUID || targetSessionId;
+          const sessionID = matchedVueMsg?.sessionID || editor?.activedSes?.id || targetSessionId;
+          const msgID = matchedVueMsg?.id || matchedVueMsg?.msgID || Number(targetId) || targetId;
+          const msgIdx = matchedVueMsg?.msgIdx || 0;
 
-          if (typeof window.toData === 'function' && matchedVueMsg) {
-            window.toData('cancelMessage', {
-              msgID: matchedVueMsg.id || matchedVueMsg.msgID || targetId,
-              msgIdex: matchedVueMsg.msgIdx || 0,
-              sessionID: matchedVueMsg.sessionID || targetSessionId,
-              byAdmin: 0,
+          // 优先链路: 通过 Electron ipcRenderer 原生通道发送 cancelMessage 并派发 revokeMsg
+          const ipc = window.ipcRenderer || (window.require ? window.require('electron')?.ipcRenderer : null);
+          if (ipc && typeof ipc.send === 'function') {
+            const key = '__kkbotRecallReqId';
+            const current = typeof window[key] === 'number' ? window[key] : 900000;
+            window[key] = current + 1;
+            const requestId = current + 1;
+            const replyChannel = 'data-' + requestId;
+
+            const ipcPromise = new Promise(resolve => {
+              ipc.once(replyChannel, (_event, payload) => resolve(payload));
+              ipc.send('data', {
+                id: requestId,
+                args: ['cancelMessage', {
+                  type: 'own',
+                  sessionID,
+                  msgID,
+                  msgIdx
+                }],
+                progress: false
+              });
             });
-            return { success: true, method: 'toData_cancelMessage' };
-          }
 
-          if (bus && matchedVueMsg) {
-            bus.$emit('CancelMessage', {
-              byAdmin: 0,
-              event: 'CancelMessage',
-              msgID: matchedVueMsg.id || matchedVueMsg.msgID || targetId,
-              msgIdex: matchedVueMsg.msgIdx || 0,
-            });
-            return { success: true, method: 'bus_cancelMessage' };
-          }
-
-          if (matchedItem) {
-            matchedItem.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
-            const menuItems = Array.from(document.querySelectorAll('.context-menu-item, .v-contextmenu-item, .menu-item'));
-            const recallItem = menuItems.find(el => el.textContent?.includes('撤回'));
-            if (recallItem) {
-              recallItem.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-              return { success: true, method: 'dom_contextmenu' };
+            const ipcRes = await ipcPromise;
+            if (ipcRes && (ipcRes.code === 0 || ipcRes.code === undefined)) {
+              if (bus && sesUUID) {
+                bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
+              }
+              return { success: true, method: 'ipc_cancelMessage' };
             }
           }
 
-          return { success: false, error: '未找到可用的底层撤回入口或消息未在视口中' };
+          // 降级链路 1: 通过 Vue chatContent.addRevokeMsg / onCancelMessage
+          function findChatContentVm(vm) {
+            if (!vm) return null;
+            if (vm.$options?._componentTag === 'chat-content' || vm.$options?.name === 'chat-content') return vm;
+            if (vm.$children) {
+              for (const c of vm.$children) {
+                const res = findChatContentVm(c);
+                if (res) return res;
+              }
+            }
+            return null;
+          }
+          const chatContent = findChatContentVm(app);
+          if (chatContent && typeof chatContent.addRevokeMsg === 'function') {
+            await chatContent.addRevokeMsg({ byAdmin: 0, msgID, msgIdex: msgIdx });
+            return { success: true, method: 'chat_content_addRevokeMsg' };
+          }
+
+          // 降级链路 2: 通过 $bus 广播
+          if (bus && sesUUID) {
+            bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
+            bus.$emit('CancelMessage', { byAdmin: 0, event: 'CancelMessage', msgID, msgIdex: msgIdx });
+            return { success: true, method: 'bus_revokeMsg' };
+          }
+
+          return { success: false, error: '未找到可用的底层撤回通道' };
         })()
       `;
 
