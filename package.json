@@ -19,6 +19,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\"",
+    "bench": "tsx scripts/benchmarks/index.ts",
+    "bench:latency": "tsx scripts/benchmarks/latency.bench.ts",
+    "bench:resource": "tsx scripts/benchmarks/resource.bench.ts",
+    "bench:throughput": "tsx scripts/benchmarks/throughput.bench.ts",
+    "verify:bridge": "tsx scripts/verify-event-bridge-live.ts",
     "format": "prettier --write \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\""
   },
   "devDependencies": {
