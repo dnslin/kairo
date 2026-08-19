@@ -18,7 +18,8 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
-    "pino": "^9.6.0"
+    "pino": "^9.6.0",
+    "pinyin-pro": "^3.29.2"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
