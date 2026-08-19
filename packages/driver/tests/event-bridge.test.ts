@@ -350,7 +350,28 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       },
     });
 
-    // 3. 重复撤回事件（去重）
+    // 3. receive-message.message 数组中嵌套 Event 撤回消息（KK9 生产真实载荷格式）
+    mockCdp.triggerBinding('__kkbot_native_bridge', {
+      type: 'receive-message',
+      data: {
+        session: { id: '0-7783', sesUUID: '0-7783', name: '王五' },
+        message: [
+          {
+            id: 'msg-to-recall-3',
+            contentType: 6,
+            content: JSON.stringify({
+              event: 'CancelMessage',
+              msgID: 'msg-to-recall-3',
+              byAdmin: 0,
+            }),
+            sessionID: '0-7783',
+            sender: '王五',
+          },
+        ],
+      },
+    });
+
+    // 4. 重复撤回事件（去重）
     mockCdp.triggerBinding('__kkbot_native_bridge', {
       type: 'recalled',
       data: {
@@ -360,7 +381,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       },
     });
 
-    expect(recalledEvents).toHaveLength(2);
+    expect(recalledEvents).toHaveLength(3);
     expect(recalledEvents[0]!.messageId).toBe('msg-to-recall-1');
     expect(recalledEvents[0]!.sessionId).toBe('0-3585');
     expect(recalledEvents[0]!.sender).toBe('张三');
@@ -368,6 +389,10 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(recalledEvents[1]!.messageId).toBe('msg-to-recall-2');
     expect(recalledEvents[1]!.sessionId).toBe('1-29467');
     expect(recalledEvents[1]!.sender).toBe('管理员');
+
+    expect(recalledEvents[2]!.messageId).toBe('msg-to-recall-3');
+    expect(recalledEvents[2]!.sessionId).toBe('0-7783');
+    expect(recalledEvents[2]!.sender).toBe('王五');
   });
 
   it('韧性与重连：CDP 重新连接后自动 reattach 重新注入 Hook', async () => {

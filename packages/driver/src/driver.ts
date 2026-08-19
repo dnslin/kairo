@@ -336,6 +336,34 @@ export class KK9Driver extends EventEmitter {
         const getChatContentVm = () => document.querySelector('.chat-content, .message-content-box')?.__vue__;
 
         const bus = getMainPageVm()?.$bus || getEditorVm()?.$bus || getChatContentVm()?.$bus || (window.vueBus || window.$bus);
+
+        function parseRecall(m, defaultSessionId) {
+          if (!m) return null;
+          let c = m.content;
+          if (typeof c === 'string' && c.includes('CancelMessage')) {
+            try { c = JSON.parse(c); } catch {}
+          }
+          if (c && (c.event === 'CancelMessage' || c.type === 'CancelMessage')) {
+            return {
+              messageId: String(c.msgID || c.msgId || c.id || m.msgID || m.id || ''),
+              sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
+              sender: String(m.sender || m.senderName || c.sender || ''),
+              time: new Date().toLocaleTimeString(),
+              timestamp: Date.now()
+            };
+          }
+          if (m.event === 'CancelMessage' || m.type === 'CancelMessage') {
+            return {
+              messageId: String(m.msgID || m.msgId || m.id || ''),
+              sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
+              sender: String(m.sender || m.senderName || ''),
+              time: new Date().toLocaleTimeString(),
+              timestamp: Date.now()
+            };
+          }
+          return null;
+        }
+
         if (bus && typeof bus.$on === 'function') {
           bus.$on('CancelMessage', (data) => {
             if (data && (data.msgID || data.msgId || data.id)) {
@@ -349,18 +377,16 @@ export class KK9Driver extends EventEmitter {
             }
           });
           bus.$on('receive-message', (data) => {
-            if (data && (data.event === 'CancelMessage' || data.type === 'CancelMessage')) {
-              notifyRecalled({
-                messageId: String(data.msgID || data.msgId || data.id || ''),
-                sessionId: String(data.sessionID || data.sessionId || ''),
-                sender: String(data.sender || data.senderName || ''),
-                time: new Date().toLocaleTimeString(),
-                timestamp: Date.now()
-              });
+            if (!data) return;
+            const msgs = Array.isArray(data.message) ? data.message : Array.isArray(data.messages) ? data.messages : [data];
+            for (const m of msgs) {
+              const evt = parseRecall(m, data.session?.sesUUID || data.session?.id);
+              if (evt && evt.messageId) {
+                notifyRecalled(evt);
+              }
             }
           });
         }
-        return true;
       })()
     `;
     try {

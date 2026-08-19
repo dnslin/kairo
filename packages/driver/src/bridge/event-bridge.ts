@@ -7,10 +7,12 @@ import type {
   EventBridgeConfig,
   EventBridgeEvents,
   KK9Message,
+  KK9RecalledEvent,
   KK9Session,
 } from '../types/index.js';
 import { createChildLogger } from '../utils/logger.js';
 import {
+  extractRecalledEventsFromPayload,
   generateMessageFingerprint,
   normalizeNativeMessage,
   normalizeRecalledEvent,
@@ -24,10 +26,7 @@ const DEFAULT_MAX_FINGERPRINTS = 10000;
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export declare interface KK9EventBridge {
   on<U extends keyof EventBridgeEvents>(event: U, listener: EventBridgeEvents[U]): this;
-  emit<U extends keyof EventBridgeEvents>(
-    event: U,
-    ...args: Parameters<EventBridgeEvents[U]>
-  ): boolean;
+  emit<U extends keyof EventBridgeEvents>(event: U, ...args: Parameters<EventBridgeEvents[U]>): boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare
@@ -159,17 +158,18 @@ export class KK9EventBridge extends EventEmitter {
     const eventType = parsed.type || parsed.event;
     const data = parsed.data !== undefined ? parsed.data : parsed;
 
+    // 1. 优先提取载荷中可能包含的消息撤回事件
+    if (this.enableRecallHook) {
+      const recalledEvents = extractRecalledEventsFromPayload(data);
+      for (const evt of recalledEvents) {
+        this.handleRecalledEvent(evt);
+      }
+    }
+
+    // 2. 分发业务事件
     switch (eventType) {
       case 'receive-message': {
-        const rawData = data as Record<string, unknown>;
-        if (
-          rawData &&
-          (rawData['event'] === 'CancelMessage' || rawData['type'] === 'CancelMessage')
-        ) {
-          this.handleRecalledPayload(rawData);
-        } else {
-          this.handleIncomingMessages(data);
-        }
+        this.handleIncomingMessages(data);
         break;
       }
       case 'session-msg': {
@@ -240,7 +240,14 @@ export class KK9EventBridge extends EventEmitter {
     if (!this.enableRecallHook) return;
     const evt = normalizeRecalledEvent(payload);
     if (!evt || !evt.messageId) return;
+    this.handleRecalledEvent(evt);
+  }
 
+  /**
+   * 触发单条撤回事件
+   */
+  private handleRecalledEvent(evt: KK9RecalledEvent): void {
+    if (!this.enableRecallHook) return;
     if (this.knownRecalledIds.has(evt.messageId)) {
       return;
     }
@@ -342,21 +349,83 @@ export class KK9EventBridge extends EventEmitter {
         };
 
         const bus = getBus();
+        const hookedSessions = new Set();
+
+        function parseRecallFromMsg(m, defaultSessionId) {
+          if (!m) return null;
+          let contentObj = m.content;
+          if (typeof contentObj === 'string' && contentObj.includes('CancelMessage')) {
+            try { contentObj = JSON.parse(contentObj); } catch {}
+          }
+          if (contentObj && (contentObj.event === 'CancelMessage' || contentObj.type === 'CancelMessage')) {
+            return {
+              messageId: String(contentObj.msgID || contentObj.msgId || contentObj.id || m.msgID || m.id || ''),
+              sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
+              sender: String(m.sender || m.senderName || contentObj.sender || ''),
+              time: new Date().toLocaleTimeString(),
+              timestamp: Date.now(),
+              raw: m
+            };
+          }
+          if (m.event === 'CancelMessage' || m.type === 'CancelMessage') {
+            return {
+              messageId: String(m.msgID || m.msgId || m.id || ''),
+              sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
+              sender: String(m.sender || m.senderName || ''),
+              time: new Date().toLocaleTimeString(),
+              timestamp: Date.now(),
+              raw: m
+            };
+          }
+          return null;
+        }
+
+        function hookSession(sesUUID) {
+          if (!sesUUID || hookedSessions.has(sesUUID) || !bus || typeof bus.$on !== 'function') return;
+          hookedSessions.add(sesUUID);
+
+          // 监听会话增量消息
+          bus.$on(sesUUID + '-msg', (msgArray) => {
+            if (!msgArray) return;
+            const msgs = Array.isArray(msgArray) ? msgArray : [msgArray];
+            for (const m of msgs) {
+              const recallEvt = parseRecallFromMsg(m, sesUUID);
+              if (recallEvt && recallEvt.messageId) {
+                postEvent('recalled', recallEvt);
+              }
+            }
+            postEvent('session-msg', { sesUUID, messages: msgs });
+          });
+
+          // 监听会话专用撤回事件
+          bus.$on(sesUUID + '-revokeMsg', (revokePayload) => {
+            if (!revokePayload) return;
+            postEvent('recalled', {
+              messageId: String(revokePayload.msgID || revokePayload.msgId || revokePayload.id || ''),
+              sessionId: String(sesUUID || ''),
+              sender: String(revokePayload.sender || revokePayload.senderName || '某人'),
+              time: new Date().toLocaleTimeString(),
+              timestamp: Date.now(),
+              raw: revokePayload,
+            });
+          });
+        }
+
         if (bus && typeof bus.$on === 'function') {
           // 1. 监听全局 receive-message
           bus.$on('receive-message', (payload) => {
             if (!payload) return;
-            if (payload.event === 'CancelMessage' || payload.type === 'CancelMessage') {
-              postEvent('recalled', {
-                messageId: String(payload.msgID || payload.msgId || payload.id || ''),
-                sessionId: String(payload.sessionID || payload.sessionId || ''),
-                sender: String(payload.sender || payload.senderName || ''),
-                time: new Date().toLocaleTimeString(),
-                timestamp: Date.now(),
-                raw: payload,
-              });
-              return;
+            const sesUUID = payload?.session?.sesUUID || payload?.sesUUID || payload?.sessionID;
+            if (sesUUID) hookSession(sesUUID);
+
+            const msgs = Array.isArray(payload.message) ? payload.message : Array.isArray(payload.messages) ? payload.messages : [payload];
+            for (const m of msgs) {
+              const recallEvt = parseRecallFromMsg(m, sesUUID);
+              if (recallEvt && recallEvt.messageId) {
+                postEvent('recalled', recallEvt);
+              }
             }
+
             postEvent('receive-message', payload);
           });
 
@@ -366,44 +435,82 @@ export class KK9EventBridge extends EventEmitter {
             postEvent('recalled', {
               messageId: String(payload.msgID || payload.msgId || payload.id || ''),
               sessionId: String(payload.sessionID || payload.sessionId || ''),
-              sender: String(payload.sender || payload.senderName || payload.fromUserName || ''),
+              sender: String(payload.sender || payload.senderName || payload.fromUserName || '某人'),
               time: new Date().toLocaleTimeString(),
               timestamp: Date.now(),
               raw: payload,
             });
           });
 
-          // 3. 动态监听活动会话增量消息 \${sesUUID}-msg 与 \${sesUUID}-revokeMsg
-          const hookedSessions = new Set();
-          function hookSession(sesUUID) {
-            if (!sesUUID || hookedSessions.has(sesUUID)) return;
-            hookedSessions.add(sesUUID);
-            bus.$on(sesUUID + '-msg', (msgArray) => {
-              if (!msgArray) return;
-              postEvent('session-msg', { sesUUID, messages: Array.isArray(msgArray) ? msgArray : [msgArray] });
-            });
-            bus.$on(sesUUID + '-revokeMsg', (revokePayload) => {
-              if (!revokePayload) return;
-              postEvent('recalled', {
-                messageId: String(revokePayload.msgID || revokePayload.msgId || revokePayload.id || ''),
-                sessionId: String(sesUUID || ''),
-                sender: String(revokePayload.sender || ''),
-                time: new Date().toLocaleTimeString(),
-                timestamp: Date.now(),
-                raw: revokePayload,
-              });
+          // 3. 预先挂钩所有已知会话
+          const editor = getEditorVm();
+          const sortedSessions = editor?.sortedSessions || [];
+          if (Array.isArray(sortedSessions)) {
+            sortedSessions.forEach(s => {
+              if (s && s.sesUUID) hookSession(s.sesUUID);
             });
           }
-
-          const editor = getEditorVm();
           if (editor?.activedSes?.sesUUID) {
             hookSession(editor.activedSes.sesUUID);
           }
-          bus.$on('receive-message', (payload) => {
-            const sesUUID = payload?.session?.sesUUID || payload?.sesUUID;
-            if (sesUUID) hookSession(sesUUID);
+        }
+
+        // 4. 挂钩所有 chat-content 组件实例的撤回方法
+        function hookChatContentInstances() {
+          const chatContainers = document.querySelectorAll('.chat-container, .chat-content, .message-content-box');
+          chatContainers.forEach(container => {
+            const vm = container.__vue__;
+            if (vm && typeof vm.addRevokeMsg === 'function' && !vm.__kkbot_revoke_hooked) {
+              vm.__kkbot_revoke_hooked = true;
+              const origAdd = vm.addRevokeMsg;
+              vm.addRevokeMsg = function(data) {
+                if (data && (data.msgID || data.msgId || data.id)) {
+                  postEvent('recalled', {
+                    messageId: String(data.msgID || data.msgId || data.id),
+                    sessionId: String(vm.sesInfo?.sesUUID || vm.sessionID || ''),
+                    sender: String(data.sender || data.senderName || '某人'),
+                    time: new Date().toLocaleTimeString(),
+                    timestamp: Date.now(),
+                    raw: data
+                  });
+                }
+                return origAdd.apply(this, arguments);
+              };
+            }
           });
         }
+        hookChatContentInstances();
+
+        // 5. DOM 变动监听器（作为系统气泡撤回提示的终极兜底守卫）
+        try {
+          const observer = new MutationObserver((mutations) => {
+            hookChatContentInstances();
+            for (const m of mutations) {
+              for (const node of m.addedNodes) {
+                if (node && node.nodeType === 1) {
+                  const el = node;
+                  const text = el.textContent?.trim() || '';
+                  if (
+                    (el.classList?.contains('system-msg') || el.classList?.contains('rcd-item') || el.classList?.contains('system-recall')) &&
+                    text.includes('撤回')
+                  ) {
+                    const id = el.getAttribute('id') || el.getAttribute('data-id') || el.getAttribute('data-msgid');
+                    if (id) {
+                      postEvent('recalled', {
+                        messageId: String(id),
+                        sessionId: '',
+                        sender: text.replace(/撤回.*$/, '').trim() || '某人',
+                        time: new Date().toLocaleTimeString(),
+                        timestamp: Date.now()
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          });
+          observer.observe(document.body, { childList: true, subtree: true });
+        } catch {}
 
         return { ok: true, busFound: !!bus };
       })()

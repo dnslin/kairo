@@ -9,6 +9,7 @@ export {
   generateMessageFingerprint,
   normalizeNativeMessage,
   normalizeRecalledEvent,
+  extractRecalledEventsFromPayload,
 } from './bridge/converter.js';
 export { CdpClient } from './cdp/client.js';
 export { SessionOps } from './dom/session-ops.js';
