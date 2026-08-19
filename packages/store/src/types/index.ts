@@ -207,3 +207,76 @@ export interface SearchEmployeeOptions {
   /** 分页偏移量，默认 0 */
   offset?: number;
 }
+
+/**
+ * 会话工作模式
+ * - auto: 自动应答
+ * - draft: 草稿待审
+ * - disabled: 完全禁用
+ */
+export type SessionMode = 'auto' | 'draft' | 'disabled';
+
+/**
+ * 会话类型（私聊或群聊）
+ */
+export type SessionType = 'private' | 'group';
+
+/**
+ * 会话实体（数据库持久化记录）
+ */
+export interface SessionRecord {
+  /** 会话唯一标识 (sesUUID) */
+  id: string;
+  /** 会话显示名称 */
+  name: string;
+  /** 会话类型 */
+  type: SessionType;
+  /** 关联员工档案 ID (org_employees.id) */
+  employeeId: string | null;
+  /** 会话工作模式 */
+  mode: SessionMode;
+  /** 人工接管截止时间戳 (毫秒)，大于当前时间代表人工接管中/退避中 */
+  humanTakeoverUntil: number;
+  /** 最后收到/发送消息的时间戳 (毫秒) */
+  lastMessageAt: number;
+  /** 机器人最后回复时间戳 (毫秒) */
+  lastReplyAt: number;
+  /** 当日回复计数 */
+  dailyReplyCount: number;
+  /** 当日计数重置日期 (YYYY-MM-DD) */
+  dailyCountResetDate: string | null;
+  /** 会话创建时间戳 (毫秒) */
+  createdAt: number;
+  /** 会话最后更新时间戳 (毫秒) */
+  updatedAt: number;
+}
+
+/**
+ * 会话插入或更新输入结构
+ */
+export interface UpsertSessionInput {
+  /** 会话唯一标识 (sesUUID) */
+  id: string;
+  /** 会话显示名称 */
+  name?: string;
+  /** 会话类型 */
+  type?: SessionType;
+  /** 关联员工档案 ID */
+  employeeId?: string | null;
+  /** 会话工作模式 */
+  mode?: SessionMode;
+  /** 人工接管截止时间戳 (毫秒) */
+  humanTakeoverUntil?: number;
+  /** 最后消息时间戳 (毫秒) */
+  lastMessageAt?: number;
+  /** 最后回复时间戳 (毫秒) */
+  lastReplyAt?: number;
+  /** 当日回复计数 */
+  dailyReplyCount?: number;
+  /** 当日计数重置日期 */
+  dailyCountResetDate?: string | null;
+  /** 创建时间戳 (毫秒，可选，默认 Date.now()) */
+  createdAt?: number;
+  /** 更新时间戳 (毫秒，可选，默认 Date.now()) */
+  updatedAt?: number;
+}
