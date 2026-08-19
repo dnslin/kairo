@@ -150,6 +150,25 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       expect(mockCdp.evaluate).toHaveBeenCalledTimes(2);
     });
 
+    it('支持 10 位 UNIX 秒级时间戳自动归一化且在 120 秒内允许撤回', async () => {
+      const mockCdp = {
+        evaluate: vi
+          .fn()
+          .mockResolvedValueOnce({
+            isMe: true,
+            sender: '我',
+            timestamp: Math.floor(Date.now() / 1000) - 5, // 5秒前 (秒级时间戳)
+          })
+          .mockResolvedValueOnce({ success: true }),
+      } as unknown as CdpClient;
+
+      const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
+      const res = await ops.recallMessage('seconds_timestamp_msg_id');
+
+      expect(res).toBe(true);
+      expect(mockCdp.evaluate).toHaveBeenCalledTimes(2);
+    });
+
     it('未找到消息时应安全返回 false', async () => {
       const mockCdp = {
         evaluate: vi.fn().mockResolvedValueOnce(null),

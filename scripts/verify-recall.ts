@@ -13,6 +13,7 @@ async function runRecallVerification(): Promise<void> {
     },
     polling: {
       intervalMs: 1500,
+      autoSwitchSession: false,
     },
   });
 
@@ -94,7 +95,7 @@ async function runRecallVerification(): Promise<void> {
     console.log('\n--- 测试 4: 原生撤回事件实时监听 ---');
     console.log('💡 正在监听客户端撤回事件 (持续 10 秒)...');
     console.log('👉 你现在可以在 KK9 客户端手动右键撤回任意消息，观察下方事件捕获输出：');
-    driver.startPolling({ intervalMs: 1000 });
+    driver.startPolling({ intervalMs: 1000, autoSwitchSession: false });
     await sleep(10000);
     driver.stopPolling();
 

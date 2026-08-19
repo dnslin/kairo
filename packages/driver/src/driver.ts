@@ -167,6 +167,8 @@ export class KK9Driver extends EventEmitter {
         customPolling?.maxSessionsPerCycle ?? this.config.polling?.maxSessionsPerCycle ?? 10,
       maxMessagesPerSession:
         customPolling?.maxMessagesPerSession ?? this.config.polling?.maxMessagesPerSession ?? 20,
+      autoSwitchSession:
+        customPolling?.autoSwitchSession ?? this.config.polling?.autoSwitchSession ?? true,
     };
 
     this.isPolling = true;
@@ -203,6 +205,15 @@ export class KK9Driver extends EventEmitter {
   }
 
   private async executePollCycle(config: PollingConfig): Promise<void> {
+    // 若禁用自动切换会话，仅在当前激活会话提取增量消息与撤回事件
+    if (config.autoSwitchSession === false) {
+      const current = await this.getCurrentSession();
+      if (current) {
+        await this.collectAndEmitMessages(current, config.maxMessagesPerSession);
+      }
+      return;
+    }
+
     const sessions = await this.getSessions();
     // 排序：包含未读 @ 的会话最优先处理，其次是普通未读会话
     const unreadSessions = sessions

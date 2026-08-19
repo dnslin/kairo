@@ -782,7 +782,14 @@ export class SendOps {
 
             const sender = item.querySelector('${this.selectors.messageSender}')?.textContent?.trim() || vueMsg?.senderName || '';
             const time = item.querySelector('${this.selectors.messageTime}')?.textContent?.trim() || '';
-            const sendTime = vueMsg?.sendTime || (vueMsg?.time ? new Date(vueMsg.time).getTime() : 0);
+            let sendTime = 0;
+            if (vueMsg && vueMsg.sendTime) {
+              const n = Number(vueMsg.sendTime);
+              sendTime = n < 10000000000 ? n * 1000 : n;
+            } else if (vueMsg && vueMsg.time) {
+              const p = new Date(vueMsg.time).getTime();
+              if (!isNaN(p)) sendTime = p;
+            }
 
             if (targetId && (rawId === targetId || item.id === targetId || String(targetId).includes(String(rawId)) || (rawId && String(rawId).includes(String(targetId))))) {
               return {
@@ -817,7 +824,11 @@ export class SendOps {
 
       // 时效安全防护：超过 120 秒拒绝撤回
       if (msgInfo.timestamp) {
-        const elapsedMs = Date.now() - msgInfo.timestamp;
+        let ts = msgInfo.timestamp;
+        if (ts < 10_000_000_000) {
+          ts *= 1000;
+        }
+        const elapsedMs = Date.now() - ts;
         if (elapsedMs > 120_000) {
           log.warn({ messageId, elapsedMs }, '消息已超过 2 分钟时效限制，拒绝撤回');
           return false;

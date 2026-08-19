@@ -186,6 +186,8 @@ export interface PollingConfig {
   switchDelayMs: number;
   maxSessionsPerCycle: number;
   maxMessagesPerSession: number;
+  /** 是否允许轮询自动在未读会话间切换（设为 false 时仅在当前激活会话监听） */
+  autoSwitchSession?: boolean;
 }
 
 export interface DriverConfig {
