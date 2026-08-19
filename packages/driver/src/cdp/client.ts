@@ -242,7 +242,10 @@ export class CdpClient extends EventEmitter {
               : Array.isArray(data)
                 ? Buffer.concat(data).toString('utf-8')
                 : Buffer.from(data).toString('utf-8');
-        const res = JSON.parse(text) as CdpResponse & { method?: string; params?: Record<string, unknown> };
+        const res = JSON.parse(text) as CdpResponse & {
+          method?: string;
+          params?: Record<string, unknown>;
+        };
         if (res.id && this.pending.has(res.id)) {
           const { resolve, reject, timer } = this.pending.get(res.id)!;
           clearTimeout(timer);

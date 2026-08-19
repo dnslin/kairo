@@ -3,7 +3,8 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@kkbot/driver": ["packages/driver/src/index.ts"]
+      "@kkbot/driver": ["packages/driver/src/index.ts"],
+      "@kkbot/store": ["packages/store/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*", "packages/*/examples/**/*"]
