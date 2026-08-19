@@ -317,9 +317,9 @@ export class KK9Driver extends EventEmitter {
     }
 
     const hookScript = `
-      (() => {
-        if (window.__kkbot_cancel_hooked) return true;
-        window.__kkbot_cancel_hooked = true;
+        if (typeof window.__kkbot_cancel_cleanup === 'function') {
+          try { window.__kkbot_cancel_cleanup(); } catch (e) {}
+        }
         window.__kkbot_recalled_events = window.__kkbot_recalled_events || [];
 
         function notifyRecalled(evt) {

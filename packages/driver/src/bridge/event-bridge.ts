@@ -313,10 +313,13 @@ export class KK9EventBridge extends EventEmitter {
     const binding = this.bindingName;
     return `
       (() => {
-        if (window.__kkbot_bridge_installed) {
-          return { ok: true, reinstalled: true };
+        if (typeof window.__kkbot_bridge_cleanup === 'function') {
+          try {
+            window.__kkbot_bridge_cleanup();
+          } catch (e) {
+            console.warn('[KK9EventBridge] 清理前序 Hook 异常:', e);
+          }
         }
-        window.__kkbot_bridge_installed = true;
 
         function postEvent(type, data) {
           if (typeof window[${JSON.stringify(binding)}] === 'function') {
@@ -349,7 +352,18 @@ export class KK9EventBridge extends EventEmitter {
         };
 
         const bus = getBus();
+        const unbindFns = [];
         const hookedSessions = new Set();
+
+        function onBus(event, handler) {
+          if (!bus || typeof bus.$on !== 'function') return;
+          bus.$on(event, handler);
+          unbindFns.push(() => {
+            try {
+              bus.$off(event, handler);
+            } catch (e) {}
+          });
+        }
 
         function parseRecallFromMsg(m, defaultSessionId) {
           if (!m) return null;
@@ -358,24 +372,30 @@ export class KK9EventBridge extends EventEmitter {
             try { contentObj = JSON.parse(contentObj); } catch {}
           }
           if (contentObj && (contentObj.event === 'CancelMessage' || contentObj.type === 'CancelMessage')) {
-            return {
-              messageId: String(contentObj.msgID || contentObj.msgId || contentObj.id || m.msgID || m.id || ''),
-              sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
-              sender: String(m.sender || m.senderName || contentObj.sender || ''),
-              time: new Date().toLocaleTimeString(),
-              timestamp: Date.now(),
-              raw: m
-            };
+            const msgId = String(contentObj.msgID || contentObj.msgId || contentObj.id || m.msgID || m.id || '');
+            if (msgId) {
+              return {
+                messageId: msgId,
+                sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
+                sender: String(m.sender || m.senderName || contentObj.sender || ''),
+                time: new Date().toLocaleTimeString(),
+                timestamp: Date.now(),
+                raw: m
+              };
+            }
           }
           if (m.event === 'CancelMessage' || m.type === 'CancelMessage') {
-            return {
-              messageId: String(m.msgID || m.msgId || m.id || ''),
-              sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
-              sender: String(m.sender || m.senderName || ''),
-              time: new Date().toLocaleTimeString(),
-              timestamp: Date.now(),
-              raw: m
-            };
+            const msgId = String(m.msgID || m.msgId || m.id || '');
+            if (msgId) {
+              return {
+                messageId: msgId,
+                sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
+                sender: String(m.sender || m.senderName || ''),
+                time: new Date().toLocaleTimeString(),
+                timestamp: Date.now(),
+                raw: m
+              };
+            }
           }
           return null;
         }
@@ -385,7 +405,7 @@ export class KK9EventBridge extends EventEmitter {
           hookedSessions.add(sesUUID);
 
           // 监听会话增量消息
-          bus.$on(sesUUID + '-msg', (msgArray) => {
+          onBus(sesUUID + '-msg', (msgArray) => {
             if (!msgArray) return;
             const msgs = Array.isArray(msgArray) ? msgArray : [msgArray];
             for (const m of msgs) {
@@ -398,7 +418,7 @@ export class KK9EventBridge extends EventEmitter {
           });
 
           // 监听会话专用撤回事件
-          bus.$on(sesUUID + '-revokeMsg', (revokePayload) => {
+          onBus(sesUUID + '-revokeMsg', (revokePayload) => {
             if (!revokePayload) return;
             postEvent('recalled', {
               messageId: String(revokePayload.msgID || revokePayload.msgId || revokePayload.id || ''),
@@ -413,7 +433,7 @@ export class KK9EventBridge extends EventEmitter {
 
         if (bus && typeof bus.$on === 'function') {
           // 1. 监听全局 receive-message
-          bus.$on('receive-message', (payload) => {
+          onBus('receive-message', (payload) => {
             if (!payload) return;
             const sesUUID = payload?.session?.sesUUID || payload?.sesUUID || payload?.sessionID;
             if (sesUUID) hookSession(sesUUID);
@@ -430,7 +450,7 @@ export class KK9EventBridge extends EventEmitter {
           });
 
           // 2. 监听全局 CancelMessage
-          bus.$on('CancelMessage', (payload) => {
+          onBus('CancelMessage', (payload) => {
             if (!payload) return;
             postEvent('recalled', {
               messageId: String(payload.msgID || payload.msgId || payload.id || ''),
@@ -460,8 +480,8 @@ export class KK9EventBridge extends EventEmitter {
           const chatContainers = document.querySelectorAll('.chat-container, .chat-content, .message-content-box');
           chatContainers.forEach(container => {
             const vm = container.__vue__;
-            if (vm && typeof vm.addRevokeMsg === 'function' && !vm.__kkbot_revoke_hooked) {
-              vm.__kkbot_revoke_hooked = true;
+            if (vm && typeof vm.addRevokeMsg === 'function' && !vm.__kkbot_revoke_active) {
+              vm.__kkbot_revoke_active = true;
               const origAdd = vm.addRevokeMsg;
               vm.addRevokeMsg = function(data) {
                 if (data && (data.msgID || data.msgId || data.id)) {
@@ -482,8 +502,9 @@ export class KK9EventBridge extends EventEmitter {
         hookChatContentInstances();
 
         // 5. DOM 变动监听器（作为系统气泡撤回提示的终极兜底守卫）
+        let observer = null;
         try {
-          const observer = new MutationObserver((mutations) => {
+          observer = new MutationObserver((mutations) => {
             hookChatContentInstances();
             for (const m of mutations) {
               for (const node of m.addedNodes) {
@@ -512,7 +533,16 @@ export class KK9EventBridge extends EventEmitter {
           observer.observe(document.body, { childList: true, subtree: true });
         } catch {}
 
-        return { ok: true, busFound: !!bus };
+        window.__kkbot_bridge_cleanup = () => {
+          unbindFns.forEach(fn => {
+            try { fn(); } catch (e) {}
+          });
+          if (observer) {
+            try { observer.disconnect(); } catch (e) {}
+          }
+        };
+
+        return { ok: true, busFound: !!bus, sessionsHooked: hookedSessions.size };
       })()
     `;
   }
