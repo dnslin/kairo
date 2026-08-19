@@ -223,6 +223,17 @@ export interface DriverConfig {
   selectors?: Partial<SelectorsConfig>;
   polling?: Partial<PollingConfig>;
 }
+export interface EventBridgeConfig {
+  cdp: CdpConfig;
+  /** 自定义 CDP 绑定名称 (默认 '__kkbot_native_bridge') */
+  bindingName?: string;
+  /** 去重指纹最大缓存数量 (默认 10000) */
+  maxFingerprints?: number;
+  /** 当前用户 UID / 账号 (用于识别自身发出消息 isMe) */
+  currentUserId?: string | number;
+  /** 是否启用消息撤回原生事件捕获 (默认 true) */
+  enableRecallHook?: boolean;
+}
 
 /**
  * 发送操作结果与快捷撤回方法
@@ -280,3 +291,7 @@ export interface DriverEvents {
   error: (error: Error) => void;
   heartbeat: (uptimeMs: number) => void;
 }
+/**
+ * 原生事件桥事件契约（与 DriverEvents 100% 同构）
+ */
+export type EventBridgeEvents = DriverEvents;

@@ -4,6 +4,12 @@
  */
 
 export { KK9Driver } from './driver.js';
+export { KK9EventBridge } from './bridge/event-bridge.js';
+export {
+  generateMessageFingerprint,
+  normalizeNativeMessage,
+  normalizeRecalledEvent,
+} from './bridge/converter.js';
 export { CdpClient } from './cdp/client.js';
 export { SessionOps } from './dom/session-ops.js';
 export { MessageOps, readImageAsBase64, saveImageToFile } from './dom/message-ops.js';
@@ -42,6 +48,8 @@ export type {
   CdpConfig,
   PollingConfig,
   DriverConfig,
+  EventBridgeConfig,
+  EventBridgeEvents,
   SendResult,
   KK9RecalledEvent,
   PreSendCheckResult,

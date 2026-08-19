@@ -131,10 +131,7 @@ export class KK9Driver extends EventEmitter {
   /**
    * 消息撤回 (Recall / CancelMessage) 全局 API
    */
-  public async recallMessage(
-    messageId: string,
-    session?: KK9Session | string
-  ): Promise<boolean> {
+  public async recallMessage(messageId: string, session?: KK9Session | string): Promise<boolean> {
     const sessionId = typeof session === 'string' ? session : session?.id;
     return this.sendOps.recallMessage(messageId, sessionId);
   }
@@ -300,7 +297,9 @@ export class KK9Driver extends EventEmitter {
   private async setupCancelMessageHook(): Promise<void> {
     try {
       await this.cdp.sendCommand('Runtime.enable');
-      await this.cdp.sendCommand('Runtime.addBinding', { name: '__kkbot_on_recalled' }).catch(() => {});
+      await this.cdp
+        .sendCommand('Runtime.addBinding', { name: '__kkbot_on_recalled' })
+        .catch(() => {});
 
       this.cdp.on('Runtime.bindingCalled', (rawParams: unknown) => {
         const params = rawParams as { name?: string; payload?: string };
