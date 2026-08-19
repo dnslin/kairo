@@ -268,6 +268,15 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
       const resNeg = repo.findEmployees('A座', -5);
       expect(resNeg.length).toBe(1);
     });
+
+    it('多部门兼职员工在多个任职命中搜索条件时应严格去重为单条记录', () => {
+      // 张三丰在 dept_infra 职位为首席架构师，在 dept_tech 职位为技术专家委员会成员
+      // 搜索 "技术" 会同时匹配 dept_tech (部门名) 和 技术专家委员会成员 (岗位)
+      const res = repo.findEmployees('技术');
+      const zsfMatches = res.filter(e => e.id === 'emp_arch');
+      expect(zsfMatches).toHaveLength(1);
+      expect(zsfMatches[0].departments).toHaveLength(2);
+    });
   });
 
   describe('3. getReportingChain: 向上递归穿透管理汇报链', () => {

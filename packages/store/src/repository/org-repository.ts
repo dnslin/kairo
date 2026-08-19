@@ -491,33 +491,7 @@ export class OrgRepository {
       return [];
     }
 
-    const empIds = empRows.map(e => e.id);
-    const placeholders = empIds.map(() => '?').join(',');
-
-    const apptStmt = this.db.prepare(`
-      SELECT 
-        ed.employee_id,
-        ed.dept_id,
-        d.name AS dept_name,
-        ed.is_primary,
-        ed.is_leader,
-        ed.position
-      FROM org_employee_departments ed
-      LEFT JOIN org_departments d ON ed.dept_id = d.id
-      WHERE ed.employee_id IN (${placeholders})
-      ORDER BY ed.is_primary DESC, ed.dept_id ASC
-    `);
-
-    const apptRows = apptStmt.all(...empIds) as AppointmentRow[];
-    const apptMap = new Map<string, AppointmentRow[]>();
-
-    for (const appt of apptRows) {
-      const list = apptMap.get(appt.employee_id) ?? [];
-      list.push(appt);
-      apptMap.set(appt.employee_id, list);
-    }
-
-    return empRows.map(emp => this.mapToEmployeeWithDepts(emp, apptMap.get(emp.id) ?? []));
+    return this.hydrateEmployeesWithDepts(empRows);
   }
 
   /**
@@ -628,7 +602,7 @@ export class OrgRepository {
     // 3: 工号/姓名/拼音前缀匹配
     // 4: 模糊匹配
     const sql = `
-      SELECT DISTINCT 
+      SELECT 
         e.id, 
         e.login_name, 
         e.name, 
@@ -638,18 +612,20 @@ export class OrgRepository {
         e.region, 
         e.leader_id, 
         e.updated_at,
-        CASE 
-          WHEN e.login_name = ? THEN 1
-          WHEN e.name = ? THEN 2
-          WHEN LOWER(e.pinyin_abbr) = LOWER(?) THEN 3
-          WHEN e.login_name LIKE ? THEN 4
-          WHEN e.name LIKE ? THEN 5
-          WHEN LOWER(e.pinyin_abbr) LIKE LOWER(?) THEN 6
-          WHEN e.region LIKE ? THEN 7
-          WHEN ed.position LIKE ? THEN 8
-          WHEN d.name LIKE ? OR d.path LIKE ? THEN 9
-          ELSE 10
-        END AS rank_score
+        MIN(
+          CASE 
+            WHEN e.login_name = ? THEN 1
+            WHEN e.name = ? THEN 2
+            WHEN LOWER(e.pinyin_abbr) = LOWER(?) THEN 3
+            WHEN e.login_name LIKE ? THEN 4
+            WHEN e.name LIKE ? THEN 5
+            WHEN LOWER(e.pinyin_abbr) LIKE LOWER(?) THEN 6
+            WHEN e.region LIKE ? THEN 7
+            WHEN ed.position LIKE ? THEN 8
+            WHEN d.name LIKE ? OR d.path LIKE ? THEN 9
+            ELSE 10
+          END
+        ) AS rank_score
       FROM org_employees e
       LEFT JOIN org_employee_departments ed ON e.id = ed.employee_id
       LEFT JOIN org_departments d ON ed.dept_id = d.id
@@ -664,6 +640,7 @@ export class OrgRepository {
         OR d.name LIKE ?
         OR d.path LIKE ?
       )
+      GROUP BY e.id
       ORDER BY rank_score ASC, e.id ASC
       LIMIT ?
     `;
@@ -697,33 +674,7 @@ export class OrgRepository {
       return [];
     }
 
-    const empIds = empRows.map(e => e.id);
-    const placeholders = empIds.map(() => '?').join(',');
-
-    const apptStmt = this.db.prepare(`
-      SELECT 
-        ed.employee_id,
-        ed.dept_id,
-        d.name AS dept_name,
-        ed.is_primary,
-        ed.is_leader,
-        ed.position
-      FROM org_employee_departments ed
-      LEFT JOIN org_departments d ON ed.dept_id = d.id
-      WHERE ed.employee_id IN (${placeholders})
-      ORDER BY ed.is_primary DESC, ed.dept_id ASC
-    `);
-
-    const apptRows = apptStmt.all(...empIds) as AppointmentRow[];
-    const apptMap = new Map<string, AppointmentRow[]>();
-
-    for (const appt of apptRows) {
-      const list = apptMap.get(appt.employee_id) ?? [];
-      list.push(appt);
-      apptMap.set(appt.employee_id, list);
-    }
-
-    return empRows.map(emp => this.mapToEmployeeWithDepts(emp, apptMap.get(emp.id) ?? []));
+    return this.hydrateEmployeesWithDepts(empRows);
   }
 
   /**
@@ -780,5 +731,38 @@ export class OrgRepository {
       updatedAt: empRow.updated_at,
       departments,
     };
+  }
+
+  /**
+   * 批量将员工行关联任职数据并组装为聚合员工实体
+   */
+  private hydrateEmployeesWithDepts(empRows: EmployeeRow[]): OrgEmployeeWithDepts[] {
+    const empIds = empRows.map(e => e.id);
+    const placeholders = empIds.map(() => '?').join(',');
+
+    const apptStmt = this.db.prepare(`
+      SELECT 
+        ed.employee_id,
+        ed.dept_id,
+        d.name AS dept_name,
+        ed.is_primary,
+        ed.is_leader,
+        ed.position
+      FROM org_employee_departments ed
+      LEFT JOIN org_departments d ON ed.dept_id = d.id
+      WHERE ed.employee_id IN (${placeholders})
+      ORDER BY ed.is_primary DESC, ed.dept_id ASC
+    `);
+
+    const apptRows = apptStmt.all(...empIds) as AppointmentRow[];
+    const apptMap = new Map<string, AppointmentRow[]>();
+
+    for (const appt of apptRows) {
+      const list = apptMap.get(appt.employee_id) ?? [];
+      list.push(appt);
+      apptMap.set(appt.employee_id, list);
+    }
+
+    return empRows.map(emp => this.mapToEmployeeWithDepts(emp, apptMap.get(emp.id) ?? []));
   }
 }
