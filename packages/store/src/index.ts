@@ -13,3 +13,4 @@ export * from './repository/org-repository.js';
 export * from './repository/message-repository.js';
 export * from './media/media-storage.js';
 export * from './store.js';
+export * from './export/roster-exporter.js';

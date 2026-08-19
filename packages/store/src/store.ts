@@ -3,7 +3,7 @@ import { closeDatabase, createDatabase } from './database/connection.js';
 import { MediaStorage } from './media/media-storage.js';
 import { MessageRepository } from './repository/message-repository.js';
 import { OrgRepository } from './repository/org-repository.js';
-import type { StoreOptions } from './types/index.js';
+import type { ExportRosterOptions, StoreOptions } from './types/index.js';
 import { createChildLogger } from './utils/logger.js';
 
 const log = createChildLogger('store-facade');
@@ -29,6 +29,20 @@ export class KKBotStore {
     this.media = new MediaStorage(options?.media);
 
     log.debug('KKBotStore 存储中枢初始化完成');
+  }
+
+  /**
+   * 快捷导出企业组织花名册 CSV 文件（支持 Windows Excel 独占锁防御）
+   *
+   * @param targetPathOrOptions 目标文件路径或导出选项（默认: data/organization_roster.csv）
+   * @param options 补充导出选项
+   * @returns 实际生成的文件路径
+   */
+  public async exportRosterCsv(
+    targetPathOrOptions?: string | ExportRosterOptions,
+    options?: ExportRosterOptions
+  ): Promise<string> {
+    return this.org.exportRosterCsv(targetPathOrOptions, options);
   }
 
   /**
