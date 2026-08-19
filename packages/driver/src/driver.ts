@@ -1,10 +1,24 @@
 import EventEmitter from 'node:events';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { CdpClient } from './cdp/client.js';
 import { MessageOps } from './dom/message-ops.js';
 import { resolveSelectors } from './dom/selectors.js';
 import { SendOps } from './dom/send-ops.js';
 import { SessionOps } from './dom/session-ops.js';
-import type { ConnectionStatus, DriverConfig, DriverEvents, KK9Message, KK9Session, PollingConfig, SelectorsConfig, SendResult } from './types/index.js';
+import type {
+  ConnectionStatus,
+  DriverConfig,
+  DriverEvents,
+  FormattedText,
+  KK9Message,
+  KK9ReplyTarget,
+  KK9Session,
+  PollingConfig,
+  SelectorsConfig,
+  SendFileOptions,
+  SendOptions,
+  SendResult,
+} from './types/index.js';
 import { createChildLogger } from './utils/logger.js';
 
 const log = createChildLogger('kk9-driver');
@@ -68,16 +82,50 @@ export class KK9Driver extends EventEmitter {
     return this.messageOps.getRecentMessages(limit, targetSession);
   }
 
-  public async sendText(text: string, options: { verifyTimeoutMs?: number; targetSessionId?: string } = {}): Promise<SendResult> {
+  /**
+   * 发送纯文本消息
+   */
+  public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
     return this.sendOps.sendText(text, options);
   }
 
-  public async sendImage(imagePath: string, options: { verifyTimeoutMs?: number; targetSessionId?: string } = {}): Promise<SendResult> {
+  /**
+   * 发送富文本格式化消息
+   */
+  public async sendRichText(
+    content: FormattedText,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    return this.sendOps.sendRichText(content, options);
+  }
+
+  /**
+   * 快捷发送引用/回复消息
+   */
+  public async sendReply(
+    replyTo: string | KK9ReplyTarget,
+    content: FormattedText,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    return this.sendOps.sendReply(replyTo, content, options);
+  }
+
+  /**
+   * 发送本地文件
+   */
+  public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
+    return this.sendOps.sendFile(filePath, options);
+  }
+
+  /**
+   * 发送本地图片
+   */
+  public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     return this.sendOps.sendImage(imagePath, options);
   }
 
   /**
-   * 启动智能轮询监听器（未读会话优先 + 当前会话回退）
+   * 启动智能轮询监听器（未读会话/@优先 + 当前会话回退）
    */
   public startPolling(customPolling?: Partial<PollingConfig>): void {
     if (this.isPolling) return;
@@ -85,8 +133,10 @@ export class KK9Driver extends EventEmitter {
     const pollConfig: PollingConfig = {
       intervalMs: customPolling?.intervalMs ?? this.config.polling?.intervalMs ?? 3000,
       switchDelayMs: customPolling?.switchDelayMs ?? this.config.polling?.switchDelayMs ?? 500,
-      maxSessionsPerCycle: customPolling?.maxSessionsPerCycle ?? this.config.polling?.maxSessionsPerCycle ?? 10,
-      maxMessagesPerSession: customPolling?.maxMessagesPerSession ?? this.config.polling?.maxMessagesPerSession ?? 20,
+      maxSessionsPerCycle:
+        customPolling?.maxSessionsPerCycle ?? this.config.polling?.maxSessionsPerCycle ?? 10,
+      maxMessagesPerSession:
+        customPolling?.maxMessagesPerSession ?? this.config.polling?.maxMessagesPerSession ?? 20,
     };
 
     this.isPolling = true;
@@ -124,7 +174,14 @@ export class KK9Driver extends EventEmitter {
 
   private async executePollCycle(config: PollingConfig): Promise<void> {
     const sessions = await this.getSessions();
-    const unreadSessions = sessions.filter((s) => s.unread);
+    // 排序：包含未读 @ 的会话最优先处理，其次是普通未读会话
+    const unreadSessions = sessions
+      .filter(s => s.unread || s.unreadAt)
+      .sort((a, b) => {
+        if (a.unreadAt && !b.unreadAt) return -1;
+        if (!a.unreadAt && b.unreadAt) return 1;
+        return (b.unreadCount || 0) - (a.unreadCount || 0);
+      });
 
     if (unreadSessions.length > 0) {
       const batch = unreadSessions.slice(0, config.maxSessionsPerCycle);
@@ -133,7 +190,7 @@ export class KK9Driver extends EventEmitter {
 
         const switched = await this.selectSession(session.id);
         if (switched) {
-          await new Promise((r) => setTimeout(r, config.switchDelayMs));
+          await sleep(config.switchDelayMs);
           await this.collectAndEmitMessages(session, config.maxMessagesPerSession);
         }
       }
@@ -162,6 +219,12 @@ export class KK9Driver extends EventEmitter {
 
         log.debug({ id: msg.id, sender: msg.sender, content: msg.content }, '捕获新消息并触发事件');
         this.emit('message', msg);
+
+        // 如果是 @ 提及消息，派发专用 at 事件
+        if (msg.atMe || msg.atAll || msg.mentions?.isAtMe || msg.mentions?.isAtAll) {
+          log.info({ id: msg.id, sender: msg.sender, mentions: msg.mentions }, '捕获到 @ 提及事件');
+          this.emit('at', msg);
+        }
       }
     }
   }

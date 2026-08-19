@@ -38,7 +38,7 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
       }
     });
 
-    await new Promise<void>((resolve) => {
+    await new Promise<void>(resolve => {
       httpServer.listen(0, '127.0.0.1', () => {
         const addr = httpServer.address();
         if (addr && typeof addr === 'object') {
@@ -51,9 +51,15 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
 
     wss = new WebSocketServer({ server: httpServer });
 
-    wss.on('connection', (ws) => {
-      ws.on('message', (data) => {
-        const msg = JSON.parse(typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf-8') : (data as Buffer).toString('utf-8'));
+    wss.on('connection', ws => {
+      ws.on('message', data => {
+        const msg = JSON.parse(
+          typeof data === 'string'
+            ? data
+            : Buffer.isBuffer(data)
+              ? data.toString('utf-8')
+              : (data as Buffer).toString('utf-8')
+        );
         if (msg.method === 'Runtime.evaluate') {
           if (msg.params?.expression === 'throw new Error("mock error")') {
             ws.send(
@@ -67,9 +73,16 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
             );
           } else if (msg.params?.expression === '1') {
             // 心跳
-            ws.send(JSON.stringify({ id: msg.id, result: { result: { type: 'number', value: 1 } } }));
+            ws.send(
+              JSON.stringify({ id: msg.id, result: { result: { type: 'number', value: 1 } } })
+            );
           } else {
-            ws.send(JSON.stringify({ id: msg.id, result: { result: { type: 'string', value: 'evaluated_ok' } } }));
+            ws.send(
+              JSON.stringify({
+                id: msg.id,
+                result: { result: { type: 'string', value: 'evaluated_ok' } },
+              })
+            );
           }
         } else if (msg.method === 'Input.dispatchKeyEvent') {
           ws.send(JSON.stringify({ id: msg.id, result: {} }));
@@ -85,7 +98,7 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
       client.terminate();
     }
     wss.close();
-    await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+    await new Promise<void>(resolve => httpServer.close(() => resolve()));
   });
 
   it('connect 应成功探测 Target 并建立 WebSocket 连接', async () => {
@@ -96,7 +109,7 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
     });
 
     const statusList: string[] = [];
-    client.on('status', (s) => statusList.push(s));
+    client.on('status', s => statusList.push(s));
 
     expect(client.getStatus()).toBe('disconnected');
     await client.connect();
@@ -139,7 +152,9 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
     });
 
     await client.connect();
-    await expect(client.evaluate('throw new Error("mock error")')).rejects.toThrow('Uncaught Error: mock error');
+    await expect(client.evaluate('throw new Error("mock error")')).rejects.toThrow(
+      'Uncaught Error: mock error'
+    );
 
     await client.disconnect();
   });

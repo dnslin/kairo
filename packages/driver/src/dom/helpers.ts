@@ -14,7 +14,7 @@ export function findVueSessionItem<T extends ScrollerItemLike>(
   target: string
 ): { index: number; item: T | null } {
   if (!Array.isArray(items) || !target) return { index: -1, item: null };
-  const index = items.findIndex((it) => {
+  const index = items.findIndex(it => {
     if (!it) return false;
     return (
       it.sesUUID === target ||
