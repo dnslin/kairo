@@ -6,6 +6,7 @@
 export * from './types/index.js';
 export * from './utils/errors.js';
 export * from './utils/logger.js';
+export * from './utils/pinyin.js';
 export * from './database/schema.js';
 export * from './database/connection.js';
 export * from './repository/org-repository.js';

@@ -80,6 +80,8 @@ export interface OrgEmployee {
   loginName: string;
   /** 真实姓名 */
   name: string;
+  /** 姓名拼音首字母缩写 (如 "zsf") */
+  pinyinAbbr?: string | null;
   /** 联系手机号 */
   phone?: string | null;
   /** 电子邮箱 */
@@ -116,6 +118,8 @@ export interface OrgEmployeeInput {
   loginName: string;
   /** 真实姓名 */
   name: string;
+  /** 姓名拼音首字母缩写（可选，未提供时将根据中文姓名自动生成） */
+  pinyinAbbr?: string | null;
   /** 联系手机号 */
   phone?: string | null;
   /** 电子邮箱 */
@@ -206,6 +210,15 @@ export interface SearchEmployeeOptions {
   limit?: number;
   /** 分页偏移量，默认 0 */
   offset?: number;
+}
+
+/**
+/**
+ * 部门成员查询选项
+ */
+export interface GetDepartmentMembersOptions {
+  /** 是否递归包含子部门员工，默认 false */
+  includeSubDepts?: boolean;
 }
 
 /**

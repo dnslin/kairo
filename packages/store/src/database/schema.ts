@@ -25,11 +25,12 @@ CREATE INDEX IF NOT EXISTS idx_org_departments_parent_id ON org_departments(pare
 CREATE INDEX IF NOT EXISTS idx_org_departments_path ON org_departments(path);
 CREATE INDEX IF NOT EXISTS idx_org_departments_level ON org_departments(level);
 
--- 员工档案表（支持工号、姓名、手机号等维度检索）
+-- 员工档案表（支持工号、姓名、拼音首字母、手机号等多维度检索）
 CREATE TABLE IF NOT EXISTS org_employees (
   id TEXT PRIMARY KEY,
   login_name TEXT NOT NULL,
   name TEXT NOT NULL,
+  pinyin_abbr TEXT,
   phone TEXT,
   email TEXT,
   region TEXT,
@@ -39,9 +40,10 @@ CREATE TABLE IF NOT EXISTS org_employees (
 
 CREATE INDEX IF NOT EXISTS idx_org_employees_login_name ON org_employees(login_name);
 CREATE INDEX IF NOT EXISTS idx_org_employees_name ON org_employees(name);
+CREATE INDEX IF NOT EXISTS idx_org_employees_pinyin_abbr ON org_employees(pinyin_abbr);
 CREATE INDEX IF NOT EXISTS idx_org_employees_phone ON org_employees(phone);
 CREATE INDEX IF NOT EXISTS idx_org_employees_email ON org_employees(email);
-
+CREATE INDEX IF NOT EXISTS idx_org_employees_region ON org_employees(region);
 -- 员工与部门任职关系中间表（支持主职、多部门兼职与部门负责人关系）
 CREATE TABLE IF NOT EXISTS org_employee_departments (
   employee_id TEXT NOT NULL,

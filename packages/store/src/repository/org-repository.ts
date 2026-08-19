@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import type {
   EmployeeAppointment,
   ExportRosterOptions,
+  GetDepartmentMembersOptions,
   OrgDepartment,
   OrgDepartmentInput,
   OrgDepartmentNode,
@@ -14,6 +15,7 @@ import type {
 import { RosterExporter } from '../export/roster-exporter.js';
 import { TransactionError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
+import { getPinyinAbbr } from '../utils/pinyin.js';
 
 const log = createChildLogger('org-repo');
 
@@ -37,6 +39,7 @@ interface EmployeeRow {
   id: string;
   login_name: string;
   name: string;
+  pinyin_abbr: string | null;
   phone: string | null;
   email: string | null;
   region: string | null;
@@ -186,8 +189,8 @@ export class OrgRepository {
 
         // 3. 批量插入员工与任职关系
         const insertEmpStmt = this.db.prepare(`
-          INSERT INTO org_employees (id, login_name, name, phone, email, region, leader_id, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO org_employees (id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
 
         const insertApptStmt = this.db.prepare(`
@@ -201,11 +204,13 @@ export class OrgRepository {
         for (const emp of employees) {
           const empId = String(emp.id);
           const empUpdatedAt = emp.updatedAt ?? now;
+          const pinyinAbbr = emp.pinyinAbbr?.trim() || getPinyinAbbr(emp.name);
 
           insertEmpStmt.run(
             empId,
             emp.loginName,
             emp.name,
+            pinyinAbbr || null,
             emp.phone ?? null,
             emp.email ?? null,
             emp.region ?? null,
@@ -373,7 +378,7 @@ export class OrgRepository {
     if (!empId) return null;
 
     const empStmt = this.db.prepare<[string], EmployeeRow>(`
-      SELECT id, login_name, name, phone, email, region, leader_id, updated_at
+      SELECT id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at
       FROM org_employees
       WHERE id = ?
     `);
@@ -411,7 +416,7 @@ export class OrgRepository {
     if (!cleanLoginName) return null;
 
     const empStmt = this.db.prepare<[string], EmployeeRow>(`
-      SELECT id, login_name, name, phone, email, region, leader_id, updated_at
+      SELECT id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at
       FROM org_employees
       WHERE login_name = ?
     `);
@@ -439,9 +444,9 @@ export class OrgRepository {
     if (query && query.trim()) {
       const q = `%${query.trim()}%`;
       whereClauses.push(
-        '(e.login_name LIKE ? OR e.name LIKE ? OR e.phone LIKE ? OR e.email LIKE ?)'
+        '(e.login_name LIKE ? OR e.name LIKE ? OR e.pinyin_abbr LIKE ? OR e.phone LIKE ? OR e.email LIKE ?)'
       );
-      params.push(q, q, q, q);
+      params.push(q, q, q, q, q);
     }
 
     if (deptId && deptId.trim()) {
@@ -474,7 +479,7 @@ export class OrgRepository {
 
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
     const sql = `
-      SELECT e.id, e.login_name, e.name, e.phone, e.email, e.region, e.leader_id, e.updated_at
+      SELECT e.id, e.login_name, e.name, e.pinyin_abbr, e.phone, e.email, e.region, e.leader_id, e.updated_at
       FROM org_employees e
       ${whereSql}
       ORDER BY e.id ASC
@@ -488,33 +493,7 @@ export class OrgRepository {
       return [];
     }
 
-    const empIds = empRows.map(e => e.id);
-    const placeholders = empIds.map(() => '?').join(',');
-
-    const apptStmt = this.db.prepare(`
-      SELECT 
-        ed.employee_id,
-        ed.dept_id,
-        d.name AS dept_name,
-        ed.is_primary,
-        ed.is_leader,
-        ed.position
-      FROM org_employee_departments ed
-      LEFT JOIN org_departments d ON ed.dept_id = d.id
-      WHERE ed.employee_id IN (${placeholders})
-      ORDER BY ed.is_primary DESC, ed.dept_id ASC
-    `);
-
-    const apptRows = apptStmt.all(...empIds) as AppointmentRow[];
-    const apptMap = new Map<string, AppointmentRow[]>();
-
-    for (const appt of apptRows) {
-      const list = apptMap.get(appt.employee_id) ?? [];
-      list.push(appt);
-      apptMap.set(appt.employee_id, list);
-    }
-
-    return empRows.map(emp => this.mapToEmployeeWithDepts(emp, apptMap.get(emp.id) ?? []));
+    return this.hydrateEmployeesWithDepts(empRows);
   }
 
   /**
@@ -528,7 +507,176 @@ export class OrgRepository {
     deptId: string,
     includeSubDepts = false
   ): OrgEmployeeWithDepts[] {
-    return this.searchEmployees({ deptId, includeSubDepts, limit: 10000 });
+    return this.getDepartmentMembers(deptId, { includeSubDepts });
+  }
+
+  /**
+   * 获取指定部门全员列表，支持递归包含子部门全员
+   *
+   * @param deptId 部门 ID
+   * @param options 查询选项（是否递归包含子部门）
+   * @returns 员工列表（含任职信息）
+   */
+  public getDepartmentMembers(
+    deptId: string,
+    options?: GetDepartmentMembersOptions
+  ): OrgEmployeeWithDepts[] {
+    const cleanDeptId = deptId?.trim();
+    if (!cleanDeptId) {
+      return [];
+    }
+
+    const includeSubDepts = options?.includeSubDepts ?? false;
+    return this.searchEmployees({
+      deptId: cleanDeptId,
+      includeSubDepts,
+      limit: 10000,
+    });
+  }
+
+  /**
+   * 向上递归穿透管理汇报链
+   * 通过 leader_id 逐级向上检索直属领导、隔级领导直到顶级管理者
+   *
+   * @param employeeId 员工唯一标识 ID (UID)
+   * @returns 汇报链上的管理者列表（按管理层级由近及远排列）
+   */
+  public getReportingChain(employeeId: string | number): OrgEmployeeWithDepts[] {
+    const empId = String(employeeId)?.trim();
+    if (!empId) {
+      return [];
+    }
+
+    const startEmp = this.getEmployeeById(empId);
+    if (!startEmp || !startEmp.leaderId) {
+      return [];
+    }
+
+    const chain: OrgEmployeeWithDepts[] = [];
+    const visited = new Set<string>([startEmp.id]);
+    let currentLeaderId: string | null | undefined = startEmp.leaderId;
+
+    while (currentLeaderId) {
+      if (visited.has(currentLeaderId)) {
+        log.warn(
+          { employeeId: empId, circularLeaderId: currentLeaderId },
+          '检测到员工汇报链存在环形引用，已安全终止向上递归'
+        );
+        break;
+      }
+
+      visited.add(currentLeaderId);
+      const leader = this.getEmployeeById(currentLeaderId);
+      if (!leader) {
+        break;
+      }
+
+      chain.push(leader);
+      currentLeaderId = leader.leaderId;
+    }
+
+    return chain;
+  }
+
+  /**
+   * 多维模糊快搜员工
+   * 组合工号、中文名、拼音缩写、岗位/职称、工位区域与部门名称/路径的多字段 SQL 模糊快搜
+   * 结果按精确匹配度与相关性自动排序
+   *
+   * @param query 搜索关键词（支持中文名、拼音简写、工号、岗位、工位、部门等）
+   * @param limit 返回最大条数，默认 20
+   * @returns 匹配的员工聚合实体列表（含完整任职信息）
+   */
+  public findEmployees(query: string, limit = 20): OrgEmployeeWithDepts[] {
+    const cleanQuery = query?.trim();
+    if (!cleanQuery) {
+      return [];
+    }
+
+    const boundedLimit = Math.max(1, limit);
+    const pattern = `%${cleanQuery}%`;
+    const exactQuery = cleanQuery;
+    const prefixPattern = `${cleanQuery}%`;
+
+    // 多维联合查询与排序权重计算：
+    // 1: 工号/姓名精确匹配
+    // 2: 拼音缩写精确匹配
+    // 3: 工号/姓名/拼音前缀匹配
+    // 4: 模糊匹配
+    const sql = `
+      SELECT 
+        e.id, 
+        e.login_name, 
+        e.name, 
+        e.pinyin_abbr, 
+        e.phone, 
+        e.email, 
+        e.region, 
+        e.leader_id, 
+        e.updated_at,
+        MIN(
+          CASE 
+            WHEN e.login_name = ? THEN 1
+            WHEN e.name = ? THEN 2
+            WHEN LOWER(e.pinyin_abbr) = LOWER(?) THEN 3
+            WHEN e.login_name LIKE ? THEN 4
+            WHEN e.name LIKE ? THEN 5
+            WHEN LOWER(e.pinyin_abbr) LIKE LOWER(?) THEN 6
+            WHEN e.region LIKE ? THEN 7
+            WHEN ed.position LIKE ? THEN 8
+            WHEN d.name LIKE ? OR d.path LIKE ? THEN 9
+            ELSE 10
+          END
+        ) AS rank_score
+      FROM org_employees e
+      LEFT JOIN org_employee_departments ed ON e.id = ed.employee_id
+      LEFT JOIN org_departments d ON ed.dept_id = d.id
+      WHERE (
+        e.login_name LIKE ?
+        OR e.name LIKE ?
+        OR e.pinyin_abbr LIKE ?
+        OR e.region LIKE ?
+        OR e.phone LIKE ?
+        OR e.email LIKE ?
+        OR ed.position LIKE ?
+        OR d.name LIKE ?
+        OR d.path LIKE ?
+      )
+      GROUP BY e.id
+      ORDER BY rank_score ASC, e.id ASC
+      LIMIT ?
+    `;
+
+    const empRows = this.db.prepare(sql).all(
+      exactQuery,
+      exactQuery,
+      exactQuery,
+      prefixPattern,
+      prefixPattern,
+      prefixPattern,
+      pattern,
+      pattern,
+      pattern,
+      pattern,
+      // WHERE 条件参数
+      pattern,
+      pattern,
+      pattern,
+      pattern,
+      pattern,
+      pattern,
+      pattern,
+      pattern,
+      pattern,
+      // LIMIT 参数
+      boundedLimit
+    ) as EmployeeRow[];
+
+    if (empRows.length === 0) {
+      return [];
+    }
+
+    return this.hydrateEmployeesWithDepts(empRows);
   }
 
   /**
@@ -598,6 +746,7 @@ export class OrgRepository {
       id: empRow.id,
       loginName: empRow.login_name,
       name: empRow.name,
+      pinyinAbbr: empRow.pinyin_abbr ?? undefined,
       phone: empRow.phone ?? undefined,
       email: empRow.email ?? undefined,
       region: empRow.region ?? undefined,
@@ -605,5 +754,38 @@ export class OrgRepository {
       updatedAt: empRow.updated_at,
       departments,
     };
+  }
+
+  /**
+   * 批量将员工行关联任职数据并组装为聚合员工实体
+   */
+  private hydrateEmployeesWithDepts(empRows: EmployeeRow[]): OrgEmployeeWithDepts[] {
+    const empIds = empRows.map(e => e.id);
+    const placeholders = empIds.map(() => '?').join(',');
+
+    const apptStmt = this.db.prepare(`
+      SELECT 
+        ed.employee_id,
+        ed.dept_id,
+        d.name AS dept_name,
+        ed.is_primary,
+        ed.is_leader,
+        ed.position
+      FROM org_employee_departments ed
+      LEFT JOIN org_departments d ON ed.dept_id = d.id
+      WHERE ed.employee_id IN (${placeholders})
+      ORDER BY ed.is_primary DESC, ed.dept_id ASC
+    `);
+
+    const apptRows = apptStmt.all(...empIds) as AppointmentRow[];
+    const apptMap = new Map<string, AppointmentRow[]>();
+
+    for (const appt of apptRows) {
+      const list = apptMap.get(appt.employee_id) ?? [];
+      list.push(appt);
+      apptMap.set(appt.employee_id, list);
+    }
+
+    return empRows.map(emp => this.mapToEmployeeWithDepts(emp, apptMap.get(emp.id) ?? []));
   }
 }
