@@ -60,6 +60,26 @@ CREATE INDEX IF NOT EXISTS idx_org_emp_dept_dept_id ON org_employee_departments(
 CREATE INDEX IF NOT EXISTS idx_org_emp_dept_emp_id ON org_employee_departments(employee_id);
 CREATE INDEX IF NOT EXISTS idx_org_emp_dept_primary ON org_employee_departments(employee_id, is_primary);
 
+-- 会话持久化状态表（支持状态元数据、人工退避时间戳、收发时间与工作模式）
+CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  type TEXT NOT NULL DEFAULT 'private',
+  employee_id TEXT,
+  mode TEXT NOT NULL DEFAULT 'auto',
+  human_takeover_until INTEGER NOT NULL DEFAULT 0,
+  last_message_at INTEGER NOT NULL DEFAULT 0,
+  last_reply_at INTEGER NOT NULL DEFAULT 0,
+  daily_reply_count INTEGER NOT NULL DEFAULT 0,
+  daily_count_reset_date TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (employee_id) REFERENCES org_employees(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_employee ON sessions(employee_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_msg ON sessions(last_message_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode);
 -- 会话消息历史持久化表（支持原生 ID 精准撤回与多模态载荷）
 CREATE TABLE IF NOT EXISTS session_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -89,9 +109,9 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_session_recalled ON session_mess
  */
 export function initSchema(db: Database.Database): void {
   try {
-    log.debug('开始执行数据库 DDL 初始化...');
+    log.debug('开始执行数据库表结构与索引 DDL 初始化...');
     db.exec(SCHEMA_SQL);
-    log.debug('数据库 DDL 初始化完成');
+    log.debug('数据库表结构与索引 DDL 初始化完成');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     log.error({ err }, '初始化数据库表结构失败');
