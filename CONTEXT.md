@@ -37,11 +37,47 @@ The globally shared, read-only organizational knowledge base (e.g. FAQ, refund p
 The structured mechanism where the LLM invokes predefined functions (with Zod-validated parameters) to fetch external data or trigger side-effects.
 
 ### HITLApproval (Human-in-the-Loop)
-A safety gate where high-risk mutation tools (e.g. monetary refunds, data modification) are suspended until explicit human operator confirmation via the management console.
+A safety gate where high-risk mutation tools (e.g. monetary refunds, data modification, permission escalation) are suspended into an `ApprovalTask` until explicit human operator confirmation.
 
+### ApprovalTask
+A suspended action state containing a unique task ID, source session ID, tool name, parsed arguments, target approver identity, expiration timestamp (e.g. 60 seconds), and resolution status (`pending` | `approved` | `rejected` | `timed_out`).
+
+### DualChannelApproval
+The multi-channel approval notification and resolution mechanism that supports both web-based confirmation via the Web Ops Console and proactive direct IM messaging to designated approvers or departmental leaders.
+
+### LeaderApprovalRouting
+The dynamic resolution procedure that maps an employee's session to their direct departmental manager (`DepartmentLeader` / `ReportingLine`) using the organization repository, enabling the bot to proactively route approval requests to the relevant authority.
+
+### StatefulApprovalMatch
+The contextual recognition mechanism where direct IM messages from an active approver within the 60-second window are優先 mapped to resolve a pending `ApprovalTask` (e.g. keywords "同意", "通过", "拒绝") before falling back to normal conversation.
+
+### ReadWriteSplitExecution
+The ReAct tool execution policy that executes read-only query tools in parallel via `Promise.allSettled` while strictly serializing mutation/write tools and feeding back structured error objects to the LLM for autonomous self-correction.
+
+### InternalStreamingBufferedDelivery
+The LLM communication pattern maintaining internal token streaming for sub-50ms `AbortSignal` cancellation and live `<think>` tag stripping, while buffering the final sanitized payload for atomic delivery to the IM client.
+
+### LayeredPromptAssembly
+The 4-stage prompt compilation pipeline combining base persona (`soul.md`), dynamic memory context (L2 summaries, L3 profiles), organizational environment, and safety guardrails with file-watcher hot-reloading.
+### MultiModalRouter
+The intelligent model dispatcher that routes inbound requests with media attachments directly to vision-capable LLMs (e.g. GPT-4o, Qwen-VL) while automatically falling back to OCR text extraction tools when operating with text-only models.
 ### ModelFailover
 The automatic routing mechanism that switches execution from a primary LLM (e.g. DeepSeek-V3) to a fallback model (e.g. Qwen/OpenAI) upon network timeouts or rate limits.
 
+### ModelRoutingByIntent
+The dynamic model dispatcher that routes simple operational inquiries (e.g. org searches, greetings) to lightweight low-cost models (sub-300ms latency) while reserving heavy reasoning models (DeepSeek-R1 / GPT-4o) for complex troubleshooting and synthesis.
+
+### ReflectiveMemoryPhase
+The post-conversation background analysis phase that asynchronously extracts and crystallizes persistent employee working preferences, team dynamics, and recurring technical contexts into long-term observational memory.
+
+### FileDeliverable
+The structured output artifact capability where the bot generates tangible files (e.g. Markdown summaries, CSV rosters/metrics) and dispatches them as native downloadable file cards in the chat window.
+
+### ProactiveSchedule
+The cron-based background scheduling engine allowing employees to register recurring or delayed alerts and digests (e.g. weekly report reminders, morning ticket summaries) proactively delivered by the bot.
+
+### AsyncSubAgent
+The non-blocking task delegation mechanism where long-running multi-document analysis or crawling jobs are offloaded to background worker routines, releasing the chat session immediately and proactively pushing results upon completion.
 ## Organization & Directory
 
 ### Department
