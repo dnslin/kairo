@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import type {
   EmployeeAppointment,
+  ExportRosterOptions,
   GetDepartmentMembersOptions,
   OrgDepartment,
   OrgDepartmentInput,
@@ -11,6 +12,7 @@ import type {
   SyncOrgData,
   SyncOrgResult,
 } from '../types/index.js';
+import { RosterExporter } from '../export/roster-exporter.js';
 import { TransactionError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 import { getPinyinAbbr } from '../utils/pinyin.js';
@@ -702,6 +704,27 @@ export class OrgRepository {
       totalAppointments: row?.appt_count ?? 0,
       lastUpdatedAt: row?.max_updated_at ?? null,
     };
+  }
+
+  /**
+   * 导出企业组织花名册 CSV 文件（支持 Windows Excel 独占锁防御）
+   *
+   * @param targetPathOrOptions 目标文件路径或导出选项（默认: data/organization_roster.csv）
+   * @param options 补充导出选项
+   * @returns 实际生成的文件路径
+   */
+  public async exportRosterCsv(
+    targetPathOrOptions?: string | ExportRosterOptions,
+    options?: ExportRosterOptions
+  ): Promise<string> {
+    const opts: ExportRosterOptions =
+      typeof targetPathOrOptions === 'string'
+        ? { targetPath: targetPathOrOptions, ...options }
+        : { ...targetPathOrOptions, ...options };
+
+    const exporter = new RosterExporter(this.db);
+    const result = await exporter.export(opts);
+    return result.filePath;
   }
 
   /**

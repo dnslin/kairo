@@ -294,6 +294,40 @@ export interface GetDepartmentMembersOptions {
 }
 
 /**
+ * 花名册 CSV 导出配置选项
+ */
+export interface ExportRosterOptions {
+  /** 导出目标路径，默认: data/organization_roster.csv */
+  targetPath?: string;
+  /** 是否包含 UTF-8 BOM 标头（\\uFEFF），防止 Excel 打开中文乱码，默认 true */
+  includeBom?: boolean;
+  /** 是否包含表头行，默认 true */
+  includeHeader?: boolean;
+  /** 自定义时间基准（用于生成日期备份后缀），默认当前系统时间 */
+  now?: Date;
+  /** 自定义表头列表，默认: ['员工ID', '工号', '姓名', '部门与任职', '手机号', '邮箱', '办公地区', '直属领导ID', '更新时间'] */
+  customHeaders?: string[];
+  /** 日期格式化函数（可选） */
+  formatDate?: (timestamp: number) => string;
+}
+
+/**
+ * 花名册 CSV 导出统计结果
+ */
+export interface ExportRosterResult {
+  /** 实际写入并生成的文件路径（若触发文件锁防御则为带日期副本路径） */
+  filePath: string;
+  /** 是否触发了 Windows Excel 文件独占锁降级备份 */
+  isFallback: boolean;
+  /** 导出的总在职员工行数（不含表头） */
+  rowCount: number;
+  /** 写入的文件大小（字节） */
+  fileSizeBytes: number;
+  /** 导出操作总耗时（毫秒） */
+  durationMs: number;
+}
+
+/**
  * 消息类型枚举/常量联合类型
  */
 export type MessageType =
