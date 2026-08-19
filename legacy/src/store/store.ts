@@ -23,14 +23,34 @@ export interface SaveMessageInput {
  * 会话消息数据结构
  */
 export interface SessionMessage {
+  /** 消息自增 ID */
+  id?: number;
   /** 发送方名称 */
   sender: string;
   /** 消息内容 */
   content: string;
   /** 是否为自己发送 */
   isFromSelf: boolean;
+  /** 是否已被撤回 */
+  isRecalled?: boolean;
   /** 创建时间戳 (毫秒) */
   createdAt: number;
+}
+
+/**
+ * 消息撤回标记参数
+ */
+export interface MarkRecalledInput {
+  /** 会话 ID */
+  sessionId: string;
+  /** 消息数据库自增 ID 或字符串 ID */
+  messageId?: number | string;
+  /** 发送者 */
+  sender?: string;
+  /** 消息内容 */
+  content?: string;
+  /** 消息发生时间 */
+  time?: string | number;
 }
 
 /**
@@ -162,6 +182,7 @@ interface SessionMessageRow {
   sender: string;
   content: string;
   is_from_self: number;
+  is_recalled?: number;
   created_at: number;
 }
 
@@ -241,6 +262,10 @@ interface PreparedStatements {
   incrementDailyReplyCount: Statement;
   resetDailyCount: Statement;
   getAllThrottleStates: Statement;
+  markRecalledById: Statement;
+  markRecalledByContent: Statement;
+  markRecalledBySenderLast: Statement;
+  markRecalledBySessionLast: Statement;
 }
 
 /**
@@ -331,6 +356,7 @@ export class Store {
         sender TEXT NOT NULL,
         content TEXT NOT NULL,
         is_from_self INTEGER DEFAULT 0,
+        is_recalled INTEGER DEFAULT 0,
         created_at INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       );
@@ -385,6 +411,8 @@ export class Store {
 
     // 迁移：为已存在的 sessions 表添加节流字段
     this.migrateThrottleColumns();
+    // 迁移：为已存在的 session_messages 表添加撤回标记字段
+    this.migrateRecalledColumn();
   }
 
   /**
@@ -406,6 +434,19 @@ export class Store {
   }
 
   /**
+   * 迁移：为已存在的 session_messages 表添加 is_recalled 字段
+   */
+  private migrateRecalledColumn(): void {
+    const columns = this.db.pragma('table_info(session_messages)') as Array<{ name: string }>;
+    const columnNames = new Set(columns.map(c => c.name));
+
+    if (!columnNames.has('is_recalled')) {
+      this.db.exec('ALTER TABLE session_messages ADD COLUMN is_recalled INTEGER DEFAULT 0');
+      log.info('迁移：session_messages 表已添加 is_recalled 字段');
+    }
+  }
+
+  /**
    * 预编译所有 SQL 语句（性能关键）
    */
   private prepareStatements(): PreparedStatements {
@@ -415,9 +456,9 @@ export class Store {
         'INSERT OR IGNORE INTO processed_messages (fingerprint, processed_at) VALUES (?, ?)'
       ),
       getSessionHistory: this.db.prepare(
-        `SELECT id, session_id, sender, content, is_from_self, created_at
+        `SELECT id, session_id, sender, content, is_from_self, is_recalled, created_at
          FROM session_messages
-         WHERE session_id = ?
+         WHERE session_id = ? AND (is_recalled IS NULL OR is_recalled = 0)
          ORDER BY created_at DESC, id DESC
          LIMIT ?`
       ),
@@ -519,6 +560,32 @@ export class Store {
          ORDER BY last_reply_at DESC
          LIMIT 200`
       ),
+      markRecalledById: this.db.prepare(
+        'UPDATE session_messages SET is_recalled = 1 WHERE session_id = ? AND id = ?'
+      ),
+      markRecalledByContent: this.db.prepare(
+        'UPDATE session_messages SET is_recalled = 1 WHERE session_id = ? AND content = ?'
+      ),
+      markRecalledBySenderLast: this.db.prepare(`
+        UPDATE session_messages
+        SET is_recalled = 1
+        WHERE id = (
+          SELECT id FROM session_messages
+          WHERE session_id = ? AND sender = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        )
+      `),
+      markRecalledBySessionLast: this.db.prepare(`
+        UPDATE session_messages
+        SET is_recalled = 1
+        WHERE id = (
+          SELECT id FROM session_messages
+          WHERE session_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT 1
+        )
+      `),
     };
   }
 
@@ -606,9 +673,11 @@ export class Store {
       // 反转为正序（最旧的在前）
       const messages = rows.reverse().map(
         (row): SessionMessage => ({
+          id: row.id,
           sender: row.sender,
           content: row.content || '[已隐藏]',
           isFromSelf: row.is_from_self === 1,
+          isRecalled: row.is_recalled === 1,
           createdAt: row.created_at,
         })
       );
@@ -642,6 +711,40 @@ export class Store {
       const err = error instanceof Error ? error : new Error(String(error));
       log.error({ err, sessionId }, '保存消息失败');
       throw new StoreError('保存消息失败', err);
+    }
+  }
+
+  /**
+   * 标记消息已被撤回 (isRecalled = true)
+   * 防止失效消息被后续 LLM 上下文引用
+   */
+  markMessageRecalled(input: MarkRecalledInput | string, messageId?: string | number): boolean {
+    try {
+      const sessionId = typeof input === 'string' ? input : input.sessionId;
+      const targetMsgId = typeof input === 'string'
+        ? (messageId !== undefined && messageId !== null ? Number(messageId) || null : null)
+        : (input.messageId !== undefined && input.messageId !== null ? Number(input.messageId) || null : null);
+      const sender = typeof input === 'object' && input.sender ? input.sender : null;
+      const content = typeof input === 'object' && input.content ? input.content : null;
+
+      let res;
+      if (targetMsgId !== null) {
+        res = this.stmts.markRecalledById.run(sessionId, targetMsgId);
+      } else if (content !== null) {
+        res = this.stmts.markRecalledByContent.run(sessionId, content);
+      } else if (sender !== null) {
+        res = this.stmts.markRecalledBySenderLast.run(sessionId, sender);
+      } else {
+        res = this.stmts.markRecalledBySessionLast.run(sessionId);
+      }
+
+      this.logEvent('recalled', JSON.stringify({ sessionId, targetMsgId, sender, content }));
+      log.info({ sessionId, targetMsgId, sender, changes: res.changes }, '已将消息标记为已撤回');
+      return res.changes > 0;
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, input }, '标记消息撤回状态失败');
+      throw new StoreError('标记消息撤回状态失败', err);
     }
   }
 
