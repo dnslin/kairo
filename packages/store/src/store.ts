@@ -5,6 +5,21 @@ import { SessionRepository } from './repository/session-repository.js';
 import type { DatabaseOptions } from './types/index.js';
 
 /**
+ * 类型守卫：判断对象是否为 better-sqlite3 数据库实例
+ * @param value 待检查的值
+ */
+export function isDatabaseInstance(value: unknown): value is Database.Database {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'prepare' in value &&
+    typeof (value as Database.Database).prepare === 'function' &&
+    'exec' in value &&
+    typeof (value as Database.Database).exec === 'function'
+  );
+}
+
+/**
  * KKBot 存储层统一门面
  * 集中管理 SQLite 数据库连接及各领域仓储实例
  */
@@ -14,10 +29,10 @@ export class KKBotStore {
   public readonly org: OrgRepository;
 
   constructor(dbOrOptions?: Database.Database | DatabaseOptions) {
-    if (dbOrOptions && typeof (dbOrOptions as Database.Database).prepare === 'function') {
-      this.db = dbOrOptions as Database.Database;
+    if (isDatabaseInstance(dbOrOptions)) {
+      this.db = dbOrOptions;
     } else {
-      this.db = createDatabase(dbOrOptions as DatabaseOptions | undefined);
+      this.db = createDatabase(dbOrOptions);
     }
     this.sessions = new SessionRepository(this.db);
     this.org = new OrgRepository(this.db);

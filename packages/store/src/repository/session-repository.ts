@@ -64,6 +64,8 @@ export class SessionRepository {
   private readonly touchMsgStmt: Database.Statement;
   private readonly touchReplyStmt: Database.Statement;
 
+  /** 动态更新预编译语句缓存池，避免重复解析与编译 SQL */
+  private readonly dynamicUpdateStmtCache = new Map<string, Database.Statement>();
   constructor(db: Database.Database) {
     this.db = db;
 
@@ -202,8 +204,14 @@ export class SessionRepository {
     sets.push('updated_at = @updated_at');
     params.updated_at = input.updatedAt ?? now;
 
-    const sql = `UPDATE sessions SET ${sets.join(', ')} WHERE id = @id`;
-    this.db.prepare(sql).run(params);
+    const cacheKey = sets.slice().sort().join('|');
+    let stmt = this.dynamicUpdateStmtCache.get(cacheKey);
+    if (!stmt) {
+      const sql = `UPDATE sessions SET ${sets.join(', ')} WHERE id = @id`;
+      stmt = this.db.prepare(sql);
+      this.dynamicUpdateStmtCache.set(cacheKey, stmt);
+    }
+    stmt.run(params);
     log.debug({ sessionId: input.id, updatedFields: Object.keys(params) }, '更新会话记录');
   }
 

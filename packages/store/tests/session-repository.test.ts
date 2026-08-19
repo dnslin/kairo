@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import {
   closeDatabase,
   createDatabase,
+  isDatabaseInstance,
   KKBotStore,
   OrgRepository,
   SessionRepository,
@@ -418,6 +419,27 @@ describe('SessionRepository 会话状态持久化仓储测试 (TDD Red -> Green)
       const session = store.sessions.getSession('ses_facade_001');
       expect(session?.name).toBe('门面测试会话');
       expect(session?.mode).toBe('draft');
+    });
+
+    it('isDatabaseInstance 类型守卫应正确识别 Database 实例并防御非数据库对象', () => {
+      expect(isDatabaseInstance(db)).toBe(true);
+      expect(isDatabaseInstance(null)).toBe(false);
+      expect(isDatabaseInstance(undefined)).toBe(false);
+      expect(isDatabaseInstance({})).toBe(false);
+      expect(isDatabaseInstance({ path: ':memory:' })).toBe(false);
+    });
+
+    it('多次使用相同字段组合更新会话时应命中 PreparedStatement 缓存并正确生效', () => {
+      const sid = 'ses_cache_hit_test';
+      sessionRepo.upsertSession({ id: sid, name: '初始名称', mode: 'auto' });
+
+      // 多次重复相同字段形状的更新
+      for (let i = 1; i <= 5; i++) {
+        sessionRepo.upsertSession({ id: sid, name: `名称第${i}次`, mode: 'draft' });
+        const cur = sessionRepo.getSession(sid);
+        expect(cur?.name).toBe(`名称第${i}次`);
+        expect(cur?.mode).toBe('draft');
+      }
     });
   });
 });
