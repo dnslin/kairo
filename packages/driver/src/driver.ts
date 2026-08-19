@@ -81,6 +81,14 @@ export class KK9Driver extends EventEmitter {
     return this.sessionOps.selectSession(sessionId);
   }
 
+  /**
+   * 显式消除指定会话的未读红点（遵循视觉红点守卫原则）
+   * 仅在自动回复发送成功等确定性动作后调用
+   */
+  public async markSessionRead(sessionId: string): Promise<boolean> {
+    return this.sessionOps.markSessionRead(sessionId);
+  }
+
   public async getRecentMessages(limit = 20, session?: KK9Session): Promise<KK9Message[]> {
     const targetSession = session || (await this.getCurrentSession()) || undefined;
     return this.messageOps.getRecentMessages(limit, targetSession);

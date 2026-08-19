@@ -286,4 +286,61 @@ export class SessionOps {
       return false;
     }
   }
+
+  /**
+   * 显式消除指定会话的未读红点与 @ 提示（视觉红点守卫）
+   * @param sessionId 目标会话 ID
+   * @returns 是否成功清除红点
+   */
+  public async markSessionRead(sessionId: string): Promise<boolean> {
+    const script = `
+      (() => {
+        ${VUE_SCROLLER_HELPERS_SCRIPT}
+        const id = ${JSON.stringify(sessionId)};
+
+        // 1. 尝试从 Vue 虚拟滚动数据层清除未读标记
+        const scrollerItems = getVueScrollerItems('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
+        const { item } = findVueSessionItem(scrollerItems, id);
+        if (item) {
+          if (typeof item.unread !== 'undefined') item.unread = false;
+          if (typeof item.unreadCount !== 'undefined') item.unreadCount = 0;
+          if (typeof item.unreadAt !== 'undefined') item.unreadAt = false;
+          if (typeof item.atState !== 'undefined') item.atState = 0;
+          if (typeof item.hasAtMe !== 'undefined') item.hasAtMe = false;
+          if (typeof item.hasAtAll !== 'undefined') item.hasAtAll = false;
+        }
+
+        // 2. 遍历可见 DOM 元素隐藏未读徽标
+        const domItems = document.querySelectorAll('${this.selectors.sessionItem}');
+        let domMatched = false;
+        for (const el of domItems) {
+          const matchId = el.getAttribute('data-sesuuid') || el.getAttribute('data-session-id') || el.getAttribute('id');
+          const title = el.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
+          if (matchId === id || title === id || (title && title.includes(id))) {
+            domMatched = true;
+            const badge = el.querySelector('${this.selectors.sessionUnreadBadge}');
+            if (badge && badge instanceof HTMLElement) {
+              badge.style.display = 'none';
+            }
+            const atBadge = el.querySelector('.badge-at, .at-tips, [class*="at-tips"], [class*="badge-at"], [class*="at-badge"], .is-at');
+            if (atBadge && atBadge instanceof HTMLElement) {
+              atBadge.style.display = 'none';
+            }
+            break;
+          }
+        }
+
+        return { success: true, vueUpdated: Boolean(item), domUpdated: domMatched };
+      })()
+    `;
+
+    try {
+      const res = await this.cdp.evaluate<{ success: boolean }>(script);
+      log.debug({ sessionId, res }, '执行会话未读红点消除');
+      return Boolean(res?.success);
+    } catch (err) {
+      log.warn({ sessionId, err: String(err) }, '消除会话未读红点失败');
+      return false;
+    }
+  }
 }
