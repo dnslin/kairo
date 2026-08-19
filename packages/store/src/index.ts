@@ -9,3 +9,4 @@ export * from './utils/logger.js';
 export * from './database/schema.js';
 export * from './database/connection.js';
 export * from './repository/org-repository.js';
+export * from './export/roster-exporter.js';
