@@ -632,6 +632,41 @@ describe('Store', () => {
     });
   });
 
+  describe('markMessageRecalled 撤回消息与历史过滤 (Issue #67)', () => {
+    it('标记撤回后，getSessionHistory 应自动过滤已撤回消息', () => {
+      store.saveMessage('ses-recall', { sender: 'Alice', content: '第一条正常消息', isFromSelf: false });
+      store.saveMessage('ses-recall', { sender: 'Bob', content: '这是一条发错的消息', isFromSelf: false });
+      store.saveMessage('ses-recall', { sender: 'Charlie', content: '第三条正常消息', isFromSelf: false });
+
+      // 撤回 Bob 的发错消息
+      const recalled = store.markMessageRecalled({
+        sessionId: 'ses-recall',
+        content: '这是一条发错的消息',
+      });
+      expect(recalled).toBe(true);
+
+      // 获取会话历史，发错的消息不应再出现
+      const history = store.getSessionHistory('ses-recall', 10);
+      expect(history).toHaveLength(2);
+      expect(history.map(m => m.content)).toEqual(['第一条正常消息', '第三条正常消息']);
+    });
+
+    it('通过 sender 撤回发送者的最后一条消息', () => {
+      store.saveMessage('ses-recall-2', { sender: 'UserA', content: '旧消息', isFromSelf: false });
+      store.saveMessage('ses-recall-2', { sender: 'UserA', content: '准备撤回的最新消息', isFromSelf: false });
+
+      const recalled = store.markMessageRecalled({
+        sessionId: 'ses-recall-2',
+        sender: 'UserA',
+      });
+      expect(recalled).toBe(true);
+
+      const history = store.getSessionHistory('ses-recall-2', 10);
+      expect(history).toHaveLength(1);
+      expect(history[0]?.content).toBe('旧消息');
+    });
+  });
+
   describe('close', () => {
     it('关闭后操作抛出错误', () => {
       store.close();

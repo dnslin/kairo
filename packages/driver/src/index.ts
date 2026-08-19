@@ -41,6 +41,7 @@ export type {
   PollingConfig,
   DriverConfig,
   SendResult,
+  KK9RecalledEvent,
   PreSendCheckResult,
   SendOptions,
   SendFileOptions,

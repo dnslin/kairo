@@ -137,6 +137,8 @@ export interface KK9Message {
   timestamp: number;
   /** 消息分类类型 */
   messageType?: KK9MessageType;
+  /** 是否已被撤回 */
+  isRecalled?: boolean;
   /** 是否 @ 了当前机器人 */
   atMe?: boolean;
   /** 是否 @ 了全体成员 */
@@ -192,10 +194,26 @@ export interface DriverConfig {
   polling?: Partial<PollingConfig>;
 }
 
+/**
+ * 发送操作结果与快捷撤回方法
+ */
 export interface SendResult {
   success: boolean;
+  messageId?: string;
+  recall?: () => Promise<boolean>;
   error?: string;
   verifyLatencyMs?: number;
+}
+
+/**
+ * 消息撤回事件元数据
+ */
+export interface KK9RecalledEvent {
+  messageId: string;
+  sessionId: string;
+  sender: string;
+  time: string;
+  timestamp?: number;
 }
 
 export interface PreSendCheckResult {
@@ -227,6 +245,8 @@ export interface DriverEvents {
   message: (message: KK9Message) => void;
   /** 专为群聊 @ 我/全体 派发的快捷事件 */
   at: (message: KK9Message) => void;
+  /** 消息撤回事件 */
+  recalled: (event: KK9RecalledEvent) => void;
   error: (error: Error) => void;
   heartbeat: (uptimeMs: number) => void;
 }

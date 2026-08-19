@@ -257,8 +257,13 @@ export class SendOps {
           verifyLatencyMs: latency,
         };
       }
-
-      return { success: true, verifyLatencyMs: latency };
+      const messageId = (await this.fetchLastSentMessageId()) || `msg_${Date.now()}`;
+      return {
+        success: true,
+        messageId,
+        recall: () => this.recallMessage(messageId, options.targetSessionId),
+        verifyLatencyMs: latency,
+      };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error({ err: errorMsg }, '发送富文本异常');
@@ -377,8 +382,13 @@ export class SendOps {
           verifyLatencyMs: latency,
         };
       }
-
-      return { success: true, verifyLatencyMs: latency };
+      const messageId = (await this.fetchLastSentMessageId()) || `msg_${Date.now()}`;
+      return {
+        success: true,
+        messageId,
+        recall: () => this.recallMessage(messageId, options.targetSessionId),
+        verifyLatencyMs: latency,
+      };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error({ err: errorMsg }, '发送回复消息异常');
@@ -455,8 +465,13 @@ export class SendOps {
           verifyLatencyMs: latency,
         };
       }
-
-      return { success: true, verifyLatencyMs: latency };
+      const messageId = (await this.fetchLastSentMessageId()) || `msg_${Date.now()}`;
+      return {
+        success: true,
+        messageId,
+        recall: () => this.recallMessage(messageId, options.targetSessionId),
+        verifyLatencyMs: latency,
+      };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error({ err: errorMsg }, '发送文件异常');
@@ -609,8 +624,13 @@ export class SendOps {
           verifyLatencyMs: latency,
         };
       }
-
-      return { success: true, verifyLatencyMs: latency };
+      const messageId = (await this.fetchLastSentMessageId()) || `msg_${Date.now()}`;
+      return {
+        success: true,
+        messageId,
+        recall: () => this.recallMessage(messageId, options.targetSessionId),
+        verifyLatencyMs: latency,
+      };
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error({ err: errorMsg }, '发送图片异常');
@@ -701,5 +721,187 @@ export class SendOps {
       await sleep(200);
     }
     return false;
+  }
+
+  /**
+   * 获取最后一条自己发送的消息 ID 或指纹
+   */
+  private async fetchLastSentMessageId(): Promise<string | undefined> {
+    const script = `
+      (() => {
+        const items = document.querySelectorAll('${this.selectors.messageItem}');
+        for (let i = items.length - 1; i >= 0; i--) {
+          const item = items[i];
+          const isMe = item.matches('${this.selectors.messageIsMe}') ||
+            item.classList.contains('rcd-msg-right') ||
+            item.classList.contains('rcd-msg-me') ||
+            item.classList.contains('is-me') ||
+            item.querySelector('${this.selectors.messageIsMe}') !== null;
+          if (isMe) {
+            const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
+            const rawId = vueMsg?.id || vueMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id') || item.getAttribute('data-id');
+            if (rawId) return String(rawId);
+          }
+        }
+        return null;
+      })()
+    `;
+    try {
+      const rawId = await this.cdp.evaluate<string | null>(script);
+      return rawId || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * 消息撤回 (Recall / CancelMessage)
+   * 包含所有权校验与 120 秒时效守卫
+   */
+  public async recallMessage(messageId: string, sessionId?: string): Promise<boolean> {
+    if (!messageId) return false;
+
+    try {
+      // 1. 查找目标消息并验证所有权与时效
+      const checkScript = `
+        (() => {
+          const targetId = ${JSON.stringify(messageId)};
+          const items = document.querySelectorAll('${this.selectors.messageItem}');
+          for (let i = items.length - 1; i >= 0; i--) {
+            const item = items[i];
+            const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
+            const rawId = vueMsg?.id || vueMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id') || item.getAttribute('data-id');
+
+            const isMe = item.matches('${this.selectors.messageIsMe}') ||
+              item.classList.contains('rcd-msg-right') ||
+              item.classList.contains('rcd-msg-me') ||
+              item.classList.contains('is-me') ||
+              item.querySelector('${this.selectors.messageIsMe}') !== null ||
+              Boolean(vueMsg?.isMe) ||
+              Boolean(vueMsg?.isFromSelf);
+
+            const sender = item.querySelector('${this.selectors.messageSender}')?.textContent?.trim() || vueMsg?.senderName || '';
+            const time = item.querySelector('${this.selectors.messageTime}')?.textContent?.trim() || '';
+            const sendTime = vueMsg?.sendTime || (vueMsg?.time ? new Date(vueMsg.time).getTime() : 0);
+
+            if (targetId && (rawId === targetId || item.id === targetId || String(targetId).includes(String(rawId)) || (rawId && String(rawId).includes(String(targetId))))) {
+              return {
+                isMe,
+                sender,
+                time,
+                timestamp: sendTime || Date.now(),
+              };
+            }
+          }
+          return null;
+        })()
+      `;
+
+      const msgInfo = await this.cdp.evaluate<{
+        isMe: boolean;
+        sender?: string;
+        time?: string;
+        timestamp?: number;
+      } | null>(checkScript);
+
+      if (!msgInfo) {
+        log.warn({ messageId, sessionId }, '未找到待撤回的目标消息，取消撤回');
+        return false;
+      }
+
+      // 所有权安全校验：仅允许撤回自己发出的消息
+      if (!msgInfo.isMe) {
+        log.warn({ messageId, sender: msgInfo.sender }, '尝试撤回非自己发出的消息，安全拦截');
+        return false;
+      }
+
+      // 时效安全防护：超过 120 秒拒绝撤回
+      if (msgInfo.timestamp) {
+        const elapsedMs = Date.now() - msgInfo.timestamp;
+        if (elapsedMs > 120_000) {
+          log.warn({ messageId, elapsedMs }, '消息已超过 2 分钟时效限制，拒绝撤回');
+          return false;
+        }
+      }
+
+      // 2. 执行底层原生撤回 (CancelMessage)
+      const recallScript = `
+        (() => {
+          const targetId = ${JSON.stringify(messageId)};
+          const targetSessionId = ${JSON.stringify(sessionId || '')};
+
+          const getMainPageVm = () => document.querySelector('.main-page, #app, .app-container')?.__vue__;
+          const getEditorVm = () => document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
+          const getChatContentVm = () => document.querySelector('.chat-content, .message-content-box')?.__vue__;
+
+          const bus = getMainPageVm()?.$bus || getEditorVm()?.$bus || getChatContentVm()?.$bus || (window.vueBus || window.$bus);
+          const chatContent = getChatContentVm();
+
+          const items = document.querySelectorAll('${this.selectors.messageItem}');
+          let matchedItem = null;
+          let matchedVueMsg = null;
+
+          for (let i = items.length - 1; i >= 0; i--) {
+            const item = items[i];
+            const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
+            const rawId = vueMsg?.id || vueMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id') || item.getAttribute('data-id');
+            if (targetId && (rawId === targetId || item.id === targetId || String(targetId).includes(String(rawId)) || (rawId && String(rawId).includes(String(targetId))))) {
+              matchedItem = item;
+              matchedVueMsg = vueMsg;
+              break;
+            }
+          }
+
+          if (chatContent && matchedVueMsg) {
+            if (typeof chatContent.onCancelMessage === 'function') {
+              chatContent.onCancelMessage(matchedVueMsg);
+              return { success: true, method: 'chat_content_onCancelMessage' };
+            }
+            if (typeof chatContent.cancelMessage === 'function') {
+              chatContent.cancelMessage(matchedVueMsg);
+              return { success: true, method: 'chat_content_cancelMessage' };
+            }
+          }
+
+          if (typeof window.toData === 'function' && matchedVueMsg) {
+            window.toData('cancelMessage', {
+              msgID: matchedVueMsg.id || matchedVueMsg.msgID || targetId,
+              msgIdex: matchedVueMsg.msgIdx || 0,
+              sessionID: matchedVueMsg.sessionID || targetSessionId,
+              byAdmin: 0,
+            });
+            return { success: true, method: 'toData_cancelMessage' };
+          }
+
+          if (bus && matchedVueMsg) {
+            bus.$emit('CancelMessage', {
+              byAdmin: 0,
+              event: 'CancelMessage',
+              msgID: matchedVueMsg.id || matchedVueMsg.msgID || targetId,
+              msgIdex: matchedVueMsg.msgIdx || 0,
+            });
+            return { success: true, method: 'bus_cancelMessage' };
+          }
+
+          if (matchedItem) {
+            matchedItem.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+            const menuItems = Array.from(document.querySelectorAll('.context-menu-item, .v-contextmenu-item, .menu-item'));
+            const recallItem = menuItems.find(el => el.textContent?.includes('撤回'));
+            if (recallItem) {
+              recallItem.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+              return { success: true, method: 'dom_contextmenu' };
+            }
+          }
+
+          return { success: false, error: '未找到可用的底层撤回入口或消息未在视口中' };
+        })()
+      `;
+
+      const res = await this.cdp.evaluate<{ success: boolean; error?: string }>(recallScript);
+      return Boolean(res?.success);
+    } catch (err) {
+      log.error({ err: String(err), messageId }, '执行消息撤回异常');
+      return false;
+    }
   }
 }
