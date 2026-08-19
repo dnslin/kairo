@@ -355,6 +355,56 @@ export class KK9EventBridge extends EventEmitter {
         const unbindFns = [];
         const hookedSessions = new Set();
 
+        function resolveSenderName(senderId, msgId, sesUUID) {
+          const main = getMainPageVm();
+          const editor = getEditorVm();
+          const myUid = main?.userID || editor?.userID;
+          const myName = editor?.activedSes?.createrName || main?.userName;
+
+          if (senderId && String(senderId) === String(myUid)) {
+            return myName || '我';
+          }
+
+          // 1. 尝试从当前 chat-content 实例消息列表中反查原消息发送者
+          if (msgId) {
+            const chatContainers = document.querySelectorAll('.chat-container, .chat-content, .message-content-box');
+            for (const container of chatContainers) {
+              const vm = container.__vue__;
+              if (vm && Array.isArray(vm.messages)) {
+                const orig = vm.messages.find(m => String(m.id) === String(msgId) || String(m.msgID) === String(msgId));
+                if (orig) {
+                  if (String(orig.sender) === String(myUid)) {
+                    return myName || '我';
+                  }
+                  if (orig.senderName) return String(orig.senderName);
+                  if (orig.sendName) return String(orig.sendName);
+                  if (orig.sender) senderId = orig.sender;
+                }
+              }
+            }
+          }
+
+          // 2. 尝试从会话列表（sortedSessions）中反查联系人姓名
+          if (sesUUID && editor?.sortedSessions) {
+            const ses = editor.sortedSessions.find(s => s.sesUUID === sesUUID || String(s.id) === sesUUID);
+            if (ses) {
+              if (ses.type === 0) { // 私聊
+                if (senderId && String(senderId) === String(myUid)) {
+                  return ses.createrName || myName || '我';
+                }
+                return ses.typeName || ses.createrName || ses.name || (senderId ? String(senderId) : '对方');
+              }
+              if (ses.name) return ses.name;
+            }
+          }
+
+          if (senderId && String(senderId) === String(myUid)) {
+            return myName || '我';
+          }
+
+          return senderId ? String(senderId) : (myName || '我');
+        }
+
         function onBus(event, handler) {
           if (!bus || typeof bus.$on !== 'function') return;
           bus.$on(event, handler);
@@ -374,10 +424,12 @@ export class KK9EventBridge extends EventEmitter {
           if (contentObj && (contentObj.event === 'CancelMessage' || contentObj.type === 'CancelMessage')) {
             const msgId = String(contentObj.msgID || contentObj.msgId || contentObj.id || m.msgID || m.id || '');
             if (msgId) {
+              const sessionId = String(m.sessionID || m.sessionId || defaultSessionId || '');
+              const rawSender = m.sender || m.senderName || contentObj.sender || contentObj.senderName;
               return {
                 messageId: msgId,
-                sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
-                sender: String(m.sender || m.senderName || contentObj.sender || ''),
+                sessionId,
+                sender: resolveSenderName(rawSender, msgId, sessionId),
                 time: new Date().toLocaleTimeString(),
                 timestamp: Date.now(),
                 raw: m
@@ -387,10 +439,12 @@ export class KK9EventBridge extends EventEmitter {
           if (m.event === 'CancelMessage' || m.type === 'CancelMessage') {
             const msgId = String(m.msgID || m.msgId || m.id || '');
             if (msgId) {
+              const sessionId = String(m.sessionID || m.sessionId || defaultSessionId || '');
+              const rawSender = m.sender || m.senderName;
               return {
                 messageId: msgId,
-                sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
-                sender: String(m.sender || m.senderName || ''),
+                sessionId,
+                sender: resolveSenderName(rawSender, msgId, sessionId),
                 time: new Date().toLocaleTimeString(),
                 timestamp: Date.now(),
                 raw: m
@@ -420,10 +474,11 @@ export class KK9EventBridge extends EventEmitter {
           // 监听会话专用撤回事件
           onBus(sesUUID + '-revokeMsg', (revokePayload) => {
             if (!revokePayload) return;
+            const msgId = String(revokePayload.msgID || revokePayload.msgId || revokePayload.id || '');
             postEvent('recalled', {
-              messageId: String(revokePayload.msgID || revokePayload.msgId || revokePayload.id || ''),
+              messageId: msgId,
               sessionId: String(sesUUID || ''),
-              sender: String(revokePayload.sender || revokePayload.senderName || '某人'),
+              sender: resolveSenderName(revokePayload.sender || revokePayload.senderName, msgId, sesUUID),
               time: new Date().toLocaleTimeString(),
               timestamp: Date.now(),
               raw: revokePayload,
@@ -452,10 +507,12 @@ export class KK9EventBridge extends EventEmitter {
           // 2. 监听全局 CancelMessage
           onBus('CancelMessage', (payload) => {
             if (!payload) return;
+            const msgId = String(payload.msgID || payload.msgId || payload.id || '');
+            const sessionId = String(payload.sessionID || payload.sessionId || '');
             postEvent('recalled', {
-              messageId: String(payload.msgID || payload.msgId || payload.id || ''),
-              sessionId: String(payload.sessionID || payload.sessionId || ''),
-              sender: String(payload.sender || payload.senderName || payload.fromUserName || '某人'),
+              messageId: msgId,
+              sessionId,
+              sender: resolveSenderName(payload.sender || payload.senderName || payload.fromUserName, msgId, sessionId),
               time: new Date().toLocaleTimeString(),
               timestamp: Date.now(),
               raw: payload,
@@ -477,6 +534,9 @@ export class KK9EventBridge extends EventEmitter {
 
         // 4. 挂钩所有 chat-content 组件实例的撤回方法
         function hookChatContentInstances() {
+          const main = getMainPageVm();
+          const editor = getEditorVm();
+          const myUid = main?.userID || editor?.userID;
           const chatContainers = document.querySelectorAll('.chat-container, .chat-content, .message-content-box');
           chatContainers.forEach(container => {
             const vm = container.__vue__;
@@ -485,10 +545,12 @@ export class KK9EventBridge extends EventEmitter {
               const origAdd = vm.addRevokeMsg;
               vm.addRevokeMsg = function(data) {
                 if (data && (data.msgID || data.msgId || data.id)) {
+                  const msgId = String(data.msgID || data.msgId || data.id);
+                  const sessionId = String(vm.sesInfo?.sesUUID || vm.sessionID || '');
                   postEvent('recalled', {
-                    messageId: String(data.msgID || data.msgId || data.id),
-                    sessionId: String(vm.sesInfo?.sesUUID || vm.sessionID || ''),
-                    sender: String(data.sender || data.senderName || '某人'),
+                    messageId: msgId,
+                    sessionId,
+                    sender: resolveSenderName(data.sender || vm.loginID || myUid, msgId, sessionId),
                     time: new Date().toLocaleTimeString(),
                     timestamp: Date.now(),
                     raw: data
@@ -500,7 +562,6 @@ export class KK9EventBridge extends EventEmitter {
           });
         }
         hookChatContentInstances();
-
         // 5. DOM 变动监听器（作为系统气泡撤回提示的终极兜底守卫）
         let observer = null;
         try {
