@@ -154,6 +154,34 @@ export interface KK9Message {
   raw?: Record<string, unknown>;
 }
 
+/**
+ * 员工档案与组织架构信息
+ */
+export interface KK9Employee {
+  /** 唯一员工 UID */
+  id: number | string;
+  /** 工号 / 登录账号 (login_name) */
+  loginName: string;
+  /** 真实姓名 */
+  name: string;
+  /** 岗位 / 职称 (pos) */
+  position?: string;
+  /** 物理工位 / 办公区 */
+  region?: string;
+  /** 个性签名 (sig) */
+  signature?: string;
+  /** 手机号 */
+  phone?: string;
+  /** 电子邮箱 */
+  email?: string;
+  /** 头像地址 */
+  avatarUrl?: string;
+  /** 原始对象备份 */
+  raw?: Record<string, unknown>;
+  /** 抽取时间戳 (毫秒) */
+  updatedAt: number;
+}
+
 export interface SelectorsConfig {
   sessionList: string;
   sessionItem: string;

@@ -8,6 +8,7 @@ export { CdpClient } from './cdp/client.js';
 export { SessionOps } from './dom/session-ops.js';
 export { MessageOps, readImageAsBase64, saveImageToFile } from './dom/message-ops.js';
 export { SendOps } from './dom/send-ops.js';
+export { OrgOps, parseEmployee, parseEmployeeList } from './dom/org-ops.js';
 export {
   escapeHtml,
   styleToCss,
@@ -36,6 +37,7 @@ export type {
   KK9ImageInfo,
   KK9Session,
   KK9Message,
+  KK9Employee,
   SelectorsConfig,
   CdpConfig,
   PollingConfig,
