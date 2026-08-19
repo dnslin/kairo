@@ -1,281 +1,92 @@
-# KKBot 开发规范
+# KKBot 开发规范 (v2 Monorepo)
 
-## 技术栈
+## 1. 技术栈
 
-| 类别               | 选型                  | 版本              |
-| ------------------ | --------------------- | ----------------- |
-| Runtime            | Node.js               | 22+ LTS           |
-| Language           | TypeScript            | 5.x (strict mode) |
-| Package Manager    | pnpm                  | 8+                |
-| Browser Automation | Playwright            | latest            |
-| Database           | SQLite                | better-sqlite3    |
-| HTTP Client        | undici / native fetch | -                 |
-| Logging            | pino                  | latest            |
-| Config             | YAML                  | js-yaml           |
-| Test               | Vitest                | latest            |
-| Lint               | ESLint                | 9.x (flat config) |
-| Format             | Prettier              | 3.x               |
+| 类别 | 选型 | 说明 |
+| --- | --- | --- |
+| 运行环境 | Node.js (>=20.0.0 LTS) | 推荐 Node 22+ |
+| 语言 | TypeScript 5.7+ | Strict Mode (全严格模式) + ESM NodeNext |
+| 包管理器 | pnpm 9+ / 10+ | Monorepo 工作区 (`pnpm-workspace.yaml`) |
+| 底层通信 | WebSocket + CDP 原生协议 | @kkbot/driver 直连 Electron 调试端口 |
+| 智能引擎 | Mastra 全家桶 (@mastra/core, @mastra/memory, @mastra/mcp, @mastra/rag) | @kkbot/agent 认知内核 |
+| 数据库 | SQLite (better-sqlite3) | WAL 模式，预编译 SQL 语句 |
+| Web 前端 | Vite + React 19 + TailwindCSS + shadcn/ui | @kkbot/web 运维控制台 |
+| 日志体系 | pino | 结构化日志，子模块专用 logger |
+| 单元测试 | Vitest 3.x | 100% 离线 Mock，支持监听模式与覆盖率 |
+| 代码规范 | ESLint 9 (Flat Config) + Prettier 3 | 强制 NodeNext ESM `.js` 扩展名与禁止 `any` |
 
-## 项目结构
+---
+
+## 2. 项目结构
 
 ```
 kkbot/
-├── src/
-│   ├── index.ts          # 入口
-│   ├── config/           # 配置加载
-│   │   ├── index.ts
-│   │   ├── schema.ts     # 配置类型定义
-│   │   └── loader.ts     # YAML 加载器
-│   ├── cdp/              # CDP 连接管理
-│   │   ├── index.ts
-│   │   └── connector.ts
-│   ├── dom/              # DOM 定位器
-│   │   ├── index.ts
-│   │   └── locator.ts
-│   ├── extract/          # 消息提取
-│   │   ├── index.ts
-│   │   └── extractor.ts
-│   ├── watch/            # 消息监听
-│   │   ├── index.ts
-│   │   └── watcher.ts
-│   ├── policy/           # 策略引擎
-│   │   ├── index.ts
-│   │   └── engine.ts
-│   ├── llm/              # LLM 客户端
-│   │   ├── index.ts
-│   │   └── client.ts
-│   ├── send/             # 发送器
-│   │   ├── index.ts
-│   │   └── sender.ts
-│   ├── store/            # 数据存储
-│   │   ├── index.ts
-│   │   ├── db.ts
-│   │   └── migrations/
-│   ├── ops/              # Web 控制台
-│   │   ├── index.ts
-│   │   ├── server.ts
-│   │   └── routes/
-│   ├── types/            # 类型定义
-│   │   └── index.ts
-│   └── utils/            # 工具函数
-│       ├── index.ts
-│       └── logger.ts
-├── tests/                # 测试文件
-│   └── *.test.ts
-├── config.yaml           # 主配置文件
-├── config.example.yaml   # 配置示例
-├── data/                 # 运行时数据（gitignore）
-│   ├── kkbot.db
-│   └── logs/
-├── docs/                 # 文档
-├── package.json
-├── pnpm-lock.yaml
-├── tsconfig.json
-├── eslint.config.js
-├── prettier.config.js
-├── vitest.config.ts
-└── .gitignore
+├── packages/
+│   ├── driver/                   # @kkbot/driver: CDP 驱动层
+│   │   ├── src/
+│   │   │   ├── cdp/              # WebSocket 连接与 CDP 客户端
+│   │   │   ├── dom/              # 会话、消息、富文本、发送等 DOM/IPC 操作
+│   │   │   ├── types/            # 强类型定义 (KK9Message, KK9Session, KK9Employee 等)
+│   │   │   ├── utils/            # 日志与错误类
+│   │   │   ├── driver.ts         # KK9Driver 主类
+│   │   │   └── index.ts          # 公开 API 导出
+│   │   ├── tests/                # 离线 Vitest 单元测试
+│   │   └── package.json
+│   ├── agent/                    # @kkbot/agent: Mastra 认知内核 (规划中)
+│   ├── gateway/                  # @kkbot/gateway: 调度中枢与 SQLite 状态机 (规划中)
+│   └── web/                      # @kkbot/web: Vite React 运维控制台 (规划中)
+├── legacy/                       # v1 单体架构归档代码 (保留供参考)
+│   ├── src/
+│   └── tests/
+├── scripts/                      # 真机 E2E 验证、基准压测与调试脚本
+├── docs/                         # PRD、开发规范、ADR 架构决策、探索研究报告
+│   ├── adr/                      # ADR 0001, ADR 0002 等架构决策记录
+│   └── agents/                   # 领域模型与工单跟踪规范
+├── .omp/                         # 共享 Agent Skills 与 MCP 工具配置
+├── package.json                  # 根工作区配置
+├── pnpm-workspace.yaml           # pnpm workspace 定义
+├── tsconfig.json                 # 根 TypeScript 配置
+├── vitest.config.ts              # 根 Vitest 配置
+└── eslint.config.js              # ESLint 9 Flat 配置
 ```
 
-## 代码规范
+---
 
-### TypeScript
-
-- 使用 `strict: true`
-- 禁止 `any`，必须使用具体类型或 `unknown`
-- 优先使用 `interface` 定义对象类型
-- 使用 `type` 定义联合类型、交叉类型
-- 导出类型时使用 `export type`
-
-```typescript
-// Good
-interface Message {
-  id: string;
-  content: string;
-  sender: string;
-}
-
-type MessageStatus = 'pending' | 'sent' | 'failed';
-
-export type { Message, MessageStatus };
-
-// Bad
-const data: any = {};
-```
-
-### 模块导入
-
-- 使用 ES Modules (`import`/`export`)
-- 相对路径使用 `.js` 扩展名（TypeScript ESM 要求）
-- 导入顺序：外部模块 → 内部模块 → 类型
-
-```typescript
-// Good
-import { chromium } from 'playwright';
-import { config } from '../config/index.js';
-import type { Message } from '../types/index.js';
-```
-
-### 命名规范
-
-| 类型      | 规范             | 示例               |
-| --------- | ---------------- | ------------------ |
-| 文件名    | kebab-case       | `cdp-connector.ts` |
-| 类        | PascalCase       | `CdpConnector`     |
-| 函数/变量 | camelCase        | `getMessage`       |
-| 常量      | UPPER_SNAKE_CASE | `MAX_RETRY_COUNT`  |
-| 类型/接口 | PascalCase       | `MessagePayload`   |
-| 枚举值    | PascalCase       | `Status.Pending`   |
-
-### 错误处理
-
-- 使用自定义错误类
-- 错误必须包含上下文信息
-- 异步函数使用 try-catch
-
-```typescript
-export class CdpConnectionError extends Error {
-  constructor(
-    message: string,
-    public readonly cause?: Error
-  ) {
-    super(message);
-    this.name = 'CdpConnectionError';
-  }
-}
-
-async function connect(): Promise<void> {
-  try {
-    await browser.connect();
-  } catch (error) {
-    throw new CdpConnectionError('Failed to connect', error as Error);
-  }
-}
-```
-
-### 日志规范
-
-- 使用 pino logger
-- 日志级别：`fatal` > `error` > `warn` > `info` > `debug` > `trace`
-- 结构化日志，包含上下文
-
-```typescript
-import { logger } from '../utils/logger.js';
-
-logger.info({ sessionId, messageCount: 5 }, 'Messages extracted');
-logger.error({ err, sessionId }, 'Failed to send message');
-```
-
-### 异步处理
-
-- 优先使用 `async/await`
-- 避免回调地狱
-- 并行操作使用 `Promise.all` / `Promise.allSettled`
-
-```typescript
-// Good
-const [messages, session] = await Promise.all([
-  extractor.getMessages(),
-  store.getSession(sessionId),
-]);
-
-// Bad
-getMessages().then(messages => {
-  getSession().then(session => {
-    // ...
-  });
-});
-```
-
-## Git 规范
-
-### 分支命名
-
-- `main` - 主分支
-- `feat/xxx` - 功能分支
-- `fix/xxx` - 修复分支
-- `docs/xxx` - 文档分支
-
-### Commit Message
-
-使用 Conventional Commits:
-
-```
-<type>(<scope>): <subject>
-
-<body>
-```
-
-| Type     | 说明      |
-| -------- | --------- |
-| feat     | 新功能    |
-| fix      | Bug 修复  |
-| docs     | 文档更新  |
-| refactor | 重构      |
-| test     | 测试      |
-| chore    | 构建/工具 |
-
-示例：
-
-```
-feat(cdp): implement auto-reconnect with exponential backoff
-
-- Add reconnect logic with max 5 retries
-- Use exponential backoff (1s, 2s, 4s, 8s, 16s)
-- Emit 'reconnecting' event for status tracking
-```
-
-## 测试规范
-
-- 单元测试文件命名：`*.test.ts`
-- 测试覆盖率目标：核心模块 > 80%
-- 使用 Vitest 的 `describe`、`it`、`expect`
-
-```typescript
-import { describe, it, expect, vi } from 'vitest';
-import { CdpConnector } from '../src/cdp/connector.js';
-
-describe('CdpConnector', () => {
-  it('should connect successfully', async () => {
-    const connector = new CdpConnector();
-    await expect(connector.connect()).resolves.not.toThrow();
-  });
-});
-```
-
-## 配置文件规范
-
-- 敏感信息使用环境变量
-- 提供 `config.example.yaml` 示例
-- 配置变更需要更新类型定义
-
-```yaml
-# config.yaml
-llm:
-  baseUrl: ${LLM_BASE_URL} # 支持环境变量
-  apiKey: ${LLM_API_KEY}
-```
-
-## 依赖管理
-
-- 使用 pnpm
-- 锁定版本：`pnpm add -E <package>`
-- 定期更新依赖：`pnpm update`
-- 安全审计：`pnpm audit`
-
-## 开发流程
-
-1. 从 `main` 创建功能分支
-2. 开发完成后运行 lint + test
-3. 提交 PR，关联 Issue
-4. Code Review 通过后合并
+## 3. 开发命令
 
 ```bash
-# 开发命令
-pnpm dev          # 开发模式
-pnpm build        # 构建
-pnpm test         # 运行测试
-pnpm lint         # 代码检查
-pnpm lint:fix     # 自动修复
-pnpm format       # 格式化
+# 全局操作
+pnpm build              # 递归编译所有子包 (tsc -b)
+pnpm typecheck          # 全局 TypeScript 类型检查 (tsc --noEmit)
+pnpm test               # 运行所有子包的单元测试 (vitest run)
+pnpm test:watch         # 监听模式运行单元测试
+pnpm lint               # ESLint 检查
+pnpm format             # Prettier 自动格式化
+
+# 单包定向操作
+pnpm --filter @kkbot/driver test      # 仅运行 driver 包单元测试
+pnpm --filter @kkbot/driver build     # 仅编译 driver 包
+
+# 辅助诊断脚本
+pnpm tsx scripts/e2e-live-verification.ts    # 真机端到端全链路验证
 ```
+
+---
+
+## 4. 代码与架构规范
+
+### TypeScript 与导入规则
+1. **严格类型**: 开启全部 15 项严格检查。**严禁使用 `any` 或 `as any`**。
+2. **ESM 模块后缀**: 遵循 NodeNext 模块规范，所有相对路径 `import` 必须携带 `.js` 后缀（如 `import { CdpClient } from './cdp/client.js'`）。
+3. **类型导入**: 必须使用 `import type { ... }` 和 `export type { ... }`。
+
+### 模块组织模式
+1. 每个子包必须有 `src/index.ts` 明确导出对外公开 API，不暴露内部实现细节。
+2. 自定义错误继承内置 `Error`，并保留原因链（如 `originalCause`）。
+3. 统一使用 `const log = createChildLogger('module-name')` 获取子日志器。
+4. **语言要求**: 所有交流、代码注释、JSDoc 及日志内容必须使用**中文**。
+
+### 架构边界与隔离
+1. **驱动层零 DB 依赖**: `@kkbot/driver` 严格作为纯 I/O 驱动，绝不引入 `better-sqlite3` 或文件系统写入。
+2. **红点保护原则**: 驱动层默认严禁在后台静默清除会话未读红点，避免人工客服漏单。
+3. **测试可离线化**: 单元测试必须具备 100% 离线运行能力，使用 Mock CDP 模拟各种边缘场景，不得依赖真实客户端或网络连接。

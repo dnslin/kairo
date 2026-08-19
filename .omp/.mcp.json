@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "jshookmcp": {
+      "command": "npx",
+      "args": ["-y", "@jshookmcp/jshook"]
+    }
+  }
+}

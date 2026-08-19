@@ -38,8 +38,6 @@ nul
 .sisyphus
 tmp/
 .claude
-.omp/
-
 # Harness
 harness-progress.txt
 harness-tasks.json
