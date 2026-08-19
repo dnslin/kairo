@@ -3,6 +3,9 @@ import { KK9Driver } from '../src/driver.js';
 import type { KK9Employee, KK9Message, KK9Session, SendResult } from '../src/types/index.js';
 
 interface DriverInternal {
+  sessionOps: {
+    markSessionRead: (sessionId: string) => Promise<boolean>;
+  };
   messageOps: {
     getRecentMessages: (limit: number, session?: KK9Session) => Promise<KK9Message[]>;
   };
@@ -190,5 +193,21 @@ describe('KK9Driver 端到端事件驱动测试', () => {
     expect(profile).not.toBeNull();
     expect(profile?.loginName).toBe('E001');
     expect(internal.orgOps.getUserProfile).toHaveBeenCalledWith('emp_001');
+  });
+
+  it('markSessionRead 应转发调用 sessionOps.markSessionRead', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+    });
+    const internal = driver as unknown as DriverInternal;
+
+    const mockSessionOps = {
+      markSessionRead: vi.fn().mockResolvedValue(true),
+    };
+    internal.sessionOps = mockSessionOps;
+
+    const res = await driver.markSessionRead('ses_123');
+    expect(res).toBe(true);
+    expect(mockSessionOps.markSessionRead).toHaveBeenCalledWith('ses_123');
   });
 });

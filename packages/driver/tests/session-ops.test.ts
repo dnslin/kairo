@@ -82,4 +82,16 @@ describe('SessionOps 会话管理与虚拟滚动穿透测试', () => {
     expect(success).toBe(true);
     expect(mockCdp.evaluate).toHaveBeenCalledOnce();
   });
+
+  it('markSessionRead 应执行消除未读红点脚本并返回结果', async () => {
+    const mockCdp = {
+      evaluate: vi.fn().mockResolvedValue({ success: true }),
+    } as unknown as CdpClient;
+
+    const ops = new SessionOps(mockCdp, DEFAULT_SELECTORS);
+    const success = await ops.markSessionRead('ses_1');
+
+    expect(success).toBe(true);
+    expect(mockCdp.evaluate).toHaveBeenCalledOnce();
+  });
 });
