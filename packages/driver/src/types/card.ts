@@ -204,3 +204,178 @@ export interface CardLayoutResult {
   actionsHeight: number;
   footerHeight: number;
 }
+
+/**
+ * 审批风险等级
+ */
+export type ApprovalRiskLevel = 'P1' | 'P2' | 'P3' | 'P4';
+
+/**
+ * 审批决策卡片参数
+ */
+export interface ApprovalCardParams {
+  /** 申请人 (必填) */
+  applicant: string;
+  /** 申请事项 / 审批内容 (必填) */
+  item: string;
+  /** 审批单号 / 工单编号 */
+  orderNo?: string;
+  /** 所属部门 */
+  department?: string;
+  /** 风险等级 (P1 极高风险, P2 高风险, P3 中风险, P4 低风险)，默认为 'P3' */
+  riskLevel?: ApprovalRiskLevel;
+  /** 申请理由 / 详细说明 */
+  reason?: string;
+  /** 卡片主标题，默认为 '审批申请' */
+  title?: string;
+  /** 卡片副标题 / 发起系统，默认为 '审批决策中心' */
+  subtitle?: string;
+  /** 顶部图标或 Emoji，默认为 '🛡️' */
+  icon?: string;
+  /** 自定义扩展属性字段列表 */
+  customFields?: CardField[];
+  /** 同意按钮文本或自定义动作配置，默认为 { text: '✔ 同意', variant: 'success', replyCommand: '1' } */
+  approveAction?: string | Partial<CardAction>;
+  /** 拒绝按钮文本或自定义动作配置，默认为 { text: '✖ 拒绝', variant: 'danger', replyCommand: '2' } */
+  rejectAction?: string | Partial<CardAction>;
+  /** 完整自定义操作按钮列表 (传入时将覆盖默认的同意/拒绝按钮) */
+  actions?: CardAction[];
+  /** 底部提示说明，默认为 '💡 提示：可直接在会话中回复 [1] 同意 或 [2] 拒绝' */
+  footer?: CardFooter | string;
+}
+
+/**
+ * 告警严重级别
+ */
+export type AlertSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
+
+/**
+ * 告警监控指标项
+ */
+export interface AlertMetric {
+  /** 指标名称 (如 'CPU 使用率', '接口错误率') */
+  name: string;
+  /** 当前指标数值 (如 '98.5%', '520ms') */
+  value: string | number;
+  /** 告警阈值 (如 '> 80%', '200ms') */
+  threshold?: string | number;
+  /** 是否超标 (默认为 true，若为 true 则在卡片中高亮/标红展示) */
+  exceeded?: boolean;
+}
+
+/**
+ * 监控告警卡片参数
+ */
+export interface AlertCardParams {
+  /** 告警主标题 (如 '生产服务熔断告警') (必填) */
+  title: string;
+  /** 严重程度 (critical 致命, high 严重, medium 警告, low 次要, info 提示)，默认为 'high' */
+  severity?: AlertSeverity;
+  /** 影响服务 / 目标资源 (如 'payment-gateway-service') */
+  service?: string;
+  /** 故障详情 / 告警描述 */
+  description?: string;
+  /** 监控指标列表 (当前值/阈值对比，超标自动标红) */
+  metrics?: AlertMetric[];
+  /** 告警发生时间戳 (格式化字符串或毫秒数值，默认自动生成当前时间) */
+  timestamp?: string | number;
+  /** 告警副标题 / 监控系统，默认为 '监控告警中心' */
+  subtitle?: string;
+  /** 顶部图标或 Emoji (缺省根据 severity 自动匹配) */
+  icon?: string;
+  /** 自定义扩展属性字段列表 */
+  customFields?: CardField[];
+  /** 排查与处置操作按钮列表 (如 '查看日志', '立即切流', '静音 15 分钟') */
+  actions?: CardAction[];
+  /** 底部提示说明或排查建议 (缺省自动带有时间戳与排查提示) */
+  footer?: CardFooter | string;
+}
+
+/**
+ * 报告执行状态
+ */
+export type ReportStatus = 'success' | 'warning' | 'failure' | 'running';
+
+/**
+ * 报告核心指标项
+ */
+export interface ReportMetric {
+  /** 指标名称 (如 '总用例数', '通过率', '构建耗时') */
+  label: string;
+  /** 指标数值 (如 '1,280', '99.8%', '35s') */
+  value: string | number;
+  /** 视觉变体风格 (如 'success', 'danger', 'highlight', 'muted') */
+  variant?: CardFieldVariant;
+  /** 快捷高亮 */
+  highlight?: boolean;
+}
+
+/**
+ * 汇总报告卡片参数
+ */
+export interface ReportCardParams {
+  /** 报告主标题 (如 '日常巡检报告', 'CI/CD 构建报告') (必填) */
+  title: string;
+  /** 执行状态 (success 成功, warning 警告, failure 失败, running 执行中)，默认为 'success' */
+  status?: ReportStatus;
+  /** 耗时统计 (如 '1m 24s', '350ms') */
+  duration?: string;
+  /** 核心指标项列表 (将自动两列网格化排布) */
+  metrics?: ReportMetric[];
+  /** 摘要说明 / 报告总结 */
+  summary?: string;
+  /** 报告批次 / 编号 / 环境 (如 'Pipeline #4521', 'Production') */
+  reportId?: string;
+  /** 报告副标题 / 来源系统，默认为 '自动化巡检与统计' */
+  subtitle?: string;
+  /** 顶部图标或 Emoji (缺省根据 status 自动匹配) */
+  icon?: string;
+  /** 自定义扩展属性字段列表 */
+  customFields?: CardField[];
+  /** 底部操作按钮列表 (如 '查看详细报告', '重新执行') */
+  actions?: CardAction[];
+  /** 底部提示或生成时间说明 */
+  footer?: CardFooter | string;
+}
+
+/**
+ * 决策选项项
+ */
+export interface DecisionOption {
+  /** 选项编号 / 标识 (如 '1', '2', 'A', 'B'，若未指定则自动按序号分配 1, 2, 3...) */
+  key?: string | number;
+  /** 选项标题 / 名称 (必填，如 '方案一：就地水平扩容') */
+  title: string;
+  /** 选项详细说明 / 优劣势描述 */
+  description?: string;
+  /** 是否为推荐选项 (推荐项注入高亮视觉标识与专属推荐标记) */
+  recommended?: boolean;
+  /** 对应的快捷回复指令 (如 '1', 'A'，缺省为 key) */
+  replyCommand?: string;
+}
+
+/**
+ * 多选决策卡片参数
+ */
+export interface DecisionCardParams {
+  /** 决策主标题 (如 '技术架构方案评审决策') (必填) */
+  title: string;
+  /** 选项列表 (必填，至少包含 1 个选项) */
+  options: DecisionOption[];
+  /** 决策背景描述 / 问题背景 */
+  description?: string;
+  /** 截止时间 (如 '今天 18:00 前', '2026-08-20 20:00') */
+  deadline?: string;
+  /** 决策发起人 / 负责人 */
+  sponsor?: string;
+  /** 决策副标题 / 发起系统，默认为 '架构与方案决策中心' */
+  subtitle?: string;
+  /** 顶部图标或 Emoji，默认为 '⚖️' */
+  icon?: string;
+  /** 自定义扩展属性字段列表 */
+  customFields?: CardField[];
+  /** 自定义操作按钮列表 (若未提供，将自动从 options 生成对应的模拟按钮) */
+  actions?: CardAction[];
+  /** 底部提示说明 (若未提供，将自动生成带有截止时间与选项回复指导的提示) */
+  footer?: CardFooter | string;
+}
