@@ -81,21 +81,36 @@ export class MultiModalRouter {
       };
     }
     if (img.url) {
-      const isBase64 = img.url.startsWith('data:image/');
+      if (img.url.startsWith('data:image/')) {
+        return {
+          type: 'base64',
+          data: img.url,
+          mimeType: img.url.split(';')[0]?.replace('data:', '') || 'image/png',
+          width: img.width,
+          height: img.height,
+          size: img.size,
+          fileName: 'image.png',
+        };
+      }
+      if (img.url.startsWith('file://')) {
+        return {
+          type: 'file_path',
+          data: img.url,
+          mimeType: img.mimeType || MultiModalRouter.inferMimeType(img.url),
+          width: img.width,
+          height: img.height,
+          size: img.size,
+          fileName: img.url.split(/[/\\]/).pop()?.split('?')[0],
+        };
+      }
       return {
-        type: isBase64 ? 'base64' : 'url',
+        type: 'url',
         data: img.url,
-        mimeType:
-          img.mimeType ||
-          (isBase64
-            ? img.url.split(';')[0]?.replace('data:', '')
-            : MultiModalRouter.inferMimeType(img.url)),
+        mimeType: img.mimeType || MultiModalRouter.inferMimeType(img.url),
         width: img.width,
         height: img.height,
         size: img.size,
-        fileName: isBase64
-          ? 'image.png'
-          : img.url.split(/[/\\]/).pop()?.split('?')[0],
+        fileName: img.url.split(/[/\\]/).pop()?.split('?')[0],
       };
     }
     if (img.uri) {
@@ -136,9 +151,10 @@ export class MultiModalRouter {
 
     // 2. HTTP / HTTPS 远程公开 URL，直接使用
     if (
-      img.type === 'url' ||
-      img.data.startsWith('http://') ||
-      img.data.startsWith('https://')
+      (img.type === 'url' ||
+        img.data.startsWith('http://') ||
+        img.data.startsWith('https://')) &&
+      !img.data.startsWith('file://')
     ) {
       return img.data;
     }

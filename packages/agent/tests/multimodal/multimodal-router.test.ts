@@ -172,6 +172,59 @@ describe('MultiModalRouter 多模态附件感知与 OCR 降级测试', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('当 KK9ImageInfo 传入 file:// URL 时，应正确将其解析并读取转为 Data URI', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kkbot-file-url-'));
+    const tempImgPath = path.join(tempDir, 'file_url_test.png');
+    const samplePngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    fs.writeFileSync(tempImgPath, Buffer.from(samplePngBase64, 'base64'));
+
+    try {
+      const fileUrl = `file:///${tempImgPath.replace(/\\/g, '/')}`;
+      const msg: ConsolidatedMessage = {
+        sessionId: 'sess_1',
+        sessionName: '测试群',
+        sessionType: 'group',
+        sender: '李四',
+        content: '请看 file:// 图片',
+        messageCount: 1,
+        messages: [
+          {
+            id: 'm1',
+            sessionId: 'sess_1',
+            sessionName: '测试群',
+            sessionType: 'group',
+            sender: '李四',
+            content: '请看 file:// 图片',
+            time: '12:00',
+            isMe: false,
+            timestamp: 1787200000000,
+            images: [
+              {
+                url: fileUrl,
+              },
+            ],
+          },
+        ],
+        firstReceivedAt: 1787200000000,
+        lastReceivedAt: 1787200000000,
+        messageIds: ['m1'],
+      };
+
+      const result = await router.process(msg, { modelSupportsVision: true });
+      expect(result.hasImages).toBe(true);
+      expect(result.multiModalParts?.length).toBe(2);
+      const imgPart = result.multiModalParts?.[1];
+      expect(imgPart?.type).toBe('image_url');
+      if (imgPart?.type === 'image_url') {
+        expect(imgPart.imageUrl.url.startsWith('data:image/png;base64,')).toBe(true);
+        expect(imgPart.imageUrl.url.startsWith('file://')).toBe(false);
+      }
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
   it('当本地图片文件不存在时，不应在 Vision payload 中注入裸本地路径，应优雅跳过并提示', async () => {
     const msg: ConsolidatedMessage = {
       sessionId: 'sess_1',
