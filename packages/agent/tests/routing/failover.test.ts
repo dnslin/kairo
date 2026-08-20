@@ -336,4 +336,72 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
     // 确认备用模型没有被错误调用
     expect(backupStreamFn).not.toHaveBeenCalled();
   });
+
+  describe('maxRetries 重试次数边界与非法值校验', () => {
+    const createErrorLLM = (name: string): LLMProvider => ({
+      chat() {
+        const err = new Error(`503 from ${name}`);
+        Object.assign(err, { status: 503 });
+        return Promise.reject(err);
+      },
+    });
+
+    const createSuccessLLM = (name: string): LLMProvider => ({
+      chat() {
+        return Promise.resolve({ content: `${name} 成功响应` });
+      },
+    });
+
+    it('当 maxRetries 为 0 时，仅尝试主模型 1 次，失败后严禁切换至备用模型', async () => {
+      const manager = new ModelFailoverManager({ maxRetries: 0 });
+      const chain: ModelEndpointConfig[] = [
+        { id: 'm1', name: 'Model-1', provider: createErrorLLM('Model-1') },
+        { id: 'm2', name: 'Model-2', provider: createSuccessLLM('Model-2') },
+      ];
+
+      await expect(
+        manager.executeChat(chain, [{ role: 'user', content: 'test' }])
+      ).rejects.toThrowError(AllModelsFailedError);
+    });
+
+    it('当 maxRetries 为 1 时，最多尝试主模型 + 1 个备用模型，第 2 个备用模型不被调用', async () => {
+      const manager = new ModelFailoverManager({ maxRetries: 1 });
+      const m3Fn = vi.fn();
+      const chain: ModelEndpointConfig[] = [
+        { id: 'm1', name: 'Model-1', provider: createErrorLLM('Model-1') },
+        { id: 'm2', name: 'Model-2', provider: createErrorLLM('Model-2') },
+        {
+          id: 'm3',
+          name: 'Model-3',
+          provider: {
+            chat() {
+              m3Fn();
+              return Promise.resolve({ content: 'Model-3' });
+            },
+          },
+        },
+      ];
+
+      await expect(
+        manager.executeChat(chain, [{ role: 'user', content: 'test' }])
+      ).rejects.toThrowError(AllModelsFailedError);
+
+      expect(m3Fn).not.toHaveBeenCalled();
+    });
+
+    it('当 maxRetries 为非法值 (负数、小数、NaN 或 Infinity) 时，构造函数必须抛出 RangeError 异常', () => {
+      expect(() => new ModelFailoverManager({ maxRetries: -1 })).toThrowError(
+        RangeError
+      );
+      expect(() => new ModelFailoverManager({ maxRetries: 1.5 })).toThrowError(
+        RangeError
+      );
+      expect(() => new ModelFailoverManager({ maxRetries: Number.NaN })).toThrowError(
+        RangeError
+      );
+      expect(
+        () => new ModelFailoverManager({ maxRetries: Number.POSITIVE_INFINITY })
+      ).toThrowError(RangeError);
+    });
+  });
 });

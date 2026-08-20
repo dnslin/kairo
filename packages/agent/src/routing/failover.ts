@@ -60,8 +60,30 @@ export class ModelFailoverManager {
     this.defaultRetryStatusCodes = options?.retryStatusCodes ?? [
       503, 429, 500, 502, 504,
     ];
-    this.maxRetries = options?.maxRetries;
+    if (options?.maxRetries !== undefined) {
+      if (
+        typeof options.maxRetries !== 'number' ||
+        !Number.isInteger(options.maxRetries) ||
+        options.maxRetries < 0
+      ) {
+        throw new RangeError(
+          `maxRetries 必须为大于等于 0 的非负整数，当前输入: ${String(options.maxRetries)}`
+        );
+      }
+      this.maxRetries = options.maxRetries;
+    }
     this.onFailoverCallback = options?.onFailover;
+  }
+
+  /**
+   * 计算有效的最大尝试调用次数
+   */
+  private resolveMaxAttempts(chainLength: number): number {
+    if (chainLength <= 0) return 0;
+    if (typeof this.maxRetries === 'number') {
+      return Math.min(chainLength, this.maxRetries + 1);
+    }
+    return chainLength;
   }
 
   /**
@@ -284,10 +306,7 @@ export class ModelFailoverManager {
       throw new Error('Failover 候选模型链为空');
     }
 
-    const maxAttempts =
-      typeof this.maxRetries === 'number'
-        ? Math.min(candidateChain.length, this.maxRetries + 1)
-        : candidateChain.length;
+    const maxAttempts = this.resolveMaxAttempts(candidateChain.length);
 
     const attemptedModels: string[] = [];
     const underlyingErrors: Error[] = [];
@@ -361,10 +380,7 @@ export class ModelFailoverManager {
       throw new Error('Failover 候选模型链为空');
     }
 
-    const maxAttempts =
-      typeof this.maxRetries === 'number'
-        ? Math.min(candidateChain.length, this.maxRetries + 1)
-        : candidateChain.length;
+    const maxAttempts = this.resolveMaxAttempts(candidateChain.length);
 
     const attemptedModels: string[] = [];
     const underlyingErrors: Error[] = [];
