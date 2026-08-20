@@ -202,6 +202,19 @@ export class KkbotAgentRuntime {
 
       for (const r of batchRes.results) {
         const originalReq = options.toolCalls.find(c => c.callId === r.callId);
+        const contentStr =
+          typeof r.output === 'string'
+            ? r.output
+            : JSON.stringify(r.output ?? (r.error ? { error: r.error } : {}));
+
+        // 向对话历史追加 role: 'tool' 消息，回传给 LLM ReAct 循环
+        messages.push({
+          role: 'tool',
+          name: r.toolName,
+          toolCallId: r.callId,
+          content: contentStr,
+        });
+
         toolCalls.push({
           toolCallId: r.callId,
           toolName: r.toolName,

@@ -364,6 +364,87 @@ describe('ToolExecutor 高危工具审批拦截与零信任防篡改防重放验
     const task = await manager.getTaskById(taskId);
     expect(task?.toolExecutionStatus).toBe('succeeded');
   });
+  it('防跨用户冒名盗用攻击拦截：非原申请人携带他人 approvedTaskId 调用直接被拒绝，调用次数仍为 0', async () => {
+    // 1. 员工 emp_001 申请并获得批准
+    const suspendResult = await executor.executeSingle(
+      {
+        callId: 'call_victim_task',
+        toolName: 'drop_database_table',
+        args: { table: 'users' },
+      },
+      {
+        senderId: 'emp_001',
+        threadId: 'session_1',
+      }
+    );
+
+    const taskId = suspendResult.approvalTaskId!;
+    await manager.resolveTask({
+      taskId,
+      approved: true,
+      deciderId: 'leader_1',
+    });
+
+    // 2. 恶意员工 emp_attacker_999 尝试使用该 taskId 执行
+    const impersonateResult = await executor.executeSingle(
+      {
+        callId: 'call_attacker_run',
+        toolName: 'drop_database_table',
+        args: { table: 'users' },
+      },
+      {
+        senderId: 'emp_attacker_999', // 冒用者
+        threadId: 'session_1',
+        approvedTaskId: taskId,
+      }
+    );
+
+    expect(impersonateResult.success).toBe(false);
+    expect(impersonateResult.isError).toBe(true);
+    expect(impersonateResult.error).toContain('禁止冒用他人审批授权');
+    expect(mockDangerousExecute).toHaveBeenCalledTimes(0);
+  });
+
+  it('防跨会话重放攻击拦截：在非原申请会话中携带 approvedTaskId 调用直接被拒绝', async () => {
+    const suspendResult = await executor.executeSingle(
+      {
+        callId: 'call_orig_session',
+        toolName: 'drop_database_table',
+        args: { table: 'users' },
+      },
+      {
+        senderId: 'emp_001',
+        threadId: 'session_secure_private',
+      }
+    );
+
+    const taskId = suspendResult.approvalTaskId!;
+    await manager.resolveTask({
+      taskId,
+      approved: true,
+      deciderId: 'leader_1',
+    });
+
+    // 尝试在公共群聊 session_public_group 中重放消费该任务
+    const replayResult = await executor.executeSingle(
+      {
+        callId: 'call_replay_session',
+        toolName: 'drop_database_table',
+        args: { table: 'users' },
+      },
+      {
+        senderId: 'emp_001',
+        threadId: 'session_public_group', // 跨会话
+        approvedTaskId: taskId,
+      }
+    );
+
+    expect(replayResult.success).toBe(false);
+    expect(replayResult.isError).toBe(true);
+    expect(replayResult.error).toContain('禁止跨会话使用审批授权');
+    expect(mockDangerousExecute).toHaveBeenCalledTimes(0);
+  });
+
 
 
   it('超时主动 AbortSignal 级联取消：工具超时时收到 signal.aborted，绝不滞后产生副作用', async () => {

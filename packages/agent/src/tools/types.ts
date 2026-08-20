@@ -141,6 +141,8 @@ export interface ApprovalManagerPort {
     expected: {
       toolName: string;
       toolArgs: Record<string, unknown>;
+      callerId?: string;
+      threadId?: string;
     }
   ) => Promise<{ task: { toolExecutionResult?: unknown }; alreadyExecuted: boolean }>;
   recordToolExecutionResult: (taskId: string, result: unknown) => Promise<void>;

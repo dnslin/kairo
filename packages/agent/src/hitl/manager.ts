@@ -557,6 +557,8 @@ export class ApprovalManager extends EventEmitter {
     expected: {
       toolName: string;
       toolArgs: Record<string, unknown>;
+      callerId?: string;
+      threadId?: string;
     }
   ): Promise<{ task: ApprovalTask; alreadyExecuted: boolean }> {
     const task = await this.getTaskById(taskId);
@@ -571,14 +573,44 @@ export class ApprovalManager extends EventEmitter {
       );
     }
 
-    // 1. 校验工具名称一致性
+    // 1. 严格校验申请人身份与会话上下文绑定 (防跨用户/跨会话冒名盗用)
+    const callerId = expected.callerId?.trim();
+    const threadId = expected.threadId?.trim();
+
+    if (!callerId || !threadId) {
+      throw new ApprovalError(
+        `高危工具授权校验失败: 缺失调用者身份 (callerId) 或会话上下文 (threadId)，已强制阻断执行`
+      );
+    }
+
+    if (task.applicantId !== callerId) {
+      log.warn(
+        { taskId, taskApplicant: task.applicantId, callerId },
+        '检测到跨用户盗用已审批任务 ID，已拒绝执行'
+      );
+      throw new ApprovalError(
+        `高危工具授权校验失败: 任务申请人 (UID: ${task.applicantId}) 与当前调用者 (UID: ${callerId}) 不一致，禁止冒用他人审批授权`
+      );
+    }
+
+    if (task.threadId !== threadId) {
+      log.warn(
+        { taskId, taskThread: task.threadId, threadId },
+        '检测到跨会话重放已审批任务 ID，已拒绝执行'
+      );
+      throw new ApprovalError(
+        `高危工具授权校验失败: 任务原始会话 (${task.threadId}) 与当前调用会话 (${threadId}) 不一致，禁止跨会话使用审批授权`
+      );
+    }
+
+    // 2. 校验工具名称一致性
     if (task.toolName !== expected.toolName) {
       throw new ApprovalError(
         `高危工具授权防篡改校验失败: 审批工具为 "${task.toolName}"，实际调用为 "${expected.toolName}"`
       );
     }
 
-    // 2. 深度校验工具参数一致性 (防参数篡改)
+    // 3. 深度校验工具参数一致性 (防参数篡改)
     const taskArgsStr = JSON.stringify(task.toolArgs);
     const expectedArgsStr = JSON.stringify(expected.toolArgs);
     if (taskArgsStr !== expectedArgsStr) {
@@ -586,7 +618,6 @@ export class ApprovalManager extends EventEmitter {
         `高危工具授权防篡改校验失败: 传入参数与主管审批通过的参数不一致`
       );
     }
-
     // 3. 若已经执行成功过，直接返回已持久化的结果并标记 alreadyExecuted = true (防重复产生副作用)
     if (task.toolExecutionStatus === 'succeeded') {
       log.info(

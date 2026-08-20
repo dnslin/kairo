@@ -181,6 +181,8 @@ export class ReadWriteSplitExecutor {
             {
               toolName,
               toolArgs: validatedArgsRecord,
+              callerId: context?.senderId,
+              threadId: context?.threadId,
             }
           );
 

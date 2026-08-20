@@ -179,6 +179,17 @@ describe('KkbotAgentRuntime 核心智能微内核 HITL 高危工具拦截与执�
     });
     // 核心安全断言：底层高危工具恰好执行 1 次
     expect(mockToolExecute).toHaveBeenCalledTimes(1);
+
+    // 核心协议断言：LLM Provider 收到的 messages 中包含 role: 'tool' 消息回传给 ReAct 循环
+    expect(mockLLMProvider.chat).toHaveBeenCalled();
+    const chatMock = vi.mocked(mockLLMProvider.chat);
+    const lastChatCall = chatMock.mock.calls.at(-1);
+    const passedMessages = lastChatCall ? lastChatCall[0] : [];
+    const toolMessage = passedMessages.find(m => m.role === 'tool');
+    expect(toolMessage).toBeDefined();
+    expect(toolMessage?.toolCallId).toBe('call_sec_002_resumed');
+    expect(toolMessage?.content).toContain('max_retry');
+    expect(toolMessage?.content).toContain('5');
   });
   it('Fail-Closed 身份防护：缺少 senderId 时高危操作立即被阻断，绝不用昵称冒充 UID', async () => {
     const anonymousMessage: ConsolidatedMessage = {
