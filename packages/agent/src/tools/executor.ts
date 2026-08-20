@@ -1,6 +1,8 @@
 import type { z } from 'zod';
 import type { ToolRegistry } from './registry.js';
 import type {
+  ApprovalManagerPort,
+  LeaderApprovalRouterPort,
   ReadWriteSplitExecutorOptions,
   ToolBatchExecutionResult,
   ToolCallRequest,
@@ -27,14 +29,24 @@ function formatZodError(error: z.ZodError): string {
  * KKBot 读写分流高并发工具调度执行引擎 (Read/Write Split ReAct)
  *
  * 核心调度策略：
- * 1. 只读工具 (readOnly: true，如 search/query) 采用 Promise.allSettled 并行并发调度，极大降低延迟；
- * 2. 写操作工具 (readOnly: false，如 file/send/update) 保持严格串行排队执行，杜绝竞态与状态错乱；
- * 3. 异常自愈回传：工具报错或参数不合法时不崩溃主进程，而是封装 { error: message } 返回给 LLM 进行纠错；
- * 4. 步数硬性熔断：严格锁定单轮 ReAct maxSteps: 5，防止死循环无限消耗 Token。
+ * 1. 参数校验先于审批拦截：必须先经过 Zod 校验出合法规范的输入参数，再进行审批挂起或执行；
+ * 2. 高危工具零信任拦截与原子消费：
+ *    - 必须具备完整的申请人员工身份 (senderId) 与会话上下文 (threadId)；
+ *    - 必须成功经由 LeaderApprovalRouter 解析出直属主管（或其显式配置的 fallbackLeaderId），严禁使用魔法值兜底，解析失败立即 Fail-Closed；
+ *    - 携带 approvedTaskId 执行时必须经由 ApprovalManager 原子消费并深度核验 toolName 与 toolArgs 防篡改；
+ * 3. 只读工具 (readOnly: true，如 search/query) 采用 Promise.allSettled 并行并发调度；
+ * 4. 写操作工具 (readOnly: false，如 file/send/update) 保持严格串行排队执行；
+ * 5. 异常自愈回传：工具报错或参数不合法时不崩溃主进程，而是封装 { error: message } 返回给 LLM 进行纠错；
+ * 6. 步数硬性熔断：严格锁定单轮 ReAct maxSteps: 5，防止死循环无限消耗 Token。
  */
 export class ReadWriteSplitExecutor {
   private readonly registry: ToolRegistry;
-  private readonly options: Required<ReadWriteSplitExecutorOptions>;
+  private readonly options: Required<
+    Omit<ReadWriteSplitExecutorOptions, 'approvalManager' | 'leaderRouter'>
+  > & {
+    approvalManager?: ApprovalManagerPort;
+    leaderRouter?: LeaderApprovalRouterPort;
+  };
   private currentStep = 0;
 
   constructor(registry: ToolRegistry, options?: ReadWriteSplitExecutorOptions) {
@@ -43,6 +55,8 @@ export class ReadWriteSplitExecutor {
       maxSteps: options?.maxSteps ?? 5,
       timeoutMs: options?.timeoutMs ?? 30000,
       strictStepLimit: options?.strictStepLimit ?? true,
+      approvalManager: options?.approvalManager,
+      leaderRouter: options?.leaderRouter,
     };
   }
 
@@ -87,7 +101,7 @@ export class ReadWriteSplitExecutor {
   }
 
   /**
-   * 执行单个工具调用（带参数校验、超时、异常捕获与自愈封装）
+   * 执行单个工具调用（带参数校验、高危零信任拦截、超时控制、异常捕获与自愈封装）
    */
   public async executeSingle(
     request: ToolCallRequest,
@@ -96,7 +110,7 @@ export class ReadWriteSplitExecutor {
     const startTime = Date.now();
     const { callId, toolName, args } = request;
 
-    // 检查 AbortSignal 中断信号
+    // 1. 检查 AbortSignal 中断信号
     if (context?.signal?.aborted) {
       log.warn({ callId, toolName }, '检测到 AbortSignal 已中断，取消工具执行');
       return {
@@ -111,6 +125,7 @@ export class ReadWriteSplitExecutor {
       };
     }
 
+    // 2. 检索已注册工具
     const tool = this.registry.get(toolName);
     if (!tool) {
       const errMsg = `未找到名称为 "${toolName}" 的工具，请检查工具名称是否正确或已注册`;
@@ -129,57 +144,204 @@ export class ReadWriteSplitExecutor {
 
     const isReadOnly = tool.readOnly;
 
-    try {
-      // 1. Zod 参数强类型校验
-      let validatedArgs: unknown = args;
-      if (tool.inputSchema && typeof tool.inputSchema.safeParseAsync === 'function') {
-        const parseRes = await tool.inputSchema.safeParseAsync(args ?? {});
-        if (!parseRes.success) {
-          const formattedErr = formatZodError(parseRes.error);
-          log.warn(
-            { callId, toolName, args, error: formattedErr },
-            '工具入参未通过 Zod 校验'
+    // 3. 参数校验优先：先校验出合法的 validatedInput，杜绝持久化非法入参
+    const validationResult = tool.inputSchema.safeParse(args);
+    if (!validationResult.success) {
+      const formattedZodError = formatZodError(validationResult.error);
+      const errMsg = `工具 "${toolName}" 输入参数校验失败: ${formattedZodError}`;
+      log.warn({ callId, toolName, args, error: formattedZodError }, '参数校验不通过');
+      return {
+        callId,
+        toolName,
+        success: false,
+        isError: true,
+        error: errMsg,
+        output: {
+          error: errMsg,
+          details: validationResult.error.issues,
+        },
+        durationMs: Date.now() - startTime,
+        readOnly: isReadOnly,
+      };
+    }
+
+    const validatedInput = validationResult.data;
+    const validatedArgsRecord =
+      typeof validatedInput === 'object' && validatedInput !== null
+        ? (validatedInput as Record<string, unknown>)
+        : { input: validatedInput };
+
+    // 4. 高危工具零信任拦截与原子消费
+    if (tool.requireApproval) {
+      // 4.1 若携带 approvedTaskId：向 ApprovalManager 请求原子消费并执行防篡改校验
+      if (context?.approvedTaskId && this.options.approvalManager) {
+        try {
+          const consumeResult = await this.options.approvalManager.consumeApprovedTask(
+            context.approvedTaskId,
+            {
+              toolName,
+              toolArgs: validatedArgsRecord,
+            }
           );
+
+          // 若此前已成功执行过，直接返回持久化结果 (防重复产生副作用)
+          if (consumeResult.alreadyExecuted) {
+            log.info(
+              { callId, toolName, taskId: context.approvedTaskId },
+              '任务此前已成功执行，直接返回持久化输出'
+            );
+            return {
+              callId,
+              toolName,
+              success: true,
+              output: consumeResult.task.toolExecutionResult,
+              durationMs: Date.now() - startTime,
+              readOnly: isReadOnly,
+            };
+          }
+        } catch (authErr) {
+          const errMsg = authErr instanceof Error ? authErr.message : String(authErr);
+          log.warn({ callId, toolName, taskId: context.approvedTaskId, err: errMsg }, '高危工具消费拦截');
           return {
             callId,
             toolName,
             success: false,
             isError: true,
-            error: `参数校验失败: ${formattedErr}`,
-            output: { error: `工具 "${toolName}" 参数校验失败: ${formattedErr}` },
+            error: errMsg,
+            output: { error: errMsg },
             durationMs: Date.now() - startTime,
-            readOnly: isReadOnly,
+            readOnly: false,
           };
         }
-        validatedArgs = parseRes.data;
-      }
+      } else if (this.options.approvalManager) {
+        // 4.2 首次调用：必须具备完整的员工身份与会话上下文，必须能解析出直属主管 (Fail-Closed)
+        const senderId = context?.senderId?.trim();
+        const threadId = context?.threadId?.trim();
 
-      // 2. 超时控制与真正执行
-      const timeoutMs = this.options.timeoutMs;
-      let timer: NodeJS.Timeout | undefined;
-
-      const executePromise = tool.execute(validatedArgs, context);
-
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error(`工具执行超时 (超过 ${timeoutMs}ms)`));
-        }, timeoutMs);
-        if (typeof timer.unref === 'function') {
-          timer.unref();
+        if (!senderId || !threadId) {
+          const missingCtxMsg = `高危操作拦截失败: 缺失必要的员工身份信息 (senderId) 或会话上下文 (threadId)，已强制阻断执行`;
+          log.error({ callId, toolName, senderId, threadId }, missingCtxMsg);
+          return {
+            callId,
+            toolName,
+            success: false,
+            isError: true,
+            error: missingCtxMsg,
+            output: { error: missingCtxMsg },
+            durationMs: Date.now() - startTime,
+            readOnly: false,
+          };
         }
+
+        if (!this.options.leaderRouter) {
+          const missingRouterMsg = `高危操作拦截失败: 系统未配置 LeaderApprovalRouter，无法解析审批主管，已强制阻断执行`;
+          log.error({ callId, toolName }, missingRouterMsg);
+          return {
+            callId,
+            toolName,
+            success: false,
+            isError: true,
+            error: missingRouterMsg,
+            output: { error: missingRouterMsg },
+            durationMs: Date.now() - startTime,
+            readOnly: false,
+          };
+        }
+
+        let leaderId: string;
+        let leaderName: string | undefined;
+
+        try {
+          const leader = await this.options.leaderRouter.resolveLeader(senderId);
+          leaderId = leader.leaderId;
+          leaderName = leader.leaderName;
+        } catch (routerErr) {
+          const resolveFailMsg = `高危操作拦截失败: 无法解析员工 (ID: ${senderId}) 的审批主管，已强制阻断执行`;
+          log.error({ callId, toolName, senderId, err: routerErr }, resolveFailMsg);
+          return {
+            callId,
+            toolName,
+            success: false,
+            isError: true,
+            error: resolveFailMsg,
+            output: { error: resolveFailMsg },
+            durationMs: Date.now() - startTime,
+            readOnly: false,
+          };
+        }
+
+        const { task } = await this.options.approvalManager.startApprovalWorkflow({
+          toolCallId: callId,
+          toolName,
+          toolArgs: validatedArgsRecord,
+          applicantId: senderId,
+          applicantName: undefined,
+          leaderId,
+          leaderName,
+          threadId,
+        });
+
+        log.info(
+          { callId, toolName, taskId: task.id, leaderId },
+          '高危工具已被 HITL 审批状态机挂起拦截'
+        );
+
+        return {
+          callId,
+          toolName,
+          success: true,
+          suspended: true,
+          approvalTaskId: task.id,
+          approvalStatus: 'pending',
+          output: {
+            suspended: true,
+            approvalTaskId: task.id,
+            message: `该操作涉及高危权限，已自动发起直属主管审批 (待办ID: ${task.id})，请等待审批通过。`,
+          },
+          durationMs: Date.now() - startTime,
+          readOnly: isReadOnly,
+        };
+      }
+    }
+
+    // 5. 执行底层工具逻辑，注入超时 AbortSignal 级联中断与异常自愈控制
+    const timeoutController = new AbortController();
+    const effectiveSignal = context?.signal
+      ? AbortSignal.any([context.signal, timeoutController.signal])
+      : timeoutController.signal;
+
+    const executionContext: ToolExecutionContext = {
+      ...context,
+      signal: effectiveSignal,
+    };
+
+    let timeoutTimer: NodeJS.Timeout | undefined;
+
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutTimer = setTimeout(() => {
+          const timeoutErr = new Error(
+            `工具 "${toolName}" 执行超时 (超过 ${this.options.timeoutMs}ms)`
+          );
+          timeoutController.abort(timeoutErr);
+          reject(timeoutErr);
+        }, this.options.timeoutMs);
       });
 
-      let output: unknown;
-      try {
-        output = await Promise.race([executePromise, timeoutPromise]);
-      } finally {
-        if (timer) {
-          clearTimeout(timer);
-        }
-      }
-      const durationMs = Date.now() - startTime;
+      const executePromise = tool.execute(validatedInput, executionContext);
 
-      log.debug({ callId, toolName, durationMs }, '工具执行成功');
+      const output = await Promise.race([executePromise, timeoutPromise]);
+
+      // 若经由 approvedTaskId 授权执行成功，持久化执行结果
+      if (context?.approvedTaskId && this.options.approvalManager) {
+        await this.options.approvalManager.recordToolExecutionResult(
+          context.approvedTaskId,
+          output
+        );
+      }
+
+      const durationMs = Date.now() - startTime;
+      log.debug({ callId, toolName, durationMs, readOnly: isReadOnly }, '工具单次执行成功');
 
       return {
         callId,
@@ -192,7 +354,14 @@ export class ReadWriteSplitExecutor {
     } catch (error) {
       const durationMs = Date.now() - startTime;
       const err = error instanceof Error ? error : new Error(String(error));
-      log.error({ callId, toolName, err, durationMs }, '工具执行发生异常');
+      log.error({ callId, toolName, err, durationMs }, '工具执行抛出异常');
+
+      if (context?.approvedTaskId && this.options.approvalManager) {
+        await this.options.approvalManager.recordToolExecutionError(
+          context.approvedTaskId,
+          err.message
+        );
+      }
 
       return {
         callId,
@@ -204,6 +373,8 @@ export class ReadWriteSplitExecutor {
         durationMs,
         readOnly: isReadOnly,
       };
+    } finally {
+      clearTimeout(timeoutTimer);
     }
   }
 
@@ -228,6 +399,7 @@ export class ReadWriteSplitExecutor {
         failureCount: 0,
         readOnlyCount: 0,
         writeCount: 0,
+        suspendedCount: 0,
       };
     }
 
@@ -244,7 +416,9 @@ export class ReadWriteSplitExecutor {
       }
     });
 
-    const orderedResults: Array<ToolExecutionResult | null> = new Array<ToolExecutionResult | null>(requests.length).fill(null);
+    const orderedResults: Array<ToolExecutionResult | null> = new Array<ToolExecutionResult | null>(
+      requests.length
+    ).fill(null);
 
     // 2. 只读工具组：Promise.allSettled 并发执行
     if (readRequests.length > 0) {
@@ -273,13 +447,15 @@ export class ReadWriteSplitExecutor {
     }
 
     const totalDurationMs = Date.now() - startBatchTime;
-    const successCount = finalResults.filter(r => r.success).length;
+    const successCount = finalResults.filter(r => r.success && !r.suspended).length;
+    const suspendedCount = finalResults.filter(r => r.suspended).length;
     const failureCount = finalResults.filter(r => !r.success).length;
 
     log.info(
       {
         total: requests.length,
         successCount,
+        suspendedCount,
         failureCount,
         readOnlyCount: readRequests.length,
         writeCount: writeRequests.length,
@@ -295,6 +471,7 @@ export class ReadWriteSplitExecutor {
       failureCount,
       readOnlyCount: readRequests.length,
       writeCount: writeRequests.length,
+      suspendedCount,
     };
   }
 }

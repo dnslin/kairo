@@ -110,3 +110,80 @@ export class MemoryError extends AgentError {
     this.name = 'MemoryError';
   }
 }
+
+export class ApprovalError extends AgentError {
+  constructor(message: string, code = 'APPROVAL_ERROR', originalCause?: Error) {
+    super(message, code, originalCause);
+    this.name = 'ApprovalError';
+  }
+}
+
+export class ApprovalTaskNotFoundError extends ApprovalError {
+  constructor(taskId: string, originalCause?: Error) {
+    super(`审批任务不存在: ${taskId}`, 'APPROVAL_TASK_NOT_FOUND', originalCause);
+    this.name = 'ApprovalTaskNotFoundError';
+  }
+}
+
+export class ApprovalStateConflictError extends ApprovalError {
+  constructor(taskId: string, status: string, originalCause?: Error) {
+    super(
+      `审批任务 ${taskId} 当前状态为 ${status}，不允许再进行审批决议`,
+      'APPROVAL_STATE_CONFLICT',
+      originalCause
+    );
+    this.name = 'ApprovalStateConflictError';
+  }
+}
+
+export class LeaderNotFoundError extends ApprovalError {
+  constructor(employeeId: string, originalCause?: Error) {
+    super(
+      `无法解析员工 (ID: ${employeeId}) 的直属主管 (leader_id 为空且无上级汇报链)`,
+      'LEADER_NOT_FOUND',
+      originalCause
+    );
+    this.name = 'LeaderNotFoundError';
+  }
+}
+
+export class ApprovalTimeoutError extends ApprovalError {
+  constructor(taskId: string, timeoutMs: number, originalCause?: Error) {
+    super(
+      `审批任务 ${taskId} 在 ${timeoutMs}ms 内未决，触发超时安全降级`,
+      'APPROVAL_TIMEOUT',
+      originalCause
+    );
+    this.name = 'ApprovalTimeoutError';
+  }
+}
+
+export class WorkflowResumeError extends ApprovalError {
+  public readonly runId: string;
+
+  constructor(runId: string, originalCause?: Error) {
+    super(
+      `恢复 Mastra Workflow Run (ID: ${runId}) 失败: ${originalCause?.message ?? '未知异常'}`,
+      'WORKFLOW_RESUME_ERROR',
+      originalCause
+    );
+    this.name = 'WorkflowResumeError';
+    this.runId = runId;
+  }
+}
+
+export class ApprovalUnauthorizedError extends ApprovalError {
+  public readonly taskId: string;
+  public readonly deciderId: string;
+
+  constructor(taskId: string, deciderId: string, originalCause?: Error) {
+    super(
+      `用户 ${deciderId} 无权审批任务 ${taskId} (非指定审批主管且无管理员权限)`,
+      'APPROVAL_UNAUTHORIZED',
+      originalCause
+    );
+    this.name = 'ApprovalUnauthorizedError';
+    this.taskId = taskId;
+    this.deciderId = deciderId;
+  }
+}

@@ -46,3 +46,4 @@ export type {
 export * from './utils/errors.js';
 export { createChildLogger, logger } from './utils/logger.js';
 export * from './tools/index.js';
+export * from './hitl/index.js';

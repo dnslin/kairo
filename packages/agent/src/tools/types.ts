@@ -5,17 +5,19 @@ import type { Tool } from '@mastra/core/tools';
  * 工具执行环境上下文
  */
 export interface ToolExecutionContext {
-  /** 会话标识 ID */
-  sessionId?: string;
-  /** 线程 / 对话流 ID */
+  /** 会话唯一标识 */
   threadId?: string;
-  /** 发送人 ID */
+  /** 资源或用户唯一标识 */
+  resourceId?: string;
+  /** 发送者员工 UID */
   senderId?: string;
-  /** 发送人姓名 */
-  senderName?: string;
   /** 中断控制信号 */
   signal?: AbortSignal;
-  /** 自定义扩展数据载荷 */
+  /** 关联的已审批任务 ID (必须经由 ApprovalManager 深度校验工具名与参数一致性) */
+  approvedTaskId?: string;
+  /** 幂等执行键 */
+  idempotencyKey?: string;
+  /** 自定义扩展上下文 */
   customData?: Record<string, unknown>;
 }
 
@@ -33,6 +35,8 @@ export interface AgentTool<TInput = unknown, TOutput = unknown> {
   outputSchema?: z.ZodType<TOutput>;
   /** 是否为只读工具 (只读工具并发执行，写工具严格串行执行) */
   readOnly: boolean;
+  /** 是否为高危工具，需要触发 HITL 人工在环审批挂起 */
+  requireApproval?: boolean;
   /**
    * 工具底层执行核心函数
    * @param input 经过 Zod 校验后的输入参数
@@ -53,7 +57,8 @@ export interface RegisterToolOptions {
   override?: boolean;
   /** 是否显式标记为只读工具 (若未传则沿用工具自身的 readOnly 属性) */
   readOnly?: boolean;
-  /** 自定义元数据 */
+  /** 是否显式标记为需要 HITL 审批的高危工具 */
+  requireApproval?: boolean;
   metadata?: Record<string, unknown>;
 }
 
@@ -89,8 +94,13 @@ export interface ToolExecutionResult {
   durationMs: number;
   /** 是否为只读工具 */
   readOnly: boolean;
+  /** 是否被 HITL 审批挂起拦截 */
+  suspended?: boolean;
+  /** 关联生成的审批任务 ID (若挂起) */
+  approvalTaskId?: string;
+  /** 审批状态 */
+  approvalStatus?: 'pending' | 'approved' | 'rejected' | 'timed_out';
 }
-
 /**
  * 读写分流批量调度执行结果集
  */
@@ -107,6 +117,43 @@ export interface ToolBatchExecutionResult {
   readOnlyCount: number;
   /** 串行执行的写工具数 */
   writeCount: number;
+  /** 被 HITL 审批挂起拦截的工具数 */
+  suspendedCount: number;
+}
+
+/**
+ * 读写执行器与 ApprovalManager 交互的依赖倒置端口契约 (ApprovalManagerPort)
+ */
+export interface ApprovalManagerPort {
+  startApprovalWorkflow: (input: {
+    toolCallId: string;
+    toolName: string;
+    toolArgs: Record<string, unknown>;
+    applicantId: string;
+    applicantName?: string;
+    leaderId: string;
+    leaderName?: string;
+    threadId: string;
+    timeoutMs?: number;
+  }) => Promise<{ task: { id: string } }>;
+  consumeApprovedTask: (
+    taskId: string,
+    expected: {
+      toolName: string;
+      toolArgs: Record<string, unknown>;
+    }
+  ) => Promise<{ task: { toolExecutionResult?: unknown }; alreadyExecuted: boolean }>;
+  recordToolExecutionResult: (taskId: string, result: unknown) => Promise<void>;
+  recordToolExecutionError: (taskId: string, error: string) => Promise<void>;
+}
+
+/**
+ * 读写执行器与 LeaderApprovalRouter 交互的端口契约 (LeaderApprovalRouterPort)
+ */
+export interface LeaderApprovalRouterPort {
+  resolveLeader: (
+    applicantId: string
+  ) => Promise<{ leaderId: string; leaderName?: string }>;
 }
 
 /**
@@ -119,8 +166,11 @@ export interface ReadWriteSplitExecutorOptions {
   timeoutMs?: number;
   /** 是否在超步时抛出 StepLimitExceededError，默认 true */
   strictStepLimit?: boolean;
+  /** 审批管理器实例 (用于高危工具拦截与原子消费) */
+  approvalManager?: ApprovalManagerPort;
+  /** 直属主管路由解析器 */
+  leaderRouter?: LeaderApprovalRouterPort;
 }
-
 /**
  * 外部 MCP Server 传输协议类型
  */
