@@ -255,36 +255,61 @@ export function buildCanvasCardScript(
       throw new Error('无法初始化 2D Canvas 渲染上下文');
     }
 
-    // 圆角矩形绘制通用辅助函数 (支持原生 roundRect 与 arcTo 回退)
-    function drawRoundRect(c, x, y, w, h, r) {
-      if (typeof r === 'number') {
-        r = [r, r, r, r];
-      } else if (!Array.isArray(r)) {
-        r = [12, 12, 12, 12];
-      }
-      const [tl, tr, br, bl] = r;
+    // 语义化调色板字典与常量
+    const SEMANTIC_COLORS = {
+      danger: '#F53F3F',
+      warning: '#FF7D00',
+      success: '#00B42A',
+      primary: '#165DFF',
+      info: '#165DFF',
+      highlight: '#165DFF',
+      muted: '#86909C',
+      default: '#1D2129',
+    };
 
-      if (typeof c.roundRect === 'function') {
-        c.beginPath();
-        c.roundRect(x, y, w, h, r);
+    const TAG_THEMES = {
+      danger: { bg: 'rgba(245, 63, 63, 0.45)', color: '#FFD2D2' },
+      warning: { bg: 'rgba(255, 125, 0, 0.45)', color: '#FFE2B3' },
+      success: { bg: 'rgba(0, 180, 42, 0.45)', color: '#D6FFD8' },
+    };
+
+    const BUTTON_GRADIENTS = {
+      primary: ['#165DFF', '#0E42D2'],
+      success: ['#00B42A', '#009A22'],
+      danger: ['#F53F3F', '#D82727'],
+      warning: ['#FF7D00', '#D25F00'],
+    };
+
+    // 圆角矩形绘制通用辅助函数 (支持原生 roundRect 与 arcTo 回退)
+    function drawRoundRect(targetCtx, x, y, w, h, radii) {
+      if (typeof radii === 'number') {
+        radii = [radii, radii, radii, radii];
+      } else if (!Array.isArray(radii)) {
+        radii = [12, 12, 12, 12];
+      }
+      const [topLeft, topRight, bottomRight, bottomLeft] = radii;
+
+      if (typeof targetCtx.roundRect === 'function') {
+        targetCtx.beginPath();
+        targetCtx.roundRect(x, y, w, h, radii);
         return;
       }
 
-      c.beginPath();
-      c.moveTo(x + tl, y);
-      c.lineTo(x + w - tr, y);
-      c.arcTo(x + w, y, x + w, y + tr, tr);
-      c.lineTo(x + w, y + h - br);
-      c.arcTo(x + w, y + h, x + w - br, y + h, br);
-      c.lineTo(x + bl, y + h);
-      c.arcTo(x, y + h, x, y + h - bl, bl);
-      c.lineTo(x, y + tl);
-      c.arcTo(x, y, x + tl, y, tl);
-      c.closePath();
+      targetCtx.beginPath();
+      targetCtx.moveTo(x + topLeft, y);
+      targetCtx.lineTo(x + w - topRight, y);
+      targetCtx.arcTo(x + w, y, x + w, y + topRight, topRight);
+      targetCtx.lineTo(x + w, y + h - bottomRight);
+      targetCtx.arcTo(x + w, y + h, x + w - bottomRight, y + h, bottomRight);
+      targetCtx.lineTo(x + bottomLeft, y + h);
+      targetCtx.arcTo(x, y + h, x, y + h - bottomLeft, bottomLeft);
+      targetCtx.lineTo(x, y + topLeft);
+      targetCtx.arcTo(x, y, x + topLeft, y, topLeft);
+      targetCtx.closePath();
     }
 
     // 文本折行测量工具函数
-    function wrapText(c, text, maxWidth) {
+    function wrapText(targetCtx, text, maxWidth) {
       if (typeof text !== 'string') text = String(text ?? '');
       const chars = text.split('');
       const lines = [];
@@ -298,7 +323,7 @@ export function buildCanvasCardScript(
           continue;
         }
         const testLine = currentLine + char;
-        const metrics = c.measureText(testLine);
+        const metrics = targetCtx.measureText(testLine);
         if (metrics.width > maxWidth && currentLine.length > 0) {
           lines.push(currentLine);
           currentLine = char;
@@ -310,6 +335,25 @@ export function buildCanvasCardScript(
         lines.push(currentLine);
       }
       return lines.length > 0 ? lines : [''];
+    }
+
+    // 解析字段的颜色与加粗状态
+    function getFieldStyle(field) {
+      const isDanger = field.danger || field.variant === 'danger';
+      const isWarning = field.variant === 'warning';
+      const isSuccess = field.variant === 'success';
+      const isHighlight = field.highlight || field.variant === 'highlight' || field.variant === 'info';
+      const isMuted = field.variant === 'muted';
+      const isBold = isDanger || isWarning || isSuccess || isHighlight;
+
+      let color = SEMANTIC_COLORS.default;
+      if (isDanger) color = SEMANTIC_COLORS.danger;
+      else if (isWarning) color = SEMANTIC_COLORS.warning;
+      else if (isSuccess) color = SEMANTIC_COLORS.success;
+      else if (isHighlight) color = SEMANTIC_COLORS.primary;
+      else if (isMuted) color = SEMANTIC_COLORS.muted;
+
+      return { color, isBold };
     }
 
     // 2. 动态测量各模块高度
@@ -325,15 +369,15 @@ export function buildCanvasCardScript(
       fieldsHeight += 16;
       let i = 0;
       while (i < fields.length) {
-        const f1 = fields[i];
-        const isF1Span2 = f1.span === 2 || f1.span === 'full';
+        const field1 = fields[i];
+        const isField1Span2 = field1.span === 2 || field1.span === 'full';
 
-        if (!isF1Span2 && i + 1 < fields.length) {
-          const f2 = fields[i + 1];
-          const isF2Span2 = f2.span === 2 || f2.span === 'full';
-          if (!isF2Span2) {
+        if (!isField1Span2 && i + 1 < fields.length) {
+          const field2 = fields[i + 1];
+          const isField2Span2 = field2.span === 2 || field2.span === 'full';
+          if (!isField2Span2) {
             // 双列排布
-            fieldRowLayouts.push({ type: 'double', fields: [f1, f2], rowHeight: 24 });
+            fieldRowLayouts.push({ type: 'double', fields: [field1, field2], rowHeight: 24 });
             fieldsHeight += 24;
             i += 2;
             continue;
@@ -342,17 +386,16 @@ export function buildCanvasCardScript(
 
         // 单列排布 (根据 value 折行测量高度)
         ctx.font = '12px ' + fontFamily;
-        const labelText = f1.label ? f1.label + '：' : '';
+        const labelText = field1.label ? field1.label + '：' : '';
         const labelWidth = ctx.measureText(labelText).width;
         const valMaxWidth = Math.max(100, contentWidth - labelWidth - 8);
 
-        ctx.font = (f1.danger || f1.highlight || f1.variant === 'danger' || f1.variant === 'highlight')
-          ? 'bold 12px ' + fontFamily
-          : '500 12px ' + fontFamily;
+        const { isBold } = getFieldStyle(field1);
+        ctx.font = isBold ? 'bold 12px ' + fontFamily : '500 12px ' + fontFamily;
 
-        const valLines = wrapText(ctx, f1.value || '', valMaxWidth);
+        const valLines = wrapText(ctx, field1.value || '', valMaxWidth);
         const rowHeight = Math.max(24, valLines.length * 18 + 4);
-        fieldRowLayouts.push({ type: 'single', field: f1, labelText, labelWidth, valLines, rowHeight });
+        fieldRowLayouts.push({ type: 'single', field: field1, labelText, labelWidth, valLines, rowHeight });
         fieldsHeight += rowHeight;
         i += 1;
       }
@@ -423,300 +466,240 @@ export function buildCanvasCardScript(
 
     ctx.restore();
 
-    // 6. 绘制头部文字与状态标签
-    // 副标题/图标
-    let titleY = 36;
-    if (hasSubtitle) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
-      ctx.font = 'bold 11px ' + fontFamily;
-      const subtitleText = (card.header.icon ? card.header.icon + '  ' : '') + (card.header.subtitle || '');
-      ctx.fillText(subtitleText, padding, 25);
-      titleY = 50;
-    }
+     // 6. 绘制头部文字与状态标签
+     // 副标题/图标
+     let titleY = 36;
+     if (hasSubtitle) {
+       ctx.fillStyle = 'rgba(255, 255, 255, 0.88)';
+       ctx.font = 'bold 11px ' + fontFamily;
+       const subtitleText = (card.header.icon ? card.header.icon + '  ' : '') + (card.header.subtitle || '');
+       ctx.fillText(subtitleText, padding, 25);
+       titleY = 50;
+     }
 
-    // 主标题
-    ctx.fillStyle = theme.textColor || '#FFFFFF';
-    ctx.font = 'bold 16px ' + fontFamily;
+     // 主标题
+     ctx.fillStyle = theme.textColor || '#FFFFFF';
+     ctx.font = 'bold 16px ' + fontFamily;
 
-    let availableTitleWidth = width - padding * 2;
-    // 若有 Tag 药丸标签，预留右侧宽度
-    if (card.header.tag && card.header.tag.text) {
-      const tagText = card.header.tag.text;
-      ctx.font = 'bold 11px ' + fontFamily;
-      const tagTextWidth = ctx.measureText(tagText).width;
-      const tagW = tagTextWidth + 16;
-      const tagH = 22;
-      const tagX = width - padding - tagW;
-      const tagY = hasSubtitle ? 16 : (headerHeight - tagH) / 2;
+     let availableTitleWidth = width - padding * 2;
+     // 若有 Tag 药丸标签，预留右侧宽度
+     if (card.header.tag && card.header.tag.text) {
+       const tagText = card.header.tag.text;
+       ctx.font = 'bold 11px ' + fontFamily;
+       const tagTextWidth = ctx.measureText(tagText).width;
+       const tagW = tagTextWidth + 16;
+       const tagH = 22;
+       const tagX = width - padding - tagW;
+       const tagY = hasSubtitle ? 16 : (headerHeight - tagH) / 2;
 
-      // 绘制 Tag 药丸
-      drawRoundRect(ctx, tagX, tagY, tagW, tagH, 11);
-      let tagBg = theme.tagBg || 'rgba(255, 255, 255, 0.2)';
-      let tagColor = theme.tagColor || '#FFFFFF';
+       // 绘制 Tag 药丸
+       drawRoundRect(ctx, tagX, tagY, tagW, tagH, 11);
+       const tagVariant = card.header.tag.variant;
+       const tagTheme = (tagVariant && tagVariant in TAG_THEMES) ? TAG_THEMES[tagVariant] : null;
 
-      const tagVariant = card.header.tag.variant;
-      if (card.header.tag.bgColor) {
-        tagBg = card.header.tag.bgColor;
-      } else if (tagVariant === 'danger') {
-        tagBg = 'rgba(245, 63, 63, 0.45)';
-      } else if (tagVariant === 'warning') {
-        tagBg = 'rgba(255, 125, 0, 0.45)';
-      } else if (tagVariant === 'success') {
-        tagBg = 'rgba(0, 180, 42, 0.45)';
-      }
+       const tagBg = card.header.tag.bgColor || tagTheme?.bg || theme.tagBg || 'rgba(255, 255, 255, 0.2)';
+       const tagColor = card.header.tag.color || tagTheme?.color || theme.tagColor || '#FFFFFF';
 
-      if (card.header.tag.color) {
-        tagColor = card.header.tag.color;
-      } else if (tagVariant === 'danger') {
-        tagColor = '#FFD2D2';
-      } else if (tagVariant === 'warning') {
-        tagColor = '#FFE2B3';
-      } else if (tagVariant === 'success') {
-        tagColor = '#D6FFD8';
-      }
+       ctx.fillStyle = tagBg;
+       ctx.fill();
 
-      ctx.fillStyle = tagBg;
-      ctx.fill();
+       ctx.lineWidth = 1;
+       ctx.strokeStyle = card.header.tag.borderColor || 'rgba(255, 255, 255, 0.35)';
+       ctx.stroke();
 
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = card.header.tag.borderColor || 'rgba(255, 255, 255, 0.35)';
-      ctx.stroke();
+       ctx.fillStyle = tagColor;
+       ctx.font = 'bold 11px ' + fontFamily;
+       ctx.fillText(tagText, tagX + 8, tagY + 15);
 
-      ctx.fillStyle = tagColor;
-      ctx.font = 'bold 11px ' + fontFamily;
-      ctx.fillText(tagText, tagX + 8, tagY + 15);
+       availableTitleWidth -= (tagW + 12);
+     }
 
-      availableTitleWidth -= (tagW + 12);
-    }
+     // 绘制主标题文本 (超长截断处理)
+     ctx.fillStyle = theme.textColor || '#FFFFFF';
+     ctx.font = 'bold 16px ' + fontFamily;
+     let titleStr = card.header.title;
+     if (ctx.measureText(titleStr).width > availableTitleWidth) {
+       while (titleStr.length > 1 && ctx.measureText(titleStr + '…').width > availableTitleWidth) {
+         titleStr = titleStr.slice(0, -1);
+       }
+       titleStr += '…';
+     }
+     ctx.fillText(titleStr, padding, titleY);
 
-    // 绘制主标题文本 (超长截断处理)
-    ctx.fillStyle = theme.textColor || '#FFFFFF';
-    ctx.font = 'bold 16px ' + fontFamily;
-    let titleStr = card.header.title;
-    if (ctx.measureText(titleStr).width > availableTitleWidth) {
-      while (titleStr.length > 1 && ctx.measureText(titleStr + '…').width > availableTitleWidth) {
-        titleStr = titleStr.slice(0, -1);
-      }
-      titleStr += '…';
-    }
-    ctx.fillText(titleStr, padding, titleY);
+     // 绘制单列字段复用辅助函数
+     function drawFieldItem(targetField, targetX, targetWidth, targetY) {
+       ctx.fillStyle = SEMANTIC_COLORS.muted;
+       ctx.font = '12px ' + fontFamily;
+       const label = targetField.label ? targetField.label + '：' : '';
+       ctx.fillText(label, targetX, targetY + 12);
 
-    // 7. 绘制结构化属性字段
-    let currentY = headerHeight + 16;
-    for (const row of fieldRowLayouts) {
-      if (row.type === 'single') {
-        const { field, labelText, labelWidth, valLines, rowHeight } = row;
-        // 绘制标签
-        ctx.fillStyle = '#86909C';
-        ctx.font = '12px ' + fontFamily;
-        ctx.fillText(labelText, padding, currentY + 12);
+       const { color, isBold } = getFieldStyle(targetField);
+       ctx.fillStyle = color;
+       ctx.font = isBold ? 'bold 12px ' + fontFamily : '500 12px ' + fontFamily;
+       const valueStr = targetField.value || '';
+       const valW = ctx.measureText(valueStr).width;
+       ctx.fillText(valueStr, targetX + targetWidth - valW, targetY + 12);
+     }
 
-        // 绘制取值 (支持多行排版)
-        const isDanger = field.danger || field.variant === 'danger';
-        const isWarning = field.variant === 'warning';
-        const isSuccess = field.variant === 'success';
-        const isHighlight = field.highlight || field.variant === 'highlight' || field.variant === 'info';
-        const isMuted = field.variant === 'muted';
+     // 7. 绘制结构化属性字段
+     let currentY = headerHeight + 16;
+     for (const row of fieldRowLayouts) {
+       if (row.type === 'single') {
+         const { field, labelText, labelWidth, valLines, rowHeight } = row;
+         // 绘制标签
+         ctx.fillStyle = SEMANTIC_COLORS.muted;
+         ctx.font = '12px ' + fontFamily;
+         ctx.fillText(labelText, padding, currentY + 12);
 
-        let valColor = '#1D2129';
-        if (isDanger) valColor = '#F53F3F';
-        else if (isWarning) valColor = '#FF7D00';
-        else if (isSuccess) valColor = '#00B42A';
-        else if (isHighlight) valColor = '#165DFF';
-        else if (isMuted) valColor = '#86909C';
+         const { color, isBold } = getFieldStyle(field);
+         ctx.fillStyle = color;
+         ctx.font = isBold ? 'bold 12px ' + fontFamily : '500 12px ' + fontFamily;
 
-        ctx.fillStyle = valColor;
-        ctx.font = (isDanger || isWarning || isSuccess || isHighlight)
-          ? 'bold 12px ' + fontFamily
-          : '500 12px ' + fontFamily;
+         if (valLines.length === 1) {
+           // 单行时靠右对齐展示
+           const valW = ctx.measureText(valLines[0]).width;
+           ctx.fillText(valLines[0], width - padding - valW, currentY + 12);
+         } else {
+           // 多行时靠左紧随标签后展示
+           let lineY = currentY + 12;
+           for (const line of valLines) {
+             ctx.fillText(line, padding + labelWidth + 4, lineY);
+             lineY += 18;
+           }
+         }
+         currentY += rowHeight;
+       } else if (row.type === 'double') {
+         // 双列字段复用 drawFieldItem
+         const [field1, field2] = row.fields;
+         const colWidth = (contentWidth - 16) / 2;
 
-        if (valLines.length === 1) {
-          // 单行时靠右对齐展示
-          const valW = ctx.measureText(valLines[0]).width;
-          ctx.fillText(valLines[0], width - padding - valW, currentY + 12);
-        } else {
-          // 多行时靠左紧随标签后展示
-          let lineY = currentY + 12;
-          for (const line of valLines) {
-            ctx.fillText(line, padding + labelWidth + 4, lineY);
-            lineY += 18;
-          }
-        }
-        currentY += rowHeight;
-      } else if (row.type === 'double') {
-        // 双列字段
-        const [f1, f2] = row.fields;
-        const colWidth = (contentWidth - 16) / 2;
+         drawFieldItem(field1, padding, colWidth, currentY);
+         drawFieldItem(field2, padding + colWidth + 16, colWidth, currentY);
 
-        // 第 1 列
-        ctx.fillStyle = '#86909C';
-        ctx.font = '12px ' + fontFamily;
-        const l1 = f1.label ? f1.label + '：' : '';
-        ctx.fillText(l1, padding, currentY + 12);
-        const l1W = ctx.measureText(l1).width;
+         currentY += row.rowHeight;
+       }
+     }
 
-        const isD1 = f1.danger || f1.variant === 'danger';
-        ctx.fillStyle = isD1 ? '#F53F3F' : (f1.highlight ? '#165DFF' : '#1D2129');
-        ctx.font = isD1 || f1.highlight ? 'bold 12px ' + fontFamily : '500 12px ' + fontFamily;
-        const v1W = ctx.measureText(f1.value || '').width;
-        ctx.fillText(f1.value || '', padding + colWidth - v1W, currentY + 12);
+     // 8. 绘制分割线与模拟操作按钮
+     if (actions.length > 0) {
+       // 细分割线
+       ctx.strokeStyle = '#F2F3F5';
+       ctx.lineWidth = 1;
+       ctx.beginPath();
+       ctx.moveTo(padding, currentY + 4);
+       ctx.lineTo(width - padding, currentY + 4);
+       ctx.stroke();
 
-        // 第 2 列
-        const col2X = padding + colWidth + 16;
-        ctx.fillStyle = '#86909C';
-        ctx.font = '12px ' + fontFamily;
-        const l2 = f2.label ? f2.label + '：' : '';
-        ctx.fillText(l2, col2X, currentY + 12);
-        const l2W = ctx.measureText(l2).width;
+       currentY += 16;
 
-        const isD2 = f2.danger || f2.variant === 'danger';
-        ctx.fillStyle = isD2 ? '#F53F3F' : (f2.highlight ? '#165DFF' : '#1D2129');
-        ctx.font = isD2 || f2.highlight ? 'bold 12px ' + fontFamily : '500 12px ' + fontFamily;
-        const v2W = ctx.measureText(f2.value || '').width;
-        ctx.fillText(f2.value || '', width - padding - v2W, currentY + 12);
+       const btnH = 38;
+       const btnRadius = 6;
 
-        currentY += row.rowHeight;
-      }
-    }
+       if (actions.length === 1) {
+         // 单个全宽按钮
+         drawActionButton(ctx, padding, currentY, contentWidth, btnH, btnRadius, actions[0]);
+         currentY += btnH + 12;
+       } else if (actions.length === 2) {
+         // 两个并排按钮
+         const btnW = (contentWidth - 12) / 2;
+         drawActionButton(ctx, padding, currentY, btnW, btnH, btnRadius, actions[0]);
+         drawActionButton(ctx, padding + btnW + 12, currentY, btnW, btnH, btnRadius, actions[1]);
+         currentY += btnH + 12;
+       } else {
+         // 多按钮栅格排布
+         const btnW = (contentWidth - 12) / 2;
+         for (let idx = 0; idx < actions.length; idx++) {
+           const rowIdx = Math.floor(idx / 2);
+           const colIdx = idx % 2;
+           const bx = padding + colIdx * (btnW + 12);
+           const by = currentY + rowIdx * (btnH + 10);
+           drawActionButton(ctx, bx, by, btnW, btnH, btnRadius, actions[idx]);
+         }
+         currentY += Math.ceil(actions.length / 2) * (btnH + 10) + 4;
+       }
+     }
 
-    // 8. 绘制分割线与模拟操作按钮
-    if (actions.length > 0) {
-      // 细分割线
-      ctx.strokeStyle = '#F2F3F5';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(padding, currentY + 4);
-      ctx.lineTo(width - padding, currentY + 4);
-      ctx.stroke();
+     // 辅助函数：绘制单个按钮
+     function drawActionButton(targetCtx, x, y, w, h, radius, action) {
+       drawRoundRect(targetCtx, x, y, w, h, radius);
 
-      currentY += 16;
+       const variant = action.variant || 'primary';
+       if (action.bgColor) {
+         targetCtx.fillStyle = action.bgColor;
+         targetCtx.fill();
+       } else if (variant === 'secondary' || variant === 'default') {
+         targetCtx.fillStyle = '#F2F3F5';
+         targetCtx.fill();
+         targetCtx.lineWidth = 1;
+         targetCtx.strokeStyle = '#E5E6EB';
+         targetCtx.stroke();
+       } else if (variant === 'outline') {
+         targetCtx.fillStyle = '#FFFFFF';
+         targetCtx.fill();
+         targetCtx.lineWidth = 1;
+         targetCtx.strokeStyle = action.color || SEMANTIC_COLORS.primary;
+         targetCtx.stroke();
+       } else {
+         // 渐变按钮 (primary / success / danger / warning)
+         const [gStart, gEnd] = BUTTON_GRADIENTS[variant] || BUTTON_GRADIENTS.primary;
+         const bgGrad = targetCtx.createLinearGradient(x, y, x, y + h);
+         bgGrad.addColorStop(0, gStart);
+         bgGrad.addColorStop(1, gEnd);
+         targetCtx.fillStyle = bgGrad;
+         targetCtx.fill();
+       }
 
-      const btnH = 38;
-      const btnRadius = 6;
+       // 按钮文字
+       let btnLabel = (action.icon ? action.icon + '  ' : '') + (action.text || '');
+       if (action.replyCommand) {
+         btnLabel += ' (' + action.replyCommand + ')';
+       }
 
-      if (actions.length === 1) {
-        // 单个全宽按钮
-        const act = actions[0];
-        drawActionButton(ctx, padding, currentY, contentWidth, btnH, btnRadius, act, fontFamily);
-        currentY += btnH + 12;
-      } else if (actions.length === 2) {
-        // 两个并排按钮
-        const btnW = (contentWidth - 12) / 2;
-        drawActionButton(ctx, padding, currentY, btnW, btnH, btnRadius, actions[0], fontFamily);
-        drawActionButton(ctx, padding + btnW + 12, currentY, btnW, btnH, btnRadius, actions[1], fontFamily);
-        currentY += btnH + 12;
-      } else {
-        // 多按钮栅格排布
-        const btnW = (contentWidth - 12) / 2;
-        for (let idx = 0; idx < actions.length; idx++) {
-          const rowIdx = Math.floor(idx / 2);
-          const colIdx = idx % 2;
-          const bx = padding + colIdx * (btnW + 12);
-          const by = currentY + rowIdx * (btnH + 10);
-          drawActionButton(ctx, bx, by, btnW, btnH, btnRadius, actions[idx], fontFamily);
-        }
-        currentY += Math.ceil(actions.length / 2) * (btnH + 10) + 4;
-      }
-    }
+       let textColor = '#FFFFFF';
+       if (action.color) {
+         textColor = action.color;
+       } else if (variant === 'secondary' || variant === 'default') {
+         textColor = SEMANTIC_COLORS.default;
+       } else if (variant === 'outline') {
+         textColor = SEMANTIC_COLORS.primary;
+       }
 
-    // 辅助函数：绘制单个按钮
-    function drawActionButton(c, x, y, w, h, r, act, ff) {
-      drawRoundRect(c, x, y, w, h, r);
+       targetCtx.fillStyle = textColor;
+       targetCtx.font = 'bold 12.5px ' + fontFamily;
+       const textW = targetCtx.measureText(btnLabel).width;
+       targetCtx.fillText(btnLabel, x + (w - textW) / 2, y + (h + 8) / 2);
+     }
 
-      const variant = act.variant || 'primary';
-      if (act.bgColor) {
-        c.fillStyle = act.bgColor;
-        c.fill();
-      } else if (variant === 'success') {
-        const bgGrad = c.createLinearGradient(x, y, x, y + h);
-        bgGrad.addColorStop(0, '#00B42A');
-        bgGrad.addColorStop(1, '#009A22');
-        c.fillStyle = bgGrad;
-        c.fill();
-      } else if (variant === 'danger') {
-        const bgGrad = c.createLinearGradient(x, y, x, y + h);
-        bgGrad.addColorStop(0, '#F53F3F');
-        bgGrad.addColorStop(1, '#D82727');
-        c.fillStyle = bgGrad;
-        c.fill();
-      } else if (variant === 'warning') {
-        const bgGrad = c.createLinearGradient(x, y, x, y + h);
-        bgGrad.addColorStop(0, '#FF7D00');
-        bgGrad.addColorStop(1, '#D25F00');
-        c.fillStyle = bgGrad;
-        c.fill();
-      } else if (variant === 'secondary' || variant === 'default') {
-        c.fillStyle = '#F2F3F5';
-        c.fill();
-        c.lineWidth = 1;
-        c.strokeStyle = '#E5E6EB';
-        c.stroke();
-      } else if (variant === 'outline') {
-        c.fillStyle = '#FFFFFF';
-        c.fill();
-        c.lineWidth = 1;
-        c.strokeStyle = act.color || '#165DFF';
-        c.stroke();
-      } else {
-        // primary 默认
-        const bgGrad = c.createLinearGradient(x, y, x, y + h);
-        bgGrad.addColorStop(0, '#165DFF');
-        bgGrad.addColorStop(1, '#0E42D2');
-        c.fillStyle = bgGrad;
-        c.fill();
-      }
+     // 9. 绘制底部提示栏 / 页脚
+     if (card.footer) {
+       let footerText = '';
+       let footerIcon = '';
+       let footerAlign = 'center';
 
-      // 按钮文字
-      let btnLabel = (act.icon ? act.icon + '  ' : '') + (act.text || '');
-      if (act.replyCommand) {
-        btnLabel += ' (' + act.replyCommand + ')';
-      }
+       if (typeof card.footer === 'string') {
+         footerText = card.footer;
+       } else if (typeof card.footer === 'object' && card.footer !== null) {
+         footerText = card.footer.text || '';
+         footerIcon = card.footer.icon ? card.footer.icon + ' ' : '';
+         footerAlign = card.footer.align || 'center';
+       }
 
-      let textColor = '#FFFFFF';
-      if (act.color) {
-        textColor = act.color;
-      } else if (variant === 'secondary' || variant === 'default') {
-        textColor = '#1D2129';
-      } else if (variant === 'outline') {
-        textColor = '#165DFF';
-      }
+       const fullFooter = footerIcon + footerText;
+       ctx.fillStyle = SEMANTIC_COLORS.muted;
+       ctx.font = '11px ' + fontFamily;
 
-      c.fillStyle = textColor;
-      c.font = 'bold 12.5px ' + ff;
-      const textW = c.measureText(btnLabel).width;
-      c.fillText(btnLabel, x + (w - textW) / 2, y + (h + 8) / 2);
-    }
+       const fWidth = ctx.measureText(fullFooter).width;
+       let fx = (width - fWidth) / 2;
+       if (footerAlign === 'left') {
+         fx = padding;
+       } else if (footerAlign === 'right') {
+         fx = width - padding - fWidth;
+       }
 
-    // 9. 绘制底部提示栏 / 页脚
-    if (card.footer) {
-      let footerText = '';
-      let footerIcon = '';
-      let footerAlign = 'center';
+       ctx.fillText(fullFooter, fx, currentY + 16);
+     }
 
-      if (typeof card.footer === 'string') {
-        footerText = card.footer;
-      } else if (typeof card.footer === 'object' && card.footer !== null) {
-        footerText = card.footer.text || '';
-        footerIcon = card.footer.icon ? card.footer.icon + ' ' : '';
-        footerAlign = card.footer.align || 'center';
-      }
-
-      const fullFooter = footerIcon + footerText;
-      ctx.fillStyle = '#86909C';
-      ctx.font = '11px ' + fontFamily;
-
-      const fWidth = ctx.measureText(fullFooter).width;
-      let fx = (width - fWidth) / 2;
-      if (footerAlign === 'left') {
-        fx = padding;
-      } else if (footerAlign === 'right') {
-        fx = width - padding - fWidth;
-      }
-
-      ctx.fillText(fullFooter, fx, currentY + 16);
-    }
-
-    // 10. 导出高清 Base64 PNG
+     // 10. 导出高清 Base64 PNG
     return canvas.toDataURL('image/png');
   })()`;
 }
