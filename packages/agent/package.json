@@ -14,12 +14,17 @@
   },
   "scripts": {
     "build": "tsc",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@kkbot/driver": "workspace:*",
+    "@kkbot/store": "workspace:*",
+    "@mastra/core": "^1.60.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "chokidar": "^4.0.3",
-    "pino": "^9.6.0"
+    "pino": "^9.6.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",
