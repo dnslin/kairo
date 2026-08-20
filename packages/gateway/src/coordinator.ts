@@ -77,10 +77,14 @@ export class SessionCoordinator extends EventEmitter {
     };
 
     this.boundHandleMessage = (msg: KK9Message): void => {
-      void this.handleInboundMessage(msg);
+      this.handleInboundMessage(msg).catch(err => {
+        log.error({ err, sessionId: msg.sessionId, messageId: msg.id }, '处理入站消息发生未捕获异常');
+      });
     };
     this.boundHandleRecalled = (evt: KK9RecalledEvent): void => {
-      void this.handleRecalled(evt);
+      this.handleRecalled(evt).catch(err => {
+        log.error({ err, sessionId: evt.sessionId, messageId: evt.messageId }, '处理撤回事件发生未捕获异常');
+      });
     };
   }
 
@@ -555,7 +559,9 @@ export class SessionCoordinator extends EventEmitter {
 
       // 设置最长等待时间定时器 (防止高频连发导致无限延迟)
       bucket.maxWaitTimer = setTimeout(() => {
-        void this.flush(sessionId);
+        this.flush(sessionId).catch(err => {
+          log.error({ err, sessionId }, '执行最长等待超时防抖合并异常');
+        });
       }, this.config.maxWaitMs);
     }
 
@@ -566,7 +572,9 @@ export class SessionCoordinator extends EventEmitter {
       clearTimeout(bucket.debounceTimer);
     }
     bucket.debounceTimer = setTimeout(() => {
-      void this.flush(sessionId);
+      this.flush(sessionId).catch(err => {
+        log.error({ err, sessionId }, '执行滑动窗口防抖合并异常');
+      });
     }, this.config.debounceMs);
 
     log.debug(
