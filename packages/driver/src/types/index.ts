@@ -1,7 +1,8 @@
+import type { RenderCanvasOptions } from './card.js';
+
 /**
  * @kkbot/driver 强类型定义
  */
-
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
 export type KK9SessionType = 'private' | 'group';
@@ -281,6 +282,12 @@ export interface SendFileOptions {
   targetSessionId?: string;
   verifyTimeoutMs?: number;
 }
+
+/**
+ * 视觉卡片发送选项配置
+ * 融合 Canvas 渲染配置 (RenderCanvasOptions) 与消息发送选项 (SendOptions)
+ */
+export interface SendCardOptions extends RenderCanvasOptions, SendOptions {}
 export interface DriverEvents {
   status: (status: ConnectionStatus) => void;
   message: (message: KK9Message) => void;

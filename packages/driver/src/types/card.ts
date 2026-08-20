@@ -72,7 +72,14 @@ export interface CardHeader {
 /**
  * 字段值展示状态变体
  */
-export type CardFieldVariant = 'default' | 'muted' | 'highlight' | 'danger' | 'warning' | 'success' | 'info';
+export type CardFieldVariant =
+  | 'default'
+  | 'muted'
+  | 'highlight'
+  | 'danger'
+  | 'warning'
+  | 'success'
+  | 'info';
 
 /**
  * 字段栅格布局跨度
@@ -102,7 +109,14 @@ export interface CardField {
 /**
  * 模拟按钮样式变体
  */
-export type CardActionVariant = 'primary' | 'success' | 'warning' | 'danger' | 'secondary' | 'default' | 'outline';
+export type CardActionVariant =
+  | 'primary'
+  | 'success'
+  | 'warning'
+  | 'danger'
+  | 'secondary'
+  | 'default'
+  | 'outline';
 
 /**
  * 模拟交互按钮与快捷指令提示

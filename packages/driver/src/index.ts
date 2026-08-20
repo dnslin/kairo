@@ -97,4 +97,5 @@ export type {
   ReportCardParams,
   DecisionOption,
   DecisionCardParams,
+  SendCardOptions,
 } from './types/index.js';
