@@ -6,7 +6,8 @@
       "@kkbot/driver": ["packages/driver/src/index.ts"],
       "@kkbot/store": ["packages/store/src/index.ts"],
       "@kkbot/gateway": ["packages/gateway/src/index.ts"],
-      "@kkbot/coordinator": ["packages/gateway/src/index.ts"]
+      "@kkbot/coordinator": ["packages/gateway/src/index.ts"],
+      "@kkbot/agent": ["packages/agent/src/index.ts"]
     }
   },
   "include": ["packages/*/src/**/*", "packages/*/examples/**/*"]

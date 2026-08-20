@@ -11,6 +11,7 @@ export default defineConfig({
       '@kkbot/store': path.resolve(__dirname, 'packages/store/src/index.ts'),
       '@kkbot/gateway': path.resolve(__dirname, 'packages/gateway/src/index.ts'),
       '@kkbot/coordinator': path.resolve(__dirname, 'packages/gateway/src/index.ts'),
+      '@kkbot/agent': path.resolve(__dirname, 'packages/agent/src/index.ts'),
     },
   },
   test: {
