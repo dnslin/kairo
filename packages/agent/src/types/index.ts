@@ -1,6 +1,22 @@
 import type { KK9Message, KK9SessionType } from '@kkbot/driver';
 import type { ToolRegistry, ReadWriteSplitExecutor, ToolCallRequest } from '../tools/index.js';
 import type { ApprovalManager, LeaderApprovalRouter } from '../hitl/index.js';
+import type {
+  MultiModalContentPart,
+  MultiModalRouterOptions,
+  OcrEngine,
+} from '../multimodal/types.js';
+import type { MultiModalRouter } from '../multimodal/router.js';
+import type {
+  FailoverOptions,
+  FallbackConfig,
+  IntentRouterOptions,
+  ModelEndpointConfig,
+  ModelIntentLevel,
+} from '../routing/types.js';
+import type { IntentModelRouter } from '../routing/intent-router.js';
+import type { ModelFailoverManager } from '../routing/failover.js';
+import type { FallbackHandler } from '../routing/fallback.js';
 
 /**
  * 聚合防抖消息实体契约
@@ -138,6 +154,10 @@ export interface AgentExecuteOptions {
   systemPromptOverride?: string;
   /** 检索与知识事实列表 (用于 Layer 4 防幻觉依据) */
   retrievedFacts?: string[] | string;
+  /** 自定义 OCR 识别引擎 */
+  ocrEngine?: OcrEngine;
+  /** 强制指定意图推理级别 (跳过意图分类器自动判断) */
+  intentLevelOverride?: ModelIntentLevel;
   /** 模型温度 */
   temperature?: number;
   /** 最大输出 Token 数 */
@@ -229,7 +249,7 @@ export interface SensitiveFilterResult {
  */
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string;
+  content: string | MultiModalContentPart[];
   name?: string;
   toolCallId?: string;
 }
@@ -291,7 +311,7 @@ export interface AgentRuntimeConfig {
   sensitiveKeywords?: string[];
   /** 出站敏感正则规则 */
   sensitivePatterns?: RegExp[];
-  /** 底层 LLM Provider 实现 */
+  /** 底层默认 LLM Provider 实现 (向后兼容) */
   llmProvider?: LLMProvider;
   /** 工具注册中心实例 */
   toolRegistry?: ToolRegistry;
@@ -301,6 +321,20 @@ export interface AgentRuntimeConfig {
   approvalManager?: ApprovalManager;
   /** 主管路由解析器实例 */
   leaderRouter?: LeaderApprovalRouter;
+  /** 极速轻量模型端点 (FAST) */
+  fastModel?: ModelEndpointConfig | LLMProvider;
+  /** 深度推理模型端点 (DEEP) */
+  deepModel?: ModelEndpointConfig | LLMProvider;
+  /** 备用容灾模型列表 (Failover Backups) */
+  backupModels?: ModelEndpointConfig[];
+  /** 自定义多模态附件感知路由器配置 */
+  multiModalRouter?: MultiModalRouter | MultiModalRouterOptions;
+  /** 自定义意图分流路由器配置 */
+  intentRouter?: IntentModelRouter | IntentRouterOptions;
+  /** 自定义 Failover 故障转移管理器配置 */
+  failoverManager?: ModelFailoverManager | FailoverOptions;
+  /** 自定义全局宕机安抚兜底处理器配置 */
+  fallbackHandler?: FallbackHandler | FallbackConfig;
 }
 
 export type {
@@ -313,3 +347,27 @@ export type {
   SaveMemoryMessageInput,
   UpdateColleagueProfileInput,
 } from '../memory/types.js';
+
+export type {
+  FileCardInfo,
+  FileCategory,
+  ImageMediaSource,
+  ImageSourceType,
+  MultiModalContentPart,
+  MultiModalProcessResult,
+  MultiModalRouterOptions,
+  OcrEngine,
+  OcrResult,
+} from '../multimodal/types.js';
+
+export type {
+  FailoverEvent,
+  FailoverOptions,
+  FallbackConfig,
+  IntentClassificationResult,
+  IntentFeatures,
+  IntentRouterOptions,
+  IntentRule,
+  ModelEndpointConfig,
+  ModelIntentLevel,
+} from '../routing/types.js';
