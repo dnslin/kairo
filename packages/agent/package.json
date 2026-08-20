@@ -14,17 +14,20 @@
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@kkbot/driver": "workspace:*",
     "@kkbot/store": "workspace:*",
     "@libsql/client": "^0.17.4",
+    "@mastra/core": "^1.60.0",
     "@mastra/libsql": "^1.21.0",
     "@mastra/memory": "^1.27.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "chokidar": "^4.0.3",
-    "pino": "^9.6.0"
+    "pino": "^9.6.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",
