@@ -2,10 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import type Database from 'better-sqlite3';
+import type { Client } from '@libsql/client';
 import {
   closeDatabase,
-  createDatabase,
+  createDatabaseClient,
   OrgRepository,
   type SyncOrgData,
   RosterExporter,
@@ -15,7 +15,7 @@ import {
 } from '../src/index.js';
 
 describe('CSV 花名册导出器与 Excel 独占锁免疫测试 (TDD Red -> Green)', () => {
-  let db: Database.Database;
+  let db: Client;
   let repo: OrgRepository;
   let testTempDir: string;
 
@@ -62,10 +62,10 @@ describe('CSV 花名册导出器与 Excel 独占锁免疫测试 (TDD Red -> Gree
     ],
   };
 
-  beforeEach(() => {
-    db = createDatabase({ path: ':memory:' });
+  beforeEach(async () => {
+    db = await createDatabaseClient({ path: ':memory:' });
     repo = new OrgRepository(db);
-    repo.syncOrganization(mockOrgData);
+    await repo.syncOrganization(mockOrgData);
 
     testTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kkbot-roster-test-'));
   });
@@ -210,9 +210,10 @@ describe('CSV 花名册导出器与 Excel 独占锁免疫测试 (TDD Red -> Gree
       expect(fs.existsSync(res.filePath)).toBe(true);
     });
   });
+
   describe('6. 边界场景与自定义导出配置', () => {
     it('当数据库为空时，应正常导出仅含表头且 0 行记录的 CSV', async () => {
-      const emptyDb = createDatabase({ path: ':memory:' });
+      const emptyDb = await createDatabaseClient({ path: ':memory:' });
       const targetPath = path.join(testTempDir, 'empty.csv');
       const exporter = new RosterExporter(emptyDb);
 

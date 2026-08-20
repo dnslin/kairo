@@ -6,7 +6,7 @@ import type {
   KK9RecalledEvent,
   SendResult,
 } from '@kkbot/driver';
-import type { KKBotStore } from '@kkbot/store';
+import type { KKBotStore, SessionMode } from '@kkbot/store';
 import type {
   ConsolidatedMessage,
   CoordinatorConfig,
@@ -52,6 +52,12 @@ export class SessionCoordinator extends EventEmitter {
   private readonly buckets = new Map<string, PendingBucket>();
   /** 记录 Bot 自身发出的消息 ID (用于回显防抖识别与过滤) */
   private readonly botSentMessageIds = new Set<string>();
+  /** 记录已被撤回的消息 ID 集合 (用于防止消息存储与撤回并发竞争) */
+  private readonly recalledMessageIds = new Set<string>();
+  /** 记录各会话在内存中的人工退避截止时间 (sessionId -> timestamp) */
+  private readonly takeoverUntilMap = new Map<string, number>();
+  /** 记录各会话在内存中的工作模式缓存 (sessionId -> mode) */
+  private readonly sessionModeMap = new Map<string, SessionMode>();
   /** 运行状态标记 */
   private isRunning = false;
 
@@ -71,10 +77,14 @@ export class SessionCoordinator extends EventEmitter {
     };
 
     this.boundHandleMessage = (msg: KK9Message): void => {
-      this.handleInboundMessage(msg);
+      this.handleInboundMessage(msg).catch(err => {
+        log.error({ err, sessionId: msg.sessionId, messageId: msg.id }, '处理入站消息发生未捕获异常');
+      });
     };
     this.boundHandleRecalled = (evt: KK9RecalledEvent): void => {
-      this.handleRecalled(evt);
+      this.handleRecalled(evt).catch(err => {
+        log.error({ err, sessionId: evt.sessionId, messageId: evt.messageId }, '处理撤回事件发生未捕获异常');
+      });
     };
   }
 
@@ -144,7 +154,12 @@ export class SessionCoordinator extends EventEmitter {
    * @param sessionId 会话 ID
    * @param now 可选当前时间戳
    */
-  public isTakeoverActive(sessionId: string, now?: number): boolean {
+  public async isTakeoverActive(sessionId: string, now?: number): Promise<boolean> {
+    const memUntil = this.takeoverUntilMap.get(sessionId);
+    const currentTime = now ?? Date.now();
+    if (memUntil !== undefined) {
+      return memUntil > currentTime;
+    }
     return this.store.sessions.isTakeoverActive(sessionId, now);
   }
 
@@ -153,30 +168,40 @@ export class SessionCoordinator extends EventEmitter {
    * @param sessionId 会话 ID
    * @param durationMs 退避持续时长毫秒数，默认配置值 (10分钟)
    */
-  public setTakeover(sessionId: string, durationMs?: number): void {
+  public async setTakeover(sessionId: string, durationMs?: number): Promise<void> {
     const duration = durationMs ?? this.config.takeoverDurationMs;
     const takeoverUntil = Date.now() + duration;
+    this.takeoverUntilMap.set(sessionId, takeoverUntil);
     this.clearPendingBucket(sessionId);
-    this.store.sessions.upsertSession({ id: sessionId });
-    this.store.sessions.setTakeoverUntil(sessionId, takeoverUntil);
-    log.info({ sessionId, takeoverUntil, duration }, '手动设置人工接管退避期');
     this.emit('takeover', sessionId, takeoverUntil);
+    await this.store.sessions.upsertSession({ id: sessionId });
+    await this.store.sessions.setTakeoverUntil(sessionId, takeoverUntil);
+    log.info({ sessionId, takeoverUntil, duration }, '手动设置人工接管退避期');
   }
 
   /**
    * 手动解除会话的人工接管退避状态
    * @param sessionId 会话 ID
    */
-  public clearTakeover(sessionId: string): void {
-    this.store.sessions.setTakeoverUntil(sessionId, 0);
+  public async clearTakeover(sessionId: string): Promise<void> {
+    this.takeoverUntilMap.set(sessionId, 0);
+    await this.store.sessions.setTakeoverUntil(sessionId, 0);
     log.info({ sessionId }, '已解除人工接管退避状态');
+  }
+
+  /**
+   * 设置会话工作模式
+   */
+  public async setSessionMode(sessionId: string, mode: SessionMode): Promise<void> {
+    this.sessionModeMap.set(sessionId, mode);
+    await this.store.sessions.setSessionMode(sessionId, mode);
   }
 
   /**
    * 核心入站消息处理流
    * @param msg 入站消息实体
    */
-  public handleInboundMessage(msg: KK9Message): void {
+  public async handleInboundMessage(msg: KK9Message): Promise<void> {
     const sessionId = msg.sessionId;
 
     // 1. 处理人类或 Bot 自身发出的消息 (isMe: true)
@@ -197,117 +222,130 @@ export class SessionCoordinator extends EventEmitter {
       // 立即清空该会话的防抖队列，取消 Bot 待发出的自动回复
       this.clearPendingBucket(sessionId);
 
-      // 设置 10 分钟退避截止时间
+      // 设置 10 分钟退避截止时间并在内存中同步生效
       const takeoverUntil = Date.now() + this.config.takeoverDurationMs;
-      this.store.sessions.upsertSession({
-        id: sessionId,
-        name: msg.sessionName,
-        type: msg.sessionType,
-      });
-      this.store.sessions.setTakeoverUntil(sessionId, takeoverUntil);
-
-      // 保存人类发出的消息到 Store
-      this.store.messages.saveMessage({
-        sessionId,
-        messageId: msg.id,
-        sender: msg.sender || '自己',
-        senderId: msg.senderId,
-        content: msg.content,
-        messageType: msg.messageType || 'text',
-        isFromSelf: true,
-        isRecalled: false,
-        createdAt: msg.timestamp || Date.now(),
-      });
-
+      this.takeoverUntilMap.set(sessionId, takeoverUntil);
       this.emit('takeover', sessionId, takeoverUntil, msg);
+
+      try {
+        await this.store.sessions.upsertSession({
+          id: sessionId,
+          name: msg.sessionName,
+          type: msg.sessionType,
+        });
+        await this.store.sessions.setTakeoverUntil(sessionId, takeoverUntil);
+      } catch (err) {
+        if (!this.isRunning) return;
+        log.warn({ err, sessionId }, '更新人类介入会话状态异常');
+      }
+      await this.persistInboundMessage(msg, takeoverUntil, true);
       return;
     }
 
     // 2. 处理客户或外部成员发出的消息 (isMe: false)
-    // 确保会话存在并更新消息活动时间
     const now = msg.timestamp || Date.now();
-    this.store.sessions.upsertSession({
-      id: sessionId,
-      name: msg.sessionName,
-      type: msg.sessionType,
-    });
-    this.store.sessions.touchMessageTime(sessionId, now);
 
-    // 持久化消息到 Store
-    this.store.messages.saveMessage({
-      sessionId,
-      messageId: msg.id,
-      sender: msg.sender,
-      senderId: msg.senderId,
-      content: msg.content,
-      messageType: msg.messageType || 'text',
-      isFromSelf: false,
-      isRecalled: false,
-      createdAt: now,
-    });
-
-    // 检查是否处于人工退避期
-    if (this.isTakeoverActive(sessionId, now)) {
+    // 检查是否处于人工退避期（内存优先检测）
+    const memTakeover = this.takeoverUntilMap.get(sessionId) ?? 0;
+    if (memTakeover > now) {
       log.info({ sessionId, messageId: msg.id }, '会话处于人工退避期，抑制自动回复并保持静默');
       this.emit('suppressed', sessionId, 'human_takeover', msg);
+      await this.persistInboundMessage(msg, now, false);
       return;
     }
 
-    // 检查会话是否被禁用
-    const sessionRecord = this.store.sessions.getSession(sessionId);
-    if (sessionRecord && sessionRecord.mode === 'disabled') {
+    // 检查会话是否被禁用（内存优先检测）
+    const memMode = this.sessionModeMap.get(sessionId);
+    if (memMode === 'disabled') {
       log.info({ sessionId, messageId: msg.id }, '会话已禁用自动应答，抑制回复');
       this.emit('suppressed', sessionId, 'session_disabled', msg);
+      await this.persistInboundMessage(msg, now, false);
       return;
     }
-
-    // 3. 进入短消息防抖合并队列 (Debounce Queue)
+    // 3. 进入短消息防抖合并队列 (Debounce Queue) - 同步执行！
     this.enqueueMessage(msg);
+
+    // 异步持久化
+    await this.persistInboundMessage(msg, now, false);
+  }
+
+  /**
+   * 异步持久化入站消息与更新会话活跃时间
+   */
+  private async persistInboundMessage(
+    msg: KK9Message,
+    now: number,
+    isFromSelf: boolean
+  ): Promise<void> {
+    try {
+      const sessionId = msg.sessionId;
+      await this.store.sessions.upsertSession({
+        id: sessionId,
+        name: msg.sessionName,
+        type: msg.sessionType,
+      });
+      await this.store.sessions.touchMessageTime(sessionId, now);
+
+      await this.store.messages.saveMessage({
+        sessionId,
+        messageId: msg.id,
+        sender: msg.sender || (isFromSelf ? '自己' : ''),
+        senderId: msg.senderId,
+        content: msg.content,
+        messageType: msg.messageType || 'text',
+        isFromSelf,
+        isRecalled: this.recalledMessageIds.has(`${sessionId}:${msg.id}`),
+        createdAt: msg.timestamp || now,
+      });
+    } catch (err) {
+      if (!this.isRunning) return;
+      log.warn({ err, sessionId: msg.sessionId, messageId: msg.id }, '持久化入站消息异常');
+    }
   }
 
   /**
    * 消息撤回事件处理 (Recall Fusion)
    * @param event 消息撤回事件元数据
    */
-  public handleRecalled(event: KK9RecalledEvent): void {
+  public async handleRecalled(event: KK9RecalledEvent): Promise<void> {
     const { sessionId, messageId } = event;
     log.info({ sessionId, messageId }, '收到消息撤回事件，执行即时熔断检查');
 
-    // 1. 在 Store 中标记已撤回
-    this.store.messages.markMessageRecalled(sessionId, messageId);
-
-    // 2. 检查防抖队列并进行剔除
+    this.recalledMessageIds.add(`${sessionId}:${messageId}`);
+    // 1. 同步剔除防抖队列中的消息
     const bucket = this.buckets.get(sessionId);
-    if (!bucket) {
-      return;
-    }
+    if (bucket) {
+      const originalCount = bucket.messages.length;
+      bucket.messages = bucket.messages.filter(m => {
+        const rawMsgId =
+          (m.raw?.['messageId'] as string | undefined) ||
+          (m.raw?.['msgID'] as string | undefined) ||
+          (m.raw?.['id'] as string | undefined);
+        return m.id !== messageId && rawMsgId !== messageId;
+      });
 
-    const originalCount = bucket.messages.length;
-    bucket.messages = bucket.messages.filter(m => {
-      const rawMsgId =
-        (m.raw?.['messageId'] as string | undefined) ||
-        (m.raw?.['msgID'] as string | undefined) ||
-        (m.raw?.['id'] as string | undefined);
-      return m.id !== messageId && rawMsgId !== messageId;
-    });
+      const remainingCount = bucket.messages.length;
 
-    const remainingCount = bucket.messages.length;
+      if (remainingCount < originalCount) {
+        log.info(
+          { sessionId, messageId, originalCount, remainingCount },
+          '防抖队列中匹配到被撤回消息并完成即时剔除'
+        );
+        this.emit('recall_fused', sessionId, messageId, remainingCount);
 
-    if (remainingCount < originalCount) {
-      log.info(
-        { sessionId, messageId, originalCount, remainingCount },
-        '防抖队列中匹配到被撤回消息并完成即时剔除'
-      );
-      this.emit('recall_fused', sessionId, messageId, remainingCount);
-
-      // 若队列中全部消息被撤回，执行静默熔断
-      if (remainingCount === 0) {
-        log.info({ sessionId }, '防抖队列消息已全部被撤回，执行静默熔断取消后续流程');
-        this.clearPendingBucket(sessionId);
-        this.emit('suppressed', sessionId, 'recalled');
+        // 若队列中全部消息被撤回，执行静默熔断
+        if (remainingCount === 0) {
+          log.info({ sessionId }, '防抖队列消息已全部被撤回，执行静默熔断取消后续流程');
+          this.clearPendingBucket(sessionId);
+          this.emit('suppressed', sessionId, 'recalled');
+        }
       }
     }
+
+    // 2. 异步在 Store 中标记已撤回
+    await this.store.messages.markMessageRecalled(sessionId, messageId);
   }
+
 
   /**
    * 回复消息分发与视觉红点守卫中枢
@@ -320,8 +358,9 @@ export class SessionCoordinator extends EventEmitter {
     replyContent: FormattedText,
     options: DispatchReplyOptions = {}
   ): Promise<CoordinatorDispatchResult> {
-    const sessionRecord = this.store.sessions.getSession(sessionId);
-    const effectiveMode = options.mode ?? sessionRecord?.mode ?? 'auto';
+    const memMode = this.sessionModeMap.get(sessionId);
+    const sessionRecord = await this.store.sessions.getSession(sessionId);
+    const effectiveMode = options.mode ?? memMode ?? sessionRecord?.mode ?? 'auto';
 
     // 1. 草稿模式守护：保存草稿并坚决保留视觉红点
     if (effectiveMode === 'draft') {
@@ -329,7 +368,7 @@ export class SessionCoordinator extends EventEmitter {
       const contentStr =
         typeof replyContent === 'string' ? replyContent : JSON.stringify(replyContent);
 
-      this.store.messages.saveMessage({
+      await this.store.messages.saveMessage({
         sessionId,
         sender: '自己',
         content: contentStr,
@@ -350,7 +389,7 @@ export class SessionCoordinator extends EventEmitter {
     }
 
     // 2. 人机退避守护：退避期内拦截自动发送并坚决保留红点
-    if (this.isTakeoverActive(sessionId)) {
+    if (await this.isTakeoverActive(sessionId)) {
       log.warn({ sessionId }, '会话处于人工接管退避期，拦截自动回复发送，坚决保留红点');
       const result: CoordinatorDispatchResult = {
         action: 'suppressed',
@@ -413,9 +452,9 @@ export class SessionCoordinator extends EventEmitter {
     // 发送成功分支：更新回复时间戳、写入消息历史并执行视觉红点消除
     if (sendResult.success) {
       const now = Date.now();
-      this.store.sessions.upsertSession({ id: sessionId });
-      this.store.sessions.touchReplyTime(sessionId, now);
-      this.store.messages.saveMessage({
+      await this.store.sessions.upsertSession({ id: sessionId });
+      await this.store.sessions.touchReplyTime(sessionId, now);
+      await this.store.messages.saveMessage({
         sessionId,
         messageId: sendResult.messageId,
         sender: '自己',
@@ -520,7 +559,9 @@ export class SessionCoordinator extends EventEmitter {
 
       // 设置最长等待时间定时器 (防止高频连发导致无限延迟)
       bucket.maxWaitTimer = setTimeout(() => {
-        void this.flush(sessionId);
+        this.flush(sessionId).catch(err => {
+          log.error({ err, sessionId }, '执行最长等待超时防抖合并异常');
+        });
       }, this.config.maxWaitMs);
     }
 
@@ -531,7 +572,9 @@ export class SessionCoordinator extends EventEmitter {
       clearTimeout(bucket.debounceTimer);
     }
     bucket.debounceTimer = setTimeout(() => {
-      void this.flush(sessionId);
+      this.flush(sessionId).catch(err => {
+        log.error({ err, sessionId }, '执行滑动窗口防抖合并异常');
+      });
     }, this.config.debounceMs);
 
     log.debug(
@@ -555,7 +598,7 @@ export class SessionCoordinator extends EventEmitter {
     this.clearPendingBucket(sessionId);
 
     // 再次确认退避状态
-    if (this.isTakeoverActive(sessionId)) {
+    if (await this.isTakeoverActive(sessionId)) {
       log.info({ sessionId }, '防抖到期时会话处于人工退避状态，静默放弃合并处理');
       this.emit('suppressed', sessionId, 'human_takeover');
       return;

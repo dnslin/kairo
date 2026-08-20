@@ -41,10 +41,10 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
   let mockDriver: MockDriver;
   let store: KKBotStore;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
     mockDriver = new MockDriver();
-    store = createKKBotStore({ path: ':memory:' });
+    store = await createKKBotStore({ path: ':memory:' });
   });
 
   afterEach(() => {
@@ -87,12 +87,12 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
     expect(mockDriver.markSessionRead).toHaveBeenCalledWith('session_e2e');
 
     // 4. 校验 Store 中的会话与消息历史记录
-    const session = store.sessions.getSession('session_e2e');
+    const session = await store.sessions.getSession('session_e2e');
     expect(session).not.toBeNull();
     expect(session?.lastMessageAt).toBeGreaterThan(0);
     expect(session?.lastReplyAt).toBeGreaterThan(0);
 
-    const history = store.messages.getSessionHistory('session_e2e');
+    const history = await store.messages.getSessionHistory('session_e2e');
     expect(history.length).toBeGreaterThanOrEqual(3); // 2 条入站 + 1 条回复
 
     coordinator.stop();
@@ -132,7 +132,7 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
     expect(mockDriver.markSessionRead).not.toHaveBeenCalled();
 
     // 5. 验证 store 中消息被标记为已撤回且 getSessionHistory 自动过滤
-    const cleanHistory = store.messages.getSessionHistory('session_e2e');
+    const cleanHistory = await store.messages.getSessionHistory('session_e2e');
     expect(cleanHistory).toHaveLength(0);
 
     coordinator.stop();
@@ -157,7 +157,7 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
     coordinator.start();
 
     // 1. 人类操作员在客户端回复客户
-    mockDriver.emitMessage(
+    await coordinator.handleInboundMessage(
       createMsg({
         id: 'human_001',
         isMe: true,
@@ -166,10 +166,10 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
       })
     );
 
-    expect(coordinator.isTakeoverActive('session_e2e')).toBe(true);
+    expect(await coordinator.isTakeoverActive('session_e2e')).toBe(true);
 
     // 2. 客户紧接着发送新消息
-    mockDriver.emitMessage(createMsg({ id: 'user_reply_1', content: '好的麻烦尽快' }));
+    await coordinator.handleInboundMessage(createMsg({ id: 'user_reply_1', content: '好的麻烦尽快' }));
 
     // 3. 等待防抖窗口
     await vi.advanceTimersByTimeAsync(3000);

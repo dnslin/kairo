@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type Database from 'better-sqlite3';
+import type { Client } from '@libsql/client';
 import {
   closeDatabase,
-  createDatabase,
+  createDatabaseClient,
   OrgRepository,
   type OrgDepartmentInput,
   type OrgEmployeeInput,
@@ -10,12 +10,12 @@ import {
 } from '../src/index.js';
 
 describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> Green)', () => {
-  let db: Database.Database;
+  let db: Client;
   let repo: OrgRepository;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // 为每个测试用例分配完全隔离的内存数据库实例
-    db = createDatabase({ path: ':memory:' });
+    db = await createDatabaseClient({ path: ':memory:' });
     repo = new OrgRepository(db);
   });
 
@@ -24,27 +24,24 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
   });
 
   describe('1. 数据库底座与 DDL 表结构初始化', () => {
-    it('应成功建立内存数据库并默认启用外键约束', () => {
-      const fk = db.pragma('foreign_keys', { simple: true });
+    it('应成功建立内存数据库并默认启用外键约束', async () => {
+      const res = await db.execute('PRAGMA foreign_keys');
+      const fk = Number(res.rows[0]?.['foreign_keys']);
       expect(fk).toBe(1);
     });
 
-    it('应正确创建 org_departments、org_employees 与 org_employee_departments 三张数据表及对应索引', () => {
-      const tables = db
-        .prepare<[], { name: string }>(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'org_%' ORDER BY name"
-        )
-        .all()
-        .map(t => t.name);
+    it('应正确创建 org_departments、org_employees 与 org_employee_departments 三张数据表及对应索引', async () => {
+      const res = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'org_%' ORDER BY name"
+      );
+      const tables = res.rows.map(t => (t['name'] as string) ?? '');
 
       expect(tables).toEqual(['org_departments', 'org_employee_departments', 'org_employees']);
 
-      const indices = db
-        .prepare<[], { name: string }>(
-          "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_org_%' ORDER BY name"
-        )
-        .all()
-        .map(i => i.name);
+      const idxRes = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_org_%' ORDER BY name"
+      );
+      const indices = idxRes.rows.map(i => (i['name'] as string) ?? '');
 
       expect(indices).toContain('idx_org_departments_parent_id');
       expect(indices).toContain('idx_org_departments_path');
@@ -56,7 +53,7 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
   });
 
   describe('2. syncOrganization: 原子全量同步与多部门兼职模型', () => {
-    it('应成功原子同步部门树与员工档案（含主职与兼职任职）', () => {
+    it('应成功原子同步部门树与员工档案（含主职与兼职任职）', async () => {
       const departments: OrgDepartmentInput[] = [
         { id: 'dept-root', name: '总公司', parentId: null },
         { id: 'dept-tech', name: '技术研发中心', parentId: 'dept-root' },
@@ -90,7 +87,7 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         },
       ];
 
-      const result = repo.syncOrganization({ departments, employees });
+      const result = await repo.syncOrganization({ departments, employees });
 
       expect(result.departmentCount).toBe(4);
       expect(result.employeeCount).toBe(2);
@@ -98,24 +95,24 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
 
       // 验证统计数据
-      const stats = repo.getStats();
+      const stats = await repo.getStats();
       expect(stats.totalDepartments).toBe(4);
       expect(stats.totalEmployees).toBe(2);
       expect(stats.totalAppointments).toBe(3);
     });
 
-    it('未提供 path 与 level 时应自动推导多级层级路径与深度', () => {
+    it('未提供 path 与 level 时应自动推导多级层级路径与深度', async () => {
       const departments: OrgDepartmentInput[] = [
         { id: 'd1', name: '总部', parentId: null },
         { id: 'd2', name: '华北区', parentId: 'd1' },
         { id: 'd3', name: '海淀研发组', parentId: 'd2' },
       ];
 
-      repo.syncOrganization({ departments, employees: [] });
+      await repo.syncOrganization({ departments, employees: [] });
 
-      const d1 = repo.getDepartmentById('d1');
-      const d2 = repo.getDepartmentById('d2');
-      const d3 = repo.getDepartmentById('d3');
+      const d1 = await repo.getDepartmentById('d1');
+      const d2 = await repo.getDepartmentById('d2');
+      const d3 = await repo.getDepartmentById('d3');
 
       expect(d1?.path).toBe('/d1');
       expect(d1?.level).toBe(1);
@@ -127,7 +124,7 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
       expect(d3?.level).toBe(3);
     });
 
-    it('对同一员工在同一部门的重复任职应自动去重，并优先保留主职与负责人标记', () => {
+    it('对同一员工在同一部门的重复任职应自动去重，并优先保留主职与负责人标记', async () => {
       const departments: OrgDepartmentInput[] = [{ id: 'dept-1', name: '部门1' }];
       const employees: OrgEmployeeInput[] = [
         {
@@ -141,9 +138,9 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         },
       ];
 
-      repo.syncOrganization({ departments, employees });
+      await repo.syncOrganization({ departments, employees });
 
-      const emp = repo.getEmployeeById('emp-dup');
+      const emp = await repo.getEmployeeById('emp-dup');
       expect(emp?.departments).toHaveLength(1);
       expect(emp?.departments[0]).toMatchObject({
         deptId: 'dept-1',
@@ -152,7 +149,7 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
       });
     });
 
-    it('当多次全量同步时，应原子清除已离职员工、废弃部门与废弃任职关系（杜绝残留僵尸数据）', () => {
+    it('当多次全量同步时，应原子清除已离职员工、废弃部门与废弃任职关系（杜绝残留僵尸数据）', async () => {
       // 第一次同步：3 个部门，2 个员工
       const initialData: SyncOrgData = {
         departments: [
@@ -176,9 +173,9 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         ],
       };
 
-      repo.syncOrganization(initialData);
-      expect(repo.getStats().totalEmployees).toBe(2);
-      expect(repo.getStats().totalDepartments).toBe(3);
+      await repo.syncOrganization(initialData);
+      expect((await repo.getStats()).totalEmployees).toBe(2);
+      expect((await repo.getStats()).totalDepartments).toBe(3);
 
       // 第二次全量同步：离职员工与废弃部门被剔除，新增 e2
       const updatedData: SyncOrgData = {
@@ -202,25 +199,25 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         ],
       };
 
-      repo.syncOrganization(updatedData);
+      await repo.syncOrganization(updatedData);
 
-      const stats = repo.getStats();
+      const stats = await repo.getStats();
       expect(stats.totalDepartments).toBe(2);
       expect(stats.totalEmployees).toBe(2);
 
       // 验证已离职员工与废弃部门不可查
-      expect(repo.getEmployeeById('e-departed')).toBeNull();
-      expect(repo.getEmployeeByLoginName('departed')).toBeNull();
-      expect(repo.getDepartmentById('d-obsolete')).toBeNull();
+      expect(await repo.getEmployeeById('e-departed')).toBeNull();
+      expect(await repo.getEmployeeByLoginName('departed')).toBeNull();
+      expect(await repo.getDepartmentById('d-obsolete')).toBeNull();
 
       // 验证新员工与重命名部门可查
-      expect(repo.getEmployeeById('e2')).not.toBeNull();
-      expect(repo.getDepartmentById('d1')?.name).toBe('部门1-重命名');
+      expect(await repo.getEmployeeById('e2')).not.toBeNull();
+      expect((await repo.getDepartmentById('d1'))?.name).toBe('部门1-重命名');
     });
   });
 
   describe('3. getDepartmentTree: 递归部门层级树', () => {
-    it('应正确组装多级嵌套部门树并按层级与名称排序', () => {
+    it('应正确组装多级嵌套部门树并按层级与名称排序', async () => {
       const departments: OrgDepartmentInput[] = [
         { id: 'root-1', name: '集团总部', parentId: null },
         { id: 'root-2', name: '创新研究院', parentId: null },
@@ -230,9 +227,9 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         { id: 'team-2', name: '后端组', parentId: 'sub-2' },
       ];
 
-      repo.syncOrganization({ departments, employees: [] });
+      await repo.syncOrganization({ departments, employees: [] });
 
-      const tree = repo.getDepartmentTree();
+      const tree = await repo.getDepartmentTree();
       expect(tree).toHaveLength(2);
 
       const root1 = tree.find(r => r.id === 'root-1');
@@ -245,15 +242,15 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
       expect(techCenter?.children.map(c => c.name)).toEqual(['前端组', '后端组']);
     });
 
-    it('当组织架构为空时应安全返回空数组', () => {
-      const tree = repo.getDepartmentTree();
+    it('当组织架构为空时应安全返回空数组', async () => {
+      const tree = await repo.getDepartmentTree();
       expect(tree).toEqual([]);
     });
   });
 
   describe('4. getEmployeeById 与 getEmployeeByLoginName: 单点精确查询', () => {
-    beforeEach(() => {
-      repo.syncOrganization({
+    beforeEach(async () => {
+      await repo.syncOrganization({
         departments: [
           { id: 'dept-dev', name: '研发部' },
           { id: 'dept-sec', name: '安全部' },
@@ -275,8 +272,8 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
       });
     });
 
-    it('getEmployeeById 应返回完整员工档案及主兼职列表（主职排在首位）', () => {
-      const emp = repo.getEmployeeById('1001');
+    it('getEmployeeById 应返回完整员工档案及主兼职列表（主职排在首位）', async () => {
+      const emp = await repo.getEmployeeById('1001');
 
       expect(emp).not.toBeNull();
       expect(emp?.id).toBe('1001');
@@ -303,22 +300,22 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
       });
     });
 
-    it('getEmployeeByLoginName 应支持通过工号/登录名精确查询', () => {
-      const emp = repo.getEmployeeByLoginName('wangwu');
+    it('getEmployeeByLoginName 应支持通过工号/登录名精确查询', async () => {
+      const emp = await repo.getEmployeeByLoginName('wangwu');
       expect(emp).not.toBeNull();
       expect(emp?.id).toBe('1001');
       expect(emp?.name).toBe('王五');
     });
 
-    it('查询不存在的 ID 或工号时应返回 null', () => {
-      expect(repo.getEmployeeById('99999')).toBeNull();
-      expect(repo.getEmployeeByLoginName('non_existent')).toBeNull();
-      expect(repo.getEmployeeById('')).toBeNull();
+    it('查询不存在的 ID 或工号时应返回 null', async () => {
+      expect(await repo.getEmployeeById('99999')).toBeNull();
+      expect(await repo.getEmployeeByLoginName('non_existent')).toBeNull();
+      expect(await repo.getEmployeeById('')).toBeNull();
     });
   });
 
   describe('5. searchEmployees: 综合搜索与部门层级过滤', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       const departments: OrgDepartmentInput[] = [
         { id: 'hq', name: '总公司', parentId: null },
         { id: 'tech', name: '技术部', parentId: 'hq' },
@@ -353,30 +350,30 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         },
       ];
 
-      repo.syncOrganization({ departments, employees });
+      await repo.syncOrganization({ departments, employees });
     });
 
-    it('应支持按关键词（工号、姓名、手机号、邮箱）模糊匹配', () => {
-      const byName = repo.searchEmployees('艾丽斯');
+    it('应支持按关键词（工号、姓名、手机号、邮箱）模糊匹配', async () => {
+      const byName = await repo.searchEmployees('艾丽斯');
       expect(byName).toHaveLength(1);
       expect(byName[0]?.loginName).toBe('alice');
 
-      const byPhone = repo.searchEmployees('13987654321');
+      const byPhone = await repo.searchEmployees('13987654321');
       expect(byPhone).toHaveLength(1);
       expect(byPhone[0]?.loginName).toBe('bob');
 
-      const byEmail = repo.searchEmployees('corp.com');
+      const byEmail = await repo.searchEmployees('corp.com');
       expect(byEmail).toHaveLength(3);
     });
 
-    it('应支持按部门 ID 筛选员工', () => {
-      const techEmps = repo.searchEmployees({ deptId: 'tech', includeSubDepts: false });
+    it('应支持按部门 ID 筛选员工', async () => {
+      const techEmps = await repo.searchEmployees({ deptId: 'tech', includeSubDepts: false });
       expect(techEmps).toHaveLength(1);
       expect(techEmps[0]?.loginName).toBe('bob');
     });
 
-    it('开启 includeSubDepts 时应递归筛选包含所有子部门的员工', () => {
-      const allTechEmps = repo.getEmployeesByDepartmentId('tech', true);
+    it('开启 includeSubDepts 时应递归筛选包含所有子部门的员工', async () => {
+      const allTechEmps = await repo.getEmployeesByDepartmentId('tech', true);
       expect(allTechEmps).toHaveLength(2);
       const logins = allTechEmps.map(e => e.loginName).sort();
       expect(logins).toEqual(['alice', 'bob']);
@@ -384,8 +381,8 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
   });
 
   describe('6. 外键级联、事务回滚与边界异常处理', () => {
-    it('删除员工或部门时应自动级联删除对应的任职关系记录', () => {
-      repo.syncOrganization({
+    it('删除员工或部门时应自动级联删除对应的任职关系记录', async () => {
+      await repo.syncOrganization({
         departments: [{ id: 'd-test', name: '测试部门' }],
         employees: [
           {
@@ -397,14 +394,14 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         ],
       });
 
-      expect(repo.getStats().totalAppointments).toBe(1);
+      expect((await repo.getStats()).totalAppointments).toBe(1);
 
       // 直接删除员工
-      db.prepare('DELETE FROM org_employees WHERE id = ?').run('e-test');
-      expect(repo.getStats().totalAppointments).toBe(0);
+      await db.execute({ sql: 'DELETE FROM org_employees WHERE id = ?', args: ['e-test'] });
+      expect((await repo.getStats()).totalAppointments).toBe(0);
 
       // 重新同步并测试删除部门时的级联
-      repo.syncOrganization({
+      await repo.syncOrganization({
         departments: [{ id: 'd-test2', name: '测试部门2' }],
         employees: [
           {
@@ -415,13 +412,13 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
           },
         ],
       });
-      expect(repo.getStats().totalAppointments).toBe(1);
+      expect((await repo.getStats()).totalAppointments).toBe(1);
 
-      db.prepare('DELETE FROM org_departments WHERE id = ?').run('d-test2');
-      expect(repo.getStats().totalAppointments).toBe(0);
+      await db.execute({ sql: 'DELETE FROM org_departments WHERE id = ?', args: ['d-test2'] });
+      expect((await repo.getStats()).totalAppointments).toBe(0);
     });
 
-    it('当同步过程中抛出异常时，整个事务应完全回滚且原有数据不受破坏', () => {
+    it('当同步过程中抛出异常时，整个事务应完全回滚且原有数据不受破坏', async () => {
       const initialData: SyncOrgData = {
         departments: [{ id: 'd-safe', name: '安全部门' }],
         employees: [
@@ -434,11 +431,10 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         ],
       };
 
-      repo.syncOrganization(initialData);
-      expect(repo.getStats().totalEmployees).toBe(1);
+      await repo.syncOrganization(initialData);
+      expect((await repo.getStats()).totalEmployees).toBe(1);
 
       // 构造会导致失败的同步（如重复插入或在内部抛出错误）
-      // 模拟只读事务或损坏约束
       const badData: SyncOrgData = {
         departments: [{ id: 'd-new', name: '新部门' }],
         employees: [
@@ -447,17 +443,17 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         ],
       };
 
-      expect(() => repo.syncOrganization(badData)).toThrow();
+      await expect(repo.syncOrganization(badData)).rejects.toThrow();
 
       // 验证回滚：原数据完好保留
-      const stats = repo.getStats();
+      const stats = await repo.getStats();
       expect(stats.totalDepartments).toBe(1);
       expect(stats.totalEmployees).toBe(1);
-      expect(repo.getEmployeeById('e-safe')).not.toBeNull();
-      expect(repo.getDepartmentById('d-safe')).not.toBeNull();
+      expect(await repo.getEmployeeById('e-safe')).not.toBeNull();
+      expect(await repo.getDepartmentById('d-safe')).not.toBeNull();
     });
 
-    it('应支持批量大规模组织架构同步 (压力与性能基准)', () => {
+    it('应支持批量大规模组织架构同步 (压力与性能基准)', async () => {
       const departments: OrgDepartmentInput[] = [];
       for (let i = 1; i <= 50; i++) {
         departments.push({
@@ -484,16 +480,16 @@ describe('OrgRepository 与组织架构三表模型持久化测试 (TDD Red -> G
         });
       }
 
-      const result = repo.syncOrganization({ departments, employees });
+      const result = await repo.syncOrganization({ departments, employees });
       expect(result.departmentCount).toBe(50);
       expect(result.employeeCount).toBe(200);
       expect(result.appointmentCount).toBe(400);
 
       // 验证分页与过滤
-      const page1 = repo.searchEmployees({ limit: 10, offset: 0 });
+      const page1 = await repo.searchEmployees({ limit: 10, offset: 0 });
       expect(page1).toHaveLength(10);
 
-      const page2 = repo.searchEmployees({ limit: 10, offset: 10 });
+      const page2 = await repo.searchEmployees({ limit: 10, offset: 10 });
       expect(page2).toHaveLength(10);
       expect(page1[0]?.id).not.toEqual(page2[0]?.id);
     });
