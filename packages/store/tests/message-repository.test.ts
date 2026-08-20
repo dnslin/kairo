@@ -1,28 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type Database from 'better-sqlite3';
+import type { Client } from '@libsql/client';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   closeDatabase,
-  createDatabase,
+  createDatabaseClient,
+  createKKBotStore,
   KKBotStore,
   MediaStorage,
   MessageRepository,
-  Store,
   type MessageRawPayload,
   type SaveMessageInput,
 } from '../src/index.js';
 
 describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模态转存测试 (TDD Red -> Green)', () => {
-  let db: Database.Database;
+  let db: Client;
   let repo: MessageRepository;
   let tempDir: string;
   let mediaStorage: MediaStorage;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // 为每个测试用例分配完全隔离的内存数据库
-    db = createDatabase({ path: ':memory:' });
+    db = await createDatabaseClient({ path: ':memory:' });
     repo = new MessageRepository(db);
 
     // 为多模态转存创建隔离的临时测试目录
@@ -42,22 +42,18 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
   });
 
   describe('1. 数据库 DDL 表结构与索引初始化', () => {
-    it('应正确创建 session_messages 表并包含所有必需字段', () => {
-      const tableInfo = db
-        .prepare<
-          [],
-          {
-            cid: number;
-            name: string;
-            type: string;
-            notnull: number;
-            dflt_value: string | null;
-            pk: number;
-          }
-        >('PRAGMA table_info(session_messages)')
-        .all();
+    it('应正确创建 session_messages 表并包含所有必需字段', async () => {
+      const res = await db.execute('PRAGMA table_info(session_messages)');
+      const tableInfo = res.rows as unknown as Array<{
+        cid: number;
+        name: string;
+        type: string;
+        notnull: number;
+        dflt_value: string | null;
+        pk: number;
+      }>;
 
-      const columnNames = tableInfo.map(c => c.name);
+      const columnNames = tableInfo.map(c => String(c.name));
       expect(columnNames).toContain('id');
       expect(columnNames).toContain('session_id');
       expect(columnNames).toContain('message_id');
@@ -73,16 +69,14 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
 
       // 验证主键定义
       const idCol = tableInfo.find(c => c.name === 'id');
-      expect(idCol?.pk).toBe(1);
+      expect(Number(idCol?.pk)).toBe(1);
     });
 
-    it('应正确建立 session_messages 的核心索引', () => {
-      const indices = db
-        .prepare<[], { name: string }>(
-          "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='session_messages' ORDER BY name"
-        )
-        .all()
-        .map(i => i.name);
+    it('应正确建立 session_messages 的核心索引', async () => {
+      const res = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='session_messages' ORDER BY name"
+      );
+      const indices = res.rows.map(i => (i['name'] as string) ?? '');
 
       expect(indices).toContain('idx_session_messages_session_id');
       expect(indices).toContain('idx_session_messages_message_id');
@@ -93,7 +87,7 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
   });
 
   describe('2. saveMessage: 消息持久化与单/批量写入', () => {
-    it('应成功保存单条纯文本消息并返回完整的 SessionMessage 实体', () => {
+    it('应成功保存单条纯文本消息并返回完整的 SessionMessage 实体', async () => {
       const input: SaveMessageInput = {
         sessionId: 'session-001',
         messageId: 'native-msg-1001',
@@ -105,7 +99,7 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
         createdAt: 1700000000000,
       };
 
-      const saved = repo.saveMessage(input);
+      const saved = await repo.saveMessage(input);
 
       expect(saved.id).toBeGreaterThan(0);
       expect(saved.sessionId).toBe('session-001');
@@ -121,9 +115,9 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       expect(saved.createdAt).toBe(1700000000000);
     });
 
-    it('应支持默认缺省值（createdAt 自动赋值为当前时间戳、messageType 默认为 text）', () => {
+    it('应支持默认缺省值（createdAt 自动赋值为当前时间戳、messageType 默认为 text）', async () => {
       const nowBefore = Date.now();
-      const saved = repo.saveMessage({
+      const saved = await repo.saveMessage({
         sessionId: 'session-002',
         sender: '李四',
         content: '缺省参数测试',
@@ -140,7 +134,7 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       expect(saved.createdAt).toBeLessThanOrEqual(nowAfter);
     });
 
-    it('应支持通过 saveMessages 单事务原子批量保存多条消息', () => {
+    it('应支持通过 saveMessages 单事务原子批量保存多条消息', async () => {
       const inputs: SaveMessageInput[] = [
         {
           sessionId: 'session-batch',
@@ -165,7 +159,7 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
         },
       ];
 
-      const savedList = repo.saveMessages(inputs);
+      const savedList = await repo.saveMessages(inputs);
       expect(savedList).toHaveLength(3);
       expect(savedList[0].id).toBeLessThan(savedList[1].id);
       expect(savedList[1].id).toBeLessThan(savedList[2].id);
@@ -174,15 +168,15 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
   });
 
   describe('3. markMessageRecalled: 原生 ID 100% 精确撤回', () => {
-    it('应基于原生 messageId 精准标记撤回状态 (is_recalled = 1)', () => {
-      repo.saveMessage({
+    it('应基于原生 messageId 精准标记撤回状态 (is_recalled = 1)', async () => {
+      await repo.saveMessage({
         sessionId: 'session-recall',
         messageId: 'native-recall-target',
         sender: '王五',
         content: '这是一条即将被撤回的消息',
       });
 
-      repo.saveMessage({
+      await repo.saveMessage({
         sessionId: 'session-recall',
         messageId: 'native-recall-other',
         sender: '赵六',
@@ -190,34 +184,34 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       });
 
       // 撤回目标消息
-      const success = repo.markMessageRecalled('session-recall', 'native-recall-target');
+      const success = await repo.markMessageRecalled('session-recall', 'native-recall-target');
       expect(success).toBe(true);
 
       // 验证目标消息已被标记为撤回
-      const target = repo.getMessageByNativeId('session-recall', 'native-recall-target');
+      const target = await repo.getMessageByNativeId('session-recall', 'native-recall-target');
       expect(target).not.toBeNull();
       expect(target?.isRecalled).toBe(true);
 
       // 验证其他消息未受影响
-      const other = repo.getMessageByNativeId('session-recall', 'native-recall-other');
+      const other = await repo.getMessageByNativeId('session-recall', 'native-recall-other');
       expect(other).not.toBeNull();
       expect(other?.isRecalled).toBe(false);
     });
 
-    it('对不存在的原生 messageId 撤回应返回 false', () => {
-      const success = repo.markMessageRecalled('session-recall', 'non-existent-id');
+    it('对不存在的原生 messageId 撤回应返回 false', async () => {
+      const success = await repo.markMessageRecalled('session-recall', 'non-existent-id');
       expect(success).toBe(false);
     });
 
-    it('跨会话应严格隔离，即使原生 messageId 相同也不会误撤回其他会话的消息', () => {
-      repo.saveMessage({
+    it('跨会话应严格隔离，即使原生 messageId 相同也不会误撤回其他会话的消息', async () => {
+      await repo.saveMessage({
         sessionId: 'session-A',
         messageId: 'duplicate-native-id',
         sender: 'A1',
         content: '会话A的消息',
       });
 
-      repo.saveMessage({
+      await repo.saveMessage({
         sessionId: 'session-B',
         messageId: 'duplicate-native-id',
         sender: 'B1',
@@ -225,35 +219,35 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       });
 
       // 仅撤回会话 A 中的消息
-      const success = repo.markMessageRecalled('session-A', 'duplicate-native-id');
+      const success = await repo.markMessageRecalled('session-A', 'duplicate-native-id');
       expect(success).toBe(true);
 
-      const msgA = repo.getMessageByNativeId('session-A', 'duplicate-native-id');
-      const msgB = repo.getMessageByNativeId('session-B', 'duplicate-native-id');
+      const msgA = await repo.getMessageByNativeId('session-A', 'duplicate-native-id');
+      const msgB = await repo.getMessageByNativeId('session-B', 'duplicate-native-id');
 
       expect(msgA?.isRecalled).toBe(true);
       expect(msgB?.isRecalled).toBe(false);
     });
 
-    it('应支持按数据库自增 ID 撤回 (markMessageRecalledById)', () => {
-      const saved = repo.saveMessage({
+    it('应支持按数据库自增 ID 撤回 (markMessageRecalledById)', async () => {
+      const saved = await repo.saveMessage({
         sessionId: 'session-by-id',
         sender: '孙七',
         content: '按自增ID撤回测试',
       });
 
-      const success = repo.markMessageRecalledById(saved.id);
+      const success = await repo.markMessageRecalledById(saved.id);
       expect(success).toBe(true);
 
-      const fetched = repo.getMessageById(saved.id);
+      const fetched = await repo.getMessageById(saved.id);
       expect(fetched?.isRecalled).toBe(true);
     });
   });
 
   describe('4. getSessionHistory: 历史上下文查询与自动过滤撤回消息', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
       // 预先写入一系列会话消息，包含正常消息与撤回消息
-      repo.saveMessages([
+      await repo.saveMessages([
         { sessionId: 's-hist', messageId: 'm-1', sender: 'U1', content: '消息 1', createdAt: 1000 },
         {
           sessionId: 's-hist',
@@ -273,12 +267,12 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
         { sessionId: 's-hist', messageId: 'm-5', sender: 'U1', content: '消息 5', createdAt: 5000 },
       ]);
 
-      repo.markMessageRecalled('s-hist', 'm-2');
-      repo.markMessageRecalled('s-hist', 'm-4');
+      await repo.markMessageRecalled('s-hist', 'm-2');
+      await repo.markMessageRecalled('s-hist', 'm-4');
     });
 
-    it('默认 getSessionHistory 应在 SQL 层面完全过滤已撤回的消息', () => {
-      const history = repo.getSessionHistory('s-hist');
+    it('默认 getSessionHistory 应在 SQL 层面完全过滤已撤回的消息', async () => {
+      const history = await repo.getSessionHistory('s-hist');
 
       expect(history).toHaveLength(3);
       expect(history.map(m => m.messageId)).toEqual(['m-1', 'm-3', 'm-5']);
@@ -286,30 +280,30 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       expect(history.every(m => !m.isRecalled)).toBe(true);
     });
 
-    it('传入 limit 时应返回最新的 N 条有效消息且保持时序正序排列', () => {
-      const latest2 = repo.getSessionHistory('s-hist', 2);
+    it('传入 limit 时应返回最新的 N 条有效消息且保持时序正序排列', async () => {
+      const latest2 = await repo.getSessionHistory('s-hist', 2);
 
       expect(latest2).toHaveLength(2);
       expect(latest2.map(m => m.messageId)).toEqual(['m-3', 'm-5']);
       expect(latest2[0].createdAt).toBeLessThan(latest2[1].createdAt);
     });
 
-    it('当指定 includeRecalled: true 时应能查到包含已撤回消息的完整审计历史', () => {
-      const fullHistory = repo.getSessionHistory('s-hist', { includeRecalled: true });
+    it('当指定 includeRecalled: true 时应能查到包含已撤回消息的完整审计历史', async () => {
+      const fullHistory = await repo.getSessionHistory('s-hist', { includeRecalled: true });
 
       expect(fullHistory).toHaveLength(5);
       expect(fullHistory.map(m => m.messageId)).toEqual(['m-1', 'm-2', 'm-3', 'm-4', 'm-5']);
       expect(fullHistory.filter(m => m.isRecalled)).toHaveLength(2);
     });
 
-    it('应支持基于 beforeId 或 beforeTimestamp 进行向上滚动分页', () => {
-      const page = repo.getSessionHistory('s-hist', { beforeTimestamp: 5000, limit: 10 });
+    it('应支持基于 beforeId 或 beforeTimestamp 进行向上滚动分页', async () => {
+      const page = await repo.getSessionHistory('s-hist', { beforeTimestamp: 5000, limit: 10 });
       expect(page.map(m => m.messageId)).toEqual(['m-1', 'm-3']);
     });
   });
 
   describe('5. 多模态载荷 (raw_payload) 序列化与结构化读写', () => {
-    it('应正确持久化并反序列化图片、文件、@ 提及与引用回复的多模态载荷', () => {
+    it('应正确持久化并反序列化图片、文件、@ 提及与引用回复的多模态载荷', async () => {
       const payload: MessageRawPayload = {
         images: [
           {
@@ -338,7 +332,7 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
         },
       };
 
-      const saved = repo.saveMessage({
+      const saved = await repo.saveMessage({
         sessionId: 'session-multimodal',
         messageId: 'native-multi-01',
         sender: '系统研发',
@@ -357,14 +351,14 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       expect(saved.replyTargetId).toBe('native-ref-999');
 
       // 从数据库重新读取验证
-      const fetched = repo.getMessageById(saved.id);
+      const fetched = await repo.getMessageById(saved.id);
       expect(fetched?.rawPayload).toEqual(payload);
       expect(fetched?.replyTargetId).toBe('native-ref-999');
     });
 
-    it('当传入字符串形式的 rawPayload 时也应安全解析', () => {
+    it('当传入字符串形式的 rawPayload 时也应安全解析', async () => {
       const jsonStr = JSON.stringify({ customKey: 'customValue', number: 42 });
-      const saved = repo.saveMessage({
+      const saved = await repo.saveMessage({
         sessionId: 'session-json-str',
         sender: 'Tester',
         content: 'JSON string payload',
@@ -422,6 +416,7 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       expect(deleted).toBe(true);
       expect(mediaStorage.mediaExists(result.relativePath)).toBe(false);
     });
+
     it('当转存不存在的源文件时应抛出异常', async () => {
       await expect(
         mediaStorage.saveMediaFile(join(tempDir, 'non-existent-source.jpg'))
@@ -442,7 +437,7 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
 
   describe('7. Store 统一门面类集成测试', () => {
     it('应能通过 Store 门面统一访问 messages、org 与 media 仓储并完成全链路调用', async () => {
-      const store = new Store({ path: ':memory:', media: { baseDir: tempDir } });
+      const store = await createKKBotStore({ path: ':memory:', media: { baseDir: tempDir } });
       expect(store).toBeInstanceOf(KKBotStore);
       expect(store.messages).toBeInstanceOf(MessageRepository);
       expect(store.media).toBeInstanceOf(MediaStorage);
@@ -454,7 +449,7 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       );
 
       // 2. 持久化带有媒体相对路径的消息
-      const msg = store.messages.saveMessage({
+      const msg = await store.messages.saveMessage({
         sessionId: 'session-store-facade',
         messageId: 'store-native-1',
         sender: 'Bot',
@@ -469,11 +464,11 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       expect(msg.rawPayload?.images?.[0].relativePath).toBe(mediaResult.relativePath);
 
       // 3. 原生 ID 精确撤回
-      const recalled = store.messages.markMessageRecalled('session-store-facade', 'store-native-1');
+      const recalled = await store.messages.markMessageRecalled('session-store-facade', 'store-native-1');
       expect(recalled).toBe(true);
 
       // 4. 获取历史过滤
-      const history = store.messages.getSessionHistory('session-store-facade');
+      const history = await store.messages.getSessionHistory('session-store-facade');
       expect(history).toHaveLength(0);
 
       store.close();
@@ -481,8 +476,8 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
   });
 
   describe('8. 复合条件检索、统计与会话清理', () => {
-    beforeEach(() => {
-      repo.saveMessages([
+    beforeEach(async () => {
+      await repo.saveMessages([
         {
           sessionId: 's-search',
           messageId: 'm-search-1',
@@ -516,14 +511,14 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       ]);
     });
 
-    it('getMessages 应支持按关键词进行全文模糊检索', () => {
-      const results = repo.getMessages({ keyword: '告警' });
+    it('getMessages 应支持按关键词进行全文模糊检索', async () => {
+      const results = await repo.getMessages({ keyword: '告警' });
       expect(results).toHaveLength(2);
       expect(results.map(r => r.messageId)).toEqual(['m-search-3', 'm-search-1']);
     });
 
-    it('getMessages 应支持按发送人、消息类型与时间区间组合过滤', () => {
-      const results = repo.getMessages({
+    it('getMessages 应支持按发送人、消息类型与时间区间组合过滤', async () => {
+      const results = await repo.getMessages({
         sender: '张三',
         messageType: 'text',
         startTime: 5000,
@@ -533,18 +528,18 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       expect(results[0].messageId).toBe('m-search-1');
     });
 
-    it('countSessionMessages 与 getLatestMessage 应准确返回统计与最新记录', () => {
-      expect(repo.countSessionMessages('s-search')).toBe(3);
-      const latest = repo.getLatestMessage('s-search');
+    it('countSessionMessages 与 getLatestMessage 应准确返回统计与最新记录', async () => {
+      expect(await repo.countSessionMessages('s-search')).toBe(3);
+      const latest = await repo.getLatestMessage('s-search');
       expect(latest?.messageId).toBe('m-search-3');
       expect(latest?.content).toBe('检测到告警已恢复');
     });
 
-    it('deleteSessionMessages 应完全清理指定会话的历史记录', () => {
-      const deletedCount = repo.deleteSessionMessages('s-search');
+    it('deleteSessionMessages 应完全清理指定会话的历史记录', async () => {
+      const deletedCount = await repo.deleteSessionMessages('s-search');
       expect(deletedCount).toBe(3);
-      expect(repo.countSessionMessages('s-search')).toBe(0);
-      expect(repo.getSessionHistory('s-search')).toHaveLength(0);
+      expect(await repo.countSessionMessages('s-search')).toBe(0);
+      expect(await repo.getSessionHistory('s-search')).toHaveLength(0);
     });
   });
 });

@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type Database from 'better-sqlite3';
-import { closeDatabase, createDatabase, OrgRepository, type SyncOrgData } from '../src/index.js';
+import type { Client } from '@libsql/client';
+import { closeDatabase, createDatabaseClient, OrgRepository, type SyncOrgData } from '../src/index.js';
 
 describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关系穿透 (TDD)', () => {
-  let db: Database.Database;
+  let db: Client;
   let repo: OrgRepository;
 
   // 预置完备的组织架构测试数据集
@@ -133,10 +133,10 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
     ],
   };
 
-  beforeEach(() => {
-    db = createDatabase({ path: ':memory:' });
+  beforeEach(async () => {
+    db = await createDatabaseClient({ path: ':memory:' });
     repo = new OrgRepository(db);
-    repo.syncOrganization(fixtureData);
+    await repo.syncOrganization(fixtureData);
   });
 
   afterEach(() => {
@@ -144,135 +144,137 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
   });
 
   describe('1. 拼音首字母字段 (pinyin_abbr) 持久化与索引', () => {
-    it('表结构应包含 pinyin_abbr 字段并建立索引', () => {
-      const colInfo = db.pragma('table_info(org_employees)') as Array<{
+    it('表结构应包含 pinyin_abbr 字段并建立索引', async () => {
+      const res = await db.execute('PRAGMA table_info(org_employees)');
+      const colInfo = res.rows as unknown as Array<{
         name: string;
         type: string;
       }>;
-      const pinyinCol = colInfo.find(c => c.name === 'pinyin_abbr');
+      const pinyinCol = colInfo.find(c => String(c.name) === 'pinyin_abbr');
       expect(pinyinCol).toBeDefined();
 
-      const indexList = db.pragma('index_list(org_employees)') as Array<{ name: string }>;
-      const pinyinIdx = indexList.find(idx => idx.name === 'idx_org_employees_pinyin_abbr');
+      const idxRes = await db.execute('PRAGMA index_list(org_employees)');
+      const indexList = idxRes.rows as unknown as Array<{ name: string }>;
+      const pinyinIdx = indexList.find(idx => String(idx.name) === 'idx_org_employees_pinyin_abbr');
       expect(pinyinIdx).toBeDefined();
     });
 
-    it('同步员工时应自动生成并保存 pinyin_abbr', () => {
-      const zsf = repo.getEmployeeById('emp_arch');
+    it('同步员工时应自动生成并保存 pinyin_abbr', async () => {
+      const zsf = await repo.getEmployeeById('emp_arch');
       expect(zsf).not.toBeNull();
       expect(zsf?.pinyinAbbr).toBe('zsf');
 
-      const zgkm = repo.getEmployeeById('emp_fe');
+      const zgkm = await repo.getEmployeeById('emp_fe');
       expect(zgkm?.pinyinAbbr).toBe('zgkm');
 
-      const oyll = repo.getEmployeeById('emp_mkt_dir');
+      const oyll = await repo.getEmployeeById('emp_mkt_dir');
       expect(oyll?.pinyinAbbr).toBe('oyll');
     });
 
-    it('若同步数据中已显式提供 pinyinAbbr 则优先使用指定值', () => {
-      repo.syncOrganization({
+    it('若同步数据中已显式提供 pinyinAbbr 则优先使用指定值', async () => {
+      await repo.syncOrganization({
         departments: [{ id: 'd1', name: '研发' }],
         employees: [{ id: 'e1', loginName: 'test01', name: '王五', pinyinAbbr: 'custom_ww' }],
       });
-      const emp = repo.getEmployeeById('e1');
+      const emp = await repo.getEmployeeById('e1');
       expect(emp?.pinyinAbbr).toBe('custom_ww');
     });
   });
 
   describe('2. findEmployees: 多维模糊快搜', () => {
-    it('按拼音首字母简写搜索应准确命中（如 zsf -> 张三丰，支持大小写不敏感）', () => {
-      const resLower = repo.findEmployees('zsf');
+    it('按拼音首字母简写搜索应准确命中（如 zsf -> 张三丰，支持大小写不敏感）', async () => {
+      const resLower = await repo.findEmployees('zsf');
       expect(resLower.length).toBeGreaterThanOrEqual(1);
       expect(resLower[0].name).toBe('张三丰');
 
-      const resUpper = repo.findEmployees('ZSF');
+      const resUpper = await repo.findEmployees('ZSF');
       expect(resUpper.length).toBeGreaterThanOrEqual(1);
       expect(resUpper[0].name).toBe('张三丰');
     });
 
-    it('按工号精确/前缀搜索应准确命中', () => {
-      const res = repo.findEmployees('10003');
+    it('按工号精确/前缀搜索应准确命中', async () => {
+      const res = await repo.findEmployees('10003');
       expect(res.length).toBe(1);
       expect(res[0].id).toBe('emp_arch');
     });
 
-    it('按中文姓名模糊搜索应准确命中', () => {
-      const res = repo.findEmployees('诸葛');
+    it('按中文姓名模糊搜索应准确命中', async () => {
+      const res = await repo.findEmployees('诸葛');
       expect(res.length).toBe(1);
       expect(res[0].name).toBe('诸葛孔明');
     });
 
-    it('按岗位/职称 (position) 搜索应准确命中', () => {
-      const res = repo.findEmployees('架构师');
+    it('按岗位/职称 (position) 搜索应准确命中', async () => {
+      const res = await repo.findEmployees('架构师');
       expect(res.length).toBe(1);
       expect(res[0].name).toBe('张三丰');
 
-      const devRes = repo.findEmployees('资深Go开发');
+      const devRes = await repo.findEmployees('资深Go开发');
       expect(devRes.length).toBe(1);
       expect(devRes[0].name).toBe('李四');
     });
 
-    it('按工位/办公区域 (region) 搜索应准确命中', () => {
-      const res = repo.findEmployees('顶层');
+    it('按工位/办公区域 (region) 搜索应准确命中', async () => {
+      const res = await repo.findEmployees('顶层');
       expect(res.length).toBe(1);
       expect(res[0].name).toBe('雷军');
 
-      const roomRes = repo.findEmployees('8F-003');
+      const roomRes = await repo.findEmployees('8F-003');
       expect(roomRes.length).toBe(1);
       expect(roomRes[0].name).toBe('李四');
     });
 
-    it('按部门名称或部门路径搜索应命中该部门下的所有员工', () => {
-      const res = repo.findEmployees('市场销售部');
+    it('按部门名称或部门路径搜索应命中该部门下的所有员工', async () => {
+      const res = await repo.findEmployees('市场销售部');
       expect(res.some(e => e.name === '欧阳六六')).toBe(true);
     });
 
-    it('空查询或纯空白字符串应安全返回空数组', () => {
-      expect(repo.findEmployees('')).toEqual([]);
-      expect(repo.findEmployees('   ')).toEqual([]);
+    it('空查询或纯空白字符串应安全返回空数组', async () => {
+      expect(await repo.findEmployees('')).toEqual([]);
+      expect(await repo.findEmployees('   ')).toEqual([]);
     });
 
-    it('应支持 limit 参数截断返回数量', () => {
-      const allResults = repo.findEmployees('A座');
+    it('应支持 limit 参数截断返回数量', async () => {
+      const allResults = await repo.findEmployees('A座');
       expect(allResults.length).toBeGreaterThanOrEqual(3);
 
-      const limitedResults = repo.findEmployees('A座', 2);
+      const limitedResults = await repo.findEmployees('A座', 2);
       expect(limitedResults.length).toBe(2);
     });
 
-    it('精确匹配项应排在模糊/前缀匹配项前面 (Ranking Relevance)', () => {
+    it('精确匹配项应排在模糊/前缀匹配项前面 (Ranking Relevance)', async () => {
       // "张" 会同时匹配 "张小龙" (zxl) 和 "张三丰" (zsf)
       // 若搜索 "张三丰"，精确匹配姓名应排在首位
-      const res = repo.findEmployees('张三丰');
+      const res = await repo.findEmployees('张三丰');
       expect(res[0].name).toBe('张三丰');
     });
 
-    it('输入特殊字符时应安全处理而不发生 SQL 语法错误或注入', () => {
-      expect(() => repo.findEmployees("' OR '1'='1")).not.toThrow();
-      expect(() => repo.findEmployees('" OR "1"="1')).not.toThrow();
-      expect(() => repo.findEmployees('%')).not.toThrow();
-      expect(() => repo.findEmployees('_')).not.toThrow();
-      expect(() => repo.findEmployees('\\')).not.toThrow();
-      expect(() => repo.findEmployees('[]')).not.toThrow();
+    it('输入特殊字符时应安全处理而不发生 SQL 语法错误或注入', async () => {
+      await expect(repo.findEmployees("' OR '1'='1")).resolves.toBeDefined();
+      await expect(repo.findEmployees('" OR "1"="1')).resolves.toBeDefined();
+      await expect(repo.findEmployees('%')).resolves.toBeDefined();
+      await expect(repo.findEmployees('_')).resolves.toBeDefined();
+      await expect(repo.findEmployees('\\')).resolves.toBeDefined();
+      await expect(repo.findEmployees('[]')).resolves.toBeDefined();
 
       // 特殊连字符如 "8F-002" 应准确命中
-      const res = repo.findEmployees('8F-002');
+      const res = await repo.findEmployees('8F-002');
       expect(res.length).toBe(1);
       expect(res[0].name).toBe('张三丰');
     });
 
-    it('limit 传入 0 或负数时应安全防御并返回至少 1 条记录', () => {
-      const resZero = repo.findEmployees('A座', 0);
+    it('limit 传入 0 或负数时应安全防御并返回至少 1 条记录', async () => {
+      const resZero = await repo.findEmployees('A座', 0);
       expect(resZero.length).toBe(1);
 
-      const resNeg = repo.findEmployees('A座', -5);
+      const resNeg = await repo.findEmployees('A座', -5);
       expect(resNeg.length).toBe(1);
     });
 
-    it('多部门兼职员工在多个任职命中搜索条件时应严格去重为单条记录', () => {
+    it('多部门兼职员工在多个任职命中搜索条件时应严格去重为单条记录', async () => {
       // 张三丰在 dept_infra 职位为首席架构师，在 dept_tech 职位为技术专家委员会成员
       // 搜索 "技术" 会同时匹配 dept_tech (部门名) 和 技术专家委员会成员 (岗位)
-      const res = repo.findEmployees('技术');
+      const res = await repo.findEmployees('技术');
       const zsfMatches = res.filter(e => e.id === 'emp_arch');
       expect(zsfMatches).toHaveLength(1);
       expect(zsfMatches[0].departments).toHaveLength(2);
@@ -280,32 +282,32 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
   });
 
   describe('3. getReportingChain: 向上递归穿透管理汇报链', () => {
-    it('应按层级向上递归获取完整汇报链：直属主管 -> 隔级主管 -> 最终高管', () => {
+    it('应按层级向上递归获取完整汇报链：直属主管 -> 隔级主管 -> 最终高管', async () => {
       // 李四 (10004) -> leader: 张三丰 (10003) -> leader: 张小龙 (10002) -> leader: 雷军 (10001) -> 无
-      const chain = repo.getReportingChain('emp_dev');
+      const chain = await repo.getReportingChain('emp_dev');
       expect(chain.map(e => e.name)).toEqual(['张三丰', '张小龙', '雷军']);
       expect(chain[0].departments.length).toBeGreaterThan(0);
     });
 
-    it('直属上级为根节点时，汇报链长度应为 1', () => {
+    it('直属上级为根节点时，汇报链长度应为 1', async () => {
       // 张小龙 (emp_cto) -> leader: 雷军 (emp_ceo)
-      const chain = repo.getReportingChain('emp_cto');
+      const chain = await repo.getReportingChain('emp_cto');
       expect(chain.map(e => e.name)).toEqual(['雷军']);
     });
 
-    it('顶层管理者无上级时，汇报链应返回空数组', () => {
-      const chain = repo.getReportingChain('emp_ceo');
+    it('顶层管理者无上级时，汇报链应返回空数组', async () => {
+      const chain = await repo.getReportingChain('emp_ceo');
       expect(chain).toEqual([]);
     });
 
-    it('查询不存在的员工 ID 时应安全返回空数组', () => {
-      expect(repo.getReportingChain('non_existent_id')).toEqual([]);
-      expect(repo.getReportingChain('')).toEqual([]);
+    it('查询不存在的员工 ID 时应安全返回空数组', async () => {
+      expect(await repo.getReportingChain('non_existent_id')).toEqual([]);
+      expect(await repo.getReportingChain('')).toEqual([]);
     });
 
-    it('遇到环形汇报关系时应进行环路防御，优雅退出而不死循环', () => {
+    it('遇到环形汇报关系时应进行环路防御，优雅退出而不死循环', async () => {
       // 构造循环引用：A -> B -> A
-      repo.syncOrganization({
+      await repo.syncOrganization({
         departments: [{ id: 'd1', name: '环形测试部' }],
         employees: [
           { id: 'emp_a', loginName: 'A', name: '员工A', leaderId: 'emp_b' },
@@ -313,25 +315,25 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
         ],
       });
 
-      const chainA = repo.getReportingChain('emp_a');
+      const chainA = await repo.getReportingChain('emp_a');
       expect(chainA.map(e => e.id)).toEqual(['emp_b']);
     });
 
-    it('当中间领导离职/不存在时，汇报链应截断在有效范围内', () => {
-      repo.syncOrganization({
+    it('当中间领导离职/不存在时，汇报链应截断在有效范围内', async () => {
+      await repo.syncOrganization({
         departments: [{ id: 'd1', name: '断链测试部' }],
         employees: [{ id: 'emp_1', loginName: '1', name: '员工1', leaderId: 'missing_leader' }],
       });
 
-      const chain = repo.getReportingChain('emp_1');
+      const chain = await repo.getReportingChain('emp_1');
       expect(chain).toEqual([]);
     });
   });
 
   describe('4. getDepartmentMembers: 部门成员获取与子部门递归穿透', () => {
-    it('includeSubDepts: false (默认) 时，仅返回直属于该部门的员工', () => {
+    it('includeSubDepts: false (默认) 时，仅返回直属于该部门的员工', async () => {
       // dept_tech 直属员工只有 张小龙 (emp_cto, 主职) 与 张三丰 (emp_arch, 兼职技术专家)
-      const directMembers = repo.getDepartmentMembers('dept_tech');
+      const directMembers = await repo.getDepartmentMembers('dept_tech');
       const memberNames = directMembers.map(m => m.name);
       expect(memberNames).toContain('张小龙');
       expect(memberNames).toContain('张三丰');
@@ -339,10 +341,10 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
       expect(memberNames).not.toContain('诸葛孔明'); // 诸葛孔明在子部门 dept_fe
     });
 
-    it('includeSubDepts: true 时，应递归获取该部门及其所有子部门全员', () => {
+    it('includeSubDepts: true 时，应递归获取该部门及其所有子部门全员', async () => {
       // dept_tech 下包含 dept_infra 与 dept_fe
       // 成员应包含：张小龙、张三丰、李四、诸葛孔明
-      const allTechMembers = repo.getDepartmentMembers('dept_tech', { includeSubDepts: true });
+      const allTechMembers = await repo.getDepartmentMembers('dept_tech', { includeSubDepts: true });
       const memberNames = allTechMembers.map(m => m.name);
 
       expect(memberNames).toContain('张小龙');
@@ -352,17 +354,17 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
       expect(memberNames).not.toContain('欧阳六六'); // 市场部不在技术中台下
     });
 
-    it('在父部门与子部门同时兼职的员工应自动去重，保留完整任职列表', () => {
+    it('在父部门与子部门同时兼职的员工应自动去重，保留完整任职列表', async () => {
       // 张三丰在 dept_infra 是主职+主管，在 dept_tech 是兼职
-      const allTechMembers = repo.getDepartmentMembers('dept_tech', { includeSubDepts: true });
+      const allTechMembers = await repo.getDepartmentMembers('dept_tech', { includeSubDepts: true });
       const zsfList = allTechMembers.filter(m => m.id === 'emp_arch');
       expect(zsfList.length).toBe(1);
       expect(zsfList[0].departments.length).toBe(2);
     });
 
-    it('查询空部门或不存在的部门 ID 应安全返回空数组', () => {
-      expect(repo.getDepartmentMembers('non_existent_dept')).toEqual([]);
-      expect(repo.getDepartmentMembers('')).toEqual([]);
+    it('查询空部门或不存在的部门 ID 应安全返回空数组', async () => {
+      expect(await repo.getDepartmentMembers('non_existent_dept')).toEqual([]);
+      expect(await repo.getDepartmentMembers('')).toEqual([]);
     });
   });
 });

@@ -49,10 +49,10 @@ describe('SessionCoordinator 业务编排器测试', () => {
   let mockDriver: MockDriver;
   let store: KKBotStore;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
     mockDriver = new MockDriver();
-    store = createKKBotStore({ path: ':memory:' });
+    store = await createKKBotStore({ path: ':memory:' });
   });
 
   afterEach(() => {
@@ -110,9 +110,9 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(coordinator.getPendingQueue('session_001')).toHaveLength(0);
 
       // 验证 store 中的数据落盘
-      const history = store.messages.getSessionHistory('session_001', { limit: 10 });
+      const history = await store.messages.getSessionHistory('session_001', { limit: 10 });
       expect(history).toHaveLength(3);
-      const sessionRecord = store.sessions.getSession('session_001');
+      const sessionRecord = await store.sessions.getSession('session_001');
       expect(sessionRecord).not.toBeNull();
       expect(sessionRecord?.lastMessageAt).toBeGreaterThan(0);
 
@@ -238,14 +238,14 @@ describe('SessionCoordinator 业务编排器测试', () => {
       });
       coordinator.start();
 
-      mockDriver.emitMessage(createSampleMessage({ id: 'm1', content: '正常消息 1' }));
-      mockDriver.emitMessage(createSampleMessage({ id: 'm2', content: '手误发送的敏感信息' }));
-      mockDriver.emitMessage(createSampleMessage({ id: 'm3', content: '正常消息 2' }));
+      await coordinator.handleInboundMessage(createSampleMessage({ id: 'm1', content: '正常消息 1' }));
+      await coordinator.handleInboundMessage(createSampleMessage({ id: 'm2', content: '手误发送的敏感信息' }));
+      await coordinator.handleInboundMessage(createSampleMessage({ id: 'm3', content: '正常消息 2' }));
 
       expect(coordinator.getPendingQueue('session_001')).toHaveLength(3);
 
       // 用户撤回 m2
-      mockDriver.emitRecalled({
+      await coordinator.handleRecalled({
         messageId: 'm2',
         sessionId: 'session_001',
         sender: '张三',
@@ -258,7 +258,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(queue.map(m => m.id)).toEqual(['m1', 'm3']);
 
       // 验证 store 中已标记 is_recalled = 1
-      const history = store.messages.getSessionHistory('session_001');
+      const history = await store.messages.getSessionHistory('session_001');
       expect(history.map(m => m.messageId)).toEqual(['m1', 'm3']);
       // 等待防抖到期
       await vi.advanceTimersByTimeAsync(1500);
@@ -313,7 +313,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
   });
 
   describe('3. 人机协同退避 (Human Takeover)', () => {
-    it('检测到人类操作员发消息 (isMe: true 且非 Bot 发送) 时自动设置 10 分钟退避', () => {
+    it('检测到人类操作员发消息 (isMe: true 且非 Bot 发送) 时自动设置 10 分钟退避', async () => {
       const onTakeover = vi.fn();
       const coordinator = new SessionCoordinator({
         driver: mockDriver as unknown as KK9Driver,
@@ -337,14 +337,14 @@ describe('SessionCoordinator 业务编排器测试', () => {
         sender: '我',
         content: '您好，我是人工客服小李，请问有什么可以帮您？',
       });
-      mockDriver.emitMessage(humanMsg);
+      await coordinator.handleInboundMessage(humanMsg);
 
       // 1. 应立即清空之前的防抖队列 (避免人类介入后 Bot 仍抢答)
       expect(coordinator.getPendingQueue('session_001')).toHaveLength(0);
 
       // 2. 应在 store 中持久化 10 分钟退避
-      expect(coordinator.isTakeoverActive('session_001')).toBe(true);
-      expect(store.sessions.isTakeoverActive('session_001')).toBe(true);
+      expect(await coordinator.isTakeoverActive('session_001')).toBe(true);
+      expect(await store.sessions.isTakeoverActive('session_001')).toBe(true);
       expect(onTakeover).toHaveBeenCalled();
 
       coordinator.stop();
@@ -367,18 +367,18 @@ describe('SessionCoordinator 业务编排器测试', () => {
       coordinator.start();
 
       // 主动开启人工退避
-      coordinator.setTakeover('session_001', 600000);
-      expect(coordinator.isTakeoverActive('session_001')).toBe(true);
+      await coordinator.setTakeover('session_001', 600000);
+      expect(await coordinator.isTakeoverActive('session_001')).toBe(true);
 
       // 客户发送新消息
-      mockDriver.emitMessage(createSampleMessage({ id: 'u2', content: '还在吗？' }));
+      await coordinator.handleInboundMessage(createSampleMessage({ id: 'u2', content: '还在吗？' }));
 
       // 防抖队列应为空，且触发 suppressed 事件
       expect(coordinator.getPendingQueue('session_001')).toHaveLength(0);
       expect(onSuppressed).toHaveBeenCalledWith('session_001', 'human_takeover', expect.anything());
 
       // 消息依然正常持久化记录到 store
-      const history = store.messages.getSessionHistory('session_001');
+      const history = await store.messages.getSessionHistory('session_001');
       expect(history).toHaveLength(1);
       expect(history[0]?.content).toBe('还在吗？');
 
@@ -388,7 +388,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
 
       // 时间经过 11 分钟 (超过 10 分钟退避期)
       await vi.advanceTimersByTimeAsync(11 * 60 * 1000);
-      expect(coordinator.isTakeoverActive('session_001')).toBe(false);
+      expect(await coordinator.isTakeoverActive('session_001')).toBe(false);
 
       // 客户再发新消息，此时应恢复正常防抖处理
       mockDriver.emitMessage(createSampleMessage({ id: 'u3', content: '恢复正常了' }));
@@ -416,7 +416,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(res.success).toBe(true);
 
       // 模拟 driver 回显该 Bot 消息 (isMe: true)
-      mockDriver.emitMessage(
+      await coordinator.handleInboundMessage(
         createSampleMessage({
           id: res.messageId || 'bot_msg_001',
           isMe: true,
@@ -426,7 +426,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
 
       // 不应触发退避
       expect(onTakeover).not.toHaveBeenCalled();
-      expect(coordinator.isTakeoverActive('session_001')).toBe(false);
+      expect(await coordinator.isTakeoverActive('session_001')).toBe(false);
 
       coordinator.stop();
     });
@@ -454,7 +454,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(mockDriver.markSessionRead).toHaveBeenCalledWith('session_001');
 
       // 验证更新了 store 中的 last_reply_at
-      const session = store.sessions.getSession('session_001');
+      const session = await store.sessions.getSession('session_001');
       expect(session?.lastReplyAt).toBeGreaterThan(0);
 
       coordinator.stop();
@@ -468,7 +468,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       coordinator.start();
 
       // 初始化会话为 draft 模式
-      store.sessions.upsertSession({
+      await store.sessions.upsertSession({
         id: 'session_draft',
         name: '草稿会话',
         type: 'private',
@@ -495,7 +495,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       });
       coordinator.start();
 
-      coordinator.setTakeover('session_001', 600000);
+      await coordinator.setTakeover('session_001', 600000);
 
       const result = await coordinator.dispatchReply('session_001', '退避期尝试发送');
 
@@ -581,7 +581,8 @@ describe('SessionCoordinator 业务编排器测试', () => {
       coordinator.on('suppressed', onSuppressed);
       coordinator.start();
 
-      store.sessions.upsertSession({
+      await coordinator.setSessionMode('session_disabled', 'disabled');
+      await store.sessions.upsertSession({
         id: 'session_disabled',
         name: '已禁用会话',
         type: 'private',
@@ -589,7 +590,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       });
 
       // 入站消息
-      mockDriver.emitMessage(
+      await coordinator.handleInboundMessage(
         createSampleMessage({ sessionId: 'session_disabled', id: 'dis_1', content: '测试' })
       );
       expect(coordinator.getPendingQueue('session_disabled')).toHaveLength(0);
@@ -619,11 +620,11 @@ describe('SessionCoordinator 业务编排器测试', () => {
       });
       coordinator.start();
 
-      coordinator.setTakeover('session_001', 600000);
-      expect(coordinator.isTakeoverActive('session_001')).toBe(true);
+      await coordinator.setTakeover('session_001', 600000);
+      expect(await coordinator.isTakeoverActive('session_001')).toBe(true);
 
-      coordinator.clearTakeover('session_001');
-      expect(coordinator.isTakeoverActive('session_001')).toBe(false);
+      await coordinator.clearTakeover('session_001');
+      expect(await coordinator.isTakeoverActive('session_001')).toBe(false);
 
       mockDriver.emitMessage(createSampleMessage({ id: 'after_clear', content: '恢复后消息' }));
       expect(coordinator.getPendingQueue('session_001')).toHaveLength(1);

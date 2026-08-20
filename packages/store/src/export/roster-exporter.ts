@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type Database from 'better-sqlite3';
+import type { Client } from '@libsql/client';
 import type {
   EmployeeAppointment,
   ExportRosterOptions,
@@ -268,10 +268,10 @@ export async function atomicWriteRosterCsv(
  * 负责从 SQLite 提取在职员工与多部门任职关系，并原子导出为标准 UTF-8 BOM CSV 文件
  */
 export class RosterExporter {
-  private readonly db: Database.Database;
+  private readonly client: Client;
 
-  constructor(db: Database.Database) {
-    this.db = db;
+  constructor(client: Client) {
+    this.client = client;
   }
 
   /**
@@ -280,10 +280,10 @@ export class RosterExporter {
    * @param options 导出选项
    * @returns CSV 字符串及在职员工记录数
    */
-  public buildCsvContent(options?: ExportRosterOptions): {
+  public async buildCsvContent(options?: ExportRosterOptions): Promise<{
     content: string;
     rowCount: number;
-  } {
+  }> {
     const {
       includeBom = true,
       includeHeader = true,
@@ -292,14 +292,14 @@ export class RosterExporter {
     } = options ?? {};
 
     // 1. 查询所有部门信息并计算每个部门的中文层级全路径 (如: 总经办/技术研发中心/基础架构组)
-    const deptStmt = this.db.prepare<[], DepartmentRow>(`
+    const deptRes = await this.client.execute(`
       SELECT id, name, parent_id
       FROM org_departments
     `);
-    const deptRows = deptStmt.all();
+    const deptRows = deptRes.rows as unknown as DepartmentRow[];
     const rawDeptMap = new Map<string, DepartmentRow>();
     for (const d of deptRows) {
-      rawDeptMap.set(d.id, d);
+      rawDeptMap.set(String(d.id), d);
     }
 
     const deptPathMap = new Map<string, string>();
@@ -308,25 +308,25 @@ export class RosterExporter {
       let cur: DepartmentRow | undefined = d;
       const visited = new Set<string>();
       while (cur) {
-        if (visited.has(cur.id)) break;
-        visited.add(cur.id);
-        segments.unshift(cur.name.trim());
+        if (visited.has(String(cur.id))) break;
+        visited.add(String(cur.id));
+        segments.unshift(String(cur.name).trim());
         if (!cur.parent_id) break;
-        cur = rawDeptMap.get(cur.parent_id);
+        cur = rawDeptMap.get(String(cur.parent_id));
       }
-      deptPathMap.set(d.id, segments.join('/'));
+      deptPathMap.set(String(d.id), segments.join('/'));
     }
 
     // 2. 查询所有在职员工档案
-    const empStmt = this.db.prepare<[], EmployeeRow>(`
+    const empRes = await this.client.execute(`
       SELECT id, login_name, name, phone, email, region, leader_id, updated_at
       FROM org_employees
       ORDER BY id ASC
     `);
-    const empRows = empStmt.all();
+    const empRows = empRes.rows as unknown as EmployeeRow[];
 
     // 3. 批量查询所有员工任职关系
-    const apptStmt = this.db.prepare<[], AppointmentRow>(`
+    const apptRes = await this.client.execute(`
       SELECT 
         ed.employee_id,
         ed.dept_id,
@@ -338,19 +338,19 @@ export class RosterExporter {
       LEFT JOIN org_departments d ON ed.dept_id = d.id
       ORDER BY ed.is_primary DESC, ed.dept_id ASC
     `);
-    const apptRows = apptStmt.all();
+    const apptRows = apptRes.rows as unknown as AppointmentRow[];
 
     const apptMap = new Map<string, EmployeeAppointment[]>();
     for (const row of apptRows) {
-      const list = apptMap.get(row.employee_id) ?? [];
+      const list = apptMap.get(String(row.employee_id)) ?? [];
       list.push({
-        deptId: row.dept_id,
-        deptName: row.dept_name ?? undefined,
-        isPrimary: row.is_primary === 1,
-        isLeader: row.is_leader === 1,
-        position: row.position ?? undefined,
+        deptId: String(row.dept_id),
+        deptName: row.dept_name ? String(row.dept_name) : undefined,
+        isPrimary: Number(row.is_primary) === 1,
+        isLeader: Number(row.is_leader) === 1,
+        position: row.position ? String(row.position) : undefined,
       });
-      apptMap.set(row.employee_id, list);
+      apptMap.set(String(row.employee_id), list);
     }
 
     // 4. 生成每一行员工数据
@@ -363,22 +363,22 @@ export class RosterExporter {
     }
 
     for (const emp of empRows) {
-      const appointments = apptMap.get(emp.id) ?? [];
+      const appointments = apptMap.get(String(emp.id)) ?? [];
       const deptFormatted = formatDepartmentAppointments(
         appointments,
         deptPathMap
       );
 
       const row = [
-        emp.id,
-        emp.login_name,
-        emp.name,
+        String(emp.id),
+        String(emp.login_name),
+        String(emp.name),
         deptFormatted,
-        emp.phone ?? '',
-        emp.email ?? '',
-        emp.region ?? '',
-        emp.leader_id ?? '',
-        formatDate(emp.updated_at),
+        emp.phone ? String(emp.phone) : '',
+        emp.email ? String(emp.email) : '',
+        emp.region ? String(emp.region) : '',
+        emp.leader_id ? String(emp.leader_id) : '',
+        formatDate(Number(emp.updated_at)),
       ];
 
       lines.push(formatCsvRow(row));
@@ -410,7 +410,7 @@ export class RosterExporter {
     log.info({ targetPath }, '开始导出企业组织花名册 CSV...');
 
     try {
-      const { content, rowCount } = this.buildCsvContent(options);
+      const { content, rowCount } = await this.buildCsvContent(options);
 
       const { filePath, isFallback } = await atomicWriteRosterCsv(
         targetPath,
@@ -450,15 +450,15 @@ export class RosterExporter {
 /**
  * 快捷函数：导出企业组织花名册 CSV
  *
- * @param db better-sqlite3 数据库实例
+ * @param client LibSQL 客户端实例
  * @param options 导出选项
  * @returns 最终生成的文件路径
  */
 export async function exportRosterCsv(
-  db: Database.Database,
+  client: Client,
   options?: ExportRosterOptions
 ): Promise<string> {
-  const exporter = new RosterExporter(db);
+  const exporter = new RosterExporter(client);
   const result = await exporter.export(options);
   return result.filePath;
 }

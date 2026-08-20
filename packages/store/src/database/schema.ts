@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Client } from '@libsql/client';
 import { SchemaInitError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 
@@ -44,6 +44,7 @@ CREATE INDEX IF NOT EXISTS idx_org_employees_pinyin_abbr ON org_employees(pinyin
 CREATE INDEX IF NOT EXISTS idx_org_employees_phone ON org_employees(phone);
 CREATE INDEX IF NOT EXISTS idx_org_employees_email ON org_employees(email);
 CREATE INDEX IF NOT EXISTS idx_org_employees_region ON org_employees(region);
+
 -- 员工与部门任职关系中间表（支持主职、多部门兼职与部门负责人关系）
 CREATE TABLE IF NOT EXISTS org_employee_departments (
   employee_id TEXT NOT NULL,
@@ -80,6 +81,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_employee ON sessions(employee_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_msg ON sessions(last_message_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode);
+
 -- 会话消息历史持久化表（支持原生 ID 精准撤回与多模态载荷）
 CREATE TABLE IF NOT EXISTS session_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,13 +106,13 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_session_recalled ON session_mess
 `;
 
 /**
- * 初始化数据库表结构与索引
- * @param db better-sqlite3 数据库实例
+ * 异步初始化数据库表结构与索引
+ * @param client LibSQL 客户端实例
  */
-export function initSchema(db: Database.Database): void {
+export async function initSchema(client: Client): Promise<void> {
   try {
     log.debug('开始执行数据库表结构与索引 DDL 初始化...');
-    db.exec(SCHEMA_SQL);
+    await client.executeMultiple(SCHEMA_SQL);
     log.debug('数据库表结构与索引 DDL 初始化完成');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));

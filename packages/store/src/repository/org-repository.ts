@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Client } from '@libsql/client';
 import type {
   EmployeeAppointment,
   ExportRosterOptions,
@@ -71,8 +71,9 @@ interface StatsRow {
 
 /**
  * 计算部门的层级路径 (path) 与层级深度 (level)
+ * 当输入数据未显式提供 path/level 时，根据 parent_id 拓扑结构自动推导
  *
- * @param departments 部门输入列表
+ * @param departments 原始部门输入列表
  * @returns 补齐 path 与 level 的标准化部门列表
  */
 function normalizeDepartments(
@@ -83,36 +84,34 @@ function normalizeDepartments(
     deptMap.set(dept.id, dept);
   }
 
-  const now = Date.now();
   const normalizedList: Array<Required<OrgDepartmentInput>> = [];
+  const now = Date.now();
 
   for (const dept of departments) {
-    let finalPath = dept.path ?? null;
-    let finalLevel = dept.level ?? 1;
+    let path = dept.path;
+    let level = dept.level;
 
-    if (!finalPath || !dept.level) {
-      // 遍历父链生成 path 和 level
-      const pathSegments: string[] = [];
-      let currentId: string | null | undefined = dept.id;
+    if (!path || !level) {
+      const segments: string[] = [];
+      let current: OrgDepartmentInput | undefined = dept;
       const visited = new Set<string>();
 
-      while (currentId && deptMap.has(currentId)) {
-        if (visited.has(currentId)) {
-          // 环路防御
+      while (current) {
+        if (visited.has(current.id)) {
+          log.warn({ deptId: dept.id, circularId: current.id }, '检测到部门树循环引用');
           break;
         }
-        visited.add(currentId);
-        pathSegments.unshift(currentId);
-        const parentDept = deptMap.get(currentId);
-        currentId = parentDept?.parentId;
+        visited.add(current.id);
+        segments.unshift(current.id);
+
+        if (!current.parentId) {
+          break;
+        }
+        current = deptMap.get(current.parentId);
       }
 
-      if (!finalPath) {
-        finalPath = `/${pathSegments.join('/')}`;
-      }
-      if (!dept.level) {
-        finalLevel = pathSegments.length > 0 ? pathSegments.length : 1;
-      }
+      path = `/${segments.join('/')}`;
+      level = segments.length;
     }
 
     normalizedList.push({
@@ -120,8 +119,8 @@ function normalizeDepartments(
       name: dept.name,
       parentId: dept.parentId ?? null,
       leaderId: dept.leaderId ?? null,
-      path: finalPath,
-      level: finalLevel,
+      path,
+      level,
       updatedAt: dept.updatedAt ?? now,
     });
   }
@@ -134,10 +133,10 @@ function normalizeDepartments(
  * 负责部门树、员工档案与多部门任职关系的持久化、原子全量同步与层级查询
  */
 export class OrgRepository {
-  private readonly db: Database.Database;
+  private readonly client: Client;
 
-  constructor(db: Database.Database) {
-    this.db = db;
+  constructor(client: Client) {
+    this.client = client;
   }
 
   /**
@@ -146,7 +145,7 @@ export class OrgRepository {
    * @param data 组织架构数据载荷（部门列表与员工列表）
    * @returns 同步统计结果
    */
-  public syncOrganization(data: SyncOrgData): SyncOrgResult {
+  public async syncOrganization(data: SyncOrgData): Promise<SyncOrgResult> {
     const startTime = Date.now();
     const { departments = [], employees = [] } = data;
 
@@ -155,58 +154,50 @@ export class OrgRepository {
       '开始执行组织架构全量原子同步...'
     );
 
+    const tx = await this.client.transaction('write');
+
     try {
       const normalizedDepts = normalizeDepartments(departments);
       const now = Date.now();
 
-      // 构建事务执行函数
-      const performSync = this.db.transaction(() => {
-        // 延迟外键检查至事务提交时统一校验，允许清空与重装
-        this.db.pragma('defer_foreign_keys = ON');
+      // 延迟外键检查至事务提交时统一校验，允许清空与重装
+      await tx.execute('PRAGMA defer_foreign_keys = ON;');
 
-        // 1. 清空旧数据
-        this.db.prepare('DELETE FROM org_employee_departments').run();
-        this.db.prepare('DELETE FROM org_employees').run();
-        this.db.prepare('DELETE FROM org_departments').run();
+      // 1. 清空旧数据
+      await tx.execute('DELETE FROM org_employee_departments;');
+      await tx.execute('DELETE FROM org_employees;');
+      await tx.execute('DELETE FROM org_departments;');
 
-        // 2. 批量插入部门
-        const insertDeptStmt = this.db.prepare(`
-          INSERT INTO org_departments (id, name, parent_id, leader_id, path, level, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `);
-
-        for (const dept of normalizedDepts) {
-          insertDeptStmt.run(
+      // 2. 批量插入部门
+      for (const dept of normalizedDepts) {
+        await tx.execute({
+          sql: `INSERT INTO org_departments (id, name, parent_id, leader_id, path, level, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          args: [
             dept.id,
             dept.name,
-            dept.parentId,
-            dept.leaderId,
+            dept.parentId ?? null,
+            dept.leaderId ?? null,
             dept.path,
             dept.level,
-            dept.updatedAt
-          );
-        }
+            dept.updatedAt,
+          ],
+        });
+      }
 
-        // 3. 批量插入员工与任职关系
-        const insertEmpStmt = this.db.prepare(`
-          INSERT INTO org_employees (id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `);
+      // 3. 批量插入员工与任职关系
+      let appointmentCount = 0;
+      const validDeptIds = new Set(normalizedDepts.map(d => d.id));
 
-        const insertApptStmt = this.db.prepare(`
-          INSERT INTO org_employee_departments (employee_id, dept_id, is_primary, is_leader, position)
-          VALUES (?, ?, ?, ?, ?)
-        `);
+      for (const emp of employees) {
+        const empId = String(emp.id);
+        const empUpdatedAt = emp.updatedAt ?? now;
+        const pinyinAbbr = emp.pinyinAbbr?.trim() || getPinyinAbbr(emp.name);
 
-        let appointmentCount = 0;
-        const validDeptIds = new Set(normalizedDepts.map(d => d.id));
-
-        for (const emp of employees) {
-          const empId = String(emp.id);
-          const empUpdatedAt = emp.updatedAt ?? now;
-          const pinyinAbbr = emp.pinyinAbbr?.trim() || getPinyinAbbr(emp.name);
-
-          insertEmpStmt.run(
+        await tx.execute({
+          sql: `INSERT INTO org_employees (id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          args: [
             empId,
             emp.loginName,
             emp.name,
@@ -215,60 +206,66 @@ export class OrgRepository {
             emp.email ?? null,
             emp.region ?? null,
             emp.leaderId ?? null,
-            empUpdatedAt
-          );
+            empUpdatedAt,
+          ],
+        });
 
-          if (Array.isArray(emp.departments) && emp.departments.length > 0) {
-            // 对同一员工的任职部门进行去重，优先保留主职标记
-            const seenDepts = new Map<
-              string,
-              { isPrimary: boolean; isLeader: boolean; position: string | null }
-            >();
+        if (Array.isArray(emp.departments) && emp.departments.length > 0) {
+          // 对同一员工的任职部门进行去重，优先保留主职标记
+          const seenDepts = new Map<
+            string,
+            { isPrimary: boolean; isLeader: boolean; position: string | null }
+          >();
 
-            for (const appt of emp.departments) {
-              if (!appt.deptId || !validDeptIds.has(appt.deptId)) {
-                // 跳过不存在或空的部门引用
-                continue;
-              }
-
-              const existing = seenDepts.get(appt.deptId);
-              const isPrimary = Boolean(appt.isPrimary) || (existing?.isPrimary ?? false);
-              const isLeader = Boolean(appt.isLeader) || (existing?.isLeader ?? false);
-              const position = appt.position ?? existing?.position ?? null;
-
-              seenDepts.set(appt.deptId, { isPrimary, isLeader, position });
+          for (const appt of emp.departments) {
+            if (!appt.deptId || !validDeptIds.has(appt.deptId)) {
+              // 跳过不存在或空的部门引用
+              continue;
             }
 
-            for (const [deptId, apptData] of seenDepts.entries()) {
-              insertApptStmt.run(
+            const existing = seenDepts.get(appt.deptId);
+            const isPrimary = Boolean(appt.isPrimary) || (existing?.isPrimary ?? false);
+            const isLeader = Boolean(appt.isLeader) || (existing?.isLeader ?? false);
+            const position = appt.position ?? existing?.position ?? null;
+
+            seenDepts.set(appt.deptId, { isPrimary, isLeader, position });
+          }
+
+          for (const [deptId, apptData] of seenDepts.entries()) {
+            await tx.execute({
+              sql: `INSERT INTO org_employee_departments (employee_id, dept_id, is_primary, is_leader, position)
+                    VALUES (?, ?, ?, ?, ?)`,
+              args: [
                 empId,
                 deptId,
                 apptData.isPrimary ? 1 : 0,
                 apptData.isLeader ? 1 : 0,
-                apptData.position
-              );
-              appointmentCount++;
-            }
+                apptData.position,
+              ],
+            });
+            appointmentCount++;
           }
         }
+      }
 
-        return {
-          departmentCount: normalizedDepts.length,
-          employeeCount: employees.length,
-          appointmentCount,
-        };
-      });
-
-      const stats = performSync();
+      await tx.commit();
       const durationMs = Date.now() - startTime;
 
-      log.info({ ...stats, durationMs }, '组织架构全量原子同步成功');
-
-      return {
-        ...stats,
+      const stats: SyncOrgResult = {
+        departmentCount: normalizedDepts.length,
+        employeeCount: employees.length,
+        appointmentCount,
         durationMs,
       };
+
+      log.info({ ...stats }, '组织架构全量原子同步成功');
+      return stats;
     } catch (error) {
+      try {
+        await tx.rollback();
+      } catch {
+        // 忽略已关闭或已回滚事务的异常
+      }
       const err = error instanceof Error ? error : new Error(String(error));
       log.error({ err }, '组织架构全量原子同步失败，事务已自动回滚');
       throw new TransactionError(`组织架构原子同步失败: ${err.message}`, err);
@@ -280,14 +277,14 @@ export class OrgRepository {
    *
    * @returns 根部门节点列表（包含嵌套子部门列表）
    */
-  public getDepartmentTree(): OrgDepartmentNode[] {
-    const stmt = this.db.prepare<[], DepartmentRow>(`
+  public async getDepartmentTree(): Promise<OrgDepartmentNode[]> {
+    const res = await this.client.execute(`
       SELECT id, name, parent_id, leader_id, path, level, updated_at
       FROM org_departments
       ORDER BY level ASC, name ASC
     `);
 
-    const rows = stmt.all();
+    const rows = res.rows as unknown as DepartmentRow[];
     const nodeMap = new Map<string, OrgDepartmentNode>();
 
     for (const row of rows) {
@@ -297,8 +294,8 @@ export class OrgRepository {
         parentId: row.parent_id ?? undefined,
         leaderId: row.leader_id ?? undefined,
         path: row.path ?? undefined,
-        level: row.level,
-        updatedAt: row.updated_at,
+        level: Number(row.level),
+        updatedAt: Number(row.updated_at),
         children: [],
       });
     }
@@ -323,47 +320,49 @@ export class OrgRepository {
    * @param id 部门 ID
    * @returns 部门实体或 null
    */
-  public getDepartmentById(id: string): OrgDepartment | null {
+  public async getDepartmentById(id: string): Promise<OrgDepartment | null> {
     if (!id) return null;
 
-    const stmt = this.db.prepare<[string], DepartmentRow>(`
-      SELECT id, name, parent_id, leader_id, path, level, updated_at
-      FROM org_departments
-      WHERE id = ?
-    `);
+    const res = await this.client.execute({
+      sql: `SELECT id, name, parent_id, leader_id, path, level, updated_at
+            FROM org_departments
+            WHERE id = ?`,
+      args: [id],
+    });
 
-    const row = stmt.get(id);
-    if (!row) return null;
+    if (res.rows.length === 0) return null;
+    const row = res.rows[0] as unknown as DepartmentRow;
 
     return {
-      id: row.id,
-      name: row.name,
-      parentId: row.parent_id ?? undefined,
-      leaderId: row.leader_id ?? undefined,
-      path: row.path ?? undefined,
-      level: row.level,
-      updatedAt: row.updated_at,
+      id: String(row.id),
+      name: String(row.name),
+      parentId: row.parent_id ? String(row.parent_id) : undefined,
+      leaderId: row.leader_id ? String(row.leader_id) : undefined,
+      path: row.path ? String(row.path) : undefined,
+      level: Number(row.level),
+      updatedAt: Number(row.updated_at),
     };
   }
 
   /**
    * 获取所有扁平部门列表
    */
-  public getAllDepartments(): OrgDepartment[] {
-    const stmt = this.db.prepare<[], DepartmentRow>(`
+  public async getAllDepartments(): Promise<OrgDepartment[]> {
+    const res = await this.client.execute(`
       SELECT id, name, parent_id, leader_id, path, level, updated_at
       FROM org_departments
       ORDER BY level ASC, name ASC
     `);
 
-    return stmt.all().map(row => ({
-      id: row.id,
-      name: row.name,
-      parentId: row.parent_id ?? undefined,
-      leaderId: row.leader_id ?? undefined,
-      path: row.path ?? undefined,
-      level: row.level,
-      updatedAt: row.updated_at,
+    const rows = res.rows as unknown as DepartmentRow[];
+    return rows.map(row => ({
+      id: String(row.id),
+      name: String(row.name),
+      parentId: row.parent_id ? String(row.parent_id) : undefined,
+      leaderId: row.leader_id ? String(row.leader_id) : undefined,
+      path: row.path ? String(row.path) : undefined,
+      level: Number(row.level),
+      updatedAt: Number(row.updated_at),
     }));
   }
 
@@ -373,36 +372,47 @@ export class OrgRepository {
    * @param id 员工 ID (UID)
    * @returns 员工档案实体及任职列表，不存在时返回 null
    */
-  public getEmployeeById(id: string | number): OrgEmployeeWithDepts | null {
+  public async getEmployeeById(id: string | number): Promise<OrgEmployeeWithDepts | null> {
     const empId = String(id).trim();
     if (!empId) return null;
 
-    const empStmt = this.db.prepare<[string], EmployeeRow>(`
-      SELECT id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at
-      FROM org_employees
-      WHERE id = ?
-    `);
+    const empRes = await this.client.execute({
+      sql: `SELECT id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at
+            FROM org_employees
+            WHERE id = ?`,
+      args: [empId],
+    });
 
-    const empRow = empStmt.get(empId);
-    if (!empRow) return null;
+    if (empRes.rows.length === 0) return null;
+    const empRow = empRes.rows[0] as unknown as EmployeeRow;
 
-    const apptStmt = this.db.prepare<[string], AppointmentRow>(`
-      SELECT 
-        ed.employee_id,
-        ed.dept_id,
-        d.name AS dept_name,
-        ed.is_primary,
-        ed.is_leader,
-        ed.position
-      FROM org_employee_departments ed
-      LEFT JOIN org_departments d ON ed.dept_id = d.id
-      WHERE ed.employee_id = ?
-      ORDER BY ed.is_primary DESC, ed.dept_id ASC
-    `);
+    const apptRes = await this.client.execute({
+      sql: `SELECT 
+              ed.employee_id,
+              ed.dept_id,
+              d.name AS dept_name,
+              ed.is_primary,
+              ed.is_leader,
+              ed.position
+            FROM org_employee_departments ed
+            LEFT JOIN org_departments d ON ed.dept_id = d.id
+            WHERE ed.employee_id = ?
+            ORDER BY ed.is_primary DESC, ed.dept_id ASC`,
+      args: [empId],
+    });
 
-    const apptRows = apptStmt.all(empId);
-
+    const apptRows = apptRes.rows as unknown as AppointmentRow[];
     return this.mapToEmployeeWithDepts(empRow, apptRows);
+  }
+
+  /**
+   * 按员工 UID 查询员工（别名方法）
+   *
+   * @param uid 员工 UID
+   * @returns 员工实体或 null
+   */
+  public async getEmployeeByUid(uid: string | number): Promise<OrgEmployeeWithDepts | null> {
+    return this.getEmployeeById(uid);
   }
 
   /**
@@ -411,18 +421,19 @@ export class OrgRepository {
    * @param loginName 工号 / 登录名
    * @returns 员工实体或 null
    */
-  public getEmployeeByLoginName(loginName: string): OrgEmployeeWithDepts | null {
+  public async getEmployeeByLoginName(loginName: string): Promise<OrgEmployeeWithDepts | null> {
     const cleanLoginName = loginName?.trim();
     if (!cleanLoginName) return null;
 
-    const empStmt = this.db.prepare<[string], EmployeeRow>(`
-      SELECT id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at
-      FROM org_employees
-      WHERE login_name = ?
-    `);
+    const empRes = await this.client.execute({
+      sql: `SELECT id, login_name, name, pinyin_abbr, phone, email, region, leader_id, updated_at
+            FROM org_employees
+            WHERE login_name = ?`,
+      args: [cleanLoginName],
+    });
 
-    const empRow = empStmt.get(cleanLoginName);
-    if (!empRow) return null;
+    if (empRes.rows.length === 0) return null;
+    const empRow = empRes.rows[0] as unknown as EmployeeRow;
 
     return this.getEmployeeById(empRow.id);
   }
@@ -434,12 +445,14 @@ export class OrgRepository {
    * @param options 搜索条件或关键词字符串
    * @returns 符合条件的员工列表（包含任职信息）
    */
-  public searchEmployees(options: SearchEmployeeOptions | string): OrgEmployeeWithDepts[] {
+  public async searchEmployees(
+    options: SearchEmployeeOptions | string
+  ): Promise<OrgEmployeeWithDepts[]> {
     const opts: SearchEmployeeOptions = typeof options === 'string' ? { query: options } : options;
     const { query, deptId, includeSubDepts = false, limit = 50, offset = 0 } = opts;
 
     const whereClauses: string[] = [];
-    const params: unknown[] = [];
+    const params: (string | number)[] = [];
 
     if (query && query.trim()) {
       const q = `%${query.trim()}%`;
@@ -451,7 +464,7 @@ export class OrgRepository {
 
     if (deptId && deptId.trim()) {
       if (includeSubDepts) {
-        const targetDept = this.getDepartmentById(deptId.trim());
+        const targetDept = await this.getDepartmentById(deptId.trim());
         if (targetDept?.path) {
           whereClauses.push(`
             e.id IN (
@@ -488,7 +501,8 @@ export class OrgRepository {
 
     params.push(limit, offset);
 
-    const empRows = this.db.prepare(sql).all(...params) as EmployeeRow[];
+    const empRes = await this.client.execute({ sql, args: params });
+    const empRows = empRes.rows as unknown as EmployeeRow[];
     if (empRows.length === 0) {
       return [];
     }
@@ -503,10 +517,10 @@ export class OrgRepository {
    * @param includeSubDepts 是否递归包含子部门员工，默认 false
    * @returns 员工列表
    */
-  public getEmployeesByDepartmentId(
+  public async getEmployeesByDepartmentId(
     deptId: string,
     includeSubDepts = false
-  ): OrgEmployeeWithDepts[] {
+  ): Promise<OrgEmployeeWithDepts[]> {
     return this.getDepartmentMembers(deptId, { includeSubDepts });
   }
 
@@ -517,10 +531,10 @@ export class OrgRepository {
    * @param options 查询选项（是否递归包含子部门）
    * @returns 员工列表（含任职信息）
    */
-  public getDepartmentMembers(
+  public async getDepartmentMembers(
     deptId: string,
     options?: GetDepartmentMembersOptions
-  ): OrgEmployeeWithDepts[] {
+  ): Promise<OrgEmployeeWithDepts[]> {
     const cleanDeptId = deptId?.trim();
     if (!cleanDeptId) {
       return [];
@@ -541,13 +555,13 @@ export class OrgRepository {
    * @param employeeId 员工唯一标识 ID (UID)
    * @returns 汇报链上的管理者列表（按管理层级由近及远排列）
    */
-  public getReportingChain(employeeId: string | number): OrgEmployeeWithDepts[] {
+  public async getReportingChain(employeeId: string | number): Promise<OrgEmployeeWithDepts[]> {
     const empId = String(employeeId)?.trim();
     if (!empId) {
       return [];
     }
 
-    const startEmp = this.getEmployeeById(empId);
+    const startEmp = await this.getEmployeeById(empId);
     if (!startEmp || !startEmp.leaderId) {
       return [];
     }
@@ -566,7 +580,7 @@ export class OrgRepository {
       }
 
       visited.add(currentLeaderId);
-      const leader = this.getEmployeeById(currentLeaderId);
+      const leader = await this.getEmployeeById(currentLeaderId);
       if (!leader) {
         break;
       }
@@ -587,7 +601,7 @@ export class OrgRepository {
    * @param limit 返回最大条数，默认 20
    * @returns 匹配的员工聚合实体列表（含完整任职信息）
    */
-  public findEmployees(query: string, limit = 20): OrgEmployeeWithDepts[] {
+  public async findEmployees(query: string, limit = 20): Promise<OrgEmployeeWithDepts[]> {
     const cleanQuery = query?.trim();
     if (!cleanQuery) {
       return [];
@@ -598,11 +612,6 @@ export class OrgRepository {
     const exactQuery = cleanQuery;
     const prefixPattern = `${cleanQuery}%`;
 
-    // 多维联合查询与排序权重计算：
-    // 1: 工号/姓名精确匹配
-    // 2: 拼音缩写精确匹配
-    // 3: 工号/姓名/拼音前缀匹配
-    // 4: 模糊匹配
     const sql = `
       SELECT 
         e.id, 
@@ -647,7 +656,7 @@ export class OrgRepository {
       LIMIT ?
     `;
 
-    const empRows = this.db.prepare(sql).all(
+    const args = [
       exactQuery,
       exactQuery,
       exactQuery,
@@ -669,8 +678,11 @@ export class OrgRepository {
       pattern,
       pattern,
       // LIMIT 参数
-      boundedLimit
-    ) as EmployeeRow[];
+      boundedLimit,
+    ];
+
+    const empRes = await this.client.execute({ sql, args });
+    const empRows = empRes.rows as unknown as EmployeeRow[];
 
     if (empRows.length === 0) {
       return [];
@@ -682,8 +694,8 @@ export class OrgRepository {
   /**
    * 获取组织架构当前统计信息
    */
-  public getStats(): OrgStats {
-    const stmt = this.db.prepare<[], StatsRow>(`
+  public async getStats(): Promise<OrgStats> {
+    const res = await this.client.execute(`
       SELECT 
         (SELECT COUNT(*) FROM org_departments) AS dept_count,
         (SELECT COUNT(*) FROM org_employees) AS emp_count,
@@ -697,12 +709,12 @@ export class OrgRepository {
         ) AS max_updated_at
     `);
 
-    const row = stmt.get();
+    const row = res.rows[0] as unknown as StatsRow | undefined;
     return {
-      totalDepartments: row?.dept_count ?? 0,
-      totalEmployees: row?.emp_count ?? 0,
-      totalAppointments: row?.appt_count ?? 0,
-      lastUpdatedAt: row?.max_updated_at ?? null,
+      totalDepartments: Number(row?.dept_count ?? 0),
+      totalEmployees: Number(row?.emp_count ?? 0),
+      totalAppointments: Number(row?.appt_count ?? 0),
+      lastUpdatedAt: row?.max_updated_at ? Number(row.max_updated_at) : null,
     };
   }
 
@@ -722,7 +734,7 @@ export class OrgRepository {
         ? { targetPath: targetPathOrOptions, ...options }
         : { ...targetPathOrOptions, ...options };
 
-    const exporter = new RosterExporter(this.db);
+    const exporter = new RosterExporter(this.client);
     const result = await exporter.export(opts);
     return result.filePath;
   }
@@ -735,23 +747,23 @@ export class OrgRepository {
     apptRows: AppointmentRow[]
   ): OrgEmployeeWithDepts {
     const departments: EmployeeAppointment[] = apptRows.map(r => ({
-      deptId: r.dept_id,
-      deptName: r.dept_name ?? undefined,
-      isPrimary: r.is_primary === 1,
-      isLeader: r.is_leader === 1,
-      position: r.position ?? undefined,
+      deptId: String(r.dept_id),
+      deptName: r.dept_name ? String(r.dept_name) : undefined,
+      isPrimary: Number(r.is_primary) === 1,
+      isLeader: Number(r.is_leader) === 1,
+      position: r.position ? String(r.position) : undefined,
     }));
 
     return {
-      id: empRow.id,
-      loginName: empRow.login_name,
-      name: empRow.name,
-      pinyinAbbr: empRow.pinyin_abbr ?? undefined,
-      phone: empRow.phone ?? undefined,
-      email: empRow.email ?? undefined,
-      region: empRow.region ?? undefined,
-      leaderId: empRow.leader_id ?? undefined,
-      updatedAt: empRow.updated_at,
+      id: String(empRow.id),
+      loginName: String(empRow.login_name),
+      name: String(empRow.name),
+      pinyinAbbr: empRow.pinyin_abbr ? String(empRow.pinyin_abbr) : undefined,
+      phone: empRow.phone ? String(empRow.phone) : undefined,
+      email: empRow.email ? String(empRow.email) : undefined,
+      region: empRow.region ? String(empRow.region) : undefined,
+      leaderId: empRow.leader_id ? String(empRow.leader_id) : undefined,
+      updatedAt: Number(empRow.updated_at),
       departments,
     };
   }
@@ -759,33 +771,36 @@ export class OrgRepository {
   /**
    * 批量将员工行关联任职数据并组装为聚合员工实体
    */
-  private hydrateEmployeesWithDepts(empRows: EmployeeRow[]): OrgEmployeeWithDepts[] {
-    const empIds = empRows.map(e => e.id);
+  private async hydrateEmployeesWithDepts(
+    empRows: EmployeeRow[]
+  ): Promise<OrgEmployeeWithDepts[]> {
+    const empIds = empRows.map(e => String(e.id));
     const placeholders = empIds.map(() => '?').join(',');
 
-    const apptStmt = this.db.prepare(`
-      SELECT 
-        ed.employee_id,
-        ed.dept_id,
-        d.name AS dept_name,
-        ed.is_primary,
-        ed.is_leader,
-        ed.position
-      FROM org_employee_departments ed
-      LEFT JOIN org_departments d ON ed.dept_id = d.id
-      WHERE ed.employee_id IN (${placeholders})
-      ORDER BY ed.is_primary DESC, ed.dept_id ASC
-    `);
+    const apptRes = await this.client.execute({
+      sql: `SELECT 
+              ed.employee_id,
+              ed.dept_id,
+              d.name AS dept_name,
+              ed.is_primary,
+              ed.is_leader,
+              ed.position
+            FROM org_employee_departments ed
+            LEFT JOIN org_departments d ON ed.dept_id = d.id
+            WHERE ed.employee_id IN (${placeholders})
+            ORDER BY ed.is_primary DESC, ed.dept_id ASC`,
+      args: empIds,
+    });
 
-    const apptRows = apptStmt.all(...empIds) as AppointmentRow[];
+    const apptRows = apptRes.rows as unknown as AppointmentRow[];
     const apptMap = new Map<string, AppointmentRow[]>();
 
     for (const appt of apptRows) {
-      const list = apptMap.get(appt.employee_id) ?? [];
+      const list = apptMap.get(String(appt.employee_id)) ?? [];
       list.push(appt);
-      apptMap.set(appt.employee_id, list);
+      apptMap.set(String(appt.employee_id), list);
     }
 
-    return empRows.map(emp => this.mapToEmployeeWithDepts(emp, apptMap.get(emp.id) ?? []));
+    return empRows.map(emp => this.mapToEmployeeWithDepts(emp, apptMap.get(String(emp.id)) ?? []));
   }
 }
