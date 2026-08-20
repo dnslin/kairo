@@ -47,3 +47,10 @@ export class LLMExecutionError extends AgentError {
     this.name = 'LLMExecutionError';
   }
 }
+
+export class MemoryError extends AgentError {
+  constructor(message: string, originalCause?: Error) {
+    super(message, 'MEMORY_ERROR', originalCause);
+    this.name = 'MemoryError';
+  }
+}
