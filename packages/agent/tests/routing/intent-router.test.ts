@@ -78,7 +78,7 @@ describe('IntentModelRouter 动态意图分流测试 (FAST vs DEEP)', () => {
       '请帮我写一个 Python 脚本处理 CSV 文件',
       '请编写代码实现一个快速排序算法',
       '帮我写一个函数计算两个日期的工作日差值',
-      '实现一段并发控制逻辑，限制最大请求数为 5',
+      '写一段代码实现并发控制逻辑，限制最大请求数为 5',
     ];
     for (const query of codeGenQueries) {
       const result = await router.classify(query);
@@ -86,6 +86,22 @@ describe('IntentModelRouter 动态意图分流测试 (FAST vs DEEP)', () => {
 
       const routeResult = await router.route(query);
       expect(routeResult.selectedModel.id).toBe('deep-model-r1');
+    }
+  });
+
+  it('普通日常文案撰写与请假日常问答应稳定分流至 FAST 轻量模型，不被误判为 DEEP', async () => {
+    const ordinaryCopyQueries = [
+      '帮我写一个请假理由',
+      '帮我写一段中秋节日祝福语',
+      '起草一个下午两点的周会通知',
+      '帮我想一句生日祝福',
+    ];
+    for (const query of ordinaryCopyQueries) {
+      const result = await router.classify(query);
+      expect(result.intentLevel).toBe('FAST');
+
+      const routeResult = await router.route(query);
+      expect(routeResult.selectedModel.id).toBe('fast-model-v3');
     }
   });
 
