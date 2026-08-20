@@ -323,4 +323,5 @@ export type {
   ReportCardParams,
   DecisionOption,
   DecisionCardParams,
+  SendCardOptions,
 } from './card.js';

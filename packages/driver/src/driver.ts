@@ -7,11 +7,20 @@ import { resolveSelectors } from './dom/selectors.js';
 import { SendOps } from './dom/send-ops.js';
 import { SessionOps } from './dom/session-ops.js';
 import { renderCardToBase64 as renderCanvasCard } from './canvas/renderer.js';
+import {
+  createAlertCard,
+  createApprovalCard,
+  createDecisionCard,
+  createReportCard,
+} from './canvas/templates.js';
 import type {
+  AlertCardParams,
+  ApprovalCardParams,
+  CardData,
   ConnectionStatus,
+  DecisionCardParams,
   DriverConfig,
   DriverEvents,
-  CardData,
   FormattedText,
   KK9Employee,
   KK9Message,
@@ -19,9 +28,11 @@ import type {
   KK9ReplyTarget,
   KK9Session,
   PollingConfig,
-  SelectorsConfig,
-  SendFileOptions,
   RenderCanvasOptions,
+  ReportCardParams,
+  SelectorsConfig,
+  SendCardOptions,
+  SendFileOptions,
   SendOptions,
   SendResult,
 } from './types/index.js';
@@ -142,11 +153,59 @@ export class KK9Driver extends EventEmitter {
   /**
    * 绘制 Canvas 2D 视觉卡片并返回 Base64 PNG 图片 DataURL
    */
-  public async renderCardToBase64(
-    card: CardData,
-    options?: RenderCanvasOptions
-  ): Promise<string> {
+  public async renderCardToBase64(card: CardData, options?: RenderCanvasOptions): Promise<string> {
     return renderCanvasCard(this.cdp, card, options);
+  }
+
+  /**
+   * 发送自定义视觉卡片
+   */
+  public async sendCard(cardData: CardData, options?: SendCardOptions): Promise<SendResult> {
+    return this.sendOps.sendCard(cardData, options);
+  }
+
+  /**
+   * 快捷发送审批决策卡片
+   */
+  public async sendApprovalCard(
+    params: ApprovalCardParams,
+    options?: SendCardOptions
+  ): Promise<SendResult> {
+    const cardData = createApprovalCard(params);
+    return this.sendCard(cardData, options);
+  }
+
+  /**
+   * 快捷发送监控告警卡片
+   */
+  public async sendAlertCard(
+    params: AlertCardParams,
+    options?: SendCardOptions
+  ): Promise<SendResult> {
+    const cardData = createAlertCard(params);
+    return this.sendCard(cardData, options);
+  }
+
+  /**
+   * 快捷发送汇总报告卡片
+   */
+  public async sendReportCard(
+    params: ReportCardParams,
+    options?: SendCardOptions
+  ): Promise<SendResult> {
+    const cardData = createReportCard(params);
+    return this.sendCard(cardData, options);
+  }
+
+  /**
+   * 快捷发送多选决策卡片
+   */
+  public async sendDecisionCard(
+    params: DecisionCardParams,
+    options?: SendCardOptions
+  ): Promise<SendResult> {
+    const cardData = createDecisionCard(params);
+    return this.sendCard(cardData, options);
   }
 
   /**

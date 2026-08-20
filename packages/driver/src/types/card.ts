@@ -1,3 +1,5 @@
+import type { SendOptions } from './index.js';
+
 /**
  * @kkbot/driver 视觉卡片 (Canvas Card) 强类型系统
  */
@@ -72,7 +74,14 @@ export interface CardHeader {
 /**
  * 字段值展示状态变体
  */
-export type CardFieldVariant = 'default' | 'muted' | 'highlight' | 'danger' | 'warning' | 'success' | 'info';
+export type CardFieldVariant =
+  | 'default'
+  | 'muted'
+  | 'highlight'
+  | 'danger'
+  | 'warning'
+  | 'success'
+  | 'info';
 
 /**
  * 字段栅格布局跨度
@@ -102,7 +111,14 @@ export interface CardField {
 /**
  * 模拟按钮样式变体
  */
-export type CardActionVariant = 'primary' | 'success' | 'warning' | 'danger' | 'secondary' | 'default' | 'outline';
+export type CardActionVariant =
+  | 'primary'
+  | 'success'
+  | 'warning'
+  | 'danger'
+  | 'secondary'
+  | 'default'
+  | 'outline';
 
 /**
  * 模拟交互按钮与快捷指令提示
@@ -379,3 +395,9 @@ export interface DecisionCardParams {
   /** 底部提示说明 (若未提供，将自动生成带有截止时间与选项回复指导的提示) */
   footer?: CardFooter | string;
 }
+
+/**
+ * 视觉卡片发送选项配置
+ * 融合 Canvas 渲染配置 (RenderCanvasOptions) 与消息发送选项 (SendOptions)
+ */
+export interface SendCardOptions extends RenderCanvasOptions, SendOptions {}

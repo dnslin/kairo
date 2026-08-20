@@ -1,13 +1,17 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import mime from 'mime-types';
+import { renderCardToBase64 } from '../canvas/renderer.js';
 import type { CdpClient } from '../cdp/client.js';
 import type {
+  CardData,
   FormattedText,
   KK9ReplyTarget,
   PreSendCheckResult,
   SelectorsConfig,
+  SendCardOptions,
   SendFileOptions,
   SendOptions,
   SendResult,
@@ -641,6 +645,58 @@ export class SendOps {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error({ err: errorMsg }, '发送图片异常');
       throw new SendError(`发送图片异常: ${errorMsg}`, err instanceof Error ? err : undefined);
+    }
+  }
+
+  /**
+   * 发送 Canvas 2D 视觉卡片（远程 CDP 渲染 -> 临时缓存 -> 图片发送上屏 -> 临时文件安全清理）
+   *
+   * @param card 卡片结构化数据模型
+   * @param options 发送与渲染配置选项
+   * @returns 发送结果实体 (含 messageId 与 recall 快捷撤回函数)
+   */
+  public async sendCard(card: CardData, options: SendCardOptions = {}): Promise<SendResult> {
+    let tempFilePath: string | null = null;
+
+    try {
+      // 1. 调用 renderCardToBase64 远程渲染生成 Base64 PNG 数据
+      const dataUrl = await renderCardToBase64(this.cdp, card, options);
+      const base64Data = dataUrl.replace(/^data:[^;]+;base64,/, '');
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      // 2. 将 Base64 写入系统临时缓存目录
+      const tempDir = path.join(os.tmpdir(), 'kkbot-cards');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      tempFilePath = path.join(
+        tempDir,
+        `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
+      );
+      fs.writeFileSync(tempFilePath, buffer);
+
+      // 3. 复用已有的 sendImage 进行可靠上屏校验与消息发送
+      const result = await this.sendImage(tempFilePath, options);
+      return result;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.error({ err: errorMsg }, '发送 Canvas 视觉卡片异常');
+      if (err instanceof SendError) {
+        throw err;
+      }
+      throw new SendError(
+        `发送 Canvas 视觉卡片异常: ${errorMsg}`,
+        err instanceof Error ? err : undefined
+      );
+    } finally {
+      // 4. 无论成功或失败均安全回收临时图片文件，杜绝磁盘垃圾泄漏
+      if (tempFilePath && fs.existsSync(tempFilePath)) {
+        try {
+          fs.unlinkSync(tempFilePath);
+        } catch (cleanupErr) {
+          log.warn({ err: String(cleanupErr), path: tempFilePath }, '临时卡片文件清理失败');
+        }
+      }
     }
   }
 
