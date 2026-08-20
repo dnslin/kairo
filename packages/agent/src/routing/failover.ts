@@ -8,6 +8,7 @@ import type {
   FailoverOptions,
   ModelEndpointConfig,
 } from './types.js';
+import { AgentError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('model-failover-manager');
@@ -15,40 +16,42 @@ const log = createChildLogger('model-failover-manager');
 /**
  * 单一模型调用超时异常
  */
-export class ModelTimeoutError extends Error {
+export class ModelTimeoutError extends AgentError {
   public readonly modelName: string;
   public readonly timeoutMs: number;
-  public readonly originalCause?: unknown;
 
-  constructor(modelName: string, timeoutMs: number, originalCause?: unknown) {
-    super(`模型 [${modelName}] 调用超时 (${timeoutMs}ms)`);
+  constructor(modelName: string, timeoutMs: number, originalCause?: Error) {
+    super(
+      `模型 [${modelName}] 调用超时 (${timeoutMs}ms)`,
+      'MODEL_TIMEOUT_ERROR',
+      originalCause
+    );
     this.name = 'ModelTimeoutError';
     this.modelName = modelName;
     this.timeoutMs = timeoutMs;
-    this.originalCause = originalCause;
-    if (originalCause instanceof Error && originalCause.stack) {
-      this.stack = `${this.stack}\nCaused by: ${originalCause.stack}`;
-    }
   }
 }
 
 /**
  * 所有可用模型均故障失效异常
  */
-export class AllModelsFailedError extends Error {
+export class AllModelsFailedError extends AgentError {
   public readonly attemptedModels: string[];
   public readonly underlyingErrors: Error[];
-  public readonly originalCause?: unknown;
 
   constructor(attemptedModels: string[], underlyingErrors: Error[]) {
     const errorDetails = attemptedModels
       .map((m, idx) => `[${m}]: ${underlyingErrors[idx]?.message || '未知异常'}`)
       .join('; ');
-    super(`所有候选模型调用均已失败 (尝试模型: ${attemptedModels.join(' -> ')}): ${errorDetails}`);
+    const lastError = underlyingErrors[underlyingErrors.length - 1];
+    super(
+      `所有候选模型调用均已失败 (尝试模型: ${attemptedModels.join(' -> ')}): ${errorDetails}`,
+      'ALL_MODELS_FAILED_ERROR',
+      lastError
+    );
     this.name = 'AllModelsFailedError';
     this.attemptedModels = attemptedModels;
     this.underlyingErrors = underlyingErrors;
-    this.originalCause = underlyingErrors[underlyingErrors.length - 1];
   }
 }
 
@@ -273,8 +276,9 @@ export class ModelFailoverManager {
       });
       return response;
     } catch (err: unknown) {
+      const cause = err instanceof Error ? err : new Error(String(err));
       if (isTimedOut) {
-        throw new ModelTimeoutError(model.name, timeoutMs);
+        throw new ModelTimeoutError(model.name, timeoutMs, cause);
       }
       if (options?.signal?.aborted) {
         const abortErr = new Error('外部调用主动中断');
@@ -464,14 +468,12 @@ export class ModelFailoverManager {
         }
 
         let error: Error;
+        const cause = err instanceof Error ? err : new Error(String(err));
         if (isTimedOut) {
-          error = new ModelTimeoutError(currentModel.name, timeoutMs);
-        } else if (err instanceof Error) {
-          error = err;
+          error = new ModelTimeoutError(currentModel.name, timeoutMs, cause);
         } else {
-          error = new Error(String(err));
+          error = cause;
         }
-
         // 若外部调用方主动打断、入站安全拦截或不可重试错误，直接向外抛出
         if (
           options?.signal?.aborted ||

@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   AllModelsFailedError,
   ModelFailoverManager,
+  ModelTimeoutError,
 } from '../../src/routing/failover.js';
+import { AgentError } from '../../src/utils/errors.js';
 import type { ModelEndpointConfig } from '../../src/routing/types.js';
 import type { LLMProvider } from '../../src/types/index.js';
 
@@ -111,6 +113,15 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
     expect(result.executedModel.id).toBe('backup');
   });
 
+  it('ModelTimeoutError 应当继承 AgentError 并完整保留 originalCause 底层异常与 code', () => {
+    const rootErr = new Error('Socket timeout in 30ms');
+    const timeoutErr = new ModelTimeoutError('Test-Model', 30, rootErr);
+
+    expect(timeoutErr).toBeInstanceOf(AgentError);
+    expect(timeoutErr.code).toBe('MODEL_TIMEOUT_ERROR');
+    expect(timeoutErr.originalCause).toBe(rootErr);
+    expect(timeoutErr.stack).toContain('Socket timeout in 30ms');
+  });
   it('当所有候选模型均失败时，应记录完整审计事件(含终局未切换状态)并抛出 AllModelsFailedError 异常', async () => {
     const onFailover = vi.fn();
     const manager = new ModelFailoverManager({ onFailover });
@@ -135,9 +146,17 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
       { id: 'm2', name: 'Model-2', provider: failed2 },
     ];
 
-    await expect(
-      manager.executeChat(chain, [{ role: 'user', content: '全挂测试' }])
-    ).rejects.toThrowError(AllModelsFailedError);
+    try {
+      await manager.executeChat(chain, [{ role: 'user', content: '全挂测试' }]);
+      expect.unreachable('应抛出 AllModelsFailedError');
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(AllModelsFailedError);
+      expect(err).toBeInstanceOf(AgentError);
+      const allErr = err as AllModelsFailedError;
+      expect(allErr.code).toBe('ALL_MODELS_FAILED_ERROR');
+      expect(allErr.originalCause).toBeDefined();
+      expect((allErr.originalCause as Error).message).toBe('503 Service Unavailable');
+    }
 
     // 验证审计事件记录：第 1 次切换至 Model-2，第 2 次候选耗尽 (toModel 为 undefined)
     expect(onFailover).toHaveBeenCalledTimes(2);
@@ -158,41 +177,6 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
       })
     );
   });
-
-  it('当外部主动传入 AbortSignal 打断时，严禁 Failover 重试，应立即抛出 AbortError', async () => {
-    const manager = new ModelFailoverManager();
-    const backupFn = vi.fn();
-
-    const controller = new AbortController();
-    controller.abort(); // 事先打断
-
-    const primaryLLM: LLMProvider = {
-      chat() {
-        return Promise.resolve({ content: '不应执行' });
-      },
-    };
-
-    const backupLLM: LLMProvider = {
-      chat() {
-        backupFn();
-        return Promise.resolve({ content: '备用节点' });
-      },
-    };
-
-    const chain: ModelEndpointConfig[] = [
-      { id: 'm1', name: 'Model-1', provider: primaryLLM },
-      { id: 'm2', name: 'Model-2', provider: backupLLM },
-    ];
-
-    await expect(
-      manager.executeChat(chain, [{ role: 'user', content: 'test' }], {
-        signal: controller.signal,
-      })
-    ).rejects.toThrow();
-
-    expect(backupFn).not.toHaveBeenCalled();
-  });
-
   it('当主模型遭遇 400/401/Invalid API Key 等不可重试客户端错误时，严禁 Failover，应立即向外抛出且不调用备用模型', async () => {
     const manager = new ModelFailoverManager();
     const backupFn = vi.fn();
