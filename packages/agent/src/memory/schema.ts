@@ -18,8 +18,6 @@ CREATE TABLE IF NOT EXISTS agent_working_summaries (
   updated_at INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_agent_working_summaries_thread ON agent_working_summaries(thread_id);
-
 -- L3 员工实体画像与长期协同档案表 (按 resourceId 物理隔离)
 CREATE TABLE IF NOT EXISTS agent_colleague_profiles (
   resource_id TEXT PRIMARY KEY,
@@ -32,8 +30,6 @@ CREATE TABLE IF NOT EXISTS agent_colleague_profiles (
   raw_summary TEXT,
   updated_at INTEGER NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_agent_colleague_profiles_resource ON agent_colleague_profiles(resource_id);
 `;
 
 /**

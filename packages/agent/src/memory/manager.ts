@@ -20,8 +20,42 @@ import type {
 import { initMemorySchema } from './schema.js';
 import type { LLMMessage, LLMProvider } from '../types/index.js';
 import { createChildLogger } from '../utils/logger.js';
+import { MemoryError } from '../utils/errors.js';
 
 const log = createChildLogger('memory-manager');
+
+/**
+ * 将 SaveMemoryMessageInput 转换为 MessageRepository 的入参
+ */
+function toSaveMessageInput(input: SaveMemoryMessageInput) {
+  return {
+    sessionId: input.threadId,
+    sender: input.sender,
+    content: input.content,
+    senderId: input.senderId,
+    messageId: input.messageId,
+    messageType: input.messageType,
+    isFromSelf: input.isFromSelf,
+    isRecalled: input.isRecalled,
+    replyTargetId: input.replyTargetId,
+    createdAt: input.createdAt,
+  };
+}
+
+/**
+ * 安全解析 JSON 字符串为 string[] 列表
+ */
+function parseStringArray(jsonString: string): string[] {
+  try {
+    const raw = JSON.parse(jsonString || '[]') as unknown;
+    if (Array.isArray(raw)) {
+      return raw.filter((item): item is string => typeof item === 'string');
+    }
+  } catch {
+    // 忽略异常，降级为空数组
+  }
+  return [];
+}
 
 /**
  * 数据库存储的 L2 摘要行结构
@@ -159,7 +193,7 @@ export class AgentMemoryManager {
    */
   private ensureInitialized(): { client: Client; messageRepo: MessageRepository } {
     if (!this.initialized || !this.client || !this.messageRepo) {
-      throw new Error('AgentMemoryManager 尚未初始化，请先调用 init() 方法');
+      throw new MemoryError('AgentMemoryManager 尚未初始化，请先调用 init() 方法');
     }
     return { client: this.client, messageRepo: this.messageRepo };
   }
@@ -180,18 +214,7 @@ export class AgentMemoryManager {
    */
   public async saveMessage(input: SaveMemoryMessageInput): Promise<SessionMessage> {
     const { messageRepo } = this.ensureInitialized();
-    return messageRepo.saveMessage({
-      sessionId: input.threadId,
-      sender: input.sender,
-      content: input.content,
-      senderId: input.senderId,
-      messageId: input.messageId,
-      messageType: input.messageType,
-      isFromSelf: input.isFromSelf,
-      isRecalled: input.isRecalled,
-      replyTargetId: input.replyTargetId,
-      createdAt: input.createdAt,
-    });
+    return messageRepo.saveMessage(toSaveMessageInput(input));
   }
 
   /**
@@ -199,20 +222,7 @@ export class AgentMemoryManager {
    */
   public async saveMessages(inputs: SaveMemoryMessageInput[]): Promise<SessionMessage[]> {
     const { messageRepo } = this.ensureInitialized();
-    return messageRepo.saveMessages(
-      inputs.map((input) => ({
-        sessionId: input.threadId,
-        sender: input.sender,
-        content: input.content,
-        senderId: input.senderId,
-        messageId: input.messageId,
-        messageType: input.messageType,
-        isFromSelf: input.isFromSelf,
-        isRecalled: input.isRecalled,
-        replyTargetId: input.replyTargetId,
-        createdAt: input.createdAt,
-      }))
-    );
+    return messageRepo.saveMessages(inputs.map(toSaveMessageInput));
   }
 
   /**
@@ -411,18 +421,22 @@ export class AgentMemoryManager {
   public async maybeTriggerAsyncSummary(threadId: string): Promise<boolean> {
     const { client } = this.ensureInitialized();
 
+    const existingSummary = await this.getL2Summary(threadId);
+    const coveredCount = existingSummary?.messageCountCovered ?? 0;
+
     const countRes = await client.execute({
       sql: 'SELECT COUNT(*) as count FROM session_messages WHERE session_id = ? AND is_recalled = 0',
       args: [threadId],
     });
     const totalCount = Number(countRes.rows[0]?.count ?? 0);
+    const unsummarizedDelta = totalCount - coveredCount;
 
-    if (totalCount >= this.l2SummaryThreshold) {
+    if (unsummarizedDelta >= this.l2SummaryThreshold) {
       // 异步在后台执行摘要生成，不阻塞调用方
       void (async (): Promise<void> => {
         try {
           await this.summarizeThread(threadId);
-          log.debug({ threadId, totalCount }, '异步增量滚动摘要生成成功');
+          log.debug({ threadId, totalCount, unsummarizedDelta }, '异步增量滚动摘要生成成功');
         } catch (err) {
           log.warn({ threadId, err }, '后台异步生成工作摘要异常');
         }
@@ -477,27 +491,8 @@ export class AgentMemoryManager {
       parsedPreferences = {};
     }
 
-    try {
-      const raw = JSON.parse(row.key_facts || '[]') as unknown;
-      if (Array.isArray(raw)) {
-        parsedKeyFacts = raw.filter(
-          (item): item is string => typeof item === 'string'
-        );
-      }
-    } catch {
-      parsedKeyFacts = [];
-    }
-
-    try {
-      const raw = JSON.parse(row.recent_topics || '[]') as unknown;
-      if (Array.isArray(raw)) {
-        parsedRecentTopics = raw.filter(
-          (item): item is string => typeof item === 'string'
-        );
-      }
-    } catch {
-      parsedRecentTopics = [];
-    }
+    parsedKeyFacts = parseStringArray(row.key_facts);
+    parsedRecentTopics = parseStringArray(row.recent_topics);
 
     return {
       resourceId: String(row.resource_id),
