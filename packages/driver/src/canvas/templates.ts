@@ -25,6 +25,151 @@ import type {
 import { DriverError } from '../utils/errors.js';
 
 /**
+ * 审批风险等级视觉映射配置
+ */
+interface RiskLevelConfig {
+  theme: CardThemeType;
+  tagText: string;
+  tagVariant: CardTagVariant;
+  riskDisplay: string;
+  isDanger: boolean;
+  isWarning: boolean;
+}
+
+const RISK_LEVEL_MAP: Record<ApprovalRiskLevel, RiskLevelConfig> = {
+  P1: {
+    theme: 'danger',
+    tagText: 'P1 极高风险',
+    tagVariant: 'danger',
+    riskDisplay: '🚨 P1 极高风险',
+    isDanger: true,
+    isWarning: false,
+  },
+  P2: {
+    theme: 'warning',
+    tagText: 'P2 高风险',
+    tagVariant: 'warning',
+    riskDisplay: '⚠️ P2 高风险',
+    isDanger: false,
+    isWarning: true,
+  },
+  P3: {
+    theme: 'primary',
+    tagText: 'P3 中风险',
+    tagVariant: 'primary',
+    riskDisplay: '📋 P3 中风险',
+    isDanger: false,
+    isWarning: false,
+  },
+  P4: {
+    theme: 'info',
+    tagText: 'P4 低风险',
+    tagVariant: 'info',
+    riskDisplay: 'ℹ️ P4 低风险',
+    isDanger: false,
+    isWarning: false,
+  },
+};
+
+/**
+ * 告警严重级别视觉映射配置
+ */
+interface SeverityConfig {
+  theme: CardThemeType;
+  tagText: string;
+  tagVariant: CardTagVariant;
+  defaultIcon: string;
+  severityDisplay: string;
+  isDanger: boolean;
+  isWarning: boolean;
+}
+
+const SEVERITY_MAP: Record<AlertSeverity, SeverityConfig> = {
+  critical: {
+    theme: 'danger',
+    tagText: 'CRITICAL 致命',
+    tagVariant: 'danger',
+    defaultIcon: '🚨',
+    severityDisplay: '🚨 致命 (Critical)',
+    isDanger: true,
+    isWarning: false,
+  },
+  high: {
+    theme: 'danger',
+    tagText: 'HIGH 严重',
+    tagVariant: 'danger',
+    defaultIcon: '🚨',
+    severityDisplay: '🚨 严重 (High)',
+    isDanger: true,
+    isWarning: false,
+  },
+  medium: {
+    theme: 'warning',
+    tagText: 'MEDIUM 警告',
+    tagVariant: 'warning',
+    defaultIcon: '⚠️',
+    severityDisplay: '⚠️ 警告 (Medium)',
+    isDanger: false,
+    isWarning: true,
+  },
+  low: {
+    theme: 'info',
+    tagText: 'LOW 次要',
+    tagVariant: 'info',
+    defaultIcon: 'ℹ️',
+    severityDisplay: 'ℹ️ 次要 (Low)',
+    isDanger: false,
+    isWarning: false,
+  },
+  info: {
+    theme: 'info',
+    tagText: 'INFO 提示',
+    tagVariant: 'info',
+    defaultIcon: 'ℹ️',
+    severityDisplay: 'ℹ️ 提示 (Info)',
+    isDanger: false,
+    isWarning: false,
+  },
+};
+
+/**
+ * 报告执行状态视觉映射配置
+ */
+interface ReportStatusConfig {
+  theme: CardThemeType;
+  tagText: string;
+  tagVariant: CardTagVariant;
+  defaultIcon: string;
+}
+
+const REPORT_STATUS_MAP: Record<ReportStatus, ReportStatusConfig> = {
+  success: {
+    theme: 'success',
+    tagText: 'SUCCESS 成功',
+    tagVariant: 'success',
+    defaultIcon: '✅',
+  },
+  warning: {
+    theme: 'warning',
+    tagText: 'WARNING 告警',
+    tagVariant: 'warning',
+    defaultIcon: '⚠️',
+  },
+  failure: {
+    theme: 'danger',
+    tagText: 'FAILED 失败',
+    tagVariant: 'danger',
+    defaultIcon: '❌',
+  },
+  running: {
+    theme: 'primary',
+    tagText: 'RUNNING 进行中',
+    tagVariant: 'primary',
+    defaultIcon: '⏳',
+  },
+};
+
+/**
  * 格式化时间戳为易读日期时间字符串 (YYYY-MM-DD HH:mm:ss)
  */
 function formatTimestamp(timestamp?: string | number): string {
@@ -52,6 +197,23 @@ function formatDate(d: Date): string {
 }
 
 /**
+ * 辅助函数：根据两个可能存在的可选字段计算双列跨度
+ */
+function appendPairedFields(
+  fields: CardField[],
+  field1?: CardField,
+  field2?: CardField
+): void {
+  if (field1 && field2) {
+    fields.push({ ...field1, span: 1 }, { ...field2, span: 1 });
+  } else if (field1) {
+    fields.push({ ...field1, span: 2 });
+  } else if (field2) {
+    fields.push({ ...field2, span: 2 });
+  }
+}
+
+/**
  * 构建企业审批决策卡片
  *
  * 根据 P1~P4 风险等级自动映射视觉主题与告警标签，排版申请人/工单属性，并提供同意与拒绝双操作按钮
@@ -71,45 +233,9 @@ export function createApprovalCard(params: ApprovalCardParams): CardData {
   }
 
   const riskLevel: ApprovalRiskLevel = params.riskLevel || 'P3';
+  const riskConfig = RISK_LEVEL_MAP[riskLevel] || RISK_LEVEL_MAP.P3;
 
-  // 1. 风险等级与主题映射
-  let theme: CardThemeType = 'primary';
-  let tagText = 'P3 中风险';
-  let tagVariant: CardTagVariant = 'primary';
-  let riskDisplay = '📋 P3 中风险';
-  let isDanger = false;
-  let isWarning = false;
-
-  switch (riskLevel) {
-    case 'P1':
-      theme = 'danger';
-      tagText = 'P1 极高风险';
-      tagVariant = 'danger';
-      riskDisplay = '🚨 P1 极高风险';
-      isDanger = true;
-      break;
-    case 'P2':
-      theme = 'warning';
-      tagText = 'P2 高风险';
-      tagVariant = 'warning';
-      riskDisplay = '⚠️ P2 高风险';
-      isWarning = true;
-      break;
-    case 'P3':
-      theme = 'primary';
-      tagText = 'P3 中风险';
-      tagVariant = 'primary';
-      riskDisplay = '📋 P3 中风险';
-      break;
-    case 'P4':
-      theme = 'info';
-      tagText = 'P4 低风险';
-      tagVariant = 'info';
-      riskDisplay = 'ℹ️ P4 低风险';
-      break;
-  }
-
-  // 2. 组装结构化字段列表 (两列属性与全宽事项)
+  // 组装结构化字段列表 (两列属性与全宽事项)
   const fields: CardField[] = [];
 
   if (params.orderNo) {
@@ -124,9 +250,9 @@ export function createApprovalCard(params: ApprovalCardParams): CardData {
 
   fields.push({
     label: '风险等级',
-    value: riskDisplay,
-    danger: isDanger,
-    variant: isDanger ? 'danger' : isWarning ? 'warning' : 'default',
+    value: riskConfig.riskDisplay,
+    danger: riskConfig.isDanger,
+    variant: riskConfig.isDanger ? 'danger' : riskConfig.isWarning ? 'warning' : 'default',
     span: 1,
   });
 
@@ -149,12 +275,11 @@ export function createApprovalCard(params: ApprovalCardParams): CardData {
     fields.push(...params.customFields);
   }
 
-  // 3. 组装操作按钮列表
+  // 组装操作按钮列表
   let actions: CardAction[];
   if (params.actions && Array.isArray(params.actions)) {
     actions = params.actions;
   } else {
-    // 默认同意与拒绝双按钮
     const approve: CardAction =
       typeof params.approveAction === 'string'
         ? { text: params.approveAction, variant: 'success', replyCommand: '1' }
@@ -182,7 +307,7 @@ export function createApprovalCard(params: ApprovalCardParams): CardData {
     actions = [approve, reject];
   }
 
-  // 4. 底部提示
+  // 底部提示
   const footer =
     params.footer || {
       icon: '💡',
@@ -190,12 +315,12 @@ export function createApprovalCard(params: ApprovalCardParams): CardData {
     };
 
   return {
-    theme,
+    theme: riskConfig.theme,
     header: {
       title: params.title || '审批申请',
       subtitle: params.subtitle || '审批决策中心',
       icon: params.icon || '🛡️',
-      tag: { text: tagText, variant: tagVariant },
+      tag: { text: riskConfig.tagText, variant: riskConfig.tagVariant },
     },
     fields,
     actions,
@@ -220,80 +345,26 @@ export function createAlertCard(params: AlertCardParams): CardData {
   }
 
   const severity: AlertSeverity = params.severity || 'high';
+  const sevConfig = SEVERITY_MAP[severity] || SEVERITY_MAP.high;
 
-  // 1. 严重程度与主题映射
-  let theme: CardThemeType = 'danger';
-  let tagText = 'HIGH 严重';
-  let tagVariant: CardTagVariant = 'danger';
-  let defaultIcon = '🚨';
-  let severityDisplay = '🚨 严重 (High)';
-  let isDanger = true;
-  let isWarning = false;
-
-  switch (severity) {
-    case 'critical':
-      theme = 'danger';
-      tagText = 'CRITICAL 致命';
-      tagVariant = 'danger';
-      defaultIcon = '🚨';
-      severityDisplay = '🚨 致命 (Critical)';
-      isDanger = true;
-      break;
-    case 'high':
-      theme = 'danger';
-      tagText = 'HIGH 严重';
-      tagVariant = 'danger';
-      defaultIcon = '🚨';
-      severityDisplay = '🚨 严重 (High)';
-      isDanger = true;
-      break;
-    case 'medium':
-      theme = 'warning';
-      tagText = 'MEDIUM 警告';
-      tagVariant = 'warning';
-      defaultIcon = '⚠️';
-      severityDisplay = '⚠️ 警告 (Medium)';
-      isDanger = false;
-      isWarning = true;
-      break;
-    case 'low':
-      theme = 'info';
-      tagText = 'LOW 次要';
-      tagVariant = 'info';
-      defaultIcon = 'ℹ️';
-      severityDisplay = 'ℹ️ 次要 (Low)';
-      isDanger = false;
-      isWarning = false;
-      break;
-    case 'info':
-      theme = 'info';
-      tagText = 'INFO 提示';
-      tagVariant = 'info';
-      defaultIcon = 'ℹ️';
-      severityDisplay = 'ℹ️ 提示 (Info)';
-      isDanger = false;
-      isWarning = false;
-      break;
-  }
-
-  // 2. 组装结构化字段列表
+  // 组装结构化字段列表
   const fields: CardField[] = [];
 
   if (params.service) {
     fields.push({ label: '告警服务', value: params.service, highlight: true, span: 1 });
     fields.push({
       label: '严重级别',
-      value: severityDisplay,
-      danger: isDanger,
-      variant: isDanger ? 'danger' : isWarning ? 'warning' : 'default',
+      value: sevConfig.severityDisplay,
+      danger: sevConfig.isDanger,
+      variant: sevConfig.isDanger ? 'danger' : sevConfig.isWarning ? 'warning' : 'default',
       span: 1,
     });
   } else {
     fields.push({
       label: '严重级别',
-      value: severityDisplay,
-      danger: isDanger,
-      variant: isDanger ? 'danger' : isWarning ? 'warning' : 'default',
+      value: sevConfig.severityDisplay,
+      danger: sevConfig.isDanger,
+      variant: sevConfig.isDanger ? 'danger' : sevConfig.isWarning ? 'warning' : 'default',
       span: 2,
     });
   }
@@ -329,7 +400,7 @@ export function createAlertCard(params: AlertCardParams): CardData {
     fields.push(...params.customFields);
   }
 
-  // 3. 底部提示与时间戳
+  // 底部提示与时间戳
   const footer =
     params.footer || {
       icon: '🕒',
@@ -337,12 +408,12 @@ export function createAlertCard(params: AlertCardParams): CardData {
     };
 
   return {
-    theme,
+    theme: sevConfig.theme,
     header: {
       title: params.title,
       subtitle: params.subtitle || '监控告警中心',
-      icon: params.icon || defaultIcon,
-      tag: { text: tagText, variant: tagVariant },
+      icon: params.icon || sevConfig.defaultIcon,
+      tag: { text: sevConfig.tagText, variant: sevConfig.tagVariant },
     },
     fields,
     actions: params.actions || [],
@@ -367,51 +438,19 @@ export function createReportCard(params: ReportCardParams): CardData {
   }
 
   const status: ReportStatus = params.status || 'success';
+  const statusConfig = REPORT_STATUS_MAP[status] || REPORT_STATUS_MAP.success;
 
-  // 1. 状态与主题映射
-  let theme: CardThemeType = 'success';
-  let tagText = 'SUCCESS 成功';
-  let tagVariant: CardTagVariant = 'success';
-  let defaultIcon = '✅';
-
-  switch (status) {
-    case 'success':
-      theme = 'success';
-      tagText = 'SUCCESS 成功';
-      tagVariant = 'success';
-      defaultIcon = '✅';
-      break;
-    case 'warning':
-      theme = 'warning';
-      tagText = 'WARNING 告警';
-      tagVariant = 'warning';
-      defaultIcon = '⚠️';
-      break;
-    case 'failure':
-      theme = 'danger';
-      tagText = 'FAILED 失败';
-      tagVariant = 'danger';
-      defaultIcon = '❌';
-      break;
-    case 'running':
-      theme = 'primary';
-      tagText = 'RUNNING 进行中';
-      tagVariant = 'primary';
-      defaultIcon = '⏳';
-      break;
-  }
-
-  // 2. 组装结构化字段列表
+  // 组装结构化字段列表
   const fields: CardField[] = [];
 
-  if (params.reportId && params.duration) {
-    fields.push({ label: '报告编号', value: params.reportId, span: 1 });
-    fields.push({ label: '执行耗时', value: params.duration, highlight: true, span: 1 });
-  } else if (params.reportId) {
-    fields.push({ label: '报告编号', value: params.reportId, span: 2 });
-  } else if (params.duration) {
-    fields.push({ label: '执行耗时', value: params.duration, highlight: true, span: 2 });
-  }
+  const reportIdField = params.reportId
+    ? { label: '报告编号', value: params.reportId }
+    : undefined;
+  const durationField = params.duration
+    ? { label: '执行耗时', value: params.duration, highlight: true }
+    : undefined;
+
+  appendPairedFields(fields, reportIdField, durationField);
 
   // 网格化核心指标项 (均为 span 1)
   if (params.metrics && Array.isArray(params.metrics) && params.metrics.length > 0) {
@@ -448,7 +487,7 @@ export function createReportCard(params: ReportCardParams): CardData {
     fields.push(...params.customFields);
   }
 
-  // 3. 底部提示
+  // 底部提示
   const footer =
     params.footer || {
       icon: '📊',
@@ -456,12 +495,12 @@ export function createReportCard(params: ReportCardParams): CardData {
     };
 
   return {
-    theme,
+    theme: statusConfig.theme,
     header: {
       title: params.title,
       subtitle: params.subtitle || '自动化巡检与统计',
-      icon: params.icon || defaultIcon,
-      tag: { text: tagText, variant: tagVariant },
+      icon: params.icon || statusConfig.defaultIcon,
+      tag: { text: statusConfig.tagText, variant: statusConfig.tagVariant },
     },
     fields,
     actions: params.actions || [],
@@ -488,17 +527,17 @@ export function createDecisionCard(params: DecisionCardParams): CardData {
     throw new DriverError('决策卡片参数非法: options 选项列表不能为空', 'INVALID_DECISION_OPTIONS');
   }
 
-  // 1. 组装结构化字段列表
+  // 组装结构化字段列表
   const fields: CardField[] = [];
 
-  if (params.sponsor && params.deadline) {
-    fields.push({ label: '发起人', value: params.sponsor, span: 1 });
-    fields.push({ label: '截止时间', value: params.deadline, variant: 'warning', span: 1 });
-  } else if (params.sponsor) {
-    fields.push({ label: '发起人', value: params.sponsor, span: 2 });
-  } else if (params.deadline) {
-    fields.push({ label: '截止时间', value: params.deadline, variant: 'warning', span: 2 });
-  }
+  const sponsorField = params.sponsor
+    ? { label: '发起人', value: params.sponsor }
+    : undefined;
+  const deadlineField = params.deadline
+    ? { label: '截止时间', value: params.deadline, variant: 'warning' as const }
+    : undefined;
+
+  appendPairedFields(fields, sponsorField, deadlineField);
 
   if (params.description) {
     fields.push({
@@ -531,7 +570,7 @@ export function createDecisionCard(params: DecisionCardParams): CardData {
     fields.push(...params.customFields);
   }
 
-  // 2. 组装操作按钮列表 (若未显式传入则根据选项自动生成)
+  // 组装操作按钮列表 (若未显式传入则根据选项自动生成)
   let actions: CardAction[];
   if (params.actions && Array.isArray(params.actions)) {
     actions = params.actions;
@@ -549,7 +588,7 @@ export function createDecisionCard(params: DecisionCardParams): CardData {
     });
   }
 
-  // 3. 底部提示
+  // 底部提示
   let footer = params.footer;
   if (!footer) {
     const optionKeys = params.options.map((opt, idx) =>
