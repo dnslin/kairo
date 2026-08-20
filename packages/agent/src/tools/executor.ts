@@ -171,10 +171,25 @@ export class ReadWriteSplitExecutor {
         ? (validatedInput as Record<string, unknown>)
         : { input: validatedInput };
 
-    // 4. 高危工具零信任拦截与原子消费
+    // 4. 高危工具零信任拦截与原子消费 (requireApproval: true)
     if (tool.requireApproval) {
+      if (!this.options.approvalManager) {
+        const noManagerMsg = `高危操作安全阻断: 工具 "${toolName}" 标记为必须经由 HITL 审批执行，但当前环境未配置 ApprovalManager，已强制拒绝执行以防安全逃逸`;
+        log.error({ callId, toolName }, noManagerMsg);
+        return {
+          callId,
+          toolName,
+          success: false,
+          isError: true,
+          error: noManagerMsg,
+          output: { error: noManagerMsg },
+          durationMs: Date.now() - startTime,
+          readOnly: false,
+        };
+      }
+
       // 4.1 若携带 approvedTaskId：向 ApprovalManager 请求原子消费并执行防篡改校验
-      if (context?.approvedTaskId && this.options.approvalManager) {
+      if (context?.approvedTaskId) {
         try {
           const consumeResult = await this.options.approvalManager.consumeApprovedTask(
             context.approvedTaskId,
@@ -215,7 +230,7 @@ export class ReadWriteSplitExecutor {
             readOnly: false,
           };
         }
-      } else if (this.options.approvalManager) {
+      } else {
         // 4.2 首次调用：必须具备完整的员工身份与会话上下文，必须能解析出直属主管 (Fail-Closed)
         const senderId = context?.senderId?.trim();
         const threadId = context?.threadId?.trim();

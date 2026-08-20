@@ -444,6 +444,28 @@ describe('ToolExecutor 高危工具审批拦截与零信任防篡改防重放验
     expect(replayResult.error).toContain('禁止跨会话使用审批授权');
     expect(mockDangerousExecute).toHaveBeenCalledTimes(0);
   });
+  it('Fail-Closed 防安全逃逸：未配置 ApprovalManager 时调用高危工具直接阻断，调用次数严格为 0', async () => {
+    // 实例化未配置 approvalManager 的执行器
+    const noManagerExecutor = new ReadWriteSplitExecutor(registry, {});
+
+    const blockedResult = await noManagerExecutor.executeSingle(
+      {
+        callId: 'call_no_manager',
+        toolName: 'drop_database_table',
+        args: { table: 'customers' },
+      },
+      {
+        senderId: 'emp_001',
+        threadId: 'session_1',
+      }
+    );
+
+    expect(blockedResult.success).toBe(false);
+    expect(blockedResult.isError).toBe(true);
+    expect(blockedResult.error).toContain('未配置 ApprovalManager');
+    expect(mockDangerousExecute).toHaveBeenCalledTimes(0);
+  });
+
 
 
 
