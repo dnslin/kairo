@@ -169,6 +169,58 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
     expect(backupFn).not.toHaveBeenCalled();
   });
 
+  it('当主模型遭遇 400/401/Invalid API Key 等不可重试客户端错误时，严禁 Failover，应立即向外抛出且不调用备用模型', async () => {
+    const manager = new ModelFailoverManager();
+    const backupFn = vi.fn();
+
+    const authFailedLLM: LLMProvider = {
+      chat() {
+        const err = new Error('401 Unauthorized: Invalid API Key');
+        Object.assign(err, { status: 401 });
+        return Promise.reject(err);
+      },
+    };
+
+    const backupLLM: LLMProvider = {
+      chat() {
+        backupFn();
+        return Promise.resolve({ content: '备用节点' });
+      },
+    };
+
+    const chain: ModelEndpointConfig[] = [
+      { id: 'm1', name: 'Auth-Failed-Model', provider: authFailedLLM },
+      { id: 'm2', name: 'Backup-Model', provider: backupLLM },
+    ];
+
+    await expect(
+      manager.executeChat(chain, [{ role: 'user', content: 'test auth failure' }])
+    ).rejects.toThrowError('401 Unauthorized');
+
+    // 确认备用模型未被调用
+    expect(backupFn).not.toHaveBeenCalled();
+  });
+
+  it('isRetryableError 应精准识别可恢复异常与不可恢复客户端异常', () => {
+    const manager = new ModelFailoverManager();
+
+    // 可重试异常
+    expect(manager.isRetryableError(new Error('503 Service Unavailable'))).toBe(true);
+    expect(manager.isRetryableError(new Error('429 Too Many Requests (rate limit)'))).toBe(true);
+    expect(manager.isRetryableError(new Error('500 Internal Server Error'))).toBe(true);
+    expect(manager.isRetryableError(new Error('fetch failed: ECONNRESET'))).toBe(true);
+    expect(manager.isRetryableError(new Error('request timed out'))).toBe(true);
+
+    // 不可重试异常
+    expect(manager.isRetryableError(new Error('400 Bad Request: missing field'))).toBe(false);
+    expect(manager.isRetryableError(new Error('401 Unauthorized: invalid_api_key'))).toBe(false);
+    expect(manager.isRetryableError(new Error('403 Forbidden: permission_denied'))).toBe(false);
+    expect(manager.isRetryableError(new Error('404 Not Found'))).toBe(false);
+    const abortErr = new Error('aborted');
+    abortErr.name = 'AbortError';
+    expect(manager.isRetryableError(abortErr)).toBe(false);
+  });
+
   it('在流式调用首个 Chunk 产出前发生异常，应无感 Failover 到备用模型流式生成', async () => {
     const manager = new ModelFailoverManager();
 

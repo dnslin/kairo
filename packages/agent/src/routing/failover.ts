@@ -64,53 +64,88 @@ export class ModelFailoverManager {
 
   /**
    * 判断错误是否可重试/可切换备用节点
+   * 仅针对服务端过载(503/500/502/504)、速率限制/配额超限(429)、调用超时及网络断连等可恢复异常执行 Failover；
+   * 对于客户端错误 (400 参数错误、401 鉴权失效、403 权限拒绝、404 不存在) 及主动打断严禁切换备用节点。
    */
   public isRetryableError(err: unknown): boolean {
     if (!err) return false;
     if (err instanceof ModelTimeoutError) return true;
 
-    // 检查 Error 实例中的状态码或关键词
     if (err instanceof Error) {
+      if (
+        err.name === 'AbortError' ||
+        err.name === 'InboundSecurityBlockedError' ||
+        err.message.includes('aborted') ||
+        err.message.startsWith('INBOUND_SECURITY_BLOCKED')
+      ) {
+        return false;
+      }
+
       // 检查 status 或 statusCode 属性
       const errorObj = err as unknown as Record<string, unknown>;
       const status = errorObj['status'] || errorObj['statusCode'];
-      if (
-        typeof status === 'number' &&
-        this.defaultRetryStatusCodes.includes(status)
-      ) {
-        return true;
+      if (typeof status === 'number') {
+        if ([400, 401, 403, 404, 422].includes(status)) {
+          return false;
+        }
+        if (this.defaultRetryStatusCodes.includes(status)) {
+          return true;
+        }
       }
 
       const msg = err.message.toLowerCase();
-      // 匹配 HTTP 状态码
+
+      // 明确不可重试的客户端/鉴权/参数错误
+      if (
+        msg.includes('400') ||
+        msg.includes('401') ||
+        msg.includes('403') ||
+        msg.includes('404') ||
+        msg.includes('422') ||
+        msg.includes('unauthorized') ||
+        msg.includes('forbidden') ||
+        msg.includes('bad request') ||
+        msg.includes('invalid api key') ||
+        msg.includes('invalid_api_key') ||
+        msg.includes('invalid_request_error') ||
+        msg.includes('authentication_error') ||
+        msg.includes('permission_denied')
+      ) {
+        return false;
+      }
+
+      // 匹配明确可重试的服务端状态码与网络/超时特征
       if (
         msg.includes('503') ||
         msg.includes('429') ||
         msg.includes('500') ||
         msg.includes('502') ||
         msg.includes('504') ||
+        msg.includes('service unavailable') ||
+        msg.includes('internal server error') ||
+        msg.includes('bad gateway') ||
+        msg.includes('gateway timeout') ||
         msg.includes('rate limit') ||
+        msg.includes('rate_limit') ||
+        msg.includes('too many requests') ||
         msg.includes('quota') ||
         msg.includes('timeout') ||
         msg.includes('timed out') ||
         msg.includes('econnrefused') ||
         msg.includes('econnreset') ||
         msg.includes('etimedout') ||
+        msg.includes('enotfound') ||
         msg.includes('network') ||
-        msg.includes('fetch failed')
+        msg.includes('fetch failed') ||
+        msg.includes('socket hang up')
       ) {
         return true;
       }
 
-      // 如果是 AbortError，需确认是否为调用方主动打断
-      if (err.name === 'AbortError' || msg.includes('aborted')) {
-        return false;
-      }
-
-      return true;
+      return false;
     }
 
-    return true;
+    return false;
   }
 
   /**
@@ -233,11 +268,13 @@ export class ModelFailoverManager {
         underlyingErrors.push(error);
 
         // 如果是外部主动打断或入站安全拦截，严禁 Failover 重试，直接向外抛出
+        // 如果是外部主动打断、入站安全拦截或不可重试错误 (如 400/401)，严禁 Failover 重试，直接向外抛出
         if (
           options?.signal?.aborted ||
           error.name === 'AbortError' ||
           error.name === 'InboundSecurityBlockedError' ||
-          error.message.startsWith('INBOUND_SECURITY_BLOCKED')
+          error.message.startsWith('INBOUND_SECURITY_BLOCKED') ||
+          !this.isRetryableError(error)
         ) {
           throw error;
         }
@@ -374,12 +411,13 @@ export class ModelFailoverManager {
           error = new Error(String(err));
         }
 
-        // 若外部调用方主动打断或入站安全拦截，直接向外抛出
+        // 若外部调用方主动打断、入站安全拦截或不可重试错误，直接向外抛出
         if (
           options?.signal?.aborted ||
           error.name === 'AbortError' ||
           error.name === 'InboundSecurityBlockedError' ||
-          error.message.startsWith('INBOUND_SECURITY_BLOCKED')
+          error.message.startsWith('INBOUND_SECURITY_BLOCKED') ||
+          !this.isRetryableError(error)
         ) {
           throw error;
         }
