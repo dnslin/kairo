@@ -89,12 +89,7 @@ export class KkbotAgentRuntime {
     // 1. 预检查：若调用前已被打断，立即瞬间返回 abort 状态
     if (options?.signal?.aborted) {
       log.debug({ threadId }, '执行前已收到 Abort 信号，直接中止');
-      return {
-        content: '',
-        toolCalls: [],
-        finishReason: 'abort',
-        aborted: true,
-      };
+      return this.createAbortResult();
     }
 
     // 2. 入站安全护栏：检查提示词注入与越狱
@@ -166,16 +161,12 @@ export class KkbotAgentRuntime {
         for await (const chunk of stream) {
           if (options?.signal?.aborted) {
             log.info({ threadId }, '流式生成过程中收到 AbortSignal 打断信号');
-            return {
-              content: this.sensitiveFilter.filterOutbound(
-                cleaner.getAccumulatedCleaned()
-              ).filteredText,
-              thinkingContent: cleaner.getAccumulatedThinking() || undefined,
+            return this.createAbortResult(
+              cleaner.getAccumulatedCleaned(),
+              cleaner.getAccumulatedThinking(),
               toolCalls,
-              usage,
-              finishReason: 'abort',
-              aborted: true,
-            };
+              usage
+            );
           }
 
           if (chunk.usage) {
@@ -211,16 +202,12 @@ export class KkbotAgentRuntime {
           options?.signal?.aborted ||
           (err instanceof Error && err.name === 'AbortError')
         ) {
-          return {
-            content: this.sensitiveFilter.filterOutbound(
-              cleaner.getAccumulatedCleaned()
-            ).filteredText,
-            thinkingContent: cleaner.getAccumulatedThinking() || undefined,
+          return this.createAbortResult(
+            cleaner.getAccumulatedCleaned(),
+            cleaner.getAccumulatedThinking(),
             toolCalls,
-            usage,
-            finishReason: 'abort',
-            aborted: true,
-          };
+            usage
+          );
         }
         throw new LLMExecutionError(
           `LLM 流式调用异常: ${err instanceof Error ? err.message : String(err)}`,
@@ -246,12 +233,7 @@ export class KkbotAgentRuntime {
           options?.signal?.aborted ||
           (err instanceof Error && err.name === 'AbortError')
         ) {
-          return {
-            content: '',
-            toolCalls: [],
-            finishReason: 'abort',
-            aborted: true,
-          };
+          return this.createAbortResult('', '', [], usage);
         }
         throw new LLMExecutionError(
           `LLM 阻塞调用异常: ${err instanceof Error ? err.message : String(err)}`,
@@ -262,14 +244,12 @@ export class KkbotAgentRuntime {
 
     // 若流结束后 signal 处于 aborted 状态，立即返回 abort 结果
     if (options?.signal?.aborted) {
-      return {
-        content: this.sensitiveFilter.filterOutbound(rawContent).filteredText,
-        thinkingContent: thinkingContent || undefined,
+      return this.createAbortResult(
+        rawContent,
+        thinkingContent,
         toolCalls,
-        usage,
-        finishReason: 'abort',
-        aborted: true,
-      };
+        usage
+      );
     }
 
     // 5. 出站安全护栏：敏感词脱敏
@@ -283,6 +263,29 @@ export class KkbotAgentRuntime {
       usage,
       finishReason,
       aborted: false,
+    };
+  }
+
+  /**
+   * 统一构建中断/取消状态的返回实体
+   */
+  private createAbortResult(
+    rawContent = '',
+    thinkingContent = '',
+    toolCalls: ToolExecutionRecord[] = [],
+    usage?: TokenUsage
+  ): AgentReplyResult {
+    const filtered = rawContent
+      ? this.sensitiveFilter.filterOutbound(rawContent).filteredText
+      : '';
+
+    return {
+      content: filtered,
+      thinkingContent: thinkingContent || undefined,
+      toolCalls,
+      usage,
+      finishReason: 'abort',
+      aborted: true,
     };
   }
 }

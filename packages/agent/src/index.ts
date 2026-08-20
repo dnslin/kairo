@@ -13,6 +13,23 @@ export {
   DEFAULT_JAILBREAK_PATTERNS,
 } from './guardrails/sensitive-filter.js';
 
-export * from './types/index.js';
+export type {
+  AgentExecuteOptions,
+  AgentReplyResult,
+  AgentRuntimeConfig,
+  ConsolidatedMessage,
+  EmployeeOrgContext,
+  LayeredPromptResult,
+  LLMMessage,
+  LLMProvider,
+  LLMStreamChunk,
+  PromptCompilerOptions,
+  SensitiveCheckResult,
+  SensitiveFilterResult,
+  ThinkingCleanResult,
+  TokenUsage,
+  ToolExecutionRecord,
+  UserProfilePreference,
+} from './types/index.js';
 export * from './utils/errors.js';
 export { createChildLogger, logger } from './utils/logger.js';
