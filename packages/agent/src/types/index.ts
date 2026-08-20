@@ -284,3 +284,5 @@ export interface AgentRuntimeConfig {
   /** 底层 LLM Provider 实现 */
   llmProvider?: LLMProvider;
 }
+
+export * from '../memory/types.js';

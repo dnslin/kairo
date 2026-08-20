@@ -14,10 +14,15 @@
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@kkbot/driver": "workspace:*",
+    "@kkbot/store": "workspace:*",
+    "@libsql/client": "^0.17.4",
+    "@mastra/libsql": "^1.21.0",
+    "@mastra/memory": "^1.27.0",
     "chokidar": "^4.0.3",
     "pino": "^9.6.0"
   },
