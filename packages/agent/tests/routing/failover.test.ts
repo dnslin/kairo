@@ -111,17 +111,22 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
     expect(result.executedModel.id).toBe('backup');
   });
 
-  it('当所有候选模型均失败时，应抛出 AllModelsFailedError 异常', async () => {
-    const manager = new ModelFailoverManager();
+  it('当所有候选模型均失败时，应记录完整审计事件(含终局未切换状态)并抛出 AllModelsFailedError 异常', async () => {
+    const onFailover = vi.fn();
+    const manager = new ModelFailoverManager({ onFailover });
 
     const failed1: LLMProvider = {
       chat() {
-        return Promise.reject(new Error('500 Internal Error'));
+        const err = new Error('500 Internal Error');
+        Object.assign(err, { status: 500 });
+        return Promise.reject(err);
       },
     };
     const failed2: LLMProvider = {
       chat() {
-        return Promise.reject(new Error('429 Rate Limit Exceeded'));
+        const err = new Error('503 Service Unavailable');
+        Object.assign(err, { status: 503 });
+        return Promise.reject(err);
       },
     };
 
@@ -133,6 +138,25 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
     await expect(
       manager.executeChat(chain, [{ role: 'user', content: '全挂测试' }])
     ).rejects.toThrowError(AllModelsFailedError);
+
+    // 验证审计事件记录：第 1 次切换至 Model-2，第 2 次候选耗尽 (toModel 为 undefined)
+    expect(onFailover).toHaveBeenCalledTimes(2);
+    expect(onFailover).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        fromModel: 'Model-1',
+        toModel: 'Model-2',
+        attempt: 1,
+      })
+    );
+    expect(onFailover).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        fromModel: 'Model-2',
+        toModel: undefined,
+        attempt: 2,
+      })
+    );
   });
 
   it('当外部主动传入 AbortSignal 打断时，严禁 Failover 重试，应立即抛出 AbortError', async () => {

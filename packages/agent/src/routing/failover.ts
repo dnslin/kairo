@@ -171,19 +171,30 @@ export class ModelFailoverManager {
         },
         `${mode}模型调用异常，触发 Failover 故障转移`
       );
+    } else {
+      log.warn(
+        {
+          failedModel: currentModel.name,
+          nextModel: '无',
+          attempt,
+          err: error.message,
+          mode,
+        },
+        `${mode}模型调用异常且已无可用备用节点 (候选模型耗尽)`
+      );
+    }
 
-      if (this.onFailoverCallback) {
-        try {
-          this.onFailoverCallback({
-            fromModel: currentModel.name,
-            toModel: nextModel.name,
-            error,
-            attempt,
-            timestamp: Date.now(),
-          });
-        } catch (callbackErr) {
-          log.warn({ callbackErr }, 'Failover 回调函数执行异常');
-        }
+    if (this.onFailoverCallback) {
+      try {
+        this.onFailoverCallback({
+          fromModel: currentModel.name,
+          toModel: nextModel?.name,
+          error,
+          attempt,
+          timestamp: Date.now(),
+        });
+      } catch (callbackErr) {
+        log.warn({ callbackErr }, 'Failover 回调函数执行异常');
       }
     }
   }
