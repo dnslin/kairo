@@ -18,12 +18,17 @@ const log = createChildLogger('model-failover-manager');
 export class ModelTimeoutError extends Error {
   public readonly modelName: string;
   public readonly timeoutMs: number;
+  public readonly originalCause?: unknown;
 
-  constructor(modelName: string, timeoutMs: number) {
+  constructor(modelName: string, timeoutMs: number, originalCause?: unknown) {
     super(`模型 [${modelName}] 调用超时 (${timeoutMs}ms)`);
     this.name = 'ModelTimeoutError';
     this.modelName = modelName;
     this.timeoutMs = timeoutMs;
+    this.originalCause = originalCause;
+    if (originalCause instanceof Error && originalCause.stack) {
+      this.stack = `${this.stack}\nCaused by: ${originalCause.stack}`;
+    }
   }
 }
 
@@ -33,6 +38,7 @@ export class ModelTimeoutError extends Error {
 export class AllModelsFailedError extends Error {
   public readonly attemptedModels: string[];
   public readonly underlyingErrors: Error[];
+  public readonly originalCause?: unknown;
 
   constructor(attemptedModels: string[], underlyingErrors: Error[]) {
     const errorDetails = attemptedModels
@@ -42,6 +48,7 @@ export class AllModelsFailedError extends Error {
     this.name = 'AllModelsFailedError';
     this.attemptedModels = attemptedModels;
     this.underlyingErrors = underlyingErrors;
+    this.originalCause = underlyingErrors[underlyingErrors.length - 1];
   }
 }
 

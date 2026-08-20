@@ -231,19 +231,23 @@ export class KkbotAgentRuntime {
       try {
         const routeResult = await this.intentRouter.route(message);
         candidateChain = routeResult.candidateChain;
-      } catch {
+      } catch (err: unknown) {
         if (this.llmProvider) {
+          log.debug(
+            { err: err instanceof Error ? err.message : String(err) },
+            '意图路由器未配置独立端点，回退使用默认 LLMProvider'
+          );
           candidateChain = [
             { id: 'default', name: 'Default-LLM', provider: this.llmProvider },
           ];
         } else {
           throw new LLMExecutionError(
-            '未配置有效 LLMProvider，无法执行大模型推理生成'
+            `未配置有效 LLMProvider 或意图路由失败: ${err instanceof Error ? err.message : String(err)}`,
+            err instanceof Error ? err : undefined
           );
         }
       }
     }
-
     // 4. 编译 4 层结构化 System Prompt
     let systemPrompt = options?.systemPromptOverride;
     if (!systemPrompt) {
