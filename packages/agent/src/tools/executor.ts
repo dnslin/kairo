@@ -156,10 +156,12 @@ export class ReadWriteSplitExecutor {
 
       // 2. 超时控制与真正执行
       const timeoutMs = this.options.timeoutMs;
+      let timer: NodeJS.Timeout | undefined;
+
       const executePromise = tool.execute(validatedArgs, context);
 
       const timeoutPromise = new Promise<never>((_, reject) => {
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           reject(new Error(`工具执行超时 (超过 ${timeoutMs}ms)`));
         }, timeoutMs);
         if (typeof timer.unref === 'function') {
@@ -167,7 +169,14 @@ export class ReadWriteSplitExecutor {
         }
       });
 
-      const output = await Promise.race([executePromise, timeoutPromise]);
+      let output: unknown;
+      try {
+        output = await Promise.race([executePromise, timeoutPromise]);
+      } finally {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      }
       const durationMs = Date.now() - startTime;
 
       log.debug({ callId, toolName, durationMs }, '工具执行成功');
