@@ -196,8 +196,11 @@ describe('双通道 HITL 人工在环审批端到端全链路集成测试 (E2E F
     expect(timedOutTask?.decision?.reason).toBe(
       '业务涉及敏感权限，审批超时已为您转人工客服处理'
     );
-  });
 
+    // 验证底层的 Workflow Run 状态已被自动恢复且输出 status 为 timed_out
+    const runInfo = await workflow.getWorkflowRunById(runId);
+    expect(runInfo?.status).toBe('success');
+  });
   it('场景 4 (崩溃自愈与重试恢复)：决议后未恢复的任务在进程重启 init() 时自动自愈恢复', async () => {
     // 1. 创建并启动一个挂起的 Workflow Run
     const run = await workflow.createRun();

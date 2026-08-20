@@ -17,15 +17,15 @@ import {
   type HitlWorkflow,
 } from './workflow.js';
 import { initApprovalSchema } from './schema.js';
-import { createChildLogger } from '../utils/logger.js';
 import {
   ApprovalError,
   ApprovalStateConflictError,
   ApprovalTaskNotFoundError,
+  ApprovalTimeoutError,
   ApprovalUnauthorizedError,
   WorkflowResumeError,
 } from '../utils/errors.js';
-
+import { createChildLogger } from '../utils/logger.js';
 const log = createChildLogger('approval-manager');
 
 /**
@@ -137,10 +137,12 @@ function mapRowToTask(row: Record<string, unknown>): ApprovalTask {
  * 1. 纯净 LibSQL 依赖注入：由外部注入已有的 Client 实例，严禁硬编码数据库路径；
  * 2. 深度协同 Mastra Workflow：支持从创建 run 到原生 suspend 挂起，并在决议/超时时自动 resume 恢复执行；
  * 3. 严格决议鉴权与越权拦截：仅允许指定主管、配置的管理员或自定义鉴权回调执行决议；
- * 4. 强制注入稳定幂等键执行：审批前调用次数严格为 0；批准后向底层工具传递稳定 idempotencyKey；
+ * 4. 强制注入稳定幂等键执行与 CAS 排他锁：
+ *    - 审批前调用次数严格为 0；
+ *    - 批准后必须 CAS rowsAffected===1 抢占锁后才调用底层工具并传递稳定 idempotencyKey；
  * 5. 进程重启自愈机制 (Self-Healing)：
  *    - 扫描 pending 任务：超期立即结算为 timed_out，未超期依据剩余时间重建定时器；
- *    - 扫描 unresumed 任务：利用 getWorkflowRunById 幂等探测，已处于终态直接标记，悬挂状态重试恢复。
+ *    - 扫描 unresumed 任务：利用 getWorkflowRunById 幂等探测，已处于终态直接标记，悬挂状态按幂等重试恢复。
  */
 export class ApprovalManager extends EventEmitter {
   private readonly client: Client;
@@ -295,7 +297,9 @@ export class ApprovalManager extends EventEmitter {
 
         // 2. 工具执行状态机与 Workflow 恢复严格穷举对齐 (四态穷举防分叉与防漏执行)：
         if (this.toolExecutor && task.status === 'approved') {
-          if (task.toolExecutionStatus === 'failed') {
+          if (task.toolExecutionStatus === 'succeeded') {
+            resumeDecision = { ...task.decision, approved: true };
+          } else if (task.toolExecutionStatus === 'failed') {
             resumeDecision = {
               approved: false,
               deciderId: task.decision.deciderId,
@@ -307,6 +311,7 @@ export class ApprovalManager extends EventEmitter {
             task.toolExecutionStatus === 'not_started' ||
             task.toolExecutionStatus === 'executing'
           ) {
+            // 自愈重试路径：执行前置为 executing 状态
             try {
               await this.client.execute({
                 sql: `UPDATE approval_tasks SET tool_execution_status = 'executing' WHERE id = ?`,
@@ -346,8 +351,6 @@ export class ApprovalManager extends EventEmitter {
                 decidedAt: task.decision.decidedAt,
               };
             }
-          } else if (task.toolExecutionStatus === 'succeeded') {
-            resumeDecision = { ...task.decision, approved: true };
           }
         }
 
@@ -547,7 +550,7 @@ export class ApprovalManager extends EventEmitter {
   }
 
   /**
-   * 原子消费已批准的任务执行权 (防篡改、防重放、严格互斥校验)
+   * 原子消费已批准的任务执行权 (防篡改、防重放、严格 CAS 排他锁)
    */
   public async consumeApprovedTask(
     taskId: string,
@@ -600,7 +603,7 @@ export class ApprovalManager extends EventEmitter {
       );
     }
 
-    // 5. 严格 CAS 抢占执行锁 (必须 rowsAffected === 1)
+    // 5. 严格 CAS 抢占执行锁 (强制 rowsAffected === 1)
     const claimRes = await this.client.execute({
       sql: `UPDATE approval_tasks
             SET tool_execution_status = 'executing'
@@ -679,10 +682,21 @@ export class ApprovalManager extends EventEmitter {
       throw new ApprovalUnauthorizedError(input.taskId, input.deciderId);
     }
 
+    const now = Date.now();
+
+    // 2. 真实时间截止检查 (Real-Time Expiration Guard: 杜绝事件循环延迟导致过期仍可审批)
+    if (now >= task.expiresAt) {
+      log.warn(
+        { taskId: task.id, expiresAt: task.expiresAt, now },
+        '决议时任务已超过截止时间 (定时器延迟)，立即执行超时降级结算并拒绝决议'
+      );
+      await this.timeoutTask(task.id, now);
+      throw new ApprovalTimeoutError(task.id, task.timeoutMs);
+    }
+
     // 清除超时定时器
     this.clearTimer(input.taskId);
 
-    const now = Date.now();
     const status: ApprovalStatus = input.approved ? 'approved' : 'rejected';
     const decision: ApprovalDecision = {
       approved: input.approved,
@@ -692,15 +706,20 @@ export class ApprovalManager extends EventEmitter {
       decidedAt: now,
     };
 
-    // 2. CAS 更新任务状态与决议数据
+    // 3. 严格 CAS 更新：必须满足 status='pending' 且 expires_at > now
     const updateRes = await this.client.execute({
       sql: `UPDATE approval_tasks
             SET status = ?, decision = ?, resolved_at = ?
-            WHERE id = ? AND status = 'pending'`,
-      args: [status, JSON.stringify(decision), now, input.taskId],
+            WHERE id = ? AND status = 'pending' AND expires_at > ?`,
+      args: [status, JSON.stringify(decision), now, input.taskId, now],
     });
 
     if (updateRes.rowsAffected === 0) {
+      const latestTask = await this.getTaskById(input.taskId);
+      if (latestTask && (latestTask.expiresAt <= now || latestTask.status === 'timed_out')) {
+        await this.timeoutTask(input.taskId, now);
+        throw new ApprovalTimeoutError(input.taskId, task.timeoutMs);
+      }
       throw new ApprovalStateConflictError(input.taskId, 'concurrent_modified');
     }
 
@@ -708,9 +727,8 @@ export class ApprovalManager extends EventEmitter {
     let toolExecutionResult = task.toolExecutionResult;
     let toolExecutionError: string | undefined = undefined;
 
-    // 3. 若批准执行且配置了 toolExecutor：基于 taskId 幂等键执行
+    // 3. 若批准执行且配置了 toolExecutor：基于 CAS 排他锁抢占执行
     if (input.approved && this.toolExecutor) {
-      // CAS 抢占执行锁
       const claimRes = await this.client.execute({
         sql: `UPDATE approval_tasks
               SET tool_execution_status = 'executing'
@@ -718,11 +736,12 @@ export class ApprovalManager extends EventEmitter {
         args: [task.id],
       });
 
-      if (claimRes.rowsAffected > 0 || task.toolExecutionStatus === 'executing') {
+      // 仅在 CAS 成功（rowsAffected === 1）时才调用底层工具
+      if (claimRes.rowsAffected > 0) {
         try {
           log.info(
             { taskId: task.id, toolName: task.toolName, idempotencyKey: task.id },
-            '审批批准，开始调用高危底层工具 (传递稳定 idempotencyKey)'
+            '审批批准，CAS 抢占成功，开始调用高危底层工具 (传递稳定 idempotencyKey)'
           );
           toolExecutionResult = await this.toolExecutor(
             task.toolName,
@@ -739,7 +758,7 @@ export class ApprovalManager extends EventEmitter {
           await this.client.execute({
             sql: `UPDATE approval_tasks
                   SET tool_execution_status = 'succeeded', tool_execution_result = ?
-                  WHERE id = ?`,
+                  WHERE id = ? AND tool_execution_status = 'executing'`,
             args: [safeJsonStringify(toolExecutionResult), task.id],
           });
         } catch (error) {
@@ -749,7 +768,7 @@ export class ApprovalManager extends EventEmitter {
           await this.client.execute({
             sql: `UPDATE approval_tasks
                   SET tool_execution_status = 'failed', tool_execution_error = ?
-                  WHERE id = ?`,
+                  WHERE id = ? AND tool_execution_status = 'executing'`,
             args: [err.message, task.id],
           });
           log.error(

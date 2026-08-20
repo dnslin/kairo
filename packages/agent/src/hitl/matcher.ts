@@ -3,25 +3,26 @@ import type {
   ApprovalTask,
   StatefulApprovalMatcherOptions,
 } from './types.js';
+import { formatDisambiguationPrompt } from './router.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('stateful-matcher');
 
-// 单任务明确审批动词正则 (严格限制为显式确认动词，杜绝日常口语词如 好/可以/行/没问题/ok/yes，防止误批高危操作)
+// 单任务审批意图正则 (精确匹配 Issue #94 规定的 同意/通过/准了/OK/好/批准 等)
 const SINGLE_APPROVE_REGEX =
-  /^(?:同意|通过|批准|准了|准|通过审批|同意申请)(?:\s*(?:1|一))?$/i;
+  /^(?:同意|通过|批准|准了|准|通过审批|同意申请|ok|好)(?:\s*(?:1|一))?$/i;
 const SINGLE_REJECT_REGEX =
   /^(?:拒绝|驳回|不通过|不同意|不批准|否决|拒)(?:\s*(?:1|一))?$/i;
 
-// 多任务带编号指令正则 (如 "同意 1", "批准 2", "拒绝 1", "驳回 2")
+// 多任务带编号指令正则 (如 "同意 1", "批准 2", "拒绝 1", "驳回 2", "好 1", "OK 2")
 const MULTI_APPROVE_INDEX_REGEX =
-  /^(?:同意|通过|批准|准了|准|通过审批|同意申请)\s*(\d+)$/i;
+  /^(?:同意|通过|批准|准了|准|通过审批|同意申请|ok|好)\s*(\d+)$/i;
 const MULTI_REJECT_INDEX_REGEX =
   /^(?:拒绝|驳回|不通过|不同意|不批准|否决|拒)\s*(\d+)$/i;
 
-// 多任务无编号泛化审批动词正则 (触发消歧引导)
+// 多任务无编号泛化词正则 (多任务下输入“同意/好/OK”必须触发消歧引导，绝不直接执行)
 const GENERIC_APPROVE_REGEX =
-  /^(?:同意|通过|批准|准了|准|通过审批|同意申请)$/i;
+  /^(?:同意|通过|批准|准了|准|通过审批|同意申请|ok|好)$/i;
 const GENERIC_REJECT_REGEX =
   /^(?:拒绝|驳回|不通过|不同意|不批准|否决|拒)$/i;
 
@@ -44,20 +45,6 @@ interface DisambiguationSnapshot {
 
 /**
  * 默认参数摘要生成器
- */
-function defaultFormatArgs(args: Record<string, unknown>): string {
-  const entries = Object.entries(args);
-  if (entries.length === 0) return '无参数';
-  return entries
-    .slice(0, 3)
-    .map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v}"` : JSON.stringify(v)}`)
-    .join(', ');
-}
-
-/**
- * 主管私聊窗口内的状态化自然语言与指令消歧匹配器 (StatefulApprovalMatcher)
- *
- * 核心安全特性：
  * 1. 严格显式动词匹配：只接受“同意/通过/批准/准了/拒绝/驳回/不通过/不同意”等明确审批动词，将“好/可以/行/没问题/收到”等日常对话安全放行；
  * 2. 状态化消歧快照机制 (Stateful Disambiguation Snapshot)：
  *    - 当展示多任务编号列表时，将编号 1..N 与稳定的 taskId 强绑定到主管上下文中；
@@ -102,36 +89,18 @@ export class StatefulApprovalMatcher {
     const pendingTasks = await this.approvalManager.getPendingTasksByLeaderId(
       leaderId
     );
-
-    // 1. 检查是否存在带编号的审批指令 (如 "同意 1", "拒绝 2")
-    const approveMatch = rawInput.match(MULTI_APPROVE_INDEX_REGEX);
-    const rejectMatch = rawInput.match(MULTI_REJECT_INDEX_REGEX);
-
-    const matchObj = approveMatch || rejectMatch;
-    if (matchObj && matchObj[1]) {
-      const isApprove = Boolean(approveMatch);
-      const targetIndex = parseInt(matchObj[1], 10);
-
-      return this.handleIndexedApproval(
-        leaderId,
-        targetIndex,
-        isApprove,
-        inputMessage,
-        pendingTasks
-      );
-    }
-
-    // 2. 若无待办任务，且非带编号指令，放行正常对话
+    // 1. 无待办任务，直接放行正常对话
     if (pendingTasks.length === 0) {
       return { matched: false, rawInput: inputMessage };
     }
 
-    // 3. 单笔待办任务场景 (且未输入编号)
+    // 2. 单笔待办任务场景：目标唯一确定，支持“同意”、“批准”、“同意 1”等显式动词
     if (pendingTasks.length === 1) {
       const task = pendingTasks[0];
       if (!task) {
         return { matched: false, rawInput: inputMessage };
       }
+
       if (SINGLE_APPROVE_REGEX.test(rawInput)) {
         log.info(
           { leaderId, taskId: task.id, rawInput },
@@ -163,7 +132,26 @@ export class StatefulApprovalMatcher {
       return { matched: false, rawInput: inputMessage };
     }
 
-    // 4. 多笔待办任务场景 (>= 2 笔，输入了无编号的泛化审批词)
+    // 3. 多笔待办任务场景 (>= 2 笔)
+    // 3.1 检查是否存在带编号的审批指令 (如 "同意 1", "拒绝 2")
+    const approveMatch = rawInput.match(MULTI_APPROVE_INDEX_REGEX);
+    const rejectMatch = rawInput.match(MULTI_REJECT_INDEX_REGEX);
+    const matchObj = approveMatch || rejectMatch;
+
+    if (matchObj && matchObj[1]) {
+      const isApprove = Boolean(approveMatch);
+      const targetIndex = parseInt(matchObj[1], 10);
+
+      return this.handleIndexedApproval(
+        leaderId,
+        targetIndex,
+        isApprove,
+        inputMessage,
+        pendingTasks
+      );
+    }
+
+    // 3.2 匹配无编号的泛化审批词，触发多任务消歧列表引导
     if (
       GENERIC_APPROVE_REGEX.test(rawInput) ||
       GENERIC_REJECT_REGEX.test(rawInput)
@@ -178,7 +166,7 @@ export class StatefulApprovalMatcher {
 
       const promptMessage = this.router
         ? this.router.formatDisambiguationPrompt(pendingTasks)
-        : this.formatDefaultDisambiguation(pendingTasks);
+        : formatDisambiguationPrompt(pendingTasks);
 
       return {
         matched: true,
@@ -188,7 +176,7 @@ export class StatefulApprovalMatcher {
       };
     }
 
-    // 5. 普通日常对话放行
+    // 4. 普通日常对话放行
     return { matched: false, rawInput: inputMessage };
   }
 
@@ -216,8 +204,7 @@ export class StatefulApprovalMatcher {
       this.saveDisambiguationSnapshot(leaderId, currentPendingTasks);
       const promptMessage = this.router
         ? this.router.formatDisambiguationPrompt(currentPendingTasks)
-        : this.formatDefaultDisambiguation(currentPendingTasks);
-
+        : formatDisambiguationPrompt(currentPendingTasks);
       return {
         matched: true,
         action: 'needs_disambiguation',
@@ -296,23 +283,4 @@ export class StatefulApprovalMatcher {
     this.snapshots.delete(leaderId);
   }
 
-  /**
-   * 默认多任务消歧引导提示生成器
-   */
-  private formatDefaultDisambiguation(tasks: ApprovalTask[]): string {
-    const lines = [`⚠️ 您当前有 ${tasks.length} 项待处理的审批事项：`];
-
-    tasks.forEach((task, index) => {
-      const applicant = task.applicantName ?? task.applicantId;
-      const argsSummary = defaultFormatArgs(task.toolArgs);
-      lines.push(`${index + 1}. 【${applicant}】${task.toolName} - ${argsSummary}`);
-    });
-
-    lines.push('———————————————');
-    lines.push(
-      '👉 请回复【同意 编号】或【拒绝 编号】（例如：回复「同意 1」或「拒绝 2」进行精确决议）。'
-    );
-
-    return lines.join('\n');
-  }
 }

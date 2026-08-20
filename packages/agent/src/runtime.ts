@@ -8,12 +8,15 @@ import type {
   TokenUsage,
   ToolExecutionRecord,
 } from './types/index.js';
+import { ToolRegistry } from './tools/registry.js';
+import { ReadWriteSplitExecutor } from './tools/executor.js';
+import type { ApprovalManager } from './hitl/manager.js';
+import type { LeaderApprovalRouter } from './hitl/router.js';
 import { LayeredPromptCompiler } from './prompt/compiler.js';
 import { SensitiveFilter } from './guardrails/sensitive-filter.js';
 import { ThinkingTagCleaner } from './guardrails/thinking-tag-cleaner.js';
 import { createChildLogger } from './utils/logger.js';
 import { LLMExecutionError } from './utils/errors.js';
-
 const log = createChildLogger('agent-runtime');
 
 /**
@@ -25,7 +28,10 @@ export class KkbotAgentRuntime {
   private promptCompiler: LayeredPromptCompiler;
   private sensitiveFilter: SensitiveFilter;
   private llmProvider?: LLMProvider;
-
+  private toolRegistry?: ToolRegistry;
+  private toolExecutor?: ReadWriteSplitExecutor;
+  private approvalManager?: ApprovalManager;
+  private leaderRouter?: LeaderApprovalRouter;
   constructor(config?: AgentRuntimeConfig) {
     this.promptCompiler = new LayeredPromptCompiler({
       soulPath: config?.soulPath,
@@ -40,8 +46,22 @@ export class KkbotAgentRuntime {
     });
 
     this.llmProvider = config?.llmProvider;
-  }
+    this.toolRegistry = config?.toolRegistry;
+    this.approvalManager = config?.approvalManager;
+    this.leaderRouter = config?.leaderRouter;
 
+    if (config?.toolExecutor) {
+      this.toolExecutor = config.toolExecutor;
+    } else if (config?.toolRegistry || config?.approvalManager) {
+      this.toolExecutor = new ReadWriteSplitExecutor(
+        config.toolRegistry ?? new ToolRegistry(),
+        {
+          approvalManager: config.approvalManager,
+          leaderRouter: config.leaderRouter,
+        }
+      );
+    }
+  }
   /**
    * 初始化运行时环境 (例如异步加载 soul.md 人设)
    */
@@ -54,6 +74,7 @@ export class KkbotAgentRuntime {
    */
   public async close(): Promise<void> {
     await this.promptCompiler.close();
+    await this.approvalManager?.close();
   }
 
   /**
@@ -69,6 +90,34 @@ export class KkbotAgentRuntime {
   public getSensitiveFilter(): SensitiveFilter {
     return this.sensitiveFilter;
   }
+  /**
+   * 获取工具注册中心实例
+   */
+  public getToolRegistry(): ToolRegistry | undefined {
+    return this.toolRegistry;
+  }
+
+  /**
+   * 获取工具调度执行器实例
+   */
+  public getToolExecutor(): ReadWriteSplitExecutor | undefined {
+    return this.toolExecutor;
+  }
+
+  /**
+   * 获取审批状态机管理器实例
+   */
+  public getApprovalManager(): ApprovalManager | undefined {
+    return this.approvalManager;
+  }
+
+  /**
+   * 获取主管路由解析器实例
+   */
+  public getLeaderRouter(): LeaderApprovalRouter | undefined {
+    return this.leaderRouter;
+  }
+
 
   /**
    * 设置或切换底层的 LLM Provider
@@ -141,6 +190,49 @@ export class KkbotAgentRuntime {
       | 'error'
       | (string & {}) = 'stop';
     const toolCalls: ToolExecutionRecord[] = [];
+
+    // 4. 工具调度与高危审批拦截执行 (若传入了待执行工具调用)
+    if (options?.toolCalls && options.toolCalls.length > 0 && this.toolExecutor) {
+      const batchRes = await this.toolExecutor.executeBatch(options.toolCalls, {
+        threadId,
+        senderId: message.senderId,
+        signal: options?.signal,
+        approvedTaskId: options?.approvedTaskId,
+      });
+
+      for (const r of batchRes.results) {
+        const originalReq = options.toolCalls.find(c => c.callId === r.callId);
+        toolCalls.push({
+          toolCallId: r.callId,
+          toolName: r.toolName,
+          arguments: originalReq?.args ?? {},
+          result: r.output,
+          error: r.error,
+          status: r.suspended ? 'suspended' : r.success ? 'success' : 'error',
+          approvalTaskId: r.approvalTaskId,
+          durationMs: r.durationMs,
+        });
+      }
+
+      if (batchRes.suspendedCount > 0) {
+        const suspendedTask = batchRes.results.find(r => r.suspended);
+        let taskMsg = '该操作涉及敏感权限，已为您提交审批，等待主管决议中...';
+        if (
+          suspendedTask?.output &&
+          typeof suspendedTask.output === 'object' &&
+          'message' in suspendedTask.output &&
+          typeof suspendedTask.output.message === 'string'
+        ) {
+          taskMsg = suspendedTask.output.message;
+        }
+        return {
+          content: taskMsg,
+          toolCalls,
+          finishReason: 'tool_calls',
+          aborted: false,
+        };
+      }
+    }
 
     // 4. 执行推理 (流式优先或非流式)
     const isStreamMode =

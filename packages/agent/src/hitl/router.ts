@@ -12,15 +12,37 @@ const log = createChildLogger('leader-router');
 /**
  * 格式化参数对象为可读的摘要文本
  */
-function formatArgsSummary(args: Record<string, unknown>): string {
+export function formatArgsSummary(args: Record<string, unknown>, maxKeys = 5): string {
   const entries = Object.entries(args);
   if (entries.length === 0) {
     return '无参数';
   }
   return entries
-    .slice(0, 5)
+    .slice(0, maxKeys)
     .map(([k, v]) => `${k}: ${typeof v === 'string' ? `"${v}"` : JSON.stringify(v)}`)
     .join(', ');
+}
+
+/**
+ * 生成多任务消歧引导提示文案纯函数
+ */
+export function formatDisambiguationPrompt(tasks: ApprovalTask[]): string {
+  const lines = [
+    `⚠️ 您当前有 ${tasks.length} 项待处理的审批事项：`,
+  ];
+
+  tasks.forEach((task, index) => {
+    const applicant = task.applicantName ?? task.applicantId;
+    const argsSummary = formatArgsSummary(task.toolArgs, 3);
+    lines.push(`${index + 1}. 【${applicant}】${task.toolName} - ${argsSummary}`);
+  });
+
+  lines.push('———————————————');
+  lines.push(
+    '👉 请回复【同意 编号】或【拒绝 编号】（例如：回复「同意 1」或「拒绝 2」进行精确决议）。'
+  );
+
+  return lines.join('\n');
 }
 
 /**
@@ -137,21 +159,6 @@ export class LeaderApprovalRouter {
    * 生成多任务消歧引导提示文案
    */
   public formatDisambiguationPrompt(tasks: ApprovalTask[]): string {
-    const lines = [
-      `⚠️ 您当前有 ${tasks.length} 项待处理的审批事项：`,
-    ];
-
-    tasks.forEach((task, index) => {
-      const applicant = task.applicantName ?? task.applicantId;
-      const argsSummary = formatArgsSummary(task.toolArgs);
-      lines.push(`${index + 1}. 【${applicant}】${task.toolName} - ${argsSummary}`);
-    });
-
-    lines.push('———————————————');
-    lines.push(
-      '👉 请回复【同意 编号】或【拒绝 编号】（例如：回复「同意 1」或「拒绝 2」进行精确决议）。'
-    );
-
-    return lines.join('\n');
+    return formatDisambiguationPrompt(tasks);
   }
 }

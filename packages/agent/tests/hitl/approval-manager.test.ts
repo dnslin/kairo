@@ -3,6 +3,7 @@ import { createClient, type Client } from '@libsql/client';
 import { ApprovalManager } from '../../src/hitl/manager.js';
 import {
   ApprovalStateConflictError,
+  ApprovalTimeoutError,
   ApprovalUnauthorizedError,
 } from '../../src/utils/errors.js';
 import type { CreateApprovalTaskInput } from '../../src/hitl/types.js';
@@ -282,6 +283,47 @@ describe('ApprovalManager HITL 审批状态机核心管理器', () => {
     expect(manager.getTimeoutDegradeMessage()).toBe(
       '业务涉及敏感权限，审批超时已为您转人工客服处理'
     );
+  });
+
+  it('实时截止时间锁防护：任务已过 expiresAt 但定时器未触发时决议，直接拒绝并即时结算 timed_out', async () => {
+    const now = Date.now();
+    const expiredTaskId = 'appr_realtime_expired_task';
+
+    // 写入一条 expires_at 在过去的 pending 任务 (模拟定时器发生延迟尚未触发)
+    await client.execute({
+      sql: `INSERT INTO approval_tasks (
+        id, tool_call_id, tool_name, tool_args, applicant_id, applicant_name,
+        leader_id, leader_name, thread_id, status, timeout_ms, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        expiredTaskId,
+        'call_late',
+        'delete_logs',
+        JSON.stringify({}),
+        'emp_001',
+        '张三',
+        'emp_leader_001',
+        '李主管',
+        'thread_late',
+        'pending',
+        1000,
+        now - 2000,
+        now - 500, // 500ms 前已到期
+      ],
+    });
+
+    // 主管在第 62 秒尝试决议批准
+    await expect(
+      manager.resolveTask({
+        taskId: expiredTaskId,
+        approved: true,
+        deciderId: 'emp_leader_001',
+      })
+    ).rejects.toThrow(ApprovalTimeoutError);
+
+    // 核心安全断言：任务已被即时置为 timed_out，绝不被误批
+    const settledTask = await manager.getTaskById(expiredTaskId);
+    expect(settledTask?.status).toBe('timed_out');
   });
 
   describe('进程重启自愈机制 (Self-Healing Recovery)', () => {

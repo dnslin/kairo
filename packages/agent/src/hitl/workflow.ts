@@ -99,10 +99,18 @@ export function createApprovalStep() {
         });
       }
 
-      // 2. 携带 resumeData 时恢复执行
-      const status = resumeData.approved
-        ? ('approved' as const)
-        : ('rejected' as const);
+      // 2. 携带 resumeData 时恢复执行，支持 approved / rejected / timed_out 精确状态映射
+      let status: 'approved' | 'rejected' | 'timed_out';
+      if (resumeData.approved) {
+        status = 'approved';
+      } else if (
+        resumeData.deciderId === 'system_timeout' ||
+        resumeData.reason?.includes('超时')
+      ) {
+        status = 'timed_out';
+      } else {
+        status = 'rejected';
+      }
       const toolCallId = inputData?.toolCallId ?? suspendData?.toolCallId ?? '';
       const toolName = inputData?.toolName ?? suspendData?.toolName ?? '';
       const toolArgs = inputData?.toolArgs ?? suspendData?.toolArgs ?? {};

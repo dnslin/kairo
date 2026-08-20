@@ -28,14 +28,20 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
     const res1 = await matcher.match('emp_leader_1', '同意');
     expect(res1.matched).toBe(false);
 
-    const res2 = await matcher.match('emp_leader_1', '拒绝');
+    const res2 = await matcher.match('emp_leader_1', '好');
     expect(res2.matched).toBe(false);
 
-    const res3 = await matcher.match('emp_leader_1', '你好，今天下午有空吗？');
+    const res3 = await matcher.match('emp_leader_1', 'OK');
     expect(res3.matched).toBe(false);
+
+    const res4 = await matcher.match('emp_leader_1', '拒绝');
+    expect(res4.matched).toBe(false);
+
+    const res5 = await matcher.match('emp_leader_1', '你好，今天下午有空吗？');
+    expect(res5.matched).toBe(false);
   });
 
-  describe('单笔待办任务匹配', () => {
+  describe('单笔待办任务匹配 (Issue #94 规范精确覆盖)', () => {
     let taskId: string;
 
     beforeEach(async () => {
@@ -51,15 +57,22 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
       taskId = task.id;
     });
 
-    it('只支持单笔待办的显式审批动词同意表达', async () => {
+    it('单笔待办精准匹配 Issue #94 规定的显式同意词：同意/通过/准了/OK/好/批准/同意 1 等', async () => {
       const approvePhrases = [
         '同意',
         '通过',
         '准了',
         '准',
+        'OK',
+        'ok',
+        '好',
         '批准',
         '通过审批',
         '同意申请',
+        '同意 1',
+        '批准 1',
+        '好 1',
+        'OK 1',
       ];
 
       for (const phrase of approvePhrases) {
@@ -70,7 +83,7 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
       }
     });
 
-    it('只支持单笔待办的显式审批动词拒绝表达', async () => {
+    it('单笔待办精准匹配显式拒绝词：拒绝/驳回/不通过/不同意/不批准/否决/拒/拒绝 1 等', async () => {
       const rejectPhrases = [
         '拒绝',
         '驳回',
@@ -79,6 +92,8 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
         '不批准',
         '否决',
         '拒',
+        '拒绝 1',
+        '驳回 1',
       ];
 
       for (const phrase of rejectPhrases) {
@@ -89,22 +104,23 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
       }
     });
 
-    it('严禁将日常口语词 (好/可以/行/没问题/ok/yes/收到) 误判为审批同意', async () => {
+    it('严禁将日常口语应答词 (可以/行/没问题/yes/收到/好的/不行/no) 误判为审批 (matched: false)', async () => {
       const casualConversations = [
-        '好',
-        '好的',
         '可以',
         '行',
         '没问题',
-        'ok',
-        'OK',
         'yes',
         'Yes',
         '收到',
+        '好的',
         '好的收到',
+        '不行',
+        'no',
+        'NO',
         '稍等我看一下代码',
         '这个需求背景是什么？',
-        '明天再讨论',
+        '明天再讨论方案',
+        '今天晚上聚餐吗',
       ];
 
       for (const phrase of casualConversations) {
@@ -154,16 +170,19 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
       task3Id = task3.id;
     });
 
-    it('多笔待办下仅回复泛化动词“同意”触发消歧引导并绑定快照', async () => {
-      const res = await matcher.match('emp_leader_1', '同意');
+    it('多笔待办下回复泛化词（同意/好/OK/驳回）绝不直接执行，必须触发消歧引导 (needs_disambiguation)', async () => {
+      const genericPhrases = ['同意', '好', 'OK', 'ok', '通过', '批准', '驳回', '拒绝'];
 
-      expect(res.matched).toBe(true);
-      expect(res.action).toBe('needs_disambiguation');
-      expect(res.task).toBeUndefined();
-      expect(res.promptMessage).toContain('当前有 3 项待处理的审批事项');
-      expect(res.promptMessage).toContain('1. 【张三】grant_user_permission');
-      expect(res.promptMessage).toContain('2. 【李四】export_database_table');
-      expect(res.promptMessage).toContain('3. 【王五】delete_backup_archive');
+      for (const phrase of genericPhrases) {
+        const res = await matcher.match('emp_leader_1', phrase);
+        expect(res.matched).toBe(true);
+        expect(res.action).toBe('needs_disambiguation');
+        expect(res.task).toBeUndefined();
+        expect(res.promptMessage).toContain('当前有 3 项待处理的审批事项');
+        expect(res.promptMessage).toContain('1. 【张三】grant_user_permission');
+        expect(res.promptMessage).toContain('2. 【李四】export_database_table');
+        expect(res.promptMessage).toContain('3. 【王五】delete_backup_archive');
+      }
     });
 
     it('状态化消歧保障：当第 1 项被外部处理后，回复“同意 2”依然准确指向任务 2，绝不错批任务 3', async () => {
@@ -213,15 +232,12 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
     });
 
     it('Fail-Closed 安全保障场景 1：新建 Matcher (模拟进程重启) 收到“同意 2”，必须重新提示列表且绝不返回 task', async () => {
-      // 新建 Matcher 实例模拟重启后内存快照丢失
       const freshMatcher = new StatefulApprovalMatcher({ approvalManager: manager });
 
-      // 主管直接回复“同意 2”
       const res = await freshMatcher.match('emp_leader_1', '同意 2');
 
       expect(res.matched).toBe(true);
       expect(res.action).toBe('needs_disambiguation');
-      // 核心断言：必须 Fail-Closed，绝不猜测索引返回 task
       expect(res.task).toBeUndefined();
       expect(res.promptMessage).toContain('未检测到有效的审批待办上下文');
       expect(res.promptMessage).toContain('已为您重新生成最新待办列表');
@@ -229,7 +245,6 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
     });
 
     it('Fail-Closed 安全保障场景 2：TTL 过期后收到“同意 2”，必须重新提示列表且绝不返回 task', async () => {
-      // 创建快照 TTL 极短 (10ms) 的 Matcher
       const ttlMatcher = new StatefulApprovalMatcher({
         approvalManager: manager,
         snapshotTtlMs: 10,
@@ -246,13 +261,11 @@ describe('StatefulApprovalMatcher 主管私聊自然语言与多任务消歧匹�
 
       expect(res.matched).toBe(true);
       expect(res.action).toBe('needs_disambiguation');
-      // 核心断言：快照过期后必须 Fail-Closed 绝不执行返回 task
       expect(res.task).toBeUndefined();
       expect(res.promptMessage).toContain('未检测到有效的审批待办上下文');
     });
 
     it('带无效或越界编号时返回消歧错误提示 (disambiguation_error)', async () => {
-      // 先建立快照
       await matcher.match('emp_leader_1', '同意');
 
       const res1 = await matcher.match('emp_leader_1', '同意 5');
