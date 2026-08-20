@@ -26,6 +26,14 @@ export {
   parseFormattedTextToKK,
 } from './dom/rich-text.js';
 export { DEFAULT_SELECTORS, resolveSelectors } from './dom/selectors.js';
+export {
+  CARD_THEMES,
+  DEFAULT_RENDER_OPTIONS,
+  buildCanvasCardScript,
+  calculateCardLayout,
+  renderCardToBase64,
+  resolveCardTheme,
+} from './canvas/renderer.js';
 export { DriverError, CdpError, DomError, SendError } from './utils/errors.js';
 export { logger, createChildLogger } from './utils/logger.js';
 
@@ -57,4 +65,20 @@ export type {
   SendOptions,
   SendFileOptions,
   DriverEvents,
+  CardThemeType,
+  CardThemeCustom,
+  CardTheme,
+  CardTagVariant,
+  CardTag,
+  CardHeader,
+  CardFieldVariant,
+  CardFieldSpan,
+  CardField,
+  CardActionVariant,
+  CardAction,
+  CardFooter,
+  CardData,
+  RenderCanvasOptions,
+  ResolvedCardTheme,
+  CardLayoutResult,
 } from './types/index.js';

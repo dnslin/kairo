@@ -295,3 +295,22 @@ export interface DriverEvents {
  * 原生事件桥事件契约（与 DriverEvents 100% 同构）
  */
 export type EventBridgeEvents = DriverEvents;
+
+export type {
+  CardThemeType,
+  CardThemeCustom,
+  CardTheme,
+  CardTagVariant,
+  CardTag,
+  CardHeader,
+  CardFieldVariant,
+  CardFieldSpan,
+  CardField,
+  CardActionVariant,
+  CardAction,
+  CardFooter,
+  CardData,
+  RenderCanvasOptions,
+  ResolvedCardTheme,
+  CardLayoutResult,
+} from './card.js';
