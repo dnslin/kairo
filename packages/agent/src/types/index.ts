@@ -284,3 +284,14 @@ export interface AgentRuntimeConfig {
   /** 底层 LLM Provider 实现 */
   llmProvider?: LLMProvider;
 }
+
+export type {
+  L1MessageWindow,
+  L2WorkingSummary,
+  L3ColleagueProfile,
+  MemoryConfig,
+  MemoryContextOptions,
+  MemoryContextResult,
+  SaveMemoryMessageInput,
+  UpdateColleagueProfileInput,
+} from '../memory/types.js';

@@ -103,3 +103,10 @@ export class StepLimitExceededError extends AgentError {
     this.currentStep = currentStep;
   }
 }
+
+export class MemoryError extends AgentError {
+  constructor(message: string, originalCause?: Error) {
+    super(message, 'MEMORY_ERROR', originalCause);
+    this.name = 'MemoryError';
+  }
+}
