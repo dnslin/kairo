@@ -1,5 +1,3 @@
-import type { SendOptions } from './index.js';
-
 /**
  * @kkbot/driver 视觉卡片 (Canvas Card) 强类型系统
  */
@@ -395,9 +393,3 @@ export interface DecisionCardParams {
   /** 底部提示说明 (若未提供，将自动生成带有截止时间与选项回复指导的提示) */
   footer?: CardFooter | string;
 }
-
-/**
- * 视觉卡片发送选项配置
- * 融合 Canvas 渲染配置 (RenderCanvasOptions) 与消息发送选项 (SendOptions)
- */
-export interface SendCardOptions extends RenderCanvasOptions, SendOptions {}
