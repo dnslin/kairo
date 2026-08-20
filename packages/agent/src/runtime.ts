@@ -14,7 +14,10 @@ import { SensitiveFilter } from './guardrails/sensitive-filter.js';
 import { ThinkingTagCleaner } from './guardrails/thinking-tag-cleaner.js';
 import { MultiModalRouter } from './multimodal/router.js';
 import { IntentModelRouter } from './routing/intent-router.js';
-import { ModelFailoverManager } from './routing/failover.js';
+import {
+  AllModelsFailedError,
+  ModelFailoverManager,
+} from './routing/failover.js';
 import { FallbackHandler } from './routing/fallback.js';
 import { createChildLogger } from './utils/logger.js';
 import { LLMExecutionError } from './utils/errors.js';
@@ -374,26 +377,7 @@ export class KkbotAgentRuntime {
           );
         }
 
-        if (
-          err instanceof Error &&
-          (err.name === 'InboundSecurityBlockedError' ||
-            err.message.includes('INBOUND_SECURITY_BLOCKED'))
-        ) {
-          return {
-            content:
-              '抱歉，多模态附件内容触发了企业安全合规策略，已被系统拦截。请通过正常业务流程咨询。',
-            toolCalls: [],
-            finishReason: 'stop',
-            aborted: false,
-          };
-        }
-
-        log.error({ threadId, err }, '所有模型执行流式生成均失败，触发全局安抚兜底');
-        return await this.fallbackHandler.handle(
-          threadId,
-          message,
-          err instanceof Error ? err : new Error(String(err))
-        );
+        return await this.handleExecutionError(threadId, message, err);
       }
     } else {
       // 阻塞标准调用
@@ -421,26 +405,7 @@ export class KkbotAgentRuntime {
           return this.createAbortResult('', '', [], usage);
         }
 
-        if (
-          err instanceof Error &&
-          (err.name === 'InboundSecurityBlockedError' ||
-            err.message.includes('INBOUND_SECURITY_BLOCKED'))
-        ) {
-          return {
-            content:
-              '抱歉，多模态附件内容触发了企业安全合规策略，已被系统拦截。请通过正常业务流程咨询。',
-            toolCalls: [],
-            finishReason: 'stop',
-            aborted: false,
-          };
-        }
-
-        log.error({ threadId, err }, '所有模型执行阻塞生成均失败，触发全局安抚兜底');
-        return await this.fallbackHandler.handle(
-          threadId,
-          message,
-          err instanceof Error ? err : new Error(String(err))
-        );
+        return await this.handleExecutionError(threadId, message, err);
       }
     }
 
@@ -486,5 +451,40 @@ export class KkbotAgentRuntime {
       finishReason: 'abort',
       aborted: true,
     };
+  }
+  /**
+   * 统一异常分支处置 (区分合规拦截、全网宕机安抚与底层执行异常)
+   */
+  private async handleExecutionError(
+    threadId: string,
+    message: ConsolidatedMessage,
+    err: unknown
+  ): Promise<AgentReplyResult> {
+    if (
+      err instanceof Error &&
+      (err.name === 'InboundSecurityBlockedError' ||
+        err.message.includes('INBOUND_SECURITY_BLOCKED'))
+    ) {
+      return {
+        content:
+          '抱歉，多模态附件内容触发了企业安全合规策略，已被系统拦截。请通过正常业务流程咨询。',
+        toolCalls: [],
+        finishReason: 'stop',
+        aborted: false,
+      };
+    }
+
+    if (err instanceof AllModelsFailedError) {
+      log.error(
+        { threadId, err: err.message },
+        '所有可用模型调用均已失败，触发全局宕机安抚兜底'
+      );
+      return await this.fallbackHandler.handle(threadId, message, err);
+    }
+
+    throw new LLMExecutionError(
+      `大模型推理调用异常: ${err instanceof Error ? err.message : String(err)}`,
+      err instanceof Error ? err : undefined
+    );
   }
 }

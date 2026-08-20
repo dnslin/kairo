@@ -19,11 +19,11 @@ const FAST_CHITCHAT_KEYWORDS = [
   '您好',
   '在吗',
   '在么',
-  '早',
   '早安',
   '早上好',
   '下午好',
   '晚上好',
+  '早啊',
   '嗨',
   'hi',
   'hello',
@@ -37,7 +37,6 @@ const FAST_CHITCHAT_KEYWORDS = [
   'ok',
   '了解',
   '明白',
-  '行',
   '再见',
   '拜拜',
 ];
@@ -68,7 +67,7 @@ const FAST_ORG_QUERY_KEYWORDS = [
  * 深度推理意图关键词 (代码排错、长文档对比、故障分析、多步决策)
  */
 const DEEP_REASONING_KEYWORDS = [
-  // 代码与排错
+  // 代码排错、算法实现与代码编写生成
   '报错',
   'typeerror',
   'nullpointer',
@@ -80,6 +79,27 @@ const DEEP_REASONING_KEYWORDS = [
   '排查异常',
   '优化算法',
   '代码审查',
+  '代码编写',
+  '编写代码',
+  '写代码',
+  '写脚本',
+  '编写脚本',
+  '写一个脚本',
+  '写一段代码',
+  '写一个函数',
+  '写一个方法',
+  '写一个',
+  '写一段',
+  '编写一个',
+  '编写一段',
+  '脚本',
+  '算法',
+  '并发',
+  '多线程',
+  '生成代码',
+  '实现一个',
+  '实现一段',
+  '实现算法',
   '死锁',
   '内存泄漏',
   'cpu 飙高',
@@ -269,21 +289,25 @@ export class IntentModelRouter {
       : /\[(?:文件|附件)\]|收到文件/i.test(content);
 
     const hasMultiModal = hasImages || hasFileCards;
-    // 检查是否为极速问候/闲聊
+
+    // 检查是否包含深度推理/排错/代码编写/对比关键词
+    const hasReasoningKeywords = DEEP_REASONING_KEYWORDS.some((kw) =>
+      lower.includes(kw)
+    );
+
+    // 检查是否为极速问候/闲聊 (若命中了代码编写或深度推理关键词，则优先判定为深度推理任务)
     const isChitchat =
       charCount < 50 &&
+      !hasReasoningKeywords &&
+      !hasCode &&
       FAST_CHITCHAT_KEYWORDS.some((kw) => lower.includes(kw));
 
     // 检查是否为员工/工位/电话查询
     const isOrgQuery =
       charCount < 60 &&
+      !hasReasoningKeywords &&
+      !hasCode &&
       FAST_ORG_QUERY_KEYWORDS.some((kw) => lower.includes(kw));
-
-    // 检查是否包含深度推理/排错/对比关键词
-    const hasReasoningKeywords = DEEP_REASONING_KEYWORDS.some((kw) =>
-      lower.includes(kw)
-    );
-
     return {
       content,
       rawMessage,
@@ -345,14 +369,17 @@ export class IntentModelRouter {
       matchedKeywords.push('code_block');
     }
 
-    // 收集命中的深度推理关键词
+    // 收集命中的深度推理关键词 (如代码编写、算法、排错、故障分析等)
+    let deepKeywordCount = 0;
     for (const kw of DEEP_REASONING_KEYWORDS) {
       if (lower.includes(kw)) {
         matchedKeywords.push(kw);
-        complexityScore += 25;
+        deepKeywordCount++;
       }
     }
-
+    if (deepKeywordCount > 0) {
+      complexityScore += 40 + (deepKeywordCount - 1) * 15;
+    }
     // 文本超长增加复杂度
     if (features.charCount > this.longTextThreshold) {
       complexityScore += 30;

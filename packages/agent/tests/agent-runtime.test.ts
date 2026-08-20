@@ -522,5 +522,23 @@ describe('KkbotAgentRuntime', () => {
       expect(res.finishReason).toBe('stop');
       expect(res.aborted).toBe(false);
     });
+
+    it('当模型遭遇 401/400 等不可重试客户端配置异常时，严禁掩盖为网络繁忙话术，应向外抛出 LLMExecutionError', async () => {
+      const authFailedLLM: LLMProvider = {
+        chat() {
+          const err = new Error('401 Unauthorized: Invalid API Key');
+          Object.assign(err, { status: 401 });
+          return Promise.reject(err);
+        },
+      };
+
+      const runtime = new KkbotAgentRuntime({
+        fastModel: { id: 'fast', name: 'Fast', provider: authFailedLLM },
+      });
+
+      await expect(
+        runtime.execute('session_123', createMockMessage('你好'))
+      ).rejects.toThrowError('401 Unauthorized');
+    });
   });
 });

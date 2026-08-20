@@ -52,6 +52,7 @@ export class AllModelsFailedError extends Error {
 export class ModelFailoverManager {
   private defaultTimeoutMs: number;
   private defaultRetryStatusCodes: number[];
+  private maxRetries?: number;
   private onFailoverCallback?: (event: FailoverEvent) => void;
 
   constructor(options?: FailoverOptions) {
@@ -59,6 +60,7 @@ export class ModelFailoverManager {
     this.defaultRetryStatusCodes = options?.retryStatusCodes ?? [
       503, 429, 500, 502, 504,
     ];
+    this.maxRetries = options?.maxRetries;
     this.onFailoverCallback = options?.onFailover;
   }
 
@@ -149,6 +151,44 @@ export class ModelFailoverManager {
   }
 
   /**
+   * 统一触发 Failover 报警日志与审计回调
+   */
+  private notifyFailover(
+    currentModel: ModelEndpointConfig,
+    nextModel: ModelEndpointConfig | undefined,
+    error: Error,
+    attempt: number,
+    mode: '阻塞' | '流式'
+  ): void {
+    if (nextModel) {
+      log.warn(
+        {
+          failedModel: currentModel.name,
+          nextModel: nextModel.name,
+          attempt,
+          err: error.message,
+          mode,
+        },
+        `${mode}模型调用异常，触发 Failover 故障转移`
+      );
+
+      if (this.onFailoverCallback) {
+        try {
+          this.onFailoverCallback({
+            fromModel: currentModel.name,
+            toModel: nextModel.name,
+            error,
+            attempt,
+            timestamp: Date.now(),
+          });
+        } catch (callbackErr) {
+          log.warn({ callbackErr }, 'Failover 回调函数执行异常');
+        }
+      }
+    }
+  }
+
+  /**
    * 带超时保护的阻塞对话生成执行
    */
   public async executeChatWithTimeout(
@@ -233,10 +273,15 @@ export class ModelFailoverManager {
       throw new Error('Failover 候选模型链为空');
     }
 
+    const maxAttempts =
+      typeof this.maxRetries === 'number'
+        ? Math.min(candidateChain.length, this.maxRetries + 1)
+        : candidateChain.length;
+
     const attemptedModels: string[] = [];
     const underlyingErrors: Error[] = [];
 
-    for (let i = 0; i < candidateChain.length; i++) {
+    for (let i = 0; i < maxAttempts; i++) {
       const currentModel = candidateChain[i]!;
       attemptedModels.push(currentModel.name);
 
@@ -267,7 +312,6 @@ export class ModelFailoverManager {
         const error = err instanceof Error ? err : new Error(String(err));
         underlyingErrors.push(error);
 
-        // 如果是外部主动打断或入站安全拦截，严禁 Failover 重试，直接向外抛出
         // 如果是外部主动打断、入站安全拦截或不可重试错误 (如 400/401)，严禁 Failover 重试，直接向外抛出
         if (
           options?.signal?.aborted ||
@@ -278,31 +322,9 @@ export class ModelFailoverManager {
         ) {
           throw error;
         }
-        const nextModel = candidateChain[i + 1];
-        log.warn(
-          {
-            failedModel: currentModel.name,
-            nextModel: nextModel?.name ?? '无',
-            attempt: i + 1,
-            err: error.message,
-          },
-          '模型调用异常，触发 Failover 故障转移'
-        );
 
-        // 触发 Failover 事件回调
-        if (this.onFailoverCallback) {
-          try {
-            this.onFailoverCallback({
-              fromModel: currentModel.name,
-              toModel: nextModel?.name,
-              error,
-              attempt: i + 1,
-              timestamp: Date.now(),
-            });
-          } catch (callbackErr) {
-            log.warn({ callbackErr }, 'Failover 回调函数执行异常');
-          }
-        }
+        const nextModel = i + 1 < maxAttempts ? candidateChain[i + 1] : undefined;
+        this.notifyFailover(currentModel, nextModel, error, i + 1, '阻塞');
       }
     }
 
@@ -328,10 +350,15 @@ export class ModelFailoverManager {
       throw new Error('Failover 候选模型链为空');
     }
 
+    const maxAttempts =
+      typeof this.maxRetries === 'number'
+        ? Math.min(candidateChain.length, this.maxRetries + 1)
+        : candidateChain.length;
+
     const attemptedModels: string[] = [];
     const underlyingErrors: Error[] = [];
 
-    for (let i = 0; i < candidateChain.length; i++) {
+    for (let i = 0; i < maxAttempts; i++) {
       const currentModel = candidateChain[i]!;
       attemptedModels.push(currentModel.name);
 
@@ -421,6 +448,7 @@ export class ModelFailoverManager {
         ) {
           throw error;
         }
+
         // 核心安全契约：若已经产出了部分 Token，严禁切换到备用模型重复生成完整回复
         if (hasYieldedAny) {
           log.error(
@@ -433,30 +461,8 @@ export class ModelFailoverManager {
         // 仅在首个 chunk 产出前允许 Failover 故障转移
         underlyingErrors.push(error);
 
-        const nextModel = candidateChain[i + 1];
-        log.warn(
-          {
-            failedModel: currentModel.name,
-            nextModel: nextModel?.name ?? '无',
-            attempt: i + 1,
-            err: error.message,
-          },
-          '流式模型首个 Chunk 产出前发生异常，尝试 Failover 故障转移'
-        );
-
-        if (this.onFailoverCallback) {
-          try {
-            this.onFailoverCallback({
-              fromModel: currentModel.name,
-              toModel: nextModel?.name,
-              error,
-              attempt: i + 1,
-              timestamp: Date.now(),
-            });
-          } catch (callbackErr) {
-            log.warn({ callbackErr }, 'Failover 回调函数执行异常');
-          }
-        }
+        const nextModel = i + 1 < maxAttempts ? candidateChain[i + 1] : undefined;
+        this.notifyFailover(currentModel, nextModel, error, i + 1, '流式');
       } finally {
         clearTimeout(timer);
         if (options?.signal) {

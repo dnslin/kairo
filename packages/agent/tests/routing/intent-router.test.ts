@@ -73,6 +73,22 @@ describe('IntentModelRouter 动态意图分流测试 (FAST vs DEEP)', () => {
     }
   });
 
+  it('纯自然语言代码编写与算法实现任务应分流至 DEEP 深度推理模型', async () => {
+    const codeGenQueries = [
+      '请帮我写一个 Python 脚本处理 CSV 文件',
+      '请编写代码实现一个快速排序算法',
+      '帮我写一个函数计算两个日期的工作日差值',
+      '实现一段并发控制逻辑，限制最大请求数为 5',
+    ];
+    for (const query of codeGenQueries) {
+      const result = await router.classify(query);
+      expect(result.intentLevel).toBe('DEEP');
+
+      const routeResult = await router.route(query);
+      expect(routeResult.selectedModel.id).toBe('deep-model-r1');
+    }
+  });
+
   it('长文档方案对比、故障复盘与架构多步规划应分流至 DEEP 深度推理模型', async () => {
     const complexQueries = [
       '请对比方案 A 与方案 B 的优劣势，并给出技术选型建议',
