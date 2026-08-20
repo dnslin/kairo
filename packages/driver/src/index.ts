@@ -34,6 +34,12 @@ export {
   renderCardToBase64,
   resolveCardTheme,
 } from './canvas/renderer.js';
+export {
+  createAlertCard,
+  createApprovalCard,
+  createDecisionCard,
+  createReportCard,
+} from './canvas/templates.js';
 export { DriverError, CdpError, DomError, SendError } from './utils/errors.js';
 export { logger, createChildLogger } from './utils/logger.js';
 
@@ -81,4 +87,14 @@ export type {
   RenderCanvasOptions,
   ResolvedCardTheme,
   CardLayoutResult,
+  ApprovalRiskLevel,
+  ApprovalCardParams,
+  AlertSeverity,
+  AlertMetric,
+  AlertCardParams,
+  ReportStatus,
+  ReportMetric,
+  ReportCardParams,
+  DecisionOption,
+  DecisionCardParams,
 } from './types/index.js';
