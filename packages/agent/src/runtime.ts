@@ -67,6 +67,7 @@ export class KkbotAgentRuntime {
    */
   public async init(): Promise<void> {
     await this.promptCompiler.init();
+    await this.approvalManager?.init();
   }
 
   /**

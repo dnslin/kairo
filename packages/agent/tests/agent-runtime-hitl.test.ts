@@ -22,8 +22,6 @@ describe('KkbotAgentRuntime 核心智能微内核 HITL 高危工具拦截与执�
       client,
       defaultTimeoutMs: 60000,
     });
-    await approvalManager.init();
-
     leaderRouter = new LeaderApprovalRouter({
       orgRepository: {
         async getEmployeeById(id) {

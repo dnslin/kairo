@@ -99,14 +99,11 @@ export function createApprovalStep() {
         });
       }
 
-      // 2. 携带 resumeData 时恢复执行，支持 approved / rejected / timed_out 精确状态映射
+      // 2. 携带 resumeData 时恢复执行：严格基于 deciderId === 'system_timeout' 识别系统超时降级
       let status: 'approved' | 'rejected' | 'timed_out';
       if (resumeData.approved) {
         status = 'approved';
-      } else if (
-        resumeData.deciderId === 'system_timeout' ||
-        resumeData.reason?.includes('超时')
-      ) {
+      } else if (resumeData.deciderId === 'system_timeout') {
         status = 'timed_out';
       } else {
         status = 'rejected';

@@ -109,7 +109,7 @@ describe('Mastra HITL Workflow 原生挂起与恢复流', () => {
       approved: false,
       deciderId: 'emp_leader_1',
       deciderName: '李主管',
-      reason: '权限过高，驳回申请',
+      reason: '该操作在业务高峰期存在严重超时风险，主管明确驳回',
       decidedAt: Date.now(),
     };
 
@@ -121,8 +121,59 @@ describe('Mastra HITL Workflow 原生挂起与恢复流', () => {
 
     expect(resumeResult.status).toBe('success');
     expect(resumeResult.result.approved).toBe(false);
+    // 核心断言：即使理由包含“超时”字眼，主管明确驳回依然严格映射为 rejected
     expect(resumeResult.result.status).toBe('rejected');
-    expect(resumeResult.result.decision?.reason).toBe('权限过高，驳回申请');
+    expect(resumeResult.result.decision?.reason).toContain('存在严重超时风险');
+
+    client.close();
+  });
+
+  it('工作流在收到系统超时降级决议后成功恢复并返回 status: timed_out', async () => {
+    const client = createClient({ url: ':memory:' });
+    const storage = createHitlStorage(client);
+    await storage.init();
+
+    const workflow = createHitlWorkflow();
+    const mastra = new Mastra({
+      storage,
+      workflows: {
+        hitlWorkflow: workflow,
+      },
+    });
+
+    const wf = mastra.getWorkflow('hitlWorkflow');
+    const run = await wf.createRun();
+
+    await run.start({
+      inputData: {
+        toolCallId: 'call_wf_timeout',
+        toolName: 'emergency_reboot_cluster',
+        toolArgs: { clusterId: 'k8s-prod' },
+        applicantId: 'emp_001',
+        leaderId: 'emp_leader_1',
+        threadId: 'session_wf_3',
+        timeoutMs: 60000,
+      },
+    });
+
+    const timeoutDecision: ApprovalDecision = {
+      approved: false,
+      deciderId: 'system_timeout',
+      reason: '业务涉及敏感权限，审批超时已为您转人工客服处理',
+      decidedAt: Date.now(),
+    };
+
+    const resumeResult = await resumeApprovalWorkflow(wf, {
+      runId: run.runId,
+      stepId: APPROVAL_STEP_ID,
+      decision: timeoutDecision,
+    });
+
+    expect(resumeResult.status).toBe('success');
+    expect(resumeResult.result.approved).toBe(false);
+    // 核心断言：系统超时降级精准映射为 timed_out
+    expect(resumeResult.result.status).toBe('timed_out');
+    expect(resumeResult.result.decision?.deciderId).toBe('system_timeout');
 
     client.close();
   });
