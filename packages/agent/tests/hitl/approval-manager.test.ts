@@ -371,5 +371,47 @@ describe('ApprovalManager HITL 审批状态机核心管理器', () => {
 
       await newManager.close();
     });
+
+    it('场景 C：配置了返回 void/undefined 的 toolExecutor 时，批准与自愈恢复均能安全持久化 succeeded 状态', async () => {
+      let voidRanCount = 0;
+      const voidToolManager = new ApprovalManager({
+        client,
+        toolExecutor: async () => {
+          await Promise.resolve();
+          voidRanCount++;
+          return undefined; // 明确返回 undefined (void 工具)
+        },
+      });
+
+      await voidToolManager.init();
+
+      const task = await voidToolManager.createTask({
+        toolCallId: 'call_void_manager',
+        toolName: 'clean_expired_tokens',
+        toolArgs: { force: true },
+        applicantId: 'emp_001',
+        leaderId: 'emp_leader_001',
+        threadId: 'thread_void',
+      });
+
+      // 主管批准
+      const resolvedTask = await voidToolManager.resolveTask({
+        taskId: task.id,
+        approved: true,
+        deciderId: 'emp_leader_001',
+      });
+
+      expect(resolvedTask.status).toBe('approved');
+      expect(resolvedTask.toolExecutionStatus).toBe('succeeded');
+      expect(resolvedTask.toolExecutionResult).toBeUndefined();
+      expect(voidRanCount).toBe(1);
+
+      // 验证数据库查库
+      const dbTask = await voidToolManager.getTaskById(task.id);
+      expect(dbTask?.toolExecutionStatus).toBe('succeeded');
+      expect(dbTask?.toolExecutionResult).toBeUndefined();
+
+      await voidToolManager.close();
+    });
   });
 });

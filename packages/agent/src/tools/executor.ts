@@ -332,17 +332,23 @@ export class ReadWriteSplitExecutor {
 
       const output = await Promise.race([executePromise, timeoutPromise]);
 
-      // 若经由 approvedTaskId 授权执行成功，持久化执行结果
+      // 若经由 approvedTaskId 授权执行成功，持久化执行结果 (隔离审计异常，绝不把已成功的副作用误报为失败)
       if (context?.approvedTaskId && this.options.approvalManager) {
-        await this.options.approvalManager.recordToolExecutionResult(
-          context.approvedTaskId,
-          output
-        );
+        try {
+          await this.options.approvalManager.recordToolExecutionResult(
+            context.approvedTaskId,
+            output
+          );
+        } catch (auditErr) {
+          log.error(
+            { auditErr, taskId: context.approvedTaskId, toolName },
+            '高危工具已成功产生副作用，但审计结果持久化异常'
+          );
+        }
       }
 
       const durationMs = Date.now() - startTime;
       log.debug({ callId, toolName, durationMs, readOnly: isReadOnly }, '工具单次执行成功');
-
       return {
         callId,
         toolName,

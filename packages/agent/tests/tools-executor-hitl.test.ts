@@ -300,6 +300,71 @@ describe('ToolExecutor 高危工具审批拦截与零信任防篡改防重放验
     expect(concurrentExec.error).toContain('正在由其他进程执行中');
     expect(mockDangerousExecute).toHaveBeenCalledTimes(0);
   });
+  it('安全处理 void / undefined 返回值的高危工具，成功执行并持久化 succeeded 状态', async () => {
+    let voidSideEffectRan = false;
+
+    const voidTool = createAgentTool({
+      id: 'purge_cache_all',
+      description: '清除所有缓存 (返回 void)',
+      inputSchema: z.object({ scope: z.string() }),
+      readOnly: false,
+      requireApproval: true,
+      execute: async (_input) => {
+        await Promise.resolve();
+        voidSideEffectRan = true;
+        // 明确返回 undefined (void 函数标准行为)
+        return undefined;
+      },
+    });
+
+    registry.register(voidTool);
+
+    // 1. 挂起拦截
+    const suspendRes = await executor.executeSingle(
+      {
+        callId: 'call_void_1',
+        toolName: 'purge_cache_all',
+        args: { scope: 'all' },
+      },
+      {
+        senderId: 'emp_001',
+        threadId: 'session_1',
+      }
+    );
+
+    const taskId = suspendRes.approvalTaskId!;
+    expect(voidSideEffectRan).toBe(false);
+
+    // 2. 主管批准
+    await manager.resolveTask({
+      taskId,
+      approved: true,
+      deciderId: 'leader_1',
+    });
+
+    // 3. 执行工具 (返回 void)
+    const execRes = await executor.executeSingle(
+      {
+        callId: 'call_void_resume',
+        toolName: 'purge_cache_all',
+        args: { scope: 'all' },
+      },
+      {
+        senderId: 'emp_001',
+        threadId: 'session_1',
+        approvedTaskId: taskId,
+      }
+    );
+
+    expect(execRes.success).toBe(true);
+    expect(execRes.output).toBeUndefined();
+    expect(voidSideEffectRan).toBe(true);
+
+    // 核心安全断言：数据库中任务状态为 succeeded，绝不因 JSON.stringify(undefined) 崩溃误标 failed
+    const task = await manager.getTaskById(taskId);
+    expect(task?.toolExecutionStatus).toBe('succeeded');
+  });
+
 
   it('超时主动 AbortSignal 级联取消：工具超时时收到 signal.aborted，绝不滞后产生副作用', async () => {
     let sideEffectOccurred = false;

@@ -29,6 +29,41 @@ import {
 const log = createChildLogger('approval-manager');
 
 /**
+ * 安全的 JSON 字符串化工具函数 (针对 void / undefined / 不可序列化对象安全兜底)
+ */
+export function safeJsonStringify(value: unknown): string {
+  if (value === undefined) {
+    return JSON.stringify({ __type: 'void', value: null });
+  }
+  try {
+    const serialized = JSON.stringify(value);
+    return serialized !== undefined
+      ? serialized
+      : JSON.stringify({ __type: 'undefined_fallback', value: null });
+  } catch {
+    return JSON.stringify({
+      __type: 'unserializable_fallback',
+      value: null,
+    });
+  }
+}
+
+/**
+ * 解析数据库持久化的工具执行结果
+ */
+function parseStoredToolResult(stored: string): unknown {
+  try {
+    const parsed = JSON.parse(stored) as { __type?: string };
+    if (parsed && typeof parsed === 'object' && parsed.__type === 'void') {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return stored;
+  }
+}
+
+/**
  * 数据库行数据映射为强类型 ApprovalTask 实体
  */
 function mapRowToTask(row: Record<string, unknown>): ApprovalTask {
@@ -57,11 +92,7 @@ function mapRowToTask(row: Record<string, unknown>): ApprovalTask {
     typeof row.tool_execution_result === 'string' &&
     row.tool_execution_result.trim() !== ''
   ) {
-    try {
-      toolExecutionResult = JSON.parse(row.tool_execution_result);
-    } catch {
-      toolExecutionResult = row.tool_execution_result;
-    }
+    toolExecutionResult = parseStoredToolResult(row.tool_execution_result);
   }
 
   return {
@@ -296,7 +327,7 @@ export class ApprovalManager extends EventEmitter {
 
               await this.client.execute({
                 sql: `UPDATE approval_tasks SET tool_execution_status = 'succeeded', tool_execution_result = ? WHERE id = ?`,
-                args: [JSON.stringify(execRes), task.id],
+                args: [safeJsonStringify(execRes), task.id],
               });
 
               resumeDecision = { ...task.decision, approved: true };
@@ -591,11 +622,12 @@ export class ApprovalManager extends EventEmitter {
     taskId: string,
     result: unknown
   ): Promise<void> {
+    const serialized = safeJsonStringify(result);
     await this.client.execute({
       sql: `UPDATE approval_tasks
             SET tool_execution_status = 'succeeded', tool_execution_result = ?
             WHERE id = ? AND tool_execution_status = 'executing'`,
-      args: [JSON.stringify(result), taskId],
+      args: [serialized, taskId],
     });
   }
 
@@ -708,7 +740,7 @@ export class ApprovalManager extends EventEmitter {
             sql: `UPDATE approval_tasks
                   SET tool_execution_status = 'succeeded', tool_execution_result = ?
                   WHERE id = ?`,
-            args: [JSON.stringify(toolExecutionResult), task.id],
+            args: [safeJsonStringify(toolExecutionResult), task.id],
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
