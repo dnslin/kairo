@@ -8,7 +8,7 @@ const log = createChildLogger('tool-registry');
 
 /**
  * 创建 KKBot Agent 工具定义工厂函数
- * 底层基于 Mastra createTool 驱动，赋予 Zod Schema 强类型约束与 readOnly 读写分流元数据
+ * 底层基于 Mastra createTool 驱动，赋予 Zod Schema 强类型约束、readOnly 读写分流与 requireApproval 审批元数据
  */
 export function createAgentTool<TInput = unknown, TOutput = unknown>(config: {
   id: string;
@@ -16,12 +16,14 @@ export function createAgentTool<TInput = unknown, TOutput = unknown>(config: {
   inputSchema: z.ZodType<TInput>;
   outputSchema?: z.ZodType<TOutput>;
   readOnly?: boolean;
+  requireApproval?: boolean;
   execute: (input: TInput, context?: ToolExecutionContext) => Promise<TOutput>;
   metadata?: Record<string, unknown>;
 }): AgentTool<TInput, TOutput> {
   const readOnly = config.readOnly ?? false;
+  const requireApproval = config.requireApproval ?? false;
 
-  // 构造底层 Mastra 原生 Tool 实例
+  // 构造底层 Mastra 原生 Tool 实例，同步传递 requireApproval
   let mastraTool: Tool<TInput, TOutput> | undefined;
   try {
     mastraTool = createTool({
@@ -29,6 +31,7 @@ export function createAgentTool<TInput = unknown, TOutput = unknown>(config: {
       description: config.description,
       inputSchema: config.inputSchema,
       outputSchema: config.outputSchema,
+      requireApproval,
       execute: async (inputData) => {
         return config.execute(inputData);
       },
@@ -43,6 +46,7 @@ export function createAgentTool<TInput = unknown, TOutput = unknown>(config: {
     inputSchema: config.inputSchema,
     outputSchema: config.outputSchema,
     readOnly,
+    requireApproval,
     execute: config.execute,
     mastraTool,
     metadata: config.metadata,
@@ -59,7 +63,7 @@ export class ToolRegistry {
   /**
    * 注册一个工具到注册中心
    * @param tool Agent 工具实体
-   * @param options 注册配置选项 (如 override 覆盖或显式指定 readOnly)
+   * @param options 注册配置选项 (如 override 覆盖或显式指定 readOnly/requireApproval)
    */
   public register<TIn = unknown, TOut = unknown>(
     tool: AgentTool<TIn, TOut>,
@@ -84,15 +88,35 @@ export class ToolRegistry {
 
     if (!options) {
       this.tools.set(toolId, tool as unknown as AgentTool<unknown, unknown>);
-      log.debug({ toolId, readOnly: tool.readOnly }, '成功注册工具到注册中心');
+      log.debug({ toolId, readOnly: tool.readOnly, requireApproval: tool.requireApproval }, '成功注册工具到注册中心');
       return;
     }
 
     const effectiveReadOnly = options.readOnly !== undefined ? options.readOnly : tool.readOnly;
+    const effectiveRequireApproval =
+      options.requireApproval !== undefined ? options.requireApproval : Boolean(tool.requireApproval);
     const effectiveMetadata = {
       ...(tool.metadata ?? {}),
       ...(options.metadata ?? {}),
     };
+
+    let effectiveMastraTool = tool.mastraTool as Tool<unknown, unknown> | undefined;
+    if (options.requireApproval !== undefined || !effectiveMastraTool) {
+      try {
+        effectiveMastraTool = createTool({
+          id: toolId,
+          description: tool.description,
+          inputSchema: tool.inputSchema as z.ZodType<unknown>,
+          outputSchema: tool.outputSchema as z.ZodType<unknown> | undefined,
+          requireApproval: effectiveRequireApproval,
+          execute: async (inputData) => {
+            return tool.execute(inputData as TIn);
+          },
+        });
+      } catch (err) {
+        log.warn({ toolId, err }, '构造覆盖后的 Mastra Tool 实例发生告警');
+      }
+    }
 
     const registeredTool: AgentTool<unknown, unknown> = {
       id: toolId,
@@ -100,17 +124,19 @@ export class ToolRegistry {
       inputSchema: tool.inputSchema as z.ZodType<unknown>,
       outputSchema: tool.outputSchema as z.ZodType<unknown> | undefined,
       readOnly: effectiveReadOnly,
+      requireApproval: effectiveRequireApproval,
       execute: (input: unknown, ctx?: ToolExecutionContext) => tool.execute(input as TIn, ctx),
-      mastraTool: tool.mastraTool as Tool<unknown, unknown> | undefined,
+      mastraTool: effectiveMastraTool,
       metadata: Object.keys(effectiveMetadata).length > 0 ? effectiveMetadata : undefined,
     };
 
     this.tools.set(toolId, registeredTool);
     log.debug(
-      { toolId, readOnly: effectiveReadOnly },
+      { toolId, readOnly: effectiveReadOnly, requireApproval: effectiveRequireApproval },
       '成功注册工具到注册中心'
     );
   }
+
   /**
    * 按工具名称注销工具
    * @param id 工具 ID
@@ -119,7 +145,7 @@ export class ToolRegistry {
   public unregister(id: string): boolean {
     const deleted = this.tools.delete(id.trim());
     if (deleted) {
-      log.debug({ toolId: id }, '成功从注册中心注销工具');
+      log.debug({ toolId: id }, '已注销工具');
     }
     return deleted;
   }
@@ -177,7 +203,7 @@ export class ToolRegistry {
   }
 
   /**
-   * 将当前所有工具导出为 Mastra 原生 Tool 字典 (供 Mastra Agent 绑定)
+   * 将当前所有工具导出为 Mastra 原生 Tool 字典 (供 Mastra Agent 绑定，确保 requireApproval 同步)
    */
   public toMastraTools(): Record<string, Tool<unknown, unknown>> {
     const result: Record<string, Tool<unknown, unknown>> = {};
@@ -190,6 +216,7 @@ export class ToolRegistry {
           description: tool.description,
           inputSchema: tool.inputSchema,
           outputSchema: tool.outputSchema,
+          requireApproval: Boolean(tool.requireApproval),
           execute: async (inputData) => {
             return tool.execute(inputData);
           },

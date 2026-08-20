@@ -1,4 +1,6 @@
 import type { KK9Message, KK9SessionType } from '@kkbot/driver';
+import type { ToolRegistry, ReadWriteSplitExecutor, ToolCallRequest } from '../tools/index.js';
+import type { ApprovalManager, LeaderApprovalRouter } from '../hitl/index.js';
 import type {
   MultiModalContentPart,
   MultiModalRouterOptions,
@@ -106,6 +108,10 @@ export interface ToolExecutionRecord {
   result?: unknown;
   /** 工具执行异常信息 (若有) */
   error?: string;
+  /** 工具执行状态 */
+  status?: 'success' | 'error' | 'suspended';
+  /** 关联生成的审批任务 ID (若挂起) */
+  approvalTaskId?: string;
   /** 工具调用耗时 (毫秒) */
   durationMs?: number;
 }
@@ -156,6 +162,10 @@ export interface AgentExecuteOptions {
   temperature?: number;
   /** 最大输出 Token 数 */
   maxTokens?: number;
+  /** 待执行的工具调用请求集 */
+  toolCalls?: ToolCallRequest[];
+  /** 关联的已审批任务 ID (用于高危工具授权放行) */
+  approvedTaskId?: string;
 }
 
 /**
@@ -303,6 +313,14 @@ export interface AgentRuntimeConfig {
   sensitivePatterns?: RegExp[];
   /** 底层默认 LLM Provider 实现 (向后兼容) */
   llmProvider?: LLMProvider;
+  /** 工具注册中心实例 */
+  toolRegistry?: ToolRegistry;
+  /** 读写分流工具执行调度器实例 */
+  toolExecutor?: ReadWriteSplitExecutor;
+  /** HITL 审批状态机管理器实例 */
+  approvalManager?: ApprovalManager;
+  /** 主管路由解析器实例 */
+  leaderRouter?: LeaderApprovalRouter;
   /** 极速轻量模型端点 (FAST) */
   fastModel?: ModelEndpointConfig | LLMProvider;
   /** 深度推理模型端点 (DEEP) */

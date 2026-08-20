@@ -9,6 +9,10 @@ import type {
   TokenUsage,
   ToolExecutionRecord,
 } from './types/index.js';
+import { ToolRegistry } from './tools/registry.js';
+import { ReadWriteSplitExecutor } from './tools/executor.js';
+import type { ApprovalManager } from './hitl/manager.js';
+import type { LeaderApprovalRouter } from './hitl/router.js';
 import { LayeredPromptCompiler } from './prompt/compiler.js';
 import { SensitiveFilter } from './guardrails/sensitive-filter.js';
 import { ThinkingTagCleaner } from './guardrails/thinking-tag-cleaner.js';
@@ -21,7 +25,6 @@ import {
 import { FallbackHandler } from './routing/fallback.js';
 import { createChildLogger } from './utils/logger.js';
 import { LLMExecutionError } from './utils/errors.js';
-
 const log = createChildLogger('agent-runtime');
 
 /**
@@ -37,7 +40,10 @@ export class KkbotAgentRuntime {
   private failoverManager: ModelFailoverManager;
   private fallbackHandler: FallbackHandler;
   private llmProvider?: LLMProvider;
-
+  private toolRegistry?: ToolRegistry;
+  private toolExecutor?: ReadWriteSplitExecutor;
+  private approvalManager?: ApprovalManager;
+  private leaderRouter?: LeaderApprovalRouter;
   constructor(config?: AgentRuntimeConfig) {
     this.promptCompiler = new LayeredPromptCompiler({
       soulPath: config?.soulPath,
@@ -81,13 +87,28 @@ export class KkbotAgentRuntime {
     }
 
     this.llmProvider = config?.llmProvider;
-  }
+    this.toolRegistry = config?.toolRegistry;
+    this.approvalManager = config?.approvalManager;
+    this.leaderRouter = config?.leaderRouter;
 
+    if (config?.toolExecutor) {
+      this.toolExecutor = config.toolExecutor;
+    } else if (config?.toolRegistry || config?.approvalManager) {
+      this.toolExecutor = new ReadWriteSplitExecutor(
+        config.toolRegistry ?? new ToolRegistry(),
+        {
+          approvalManager: config.approvalManager,
+          leaderRouter: config.leaderRouter,
+        }
+      );
+    }
+  }
   /**
    * 初始化运行时环境 (例如异步加载 soul.md 人设)
    */
   public async init(): Promise<void> {
     await this.promptCompiler.init();
+    await this.approvalManager?.init();
   }
 
   /**
@@ -95,6 +116,7 @@ export class KkbotAgentRuntime {
    */
   public async close(): Promise<void> {
     await this.promptCompiler.close();
+    await this.approvalManager?.close();
   }
 
   /**
@@ -110,6 +132,34 @@ export class KkbotAgentRuntime {
   public getSensitiveFilter(): SensitiveFilter {
     return this.sensitiveFilter;
   }
+  /**
+   * 获取工具注册中心实例
+   */
+  public getToolRegistry(): ToolRegistry | undefined {
+    return this.toolRegistry;
+  }
+
+  /**
+   * 获取工具调度执行器实例
+   */
+  public getToolExecutor(): ReadWriteSplitExecutor | undefined {
+    return this.toolExecutor;
+  }
+
+  /**
+   * 获取审批状态机管理器实例
+   */
+  public getApprovalManager(): ApprovalManager | undefined {
+    return this.approvalManager;
+  }
+
+  /**
+   * 获取主管路由解析器实例
+   */
+  public getLeaderRouter(): LeaderApprovalRouter | undefined {
+    return this.leaderRouter;
+  }
+
 
   /**
    * 获取内部多模态感知路由器
@@ -259,6 +309,8 @@ export class KkbotAgentRuntime {
       systemPrompt = promptResult.fullPrompt;
     }
 
+    const extraToolMessages: LLMMessage[] = [];
+
     // 5. 模型消息构建工厂 (按候选模型端点能力动态适配多模态或 OCR 文本增强，并二次执行安全护栏防御)
     const buildMessagesForModel = async (
       model: ModelEndpointConfig
@@ -294,6 +346,7 @@ export class KkbotAgentRuntime {
       return [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userContent },
+        ...extraToolMessages,
       ];
     };
 
@@ -308,6 +361,62 @@ export class KkbotAgentRuntime {
       | 'error'
       | (string & {}) = 'stop';
     const toolCalls: ToolExecutionRecord[] = [];
+
+    // 5. 工具调度与高危审批拦截执行 (若传入了待执行工具调用)
+    if (options?.toolCalls && options.toolCalls.length > 0 && this.toolExecutor) {
+      const batchRes = await this.toolExecutor.executeBatch(options.toolCalls, {
+        threadId,
+        senderId: message.senderId,
+        signal: options?.signal,
+        approvedTaskId: options?.approvedTaskId,
+      });
+
+      for (const r of batchRes.results) {
+        const originalReq = options.toolCalls.find(c => c.callId === r.callId);
+        const contentStr =
+          typeof r.output === 'string'
+            ? r.output
+            : JSON.stringify(r.output ?? (r.error ? { error: r.error } : {}));
+
+        // 向对话历史追加 role: 'tool' 消息，回传给 LLM ReAct 循环
+        extraToolMessages.push({
+          role: 'tool',
+          name: r.toolName,
+          toolCallId: r.callId,
+          content: contentStr,
+        });
+
+        toolCalls.push({
+          toolCallId: r.callId,
+          toolName: r.toolName,
+          arguments: originalReq?.args ?? {},
+          result: r.output,
+          error: r.error,
+          status: r.suspended ? 'suspended' : r.success ? 'success' : 'error',
+          approvalTaskId: r.approvalTaskId,
+          durationMs: r.durationMs,
+        });
+      }
+
+      if (batchRes.suspendedCount > 0) {
+        const suspendedTask = batchRes.results.find(r => r.suspended);
+        let taskMsg = '该操作涉及敏感权限，已为您提交审批，等待主管决议中...';
+        if (
+          suspendedTask?.output &&
+          typeof suspendedTask.output === 'object' &&
+          'message' in suspendedTask.output &&
+          typeof suspendedTask.output.message === 'string'
+        ) {
+          taskMsg = suspendedTask.output.message;
+        }
+        return {
+          content: taskMsg,
+          toolCalls,
+          finishReason: 'tool_calls',
+          aborted: false,
+        };
+      }
+    }
 
     // 6. 执行推理 (流式优先或阻塞模式，接入 Failover 与全局兜底)
     const isStreamMode =
