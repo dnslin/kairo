@@ -6,10 +6,12 @@ import { OrgOps } from './dom/org-ops.js';
 import { resolveSelectors } from './dom/selectors.js';
 import { SendOps } from './dom/send-ops.js';
 import { SessionOps } from './dom/session-ops.js';
+import { renderCardToBase64 as renderCanvasCard } from './canvas/renderer.js';
 import type {
   ConnectionStatus,
   DriverConfig,
   DriverEvents,
+  CardData,
   FormattedText,
   KK9Employee,
   KK9Message,
@@ -19,6 +21,7 @@ import type {
   PollingConfig,
   SelectorsConfig,
   SendFileOptions,
+  RenderCanvasOptions,
   SendOptions,
   SendResult,
 } from './types/index.js';
@@ -134,6 +137,16 @@ export class KK9Driver extends EventEmitter {
    */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     return this.sendOps.sendImage(imagePath, options);
+  }
+
+  /**
+   * 绘制 Canvas 2D 视觉卡片并返回 Base64 PNG 图片 DataURL
+   */
+  public async renderCardToBase64(
+    card: CardData,
+    options?: RenderCanvasOptions
+  ): Promise<string> {
+    return renderCanvasCard(this.cdp, card, options);
   }
 
   /**
