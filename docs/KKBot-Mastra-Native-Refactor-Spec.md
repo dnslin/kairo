@@ -84,6 +84,10 @@ KKBot 只服务 KK9 客户端，不建立通用 IM 平台抽象。
 
 KKBot 不再自行实现第二套 Agent Runtime。
 
+“Mastra 原生能力”是指最终锁定的稳定兼容版本通过受支持的公开 API 执行该能力，并由 Mastra 持有对应的运行时状态机和执行语义。仅存在同名 API、博客示例，或需要 KKBot 辅助代码自行补出状态机，不算原生满足。
+
+稳定兼容版本已经原生提供所需能力时，优先选择该版本，不在 KKBot 内复制该能力。若不存在可接受的稳定兼容版本，则将对应需求返回 Wayfinder 重新裁定、缩减、替换或删除；不得以自研 Runtime 回补。本原则不锁定具体 Mastra 版本或 Node.js 基线。
+
 ### 2.3 不研发 AgentRunner
 
 不新增 `AgentRunner`、`AgentLoopRunner` 或类似运行时。
@@ -96,14 +100,15 @@ const result = await agent.generate(/* ... */);
 // 或 agent.stream(/* ... */)
 ```
 
-项目中可以保留一个很薄的调用入口，用于：
+项目中可以保留“薄集成层”：它只连接 KK 业务边界与 Mastra 公开 API，不持有 Mastra 运行时状态机或执行语义。允许职责包括：
 
-1. 把 KK 聚合消息转换为 Agent 输入；
+1. 处理 KK 专属 I/O 和数据转换，把 KK 聚合消息转换为 Agent 输入；
 2. 创建 `requestContext`、`threadId`、`resourceId`、`traceId`；
-3. 调用 Mastra Agent；
-4. 把最终结果交给 KK 发送层。
+3. 定义和注册 KKBot 业务 Tool，并把外部上下文或决议路由给 Mastra 公开 API；
+4. 把 Mastra 事件投影为 Draft、Delivery、Approval 等 KKBot 可查询和审计的业务状态；
+5. 调用 Mastra Agent，并把最终结果交给 KK 发送层执行 KK 专属的可靠交付。
 
-该入口不能再次实现模型循环、工具循环、Memory 或 Failover。
+投影不是运行时事实源。若辅助代码自行持有或决定 Agent/模型重试循环、工具循环、第二套 Agent Memory、Memory 提交或回滚、审批挂起或恢复、调度触发、模型回退等状态转换，它就是被禁止的“自研 Runtime 回补”；即使命名为 Gateway、Coordinator、Adapter 或 Wrapper 也不改变性质。KK 专属发送重试和交付补偿不在此列，但不得反向改变 Mastra 的 Agent 执行语义。
 
 ### 2.4 单进程、单数据库、单 Mastra 实例
 
@@ -142,7 +147,9 @@ const result = await agent.generate(/* ... */);
 | Observability 与 OTel | Agent、模型、工具、Memory、Workflow 和 Token Trace | [Mastra observability](https://mastra.ai/ai-agent-observability) |
 | SensitiveDataFilter | Agent Trace 在导出前执行字段级敏感信息脱敏 | [Sensitive data redaction](https://mastra.ai/blog/introducing-sensitive-data-redaction) |
 
-约束：本表只证明 Mastra 具备相应能力，不代表可以直接复制示例代码。实施前必须锁定 Mastra 版本，并以该版本的类型定义、迁移指南和契约测试为准。
+“兼容版本”是经后续版本决策验证的一组稳定 Mastra 依赖版本。兼容性必须同时满足：所需原生能力存在并受支持；Node.js 运行时与依赖引擎约束一致；类型定义和迁移说明支持目标用法；相关离线契约实验通过。只看到 API 存在不足以判定兼容。
+
+版本选择必须优先寻找满足上述条件且原生提供能力的组合。若没有可接受组合，对应需求必须返回 Wayfinder 重新裁定，不得用 KKBot 辅助代码补成第二套 Runtime。具体 Mastra 依赖版本和 Node.js 基线由后续专门决策锁定，本节不提前指定。
 
 ---
 
@@ -1897,6 +1904,9 @@ Tool：runId + toolCallId
 
 ### KKBot 自己研发
 
+- KK 专属 I/O 和数据转换；
+- `requestContext`、`threadId`、`resourceId`、`traceId` 标识创建；
+- KKBot 业务 Tool 定义和注册；
 - KK CDP Driver；
 - KK DOM 和原生事件桥；
 - KK 消息去重与补偿；
@@ -1931,6 +1941,7 @@ Tool：runId + toolCallId
 
 > **KKBot 把 KK 的真实事件、企业上下文和业务 Tool 可靠地交给 Mastra；Mastra 完成 Agent 推理与执行；KKBot 再把已完成结果可靠地交付给 KK 用户。**
 
+边界按事实权威判断，而不是按包名或类名判断：KKBot 可以负责 KK I/O、业务数据、投影和可靠交付；Mastra 必须负责 Agent、模型、工具、Memory、Approval、Workflow、Schedule 和 Failover 的运行时状态机与执行语义。任何让 KKBot 成为这些状态转换事实权威的辅助代码，均属于禁止的自研 Runtime 回补。
 
 ---
 
