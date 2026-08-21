@@ -74,7 +74,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           },
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       const msg1 = createSampleMessage({ id: 'm1', content: '第一句话' });
       const msg2 = createSampleMessage({ id: 'm2', content: '第二句话' });
@@ -116,7 +116,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(sessionRecord).not.toBeNull();
       expect(sessionRecord?.lastMessageAt).toBeGreaterThan(0);
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('多会话防抖队列应完全物理隔离，互不干扰', async () => {
@@ -131,7 +131,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           },
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       mockDriver.emitMessage(
         createSampleMessage({ sessionId: 'session_A', id: 'mA1', content: 'A-1' })
@@ -151,7 +151,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       await vi.advanceTimersByTimeAsync(500);
       expect(consolidatedMap.has('session_B')).toBe(true);
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('maxWaitMs 超时保护：持续发送短消息时应在最大等待时间强制触发合并', async () => {
@@ -167,7 +167,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           },
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       // 每隔 800ms 发送一条消息，滑动窗口不断重置，但总时间达到 3000ms 时强制 flush
       mockDriver.emitMessage(createSampleMessage({ id: 'm1', content: '1' }));
@@ -186,7 +186,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(consolidatedList).toHaveLength(1);
       expect(consolidatedList[0]?.content).toBe('1\n2\n3\n4');
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('应正确透传群聊 @ 机器人与 @ 全体 标记', async () => {
@@ -201,7 +201,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           },
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       mockDriver.emitMessage(
         createSampleMessage({
@@ -219,7 +219,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(capturedBatch?.atMe).toBe(true);
       expect(capturedBatch?.sessionType).toBe('group');
 
-      coordinator.stop();
+      await coordinator.stop();
     });
   });
 
@@ -236,7 +236,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           },
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       await coordinator.handleInboundMessage(createSampleMessage({ id: 'm1', content: '正常消息 1' }));
       await coordinator.handleInboundMessage(createSampleMessage({ id: 'm2', content: '手误发送的敏感信息' }));
@@ -268,7 +268,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(capturedBatch?.content).toBe('正常消息 1\n正常消息 2');
       expect(capturedBatch?.messageIds).toEqual(['m1', 'm3']);
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('若防抖队列中全部消息被撤回，应静默熔断取消后续流程', async () => {
@@ -286,7 +286,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       });
       coordinator.on('recall_fused', onRecallFused);
       coordinator.on('suppressed', onSuppressed);
-      coordinator.start();
+      await coordinator.start();
 
       mockDriver.emitMessage(createSampleMessage({ id: 'msg_single', content: '发错了' }));
       expect(coordinator.getPendingQueue('session_001')).toHaveLength(1);
@@ -308,7 +308,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       // 确认从未触发合并回调
       expect(onConsolidated).not.toHaveBeenCalled();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
   });
 
@@ -324,7 +324,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         },
       });
       coordinator.on('takeover', onTakeover);
-      coordinator.start();
+      await coordinator.start();
 
       // 用户先发了一条消息进入防抖
       mockDriver.emitMessage(createSampleMessage({ id: 'u1', content: '客服您好' }));
@@ -347,7 +347,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(await store.sessions.isTakeoverActive('session_001')).toBe(true);
       expect(onTakeover).toHaveBeenCalled();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('在退避期内 Bot 应保持完全静默，新消息不放入防抖队列且不触发自动回复', async () => {
@@ -364,7 +364,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         },
       });
       coordinator.on('suppressed', onSuppressed);
-      coordinator.start();
+      await coordinator.start();
 
       // 主动开启人工退避
       await coordinator.setTakeover('session_001', 600000);
@@ -396,7 +396,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       await vi.advanceTimersByTimeAsync(1500);
       expect(onConsolidated).toHaveBeenCalledOnce();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('Bot 自身通过 coordinator.dispatchReply 发送的消息不应误触发人工退避', async () => {
@@ -409,7 +409,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         },
       });
       coordinator.on('takeover', onTakeover);
-      coordinator.start();
+      await coordinator.start();
 
       // Bot 发送消息
       const res = await coordinator.dispatchReply('session_001', '这是 Bot 的自动回复');
@@ -428,7 +428,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(onTakeover).not.toHaveBeenCalled();
       expect(await coordinator.isTakeoverActive('session_001')).toBe(false);
 
-      coordinator.stop();
+      await coordinator.stop();
     });
   });
 
@@ -441,7 +441,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           autoMarkRead: true,
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       const result = await coordinator.dispatchReply('session_001', '自动回复测试');
 
@@ -457,7 +457,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       const session = await store.sessions.getSession('session_001');
       expect(session?.lastReplyAt).toBeGreaterThan(0);
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('草稿模式 (mode: draft) 坚决保留红点，不调用 markSessionRead', async () => {
@@ -465,7 +465,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         driver: mockDriver as unknown as KK9Driver,
         store,
       });
-      coordinator.start();
+      await coordinator.start();
 
       // 初始化会话为 draft 模式
       await store.sessions.upsertSession({
@@ -485,7 +485,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(mockDriver.sendText).not.toHaveBeenCalled();
       expect(mockDriver.markSessionRead).not.toHaveBeenCalled();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('人工退避期内坚决保留红点，阻止自动发送', async () => {
@@ -493,7 +493,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         driver: mockDriver as unknown as KK9Driver,
         store,
       });
-      coordinator.start();
+      await coordinator.start();
 
       await coordinator.setTakeover('session_001', 600000);
 
@@ -505,7 +505,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(mockDriver.sendText).not.toHaveBeenCalled();
       expect(mockDriver.markSessionRead).not.toHaveBeenCalled();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('发送失败时坚决保留红点，绝不清除红点', async () => {
@@ -518,7 +518,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         driver: mockDriver as unknown as KK9Driver,
         store,
       });
-      coordinator.start();
+      await coordinator.start();
 
       const result = await coordinator.dispatchReply('session_001', '发送失败测试');
 
@@ -527,7 +527,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(result.redDotCleared).toBe(false);
       expect(mockDriver.markSessionRead).not.toHaveBeenCalled();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('配置 autoMarkRead: false 时自动回复成功后不应消除红点', async () => {
@@ -538,14 +538,14 @@ describe('SessionCoordinator 业务编排器测试', () => {
           autoMarkRead: false,
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       const result = await coordinator.dispatchReply('session_001', '不消红点回复');
       expect(result.success).toBe(true);
       expect(result.redDotCleared).toBe(false);
       expect(mockDriver.markSessionRead).not.toHaveBeenCalled();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('支持发送富文本 FormattedText 内容并正常消除红点', async () => {
@@ -553,7 +553,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         driver: mockDriver as unknown as KK9Driver,
         store,
       });
-      coordinator.start();
+      await coordinator.start();
 
       const result = await coordinator.dispatchReply('session_001', [
         { text: '加粗标题', bold: true },
@@ -565,7 +565,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(mockDriver.sendRichText).toHaveBeenCalledOnce();
       expect(mockDriver.markSessionRead).toHaveBeenCalledWith('session_001');
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('会话处于 disabled 模式时抑制入站消息与出站回复', async () => {
@@ -579,7 +579,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         },
       });
       coordinator.on('suppressed', onSuppressed);
-      coordinator.start();
+      await coordinator.start();
 
       await coordinator.setSessionMode('session_disabled', 'disabled');
       await store.sessions.upsertSession({
@@ -605,7 +605,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(result.success).toBe(false);
       expect(result.action).toBe('suppressed');
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('clearTakeover 应能手动解除退避状态并恢复正常防抖处理', async () => {
@@ -618,7 +618,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           onConsolidatedMessage: onConsolidated,
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       await coordinator.setTakeover('session_001', 600000);
       expect(await coordinator.isTakeoverActive('session_001')).toBe(true);
@@ -631,7 +631,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       await vi.advanceTimersByTimeAsync(1500);
       expect(onConsolidated).toHaveBeenCalledOnce();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
     it('onConsolidatedMessage 回调异常时应捕获并派发 error 事件', async () => {
@@ -647,7 +647,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         },
       });
       coordinator.on('error', onError);
-      coordinator.start();
+      await coordinator.start();
 
       mockDriver.emitMessage(createSampleMessage({ id: 'err_test', content: '测试报错' }));
       await vi.advanceTimersByTimeAsync(1500);
@@ -655,20 +655,20 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(onError).toHaveBeenCalledWith(expect.any(Error));
       expect(onError.mock.calls[0]?.[0]?.message).toBe('LLM 接口调用异常');
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
-    it('start 与 stop 重复调用应保持幂等性', () => {
+    it('start 与 stop 重复调用应保持幂等性', async () => {
       const coordinator = new SessionCoordinator({
         driver: mockDriver as unknown as KK9Driver,
         store,
       });
 
-      coordinator.start();
-      coordinator.start(); // 重复 start 不应重复绑定
+      await coordinator.start();
+      await coordinator.start(); // 重复 start 不应重复绑定
 
-      coordinator.stop();
-      coordinator.stop(); // 重复 stop 不应抛错
+      await coordinator.stop();
+      await coordinator.stop(); // 重复 stop 不应抛错
     });
   });
 
@@ -685,7 +685,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           },
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       mockDriver.emitMessage(createSampleMessage({ sessionId: 's1', id: 'm1', content: '1' }));
       mockDriver.emitMessage(createSampleMessage({ sessionId: 's2', id: 'm2', content: '2' }));
@@ -704,10 +704,10 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(consolidatedList[1]?.sessionId).toBe('s2');
       expect(coordinator.pendingSessionCount).toBe(0);
 
-      coordinator.stop();
+      await coordinator.stop();
     });
 
-    it('drain 应安全清空所有队列并返回消息，不触发 onConsolidatedMessage', () => {
+    it('drain 应安全清空所有队列并返回消息，不触发 onConsolidatedMessage', async () => {
       const onConsolidated = vi.fn();
       const coordinator = new SessionCoordinator({
         driver: mockDriver as unknown as KK9Driver,
@@ -717,7 +717,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
           onConsolidatedMessage: onConsolidated,
         },
       });
-      coordinator.start();
+      await coordinator.start();
 
       mockDriver.emitMessage(createSampleMessage({ sessionId: 's1', id: 'm1', content: '1' }));
       mockDriver.emitMessage(createSampleMessage({ sessionId: 's2', id: 'm2', content: '2' }));
@@ -729,7 +729,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(coordinator.pendingSessionCount).toBe(0);
       expect(onConsolidated).not.toHaveBeenCalled();
 
-      coordinator.stop();
+      await coordinator.stop();
     });
   });
 });

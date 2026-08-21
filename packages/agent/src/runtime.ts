@@ -345,6 +345,7 @@ export class KkbotAgentRuntime {
 
       return [
         { role: 'system', content: systemPrompt },
+        ...(options?.historyMessages ?? []),
         { role: 'user', content: userContent },
         ...extraToolMessages,
       ];

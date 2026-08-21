@@ -152,14 +152,15 @@ export class ApprovalManager extends EventEmitter {
     task: ApprovalTask,
     deciderId: string
   ) => boolean | Promise<boolean>;
-  private readonly toolExecutor?: (
+  private toolExecutor?: (
     toolName: string,
     toolArgs: Record<string, unknown>,
     context: {
       approvalTaskId: string;
       idempotencyKey: string;
       threadId: string;
-      applicantId: string;
+      applicantId?: string;
+      senderId?: string;
     }
   ) => Promise<unknown>;
   private readonly defaultTimeoutMs: number;
@@ -187,6 +188,25 @@ export class ApprovalManager extends EventEmitter {
       options.fallbackDegradeMessage ??
       '业务涉及敏感权限，审批超时已为您转人工客服处理';
   }
+  /**
+   * 动态设置工具执行委托函数 (用于审批通过后自动执行高危操作并回写结果)
+   */
+  public setToolExecutor(
+    executor: (
+      toolName: string,
+      toolArgs: Record<string, unknown>,
+      context: {
+        approvalTaskId: string;
+        idempotencyKey: string;
+        threadId: string;
+        applicantId?: string;
+        senderId?: string;
+      }
+    ) => Promise<unknown>
+  ): void {
+    this.toolExecutor = executor;
+  }
+
 
   /**
    * 初始化数据库 Schema 并执行进程重启自愈扫描
@@ -328,6 +348,7 @@ export class ApprovalManager extends EventEmitter {
                 idempotencyKey: task.id,
                 threadId: task.threadId,
                 applicantId: task.applicantId,
+                senderId: task.applicantId,
               });
 
               await this.client.execute({
@@ -782,6 +803,7 @@ export class ApprovalManager extends EventEmitter {
               idempotencyKey: task.id,
               threadId: task.threadId,
               applicantId: task.applicantId,
+              senderId: task.applicantId,
             }
           );
           toolExecutionStatus = 'succeeded';
