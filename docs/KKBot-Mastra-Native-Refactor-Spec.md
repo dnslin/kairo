@@ -1724,7 +1724,7 @@ sequenceDiagram
         opt 主管截止前有效拒绝
             L->>G: 拒绝
         end
-        G->>A: declineToolCall
+        Note over G,A: 以 declined 结算本次 Approval；具体协议见 #126
         A-->>G: 原 Tool Call 已拒绝，不执行 Tool
         G->>U: KK 通知已拒绝；如仍需执行须重新发起
         opt 超时拒绝
