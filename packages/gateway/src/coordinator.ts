@@ -89,6 +89,8 @@ export class SessionCoordinator extends EventEmitter {
   private readonly sessionModeMap = new Map<string, SessionMode>();
   /** 运行状态标记 */
   private isRunning = false;
+  /** 全局串行发送临界区排队锁 (防止并发跨会话发送导致会话切换串线) */
+  private sendMutex = Promise.resolve();
 
   private readonly boundHandleMessage: (msg: KK9Message) => void;
   private readonly boundHandleRecalled: (evt: KK9RecalledEvent) => void;
@@ -666,28 +668,47 @@ export class SessionCoordinator extends EventEmitter {
       return result;
     }
 
-    // 4. 自动发送模式 (auto)：执行发送与红点消除
-    let sendResult: SendResult;
-    try {
-      if (typeof replyContent === 'string') {
-        sendResult = await this.driver.sendText(replyContent, {
-          ...options,
-          targetSessionId: sessionId,
-        });
-      } else {
-        sendResult = await this.driver.sendRichText(replyContent, {
-          ...options,
-          targetSessionId: sessionId,
-        });
+    // 4. 自动发送模式 (auto)：在全局串行临界区中执行会话切换与消息发送
+    const sendResult = await this.executeWithSendLock(async () => {
+      // 4.1 会话安全切换：若目标会话不是当前活跃会话，先切换到目标会话以保证 checkPreSendState 通过
+      if (typeof this.driver.selectSession === 'function') {
+        try {
+          const current = await this.driver.getCurrentSession?.();
+          if (!current || current.id !== sessionId) {
+            log.debug(
+              { targetSessionId: sessionId, currentSessionId: current?.id },
+              '切换目标会话以执行发送'
+            );
+            await this.driver.selectSession(sessionId);
+          }
+        } catch (selErr) {
+          log.warn({ selErr, sessionId }, '切换目标会话异常，尝试继续执行发送');
+        }
       }
-    } catch (err) {
-      log.error({ sessionId, err: String(err) }, '调用 Driver 发送消息异常');
-      sendResult = {
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      };
-    }
 
+      // 4.2 执行底层消息发送
+      let res: SendResult;
+      try {
+        if (typeof replyContent === 'string') {
+          res = await this.driver.sendText(replyContent, {
+            ...options,
+            targetSessionId: sessionId,
+          });
+        } else {
+          res = await this.driver.sendRichText(replyContent, {
+            ...options,
+            targetSessionId: sessionId,
+          });
+        }
+      } catch (err) {
+        log.error({ sessionId, err: String(err) }, '调用 Driver 发送消息异常');
+        res = {
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      return res;
+    });
     // 记录 Bot 发送的消息 ID，防止自身回显触发退避
     if (sendResult.messageId) {
       this.botSentMessageIds.add(sendResult.messageId);
@@ -750,6 +771,18 @@ export class SessionCoordinator extends EventEmitter {
     this.emit('reply_dispatched', sessionId, failResult);
     return failResult;
   }
+  /**
+   * 全局串行发送临界区锁 (排队执行会话切换与发送，防止并发串线)
+   */
+  private async executeWithSendLock<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.sendMutex.then(fn, fn);
+    this.sendMutex = next.then(
+      () => {},
+      () => {}
+    );
+    return next;
+  }
+
 
   /**
    * 显式手动触发指定会话的防抖聚合
@@ -1120,9 +1153,8 @@ export class SessionCoordinator extends EventEmitter {
             if (task) {
               if (this.leaderRouter && task.leaderId) {
                 const notif = this.leaderRouter.formatApprovalNotification(task);
-                await this.driver.sendText(notif.text, {
-                  targetSessionId: task.leaderId,
-                });
+                // 统一收口至 dispatchReply 进行串行锁排队、自动会话切换与红点保留
+                await this.dispatchReply(task.leaderId, notif.text, { markRead: false });
                 this.emit('approval_notified', task.leaderId, task);
                 log.info(
                   { leaderId: task.leaderId, taskId: task.id },

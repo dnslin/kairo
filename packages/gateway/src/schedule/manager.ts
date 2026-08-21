@@ -435,6 +435,16 @@ export class ProactiveScheduleManager extends EventEmitter {
           { markRead: false }
         );
       } else if (this.driver) {
+        if (typeof this.driver.selectSession === 'function') {
+          try {
+            const cur = await this.driver.getCurrentSession?.();
+            if (!cur || cur.id !== input.targetSessionId) {
+              await this.driver.selectSession(input.targetSessionId);
+            }
+          } catch (selErr) {
+            log.warn({ selErr, targetSessionId: input.targetSessionId }, '定时推送切换目标会话异常');
+          }
+        }
         if (typeof contentToPush === 'string') {
           const sendRes = await this.driver.sendText(contentToPush, {
             targetSessionId: input.targetSessionId,
@@ -463,7 +473,6 @@ export class ProactiveScheduleManager extends EventEmitter {
       } else {
         throw new Error('未配置 dispatchReply 或 driver 实例，无法发送主动推送消息');
       }
-
       fakeSched.status = 'active';
       fakeSched.lastRunAt = Date.now();
       this.emit('executed', fakeSched, dispatchResult);

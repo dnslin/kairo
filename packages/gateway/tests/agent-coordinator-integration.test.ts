@@ -26,20 +26,39 @@ import { ProactiveScheduleManager } from '../src/schedule/index.js';
  * 模拟 KK9Driver 行为测试桩
  */
 class MockDriver extends EventEmitter {
+  public activeSessionId = 'session_emp_001';
   public markSessionRead = vi.fn().mockResolvedValue(true);
-  public sendText = vi.fn().mockImplementation((_text: string, _options?: { targetSessionId?: string }) => {
+  public selectSession = vi.fn().mockImplementation((sessionId: string) => {
+    this.activeSessionId = sessionId;
+    return Promise.resolve(true);
+  });
+  public getCurrentSession = vi.fn().mockImplementation(() => {
+    return Promise.resolve({ id: this.activeSessionId, name: this.activeSessionId, type: 'private' });
+  });
+  public sendText = vi.fn().mockImplementation((_text: string, options?: { targetSessionId?: string }) => {
+    if (options?.targetSessionId && options.targetSessionId !== this.activeSessionId) {
+      return Promise.resolve({
+        success: false,
+        error: `发送前状态校验失败: session_switched - 当前活跃会话 [${this.activeSessionId}] 与目标会话 [${options.targetSessionId}] 不一致`,
+      } as SendResult);
+    }
     return Promise.resolve({
       success: true,
       messageId: `bot_reply_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     } as SendResult);
   });
-  public sendRichText = vi.fn().mockImplementation((_text: unknown, _options?: { targetSessionId?: string }) => {
+  public sendRichText = vi.fn().mockImplementation((_text: unknown, options?: { targetSessionId?: string }) => {
+    if (options?.targetSessionId && options.targetSessionId !== this.activeSessionId) {
+      return Promise.resolve({
+        success: false,
+        error: `发送前状态校验失败: session_switched - 当前活跃会话 [${this.activeSessionId}] 与目标会话 [${options.targetSessionId}] 不一致`,
+      } as SendResult);
+    }
     return Promise.resolve({
       success: true,
       messageId: `bot_reply_rich_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     } as SendResult);
   });
-
   public emitMessage(msg: KK9Message): void {
     this.emit('message', msg);
   }
@@ -765,6 +784,27 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
 
       // 核心安全断言：群聊中的“同意”绝不被判定为主管审批决议
       expect(approvalResolved).toBe(false);
+    });
+
+    it('跨会话发送时若当前活跃会话不匹配，Coordinator 自动通过 selectSession 切换会话并安全发送', async () => {
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+      });
+      await coordinator.start();
+
+      // 模拟当前 KK9 停留在员工会话 A
+      mockDriver.activeSessionId = 'session_emp_001';
+
+      // 向主管私聊会话 B 发送跨会话消息
+      const res = await coordinator.dispatchReply('session_leader_chat', '【审批待办】请审批张三的操作');
+
+      // 验证自动触发了 selectSession 切换到 session_leader_chat
+      expect(mockDriver.selectSession).toHaveBeenCalledWith('session_leader_chat');
+      // 验证发送成功，未因会话不匹配而被 Driver checkPreSendState 拦截
+      expect(res.success).toBe(true);
+      expect(res.action).toBe('message_sent');
+      expect(mockDriver.activeSessionId).toBe('session_leader_chat');
     });
   });
 
