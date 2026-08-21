@@ -180,7 +180,7 @@ flowchart TB
     Gateway --> Driver
 ```
 
-### 3.1 主链路
+### 3.1 一对一私聊自动回复主链路
 
 ```text
 KK 原生事件
@@ -193,12 +193,14 @@ KK 原生事件
 → Delivery 持久化
 ```
 
+该主链路只适用于 `sessionType = 'private'` 的一对一私聊。`sessionType = 'group'` 的群聊消息由 Driver 捕获并标准化后，Gateway 只调用 Store 幂等写入 KK Raw Store，写入后立即结束处理，不进入上述任何下游环节。
+
 ### 3.2 模块边界
 
 | 模块 | 核心职责 | 不再负责 |
 |---|---|---|
 | `@kkbot/driver` | KK CDP、事件、DOM、发送、撤回、红点、组织读取 | Agent、Memory、知识检索、审批状态 |
-| `@kkbot/gateway` | 防抖、人工接管、撤回、中断、会话模式、审批消息路由、串行发送 | 模型调用、工具循环、历史拼装、RAG 注入 |
+| `@kkbot/gateway` | 入站消息按会话类型分流、群聊 Raw Store-only 短路、私聊防抖、人工接管、撤回、中断、会话模式、审批消息路由、串行发送 | 模型调用、工具循环、历史拼装、RAG 注入 |
 | `@kkbot/agent` | 定义 Mastra Agent、Tools、Processors、Workflows、Scorers | 自研 Runtime、自研 Provider、自研 Tool Executor |
 | `@kkbot/store` | KK 原始消息、会话、组织、资产、配额、审批和交付投影 | Mastra Memory、Mastra Workflow 内部状态 |
 | `@kkbot/knowledge` | 文档摄取、规范化、Chunk、词法/向量/Rerank 检索 | Agent Loop、KK 发送 |
@@ -410,6 +412,8 @@ packages/agent/src/memory/schema.ts
 - 自定义 L1 历史拼装；
 - 自定义 `formatContextForPrompt()`。
 
+以下映射只适用于进入 Agent 链的一对一私聊。群聊消息不创建 Mastra `threadId` 或 `resourceId`，也不写入 Mastra Memory。
+
 固定映射：
 
 ```text
@@ -432,9 +436,9 @@ Mastra resourceId = KK senderId / employeeId
 
 ---
 
-## 4.7 建立 KK 原始消息与 Mastra Memory 的同步规则
+## 4.7 建立 KK 原始消息、群聊短路与 Mastra Memory 同步规则
 
-### 外部员工消息
+### 一对一私聊外部员工消息
 
 ```text
 Driver 收到消息
@@ -444,7 +448,21 @@ Driver 收到消息
 → Mastra 写入 Thread Memory
 ```
 
-### Bot 回复
+### 群聊消息
+
+`sessionType = 'group'` 是进入 Agent 链之前的强制短路条件。无论消息是否 `@` 当前账号、`@` 全体、引用其他消息、携带附件，或来源被识别为 `external`、`operator`、`bot_echo`、`system`，处理规则均为：
+
+```text
+Driver 捕获并标准化群聊消息
+→ Gateway 调用 Store 按 (session_id, message_id) 幂等写入 KK Raw Store
+→ 写入完成后立即结束处理
+```
+
+群聊消息不得进入 Pending Bucket 或防抖，不得创建或中断 Mastra Agent Run，不得写入 Mastra Memory，不得触发 Model Tier、Processor、Tool、MCP、Knowledge 检索、Tool Approval、Workflow、Schedule、Delivery 或任何 KK 发送。群聊消息也不得触发人工接管、主动回复、自动回复、审批通知、结果通知、文件交付或其他交付链路。
+
+Raw Store 写入失败时必须保留可诊断错误并结束本次群聊处理；不得为了继续下游处理而绕过持久化，也不得把群聊升级为私聊流程。
+
+### 一对一私聊 Bot 回复
 
 ```text
 Mastra 生成回复
@@ -458,19 +476,21 @@ Mastra 生成回复
 生成结果从创建时起即由 Delivery 表达，不先创建其他未发送内容实体，也不存在转换步骤。只有 `sent` 表示用户已经收到；`generated`、`sending`、`failed`、`unknown` 和 `aborted` 的内容是否以及如何写入 Mastra Memory，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)裁定，本节不提前决定提交或补偿协议。
 
 
-### 人工操作员消息
+### 一对一私聊中的人工操作员消息
 
 - 来源识别为 `operator`；
 - 进入人工接管状态；
 - 作为真实 assistant/operator 消息同步到 Mastra Thread；
 - 不与 Bot 回显重复入库。
 
-### 撤回
+### 一对一私聊撤回
 
 - 防抖期撤回：从 Pending Bucket 删除；
 - Agent 运行中撤回：Abort 当前 Mastra Run；
 - 已进入 Memory：删除对应 Memory Message；
 - Raw Store 保留记录并标记 `is_recalled = 1`。
+
+群聊撤回只更新 Raw Store 中对应原始消息的撤回标记；不得由此创建或中断 Agent Run，也不得触发 Memory、Tool、Knowledge、Approval 或 Delivery 补偿。
 
 ---
 
@@ -738,6 +758,8 @@ approval_tasks (
 - 跨 KK 会话审批通知；
 - CDP 重连补偿。
 
+以上防抖、中断、人工接管和审批路由只适用于一对一私聊。群聊消息在 Raw Store 幂等写入后已经结束处理，不进入 `SessionCoordinator` 的这些协调状态。
+
 删除：
 
 - `memoryManager.getContext()`；
@@ -763,7 +785,7 @@ KK 继续以单条完整消息发送，不引入长文本拆包。
 
 ---
 
-## 4.15 调整新消息中断和重聚
+## 4.15 调整一对一私聊新消息中断和重聚
 
 旧方式会把旧批次消息和新消息重新拼成一个 `ConsolidatedMessage`，迁移到 Mastra Memory 后容易重复写入。
 
@@ -811,7 +833,7 @@ type KkMessageOrigin =
 - 当前账号发送，但不是 Bot 发出：`operator`；
 - 撤回和系统通知：`system`。
 
-Driver 必须派发 `operator`，由 Gateway 触发人工接管。
+Driver 必须派发 `operator`。Gateway 只对一对一私聊中的 `operator` 触发人工接管；群聊中的 `operator` 仍遵守 Raw Store-only 短路。
 
 ---
 
@@ -1620,7 +1642,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 
 ## 7. 核心运行流程
 
-## 7.1 正常消息处理
+## 7.1 入站消息按会话类型分流
 
 ```mermaid
 sequenceDiagram
@@ -1631,22 +1653,26 @@ sequenceDiagram
     participant M as Mastra Agent
 
     KK->>D: 原生消息事件
-    D->>D: normalize + origin=external
+    D->>D: normalize + sessionType + origin
     D->>G: KK9Message
-    G->>S: 幂等保存原始消息
-    G->>G: 防抖合并
-    G->>M: threadId/sessionId + resourceId/senderId
-    M->>M: Memory / Model / Tools / MCP
-    M-->>G: 最终回复
-    G->>S: delivery=generated
-    G->>D: 串行发送
-    D->>KK: sendText/sendRichText
-    KK-->>D: messageId
-    D-->>G: 发送成功
-    G->>S: delivery=sent
+    G->>S: 按 (session_id, message_id) 幂等保存原始消息
+    alt sessionType = group
+        Note over G,M: Raw Store-only，写入后立即结束
+    else sessionType = private
+        G->>G: 防抖合并
+        G->>M: threadId/sessionId + resourceId/senderId
+        M->>M: Memory / Model / Tools / MCP
+        M-->>G: 最终回复
+        G->>S: delivery=generated
+        G->>D: 串行发送
+        D->>KK: sendText/sendRichText
+        KK-->>D: messageId
+        D-->>G: 发送成功
+        G->>S: delivery=sent
+    end
 ```
 
-## 7.2 新消息到达时中断
+## 7.2 一对一私聊新消息到达时中断
 
 ```text
 Agent Run 正在执行
@@ -1658,7 +1684,7 @@ Agent Run 正在执行
 → Mastra 从 Thread Memory 读取此前上下文
 ```
 
-## 7.3 人工接管
+## 7.3 一对一私聊人工接管
 
 ```text
 Driver 捕获当前账号发出的消息
@@ -1707,7 +1733,7 @@ sequenceDiagram
 
 该时序图只表达业务交互，不指定超时扫描、持久恢复或条件更新由哪个组件或 API 完成。超时、迟到批准和并发决议统一遵循 4.12；实现边界由 #126 决定。
 
-## 7.5 知识问答
+## 7.5 一对一私聊知识问答
 
 ```text
 用户询问企业制度
@@ -1808,7 +1834,8 @@ Tool：runId + toolCallId
 - 未交付生成结果不会被当作用户已经收到；
 - `generated`、`sending`、`failed`、`unknown`、`aborted` 的 Memory 提交与补偿行为按 #129 最终协议验收；
 - 撤回消息从 Agent 上下文删除；
-- 新消息中断后不重复提交旧消息。
+- 新消息中断后不重复提交旧消息；
+- 群聊消息不创建 Thread、不写入 Memory，也不触发任何 Memory 提交或补偿。
 
 ## 9.4 HITL
 
@@ -1828,13 +1855,16 @@ Tool：runId + toolCallId
 ## 9.5 Driver 和 Gateway
 
 - 原始 Payload 能识别 external/operator/bot_echo/system；
-- operator 能真实触发接管；
+- 一对一私聊中的 operator 能真实触发接管；
 - Bot 回显不触发接管；
 - EventBridge 主链路和 Polling 补偿不会重复入库；
-- 撤回能中断当前 Run；
+- 群聊消息由所有捕获路径按 `(session_id, message_id)` 唯一约束幂等写入 Raw Store；
+- 群聊消息写入后不进入防抖、Agent Run、Model Tier、Memory、Tool/MCP、Knowledge、Approval、Workflow、Schedule、Delivery 或 KK 发送；
+- 群聊中的 `@我`、`@全体`、operator、引用和附件不会改变 Raw Store-only 边界；
+- 一对一私聊撤回能中断当前 Run；
 - 两个会话并发生成不会串发；
 - 会话切换失败时 Fail-Closed；
-- 发送失败时保留红点。
+- 发送失败时保留红点；
 - 明确的 pre-trigger failure 可以自动重试；
 - 自动重试只在前一次尝试明确 `failed` 后创建新的发送尝试；任一次尝试进入 `unknown` 后停止自动重试链；
 - 发送动作可能已触发后的超时、断线、UI 回读失败或响应丢失进入 `unknown`；
@@ -1874,10 +1904,10 @@ Tool：runId + toolCallId
 
 ## 9.8 Observability
 
-- traceId 在 Driver、Gateway、Mastra、Store 间一致；
-- runId 与审批和 Delivery 对应；
-- 并发会话上下文不串线；
-- Model、Tool、Memory、Workflow 有 Mastra Trace；
+- 进入 Agent 链的一对一私聊，其 `traceId` 在 Driver、Gateway、Mastra、Store 间一致；
+- 一对一私聊的 `runId` 与审批和 Delivery 对应；
+- 并发私聊会话上下文不串线；
+- 一对一私聊的 Model、Tool、Memory、Workflow 有 Mastra Trace；
 - API Key、Cookie、Authorization、手机号和身份证号被脱敏；
 - Token Usage 可以按用户和日期查询。
 
@@ -1903,7 +1933,8 @@ Tool：runId + toolCallId
 - Web 运维控制台；
 - 长文本消息拆包；
 - 目录式 Skill 热加载；
-- 部门级私有知识权限系统。
+- 部门级私有知识权限系统；
+- 群聊自动回复、主动回复、审批通知或任何群聊交付链路。
 
 ---
 
@@ -1918,17 +1949,18 @@ Tool：runId + toolCallId
 5. Tool Approval 的运行状态只有 Mastra 一套事实源；
 6. KKBot Store 只保存 KK 业务数据和必要投影；
 7. 未交付生成结果不会被当作用户已经收到，其 Memory 提交或补偿协议由 #129 决定；
-8. Driver 能识别真实人工操作员消息并触发接管；
+8. Driver 能识别真实人工操作员消息，并只在一对一私聊中触发接管；
 9. EventBridge、Polling 和补偿扫描具备数据库级幂等；
 10. 企业知识通过正式摄取、AST Chunk 和混合检索进入 Agent；
 11. Agent 对企业制度回答必须具备来源，没有来源时拒绝编造；
 12. 整个应用由一个 YAML、一个启动命令、一个 Bootstrapper 启动；
 13. 全系统使用一个 LibSQL 数据库和一个 Mastra 实例；
 14. Agent 内部使用 Mastra Observability，应用侧使用 UnifiedLogger；
-15. 每次消息处理都能通过 `traceId + runId + sessionId` 重建完整链路；
+15. 进入 Agent 链的一对一私聊能通过 `traceId + runId + sessionId` 重建完整链路；
 16. 所有高危写 Tool 都具备审批、权限、幂等和审计；
 17. 所有关键行为都有高层 Interface 和端到端测试；
-18. Issue #107 已关闭且全部需求完成迁移，后续只以本规格为实施依据。
+18. Issue #107 已关闭且全部需求完成迁移，后续只以本规格为实施依据；
+19. 群聊消息只幂等写入 KK Raw Store，所有 Agent、工具、知识、审批和交付下游均不会启动。
 
 ---
 
@@ -1972,9 +2004,9 @@ Tool：runId + toolCallId
 
 最终关系：
 
-> **KKBot 把 KK 的真实事件、企业上下文和业务 Tool 可靠地交给 Mastra；Mastra 完成 Agent 推理与执行；KKBot 再把已完成结果可靠地交付给 KK 用户。**
+> **KKBot 可靠捕获 KK 的真实事件；群聊事件只沉淀为 KK Raw Store 事实，获准进入 Agent 链的一对一私聊事件、企业上下文和业务 Tool 才交给 Mastra；Mastra 完成 Agent 推理与执行后，KKBot 再把已完成结果可靠地交付给 KK 私聊用户。**
 
-边界按事实权威判断，而不是按包名或类名判断：KKBot 可以负责 KK I/O、业务数据、投影和可靠交付；Mastra 必须负责 Agent、模型、工具、Memory、Approval、Workflow、Schedule 和 Failover 的运行时状态机与执行语义。任何让 KKBot 成为这些状态转换事实权威的辅助代码，均属于禁止的自研 Runtime 回补。
+边界按事实权威判断，而不是按包名或类名判断：KKBot 可以负责 KK I/O、业务数据、群聊 Raw Store-only 短路、投影和可靠交付；Mastra 必须负责获准进入 Agent 链后的 Agent、模型、工具、Memory、Approval、Workflow、Schedule 和 Failover 运行时状态机与执行语义。任何让 KKBot 成为这些状态转换事实权威的辅助代码，均属于禁止的自研 Runtime 回补；任何让群聊越过 Raw Store 短路进入这些状态机或交付链的实现，同样违反本规格。
 
 ---
 
