@@ -22,3 +22,10 @@ export {
   type GenerateFileDeliverableOutput,
   type GenerateFileDeliverableOptions,
 } from './generate-file-deliverable.js';
+export {
+  createRegisterProactiveScheduleTool,
+  RegisterProactiveScheduleInputSchema,
+  type RegisterProactiveScheduleInput,
+  type RegisterProactiveScheduleOutput,
+  type ProactiveScheduleManagerLike,
+} from './register-proactive-schedule.js';

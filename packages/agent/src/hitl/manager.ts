@@ -152,7 +152,7 @@ export class ApprovalManager extends EventEmitter {
     task: ApprovalTask,
     deciderId: string
   ) => boolean | Promise<boolean>;
-  private readonly toolExecutor?: (
+  private toolExecutor?: (
     toolName: string,
     toolArgs: Record<string, unknown>,
     context: {
@@ -187,6 +187,25 @@ export class ApprovalManager extends EventEmitter {
       options.fallbackDegradeMessage ??
       '业务涉及敏感权限，审批超时已为您转人工客服处理';
   }
+  /**
+   * 动态设置工具执行委托函数 (用于审批通过后自动执行高危操作并回写结果)
+   */
+  public setToolExecutor(
+    executor: (
+      toolName: string,
+      toolArgs: Record<string, unknown>,
+      context: {
+        approvalTaskId: string;
+        idempotencyKey: string;
+        threadId: string;
+        applicantId?: string;
+        senderId?: string;
+      }
+    ) => Promise<unknown>
+  ): void {
+    this.toolExecutor = executor;
+  }
+
 
   /**
    * 初始化数据库 Schema 并执行进程重启自愈扫描
@@ -329,7 +348,6 @@ export class ApprovalManager extends EventEmitter {
                 threadId: task.threadId,
                 applicantId: task.applicantId,
               });
-
               await this.client.execute({
                 sql: `UPDATE approval_tasks SET tool_execution_status = 'succeeded', tool_execution_result = ? WHERE id = ?`,
                 args: [safeJsonStringify(execRes), task.id],

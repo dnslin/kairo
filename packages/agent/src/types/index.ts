@@ -152,13 +152,14 @@ export interface AgentExecuteOptions {
   employeeContext?: EmployeeOrgContext;
   /** 覆盖默认 System Prompt */
   systemPromptOverride?: string;
+  /** L1 会话历史消息列表 (按 user/assistant 角色插入在 system 之后、当前 user 之前) */
+  historyMessages?: LLMMessage[];
   /** 检索与知识事实列表 (用于 Layer 4 防幻觉依据) */
   retrievedFacts?: string[] | string;
   /** 自定义 OCR 识别引擎 */
   ocrEngine?: OcrEngine;
   /** 强制指定意图推理级别 (跳过意图分类器自动判断) */
   intentLevelOverride?: ModelIntentLevel;
-  /** 模型温度 */
   temperature?: number;
   /** 最大输出 Token 数 */
   maxTokens?: number;
@@ -265,25 +266,45 @@ export interface LLMStreamChunk {
   /** Token 消耗 (通常在最后一个 chunk 提供) */
   usage?: TokenUsage;
 }
+/**
+ * 结构化 LLM Function Tool 契约定义 (OpenAI / Anthropic 兼容 JSON Schema)
+ */
+export interface LLMToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    readOnly?: boolean;
+    requireApproval?: boolean;
+  };
+}
 
 /**
  * LLM 客户端抽象接口 (支持离线测试 Mock 与真实模型接入)
  */
 export interface LLMProvider {
-  /** 完整对话生成 */
+  /** 完整对话生成 (支持工具定义与 Tool Calls 输出) */
   chat(
     messages: LLMMessage[],
     options?: {
       signal?: AbortSignal;
       temperature?: number;
       maxTokens?: number;
+      tools?: LLMToolDefinition[];
     }
   ): Promise<{
     content: string;
     usage?: TokenUsage;
     finishReason?: string;
+    toolCalls?: Array<{
+      id?: string;
+      callId?: string;
+      name: string;
+      arguments?: Record<string, unknown>;
+      args?: Record<string, unknown>;
+    }>;
   }>;
-
   /** 流式对话生成 */
   chatStream?(
     messages: LLMMessage[],

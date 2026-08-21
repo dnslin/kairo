@@ -68,7 +68,7 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
         },
       },
     });
-    coordinator.start();
+    await coordinator.start();
 
     // 1. 用户连发 2 条消息
     mockDriver.emitMessage(createMsg({ id: 'm1', content: '您好，在吗？' }));
@@ -95,7 +95,7 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
     const history = await store.messages.getSessionHistory('session_e2e');
     expect(history.length).toBeGreaterThanOrEqual(3); // 2 条入站 + 1 条回复
 
-    coordinator.stop();
+    await coordinator.stop();
   });
 
   it('全链路撤回熔断：入站消息 -> 防抖期撤回 -> 队列清空 -> 静默熔断 -> 无 LLM 消耗与零发送', async () => {
@@ -109,7 +109,7 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
         onConsolidatedMessage: handleConsolidated,
       },
     });
-    coordinator.start();
+    await coordinator.start();
 
     // 1. 用户发了一条错发消息
     mockDriver.emitMessage(createMsg({ id: 'wrong_msg_1', content: '发错了别看' }));
@@ -135,7 +135,7 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
     const cleanHistory = await store.messages.getSessionHistory('session_e2e');
     expect(cleanHistory).toHaveLength(0);
 
-    coordinator.stop();
+    await coordinator.stop();
   });
 
   it('全链路人机协同：人类介入 -> 触发 10 分钟退避 -> 后续消息自动静默且坚决保留红点', async () => {
@@ -154,7 +154,7 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
         },
       },
     });
-    coordinator.start();
+    await coordinator.start();
 
     // 1. 人类操作员在客户端回复客户
     await coordinator.handleInboundMessage(
@@ -179,6 +179,6 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
     expect(mockDriver.sendText).not.toHaveBeenCalled();
     expect(mockDriver.markSessionRead).not.toHaveBeenCalled();
 
-    coordinator.stop();
+    await coordinator.stop();
   });
 });

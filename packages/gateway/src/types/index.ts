@@ -1,5 +1,24 @@
-import type { KK9Message, KK9SessionType, SendOptions } from '@kkbot/driver';
-import type { SessionMode } from '@kkbot/store';
+import type {
+  FormattedText,
+  KK9Driver,
+  KK9Message,
+  KK9SessionType,
+  SendOptions,
+} from '@kkbot/driver';
+import type { KKBotStore, SessionMode } from '@kkbot/store';
+import type {
+  AgentMemoryManager,
+  AgentReplyResult,
+  ApprovalManager,
+  ApprovalTask,
+  KkbotAgentRuntime,
+  LeaderApprovalRouter,
+  StatefulApprovalMatcher,
+} from '@kkbot/agent';
+import type {
+  ProactiveSchedule,
+  ProactiveScheduleManager,
+} from '../schedule/index.js';
 
 /**
  * 防抖合并后的聚合消息上下文实体
@@ -54,6 +73,22 @@ export interface CoordinatorDispatchResult {
 }
 
 /**
+ * 在途生成会话实体 (In-flight Lock)
+ */
+export interface InFlightSession {
+  /** 会话 ID */
+  sessionId: string;
+  /** 用于 50ms 瞬时切断的中断控制器 */
+  abortController: AbortController;
+  /** 开始生成时间戳 */
+  startedAt: number;
+  /** 当前处理的聚合消息快照 */
+  message: ConsolidatedMessage;
+  /** 关联的异步生成 Promise */
+  promise?: Promise<void | CoordinatorDispatchResult>;
+}
+
+/**
  * Coordinator 初始化配置选项
  */
 export interface CoordinatorConfig {
@@ -65,10 +100,41 @@ export interface CoordinatorConfig {
   takeoverDurationMs?: number;
   /** 自动回复成功后是否自动显式清除视觉红点，默认 true */
   autoMarkRead?: boolean;
-  /** 聚合消息触发回调处理函数 */
+  /** 是否启用主管 IM 私聊 HITL 跨会话审批拦截路由，默认 true */
+  enableHitlRouter?: boolean;
+  /** 聚合消息触发自定义回调处理函数 */
   onConsolidatedMessage?: (
     message: ConsolidatedMessage
   ) => Promise<void | CoordinatorDispatchResult> | void;
+  /** 知识库检索回调函数 (可选，用于在 Agent 执行前检索相关知识切片注入 Layer 4 事实层) */
+  knowledgeRetriever?: (
+    query: string,
+    sessionId: string
+  ) => Promise<string[] | undefined> | string[] | undefined;
+}
+
+/**
+ * SessionCoordinator 装配选项
+ */
+export interface SessionCoordinatorOptions {
+  /** 底层事件驱动 CDP 驱动器 */
+  driver: KK9Driver;
+  /** 统一持久化存储中枢 (注入单库 LibSQL 实例) */
+  store: KKBotStore;
+  /** 认知微内核 Runtime (可选) */
+  agentRuntime?: KkbotAgentRuntime;
+  /** 3-Tier 记忆管理器 (可选) */
+  memoryManager?: AgentMemoryManager;
+  /** HITL 审批状态机管理器 (可选) */
+  approvalManager?: ApprovalManager;
+  /** 直属主管审批路由器 (可选) */
+  leaderRouter?: LeaderApprovalRouter;
+  /** 状态化主管审批指令匹配器 (可选) */
+  statefulMatcher?: StatefulApprovalMatcher;
+  /** 主动定时推送调度管理器 (可选) */
+  scheduleManager?: ProactiveScheduleManager;
+  /** 会话编排器配置项 */
+  config?: CoordinatorConfig;
 }
 
 /**
@@ -76,21 +142,73 @@ export interface CoordinatorConfig {
  */
 export interface CoordinatorEvents {
   /** 消息压入防抖队列事件 */
-  message_queued: (sessionId: string, message: KK9Message, queueLength: number) => void;
+  message_queued: (
+    sessionId: string,
+    message: KK9Message,
+    queueLength: number
+  ) => void;
   /** 消息防抖合并触发事件 */
   consolidated: (message: ConsolidatedMessage) => void;
   /** 撤回即时熔断事件 (防抖期内消息被撤回) */
-  recall_fused: (sessionId: string, recalledMessageId: string, remainingCount: number) => void;
+  recall_fused: (
+    sessionId: string,
+    recalledMessageId: string,
+    remainingCount: number
+  ) => void;
   /** 人机协同退避触发事件 */
   takeover: (sessionId: string, takeoverUntil: number, message?: KK9Message) => void;
-  /** 消息被静默拦截抑制事件 (处于人工退避、会话禁用或空队列) */
+  /** 消息被静默拦截抑制事件 (处于人工退避、会话禁用、空队列或被撤回) */
   suppressed: (
     sessionId: string,
-    reason: 'human_takeover' | 'session_disabled' | 'empty_queue' | 'recalled',
+    reason:
+      | 'human_takeover'
+      | 'session_disabled'
+      | 'empty_queue'
+      | 'recalled'
+      | 'in_flight_aborted',
     message?: KK9Message
   ) => void;
+  /** 在途请求被 50ms 瞬时中断切断事件 */
+  in_flight_aborted: (
+    sessionId: string,
+    elapsedMs: number,
+    reason: string
+  ) => void;
+  /** 在途请求打断后消息自动归并重聚事件 */
+  in_flight_regrouped: (
+    sessionId: string,
+    totalMessageCount: number
+  ) => void;
+  /** Agent 认知微内核开始执行生成事件 */
+  agent_started: (sessionId: string, message: ConsolidatedMessage) => void;
+  /** Agent 认知微内核执行完毕事件 */
+  agent_completed: (sessionId: string, result: AgentReplyResult) => void;
+  /** Agent 认知微内核生成被打断事件 */
+  agent_aborted: (sessionId: string) => void;
+  /** 高危工具触发 HITL 审批挂起事件 */
+  approval_suspended: (sessionId: string, task: ApprovalTask) => void;
+  /** 主管审批决议已流转并恢复事件 */
+  approval_resolved: (
+    leaderId: string,
+    task: ApprovalTask,
+    approved: boolean
+  ) => void;
+  /** 主管私聊审批卡片已推送通知事件 */
+  approval_notified: (leaderId: string, task: ApprovalTask) => void;
   /** 消息分发完成事件 */
-  reply_dispatched: (sessionId: string, result: CoordinatorDispatchResult) => void;
+  reply_dispatched: (
+    sessionId: string,
+    result: CoordinatorDispatchResult
+  ) => void;
+  /** 主动定时任务触发事件 */
+  schedule_triggered: (schedule: ProactiveSchedule) => void;
+  /** 主动定时任务执行完成事件 */
+  schedule_executed: (
+    schedule: ProactiveSchedule,
+    result: CoordinatorDispatchResult
+  ) => void;
+  /** 主动定时任务执行异常事件 */
+  schedule_failed: (schedule: ProactiveSchedule, error: Error) => void;
   /** 异常事件 */
   error: (error: Error) => void;
 }
@@ -116,4 +234,8 @@ export interface PendingBucket {
 export interface DispatchReplyOptions extends SendOptions {
   /** 显式指定运行模式 (auto: 自动发送, draft: 保存草稿, disabled: 禁用) */
   mode?: SessionMode;
+  /** 是否在发送成功后显式消除未读红点 (默认跟随 coordinator 配置) */
+  markRead?: boolean;
+  /** 结构化富文本内容载荷 (可选) */
+  formattedPayload?: FormattedText;
 }
