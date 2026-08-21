@@ -1037,6 +1037,7 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
         llmProvider: mockReActLLM,
         toolRegistry,
         toolExecutor,
+        watchSoul: false,
       });
       await reactAgentRuntime.init();
 
@@ -1084,8 +1085,8 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       expect(createdSched).toBeDefined();
       expect(createdSched?.targetSessionId).toBe('session_emp_001');
       expect(createdSched?.cron).toBe('0 9 * * 1-5');
+      await reactAgentRuntime.close();
     });
-
     it('RAG 知识库检索集成：通过 knowledgeRetriever 注入事实切片到 Prompt 事实层', async () => {
       let capturedPrompt = '';
       const mockLLM = {
@@ -1101,6 +1102,7 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
 
       const customAgent = new KkbotAgentRuntime({
         llmProvider: mockLLM,
+        watchSoul: false,
       });
       await customAgent.init();
 
@@ -1134,6 +1136,7 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
         '根据企业上线流程规定，需先在预发环境验证。',
         expect.objectContaining({ targetSessionId: 'session_emp_001' })
       );
+      await customAgent.close();
     });
   });
   describe('5. 视觉红点守卫原则与人工退避 (Visual Red Dot Guard & Takeover)', () => {

@@ -17,7 +17,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    pool: 'threads',
+    pool: 'forks',
     include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
     coverage: {
       provider: 'v8',
