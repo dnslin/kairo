@@ -127,7 +127,7 @@ const result = await agent.generate(/* ... */);
 
 模型生成成功不等于用户已经收到。
 
-只有 KK 返回发送成功后，回复才进入“已交付”状态。草稿、发送失败内容和被中断内容不能污染下一轮 Agent Memory。
+Delivery 必须区分 `sent`、`failed` 和 `unknown`。只有 KK 发送成功的正向结果才能进入 `sent`；只有能够证明消息没有进入 KK 发送路径的结果才能进入 `failed`；发送动作可能已经触发但系统无法无歧义确认时必须进入 `unknown`。`unknown` 不是失败，人工处理前不得自动补发。草稿、发送失败内容和被中断内容不能污染下一轮 Agent Memory。
 
 ---
 
@@ -447,12 +447,13 @@ Driver 收到消息
 ```text
 Mastra 生成回复
 → 创建 delivery: generated
-→ Gateway 发送 KK
-→ 发送成功：delivery = sent
-→ 发送失败：delivery = failed
+→ Gateway 发送 KK：delivery = sending
+→ 正向发送成功：delivery = sent
+→ 可证明发送动作尚未触发：delivery = failed，可按重试策略自动重试
+→ 发送动作可能已触发或无法证明尚未触发：delivery = unknown，禁止自动补发并进入人工处理
 ```
 
-发送失败的 assistant 内容不能成为下一轮“用户已经收到”的事实。
+发送失败的 assistant 内容不能成为下一轮“用户已经收到”的事实。`unknown` 是否以及何时提交到 Mastra Memory，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)决定，本节不提前裁定。
 
 ### 草稿
 
@@ -952,6 +953,8 @@ proactiveMessageWorkflow
 
 所有主动发送必须经过 Gateway 的 OutboundDispatcher，不能直接调用 `driver.sendText()`。
 
+主动消息与普通回复共享同一 outbound 结果语义。主动发送进入 `unknown` 后，Schedule、Workflow 和补偿逻辑都不得自动再次发送；重启后的恢复与人工决议后的继续方式由[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)决定。
+
 这样可以继续保证：
 
 - 全局发送锁；
@@ -1081,16 +1084,29 @@ message_deliveries (
 状态：
 
 ```text
-generated / sending / sent / failed / aborted
+generated / sending / sent / failed / unknown / aborted
 ```
+
+每次 OutboundDispatcher 调用构成一次发送尝试。发送尝试的不可逆边界是第一项可能使消息进入 KK 发送路径的动作；实现细节可以变化，但判断标准始终是“是否仍能证明消息不可能已经进入 KK 发送路径”。
+
+一个 Delivery 可以包含多个顺序发送尝试。自动重试必须开始新的发送尝试，并且只允许前一次尝试明确进入 `failed` 后启动；任一次尝试进入 `unknown`，该 Delivery 立即停止自动重试链并进入人工处理。
+
+- **pre-trigger failure**：系统能够证明失败发生在不可逆边界之前，发送动作尚未触发。例如发送锁获取前失败、会话切换明确失败、输入校验失败，或调用 KK 发送动作前连接已确定不可用。此类结果记为 `failed`，允许自动重试。
+- **confirmed failed**：存在正面证据证明该次发送尝试没有触发 KK 发送动作。当前没有经证实的 post-send confirmed-failed 信号，因此现阶段只有明确的 pre-trigger failure 能进入 `failed`。
+- **unknown outcome**：发送动作已经触发，或系统无法证明其尚未触发。发送后的回读超时、CDP 超时、CDP 断开、UI 回读失败和响应丢失都必须记为 `unknown`，不得自动重试或补发。
+- `aborted` 仅能用于能够证明发送动作尚未触发的主动中止；中止发生在边界之后或边界位置不可判定时仍必须记为 `unknown`。
+- `unknown` 必须进入人工处理路径；人工决议前禁止任何自动补发。
+- 内容哈希、DOM 历史扫描、bot_echo、本地 ID 集合和幂等键都不能证明一次具体 outbound 调用是否发生，不得据此把 `unknown` 自动改写为 `sent` 或 `failed`，也不得据此授权补发。
+- 普通回复与主动消息必须使用同一状态定义和发送边界。
 
 该模型用于解决：
 
-- 模型生成成功但 KK 发送失败；
+- 模型生成成功但 KK 发送失败或结果不确定；
 - 草稿未发送；
 - 中断内容不能进入下一轮事实；
-- 重启后判断是否需要补发；
-- 审计用户实际收到的内容。
+- 审计用户实际收到或可能收到的内容。
+
+本节不决定 `unknown` 的 Mastra Memory 提交语义，也不决定重启后的主动任务恢复语义，分别由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)和[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)裁定。
 
 ---
 
@@ -1756,6 +1772,8 @@ Tool：runId + toolCallId
 向量：chunkId + embeddingModelFingerprint
 ```
 
+`runId + contentHash` 标识一个 Delivery，只约束 KKBot 本地的重复记录和并发创建；它既不标识单次发送尝试，也不能证明某次 KK 发送动作是否发生。发送记录进入 `unknown` 后，不得用该幂等键、DOM 历史或内容相似性将其自动改写为 `sent` / `failed`，也不得据此自动补发。
+
 ---
 
 ## 9. 测试与验收清单
@@ -1810,6 +1828,13 @@ Tool：runId + toolCallId
 - 两个会话并发生成不会串发；
 - 会话切换失败时 Fail-Closed；
 - 发送失败时保留红点。
+- 明确的 pre-trigger failure 可以自动重试；
+- 自动重试只在前一次尝试明确 `failed` 后创建新的发送尝试；任一次尝试进入 `unknown` 后停止自动重试链；
+- 发送动作可能已触发后的超时、断线、UI 回读失败或响应丢失进入 `unknown`；
+- 无法证明发送动作尚未触发时按 `unknown` 处理；
+- `unknown` 在人工处理前不会被自动重试或补发；
+- 内容哈希、DOM 历史、bot_echo 和幂等键不能自动消除 `unknown`；
+- 主动消息与普通回复遵守相同的发送边界和 Delivery 状态。
 
 ## 9.6 Knowledge
 
