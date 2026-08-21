@@ -105,7 +105,7 @@ const result = await agent.generate(/* ... */);
 1. 处理 KK 专属 I/O 和数据转换，把 KK 聚合消息转换为 Agent 输入；
 2. 创建 `requestContext`、`threadId`、`resourceId`、`traceId`；
 3. 定义和注册 KKBot 业务 Tool，并把外部上下文或决议路由给 Mastra 公开 API；
-4. 把 Mastra 事件投影为 Draft、Delivery、Approval 等 KKBot 可查询和审计的业务状态；
+4. 把 Mastra 事件投影为 Delivery、Approval 等 KKBot 可查询和审计的业务状态；
 5. 调用 Mastra Agent，并把最终结果交给 KK 发送层执行 KK 专属的可靠交付。
 
 投影不是运行时事实源。若辅助代码自行持有或决定 Agent/模型重试循环、工具循环、第二套 Agent Memory、Memory 提交或回滚、审批挂起或恢复、调度触发、模型回退等状态转换，它就是被禁止的“自研 Runtime 回补”；即使命名为 Gateway、Coordinator、Adapter 或 Wrapper 也不改变性质。KK 专属发送重试和交付补偿不在此列，但不得反向改变 Mastra 的 Agent 执行语义。
@@ -127,7 +127,7 @@ const result = await agent.generate(/* ... */);
 
 模型生成成功不等于用户已经收到。
 
-Delivery 必须区分 `sent`、`failed` 和 `unknown`。只有 KK 发送成功的正向结果才能进入 `sent`；只有能够证明消息没有进入 KK 发送路径的结果才能进入 `failed`；发送动作可能已经触发但系统无法无歧义确认时必须进入 `unknown`。`unknown` 不是失败，人工处理前不得自动补发。草稿、发送失败内容和被中断内容不能污染下一轮 Agent Memory。
+Delivery 从生成结果创建时起记录完整发送生命周期，必须区分 `generated`、`sending`、`sent`、`failed`、`unknown` 和 `aborted`。只有 KK 发送成功的正向结果才能进入 `sent`，也只有 `sent` 表示已交付事实。只有能够证明消息没有进入 KK 发送路径的结果才能进入 `failed`；发送动作可能已经触发但系统无法无歧义确认时必须进入 `unknown`。`unknown` 不是失败，人工处理前不得自动补发。其他状态的内容是否以及如何写入 Mastra Memory，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)裁定；本节只规定它们不得被当作用户已经收到。
 
 ---
 
@@ -453,13 +453,8 @@ Mastra 生成回复
 → 发送动作可能已触发或无法证明尚未触发：delivery = unknown，禁止自动补发并进入人工处理
 ```
 
-发送失败的 assistant 内容不能成为下一轮“用户已经收到”的事实。`unknown` 是否以及何时提交到 Mastra Memory，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)决定，本节不提前裁定。
+生成结果从创建时起即由 Delivery 表达，不先创建其他未发送内容实体，也不存在转换步骤。只有 `sent` 表示用户已经收到；`generated`、`sending`、`failed`、`unknown` 和 `aborted` 的内容是否以及如何写入 Mastra Memory，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)裁定，本节不提前决定提交或补偿协议。
 
-### 草稿
-
-- 草稿写入独立 `drafts` 表；
-- 草稿不进入 Mastra 对话历史；
-- 草稿真正发送成功后才成为 assistant 消息。
 
 ### 人工操作员消息
 
@@ -1021,7 +1016,6 @@ data/kkbot.db
 - 组织架构；
 - 媒体与文件；
 - Delivery；
-- Draft；
 - Approval Projection；
 - Knowledge source metadata；
 - Token quotas；
@@ -1039,7 +1033,7 @@ KKBot 不修改 Mastra 内部表结构。
 packages/store/migrations/
 ├── 0001_initial.sql
 ├── 0002_message_idempotency.sql
-├── 0003_drafts_and_deliveries.sql
+├── 0003_deliveries.sql
 ├── 0004_approval_projection.sql
 ├── 0005_knowledge.sql
 ├── 0006_quotas.sql
@@ -1063,29 +1057,13 @@ WHERE message_id IS NOT NULL;
 
 ---
 
-## 4.23 新增 Draft 和 Delivery 数据模型
+## 4.23 新增 Delivery 数据模型
 
-### Draft
+模型每次生成出准备发送的结果时，立即创建一个 Delivery 并进入 `generated`。Delivery 是生成内容及其发送生命周期的唯一 KKBot 业务投影；不先创建其他未发送内容实体，也不存在转换步骤。
 
-```sql
-drafts (
-  id,
-  session_id,
-  run_id,
-  content,
-  status,
-  created_at,
-  updated_at
-)
-```
+若未来增加可编辑、人工确认、延迟发送、共享或恢复未发送内容的产品交互，必须重新进入 Wayfinder 裁定；当前不为假设需求预留实体、表、ID、Repository 或 Projection。
 
-状态：
-
-```text
-generated / edited / sent / discarded
-```
-
-### Delivery
+### Schema
 
 ```sql
 message_deliveries (
@@ -1094,6 +1072,7 @@ message_deliveries (
   session_id,
   mastra_message_id,
   kk_message_id,
+  content,
   content_hash,
   status,
   error_code,
@@ -1108,7 +1087,9 @@ message_deliveries (
 generated / sending / sent / failed / unknown / aborted
 ```
 
-每次 OutboundDispatcher 调用构成一次发送尝试。发送尝试的不可逆边界是第一项可能使消息进入 KK 发送路径的动作；实现细节可以变化，但判断标准始终是“是否仍能证明消息不可能已经进入 KK 发送路径”。
+`generated` 表示生成内容已经持久化但尚未开始发送；开始发送时 Delivery 进入 `sending`；获得 KK 发送成功的正向结果后进入 `sent`。`sent` 是唯一已交付事实，其他状态都不得被解释为用户已经收到。
+
+每次 OutboundDispatcher 调用构成一次发送尝试。发送尝试的不可逆边界是第一项可能使消息进入 KK 发送路径的动作；实现细节可以变化，但判断标准始终是“是否仍能证明消息不可能已经进入 KK 发送路径”。发送尝试从属于同一 Delivery，不创建另一份生成结果事实。
 
 一个 Delivery 可以包含多个顺序发送尝试。自动重试必须开始新的发送尝试，并且只允许前一次尝试明确进入 `failed` 后启动；任一次尝试进入 `unknown`，该 Delivery 立即停止自动重试链并进入人工处理。
 
@@ -1122,12 +1103,12 @@ generated / sending / sent / failed / unknown / aborted
 
 该模型用于解决：
 
+- 生成结果尚未触发发送；
 - 模型生成成功但 KK 发送失败或结果不确定；
-- 草稿未发送；
-- 中断内容不能进入下一轮事实；
+- 中断内容与已交付事实隔离；
 - 审计用户实际收到或可能收到的内容。
 
-本节不决定 `unknown` 的 Mastra Memory 提交语义，也不决定重启后的主动任务恢复语义，分别由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)和[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)裁定。
+本节只定义 Delivery 的生成、发送尝试和交付事实边界。`generated`、`sending`、`failed`、`unknown`、`aborted` 内容的 Mastra Memory 提交或补偿协议，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)裁定；重启后的主动任务恢复语义由[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)裁定。
 
 ---
 
@@ -1605,8 +1586,8 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | N-01 | 唯一 Mastra Runtime | 整个进程只有一个根级 Mastra 实例，包内不得私自创建第二套 Agent Runtime。 |
 | N-02 | 禁止自研 AgentRunner | Gateway 直接调用注册在 Mastra 中的 KK Agent；辅助函数只构造上下文。 |
 | N-03 | 单一 Agent Memory 事实源 | 自定义 L2/L3 表退出 Agent 记忆链，组织资料和公共知识保持独立领域数据。 |
-| N-04 | KK 交付一致性 | 生成、发送中、已发送、失败必须持久化；发送失败不得让后续对话误以为用户已收到。 |
-| N-05 | 草稿隔离 | 草稿进入独立 Draft 数据，不进入 Mastra 对话历史，发送成功后再转正。 |
+| N-04 | KK 交付一致性 | `generated`、`sending`、`sent`、`failed`、`unknown`、`aborted` 必须持久化；只有 `sent` 表示用户已经收到。 |
+| N-05 | 未交付生成结果隔离 | 生成结果从创建时起由 Delivery 表达；非 `sent` 状态不得被当作已交付事实，其 Memory 提交或补偿协议留给 #129。 |
 | N-06 | 消息来源四分类 | Driver 输出 external/operator/bot_echo/system，人工消息不得被 isMe 过滤。 |
 | N-07 | 事件入口优先级 | EventBridge 为主，Polling 为断线补偿，DOM 扫描为兜底。 |
 | N-08 | 数据库最终幂等 | 以 `(session_id, message_id)` 唯一约束防止多事件路径重复入库。 |
@@ -1773,7 +1754,6 @@ KKBot 自有表建议至少包括：
 schema_migrations
 sessions
 session_messages
-drafts
 message_deliveries
 approval_tasks
 org_departments
@@ -1836,8 +1816,8 @@ Tool：runId + toolCallId
 - `senderId → resourceId`；
 - 两个会话不串线；
 - 人工 operator 消息进入 Thread；
-- 草稿不进入 Memory；
-- 发送失败不形成已交付历史；
+- 未交付生成结果不会被当作用户已经收到；
+- `generated`、`sending`、`failed`、`unknown`、`aborted` 的 Memory 提交与补偿行为按 #129 最终协议验收；
 - 撤回消息从 Agent 上下文删除；
 - 新消息中断后不重复提交旧消息。
 
@@ -1948,7 +1928,7 @@ Tool：runId + toolCallId
 4. Memory 只有 Mastra 一套事实源；
 5. Tool Approval 的运行状态只有 Mastra 一套事实源；
 6. KKBot Store 只保存 KK 业务数据和必要投影；
-7. 草稿、发送失败和被中断回复不会污染对话历史；
+7. 未交付生成结果不会被当作用户已经收到，其 Memory 提交或补偿协议由 #129 决定；
 8. Driver 能识别真实人工操作员消息并触发接管；
 9. EventBridge、Polling 和补偿扫描具备数据库级幂等；
 10. 企业知识通过正式摄取、AST Chunk 和混合检索进入 Agent；
@@ -1980,7 +1960,7 @@ Tool：runId + toolCallId
 - 组织架构和主管路由；
 - 企业知识摄取规则；
 - PublicKnowledge 检索策略；
-- Delivery、Draft、Approval Projection；
+- Delivery、Approval Projection；
 - 配额、资产和运行保障；
 - 统一启动与应用日志。
 
