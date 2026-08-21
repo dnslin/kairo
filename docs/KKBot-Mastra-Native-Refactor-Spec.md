@@ -664,6 +664,24 @@ approval_tasks (
 
 该表是业务投影，不是 Agent Run 的事实源。
 
+审批请求带不可自动延长的绝对截止时间 `expires_at`。审批的业务终态只有 `approved` 或 `declined`；到达截止时间仍未形成有效批准时，唯一结果是 `declined`，`timeout` 只作为拒绝原因，对用户显示为“已拒绝”，不得建立可恢复的 `timed_out` 终态。
+
+只有在 `expires_at` 之前被决议协议有效接受的批准才可能生效；在截止时刻或之后收到，或者虽先收到但截至截止时刻仍未被有效接受的批准，均为无效的迟到批准。截止时间只裁定本次 Approval 是否形成有效批准，不要求已获有效批准的 Tool 必须在截止前执行完成。
+
+超时统一 Fail-Closed：
+
+- 不升级或改派备用主管；本规则不改变本次请求在创建时采用的主管路由；
+- 不转成无限期人工待办；
+- 不按风险等级改变超时结果；
+- 不自动延长截止时间；
+- 不把超时视为可对同一 Approval 重试批准。
+
+超时形成 `declined` 后，迟到批准、重复批准和重复拒绝均不得改变终态；迟到批准不得使原 Agent Run 以批准方式恢复，也不得执行原 Tool Call。若仍需执行，申请人必须重新发起新的 Agent Run / Tool Call。批准、拒绝与超时并发时只能产生一个最终结果，Tool 最多执行一次；这是 KKBot 的产品与安全不变量，不代表 Mastra 已原生证明重复决议幂等。
+
+超时拒绝后必须通知申请人和本次请求的原审批主管，明确该次高危操作已拒绝，若仍需执行必须重新发起请求。审批投影可以记录 `expires_at`、最终结果、拒绝原因和双方通知状态，但通知投递状态与审批终态分离，且投影不是 Agent Run 的事实源，不得自行执行 Tool、恢复 Run 或伪造 Mastra 已恢复。
+
+超时扫描组件或 API、进程重启后过期 suspended runs 的发现与处理、投影和 Mastra Run 的条件更新或幂等协议、兼容 Mastra 版本是否提供原生 timeout，以及具体超时时长，统一留给 [#126《确定 Approval 投影与 Mastra Run 的恢复边界》](https://github.com/dnslin/kkbot/issues/126)及兼容版本决策；本节不提前实现或承诺。
+
 ---
 
 ## 4.13 区分 Tool Approval 和 Workflow Suspend
@@ -1695,13 +1713,27 @@ sequenceDiagram
     A->>A: Tool requireApproval
     A-->>G: Run suspended + toolCallId
     G->>S: 创建 approval projection
-    G->>L: KK 私聊审批通知
-    L->>G: 同意/拒绝
-    G->>A: approveToolCall/declineToolCall
-    A->>A: 恢复 Run 并继续 Tool Loop
-    A-->>G: 最终结果
-    G->>U: KK 通知结果
+    G->>L: KK 私聊审批通知（含截止时间）
+    alt 截止前有效批准
+        L->>G: 同意
+        G->>A: approveToolCall
+        A->>A: 恢复 Run 并继续 Tool Loop
+        A-->>G: Tool 执行后的最终结果
+        G->>U: KK 通知最终结果
+    else 截止前有效拒绝或超时拒绝
+        opt 主管截止前有效拒绝
+            L->>G: 拒绝
+        end
+        Note over G,A: 以 declined 结算本次 Approval；具体协议见 #126
+        A-->>G: 原 Tool Call 已拒绝，不执行 Tool
+        G->>U: KK 通知已拒绝；如仍需执行须重新发起
+        opt 超时拒绝
+            G->>L: KK 通知该次高危操作已超时拒绝
+        end
+    end
 ```
+
+该时序图只表达业务交互，不指定超时扫描、持久恢复或条件更新由哪个组件或 API 完成。超时、迟到批准和并发决议统一遵循 4.12；实现边界由 #126 决定。
 
 ## 7.5 知识问答
 
@@ -1814,9 +1846,12 @@ Tool：runId + toolCallId
 - 直属主管拒绝；
 - 非主管无法审批；
 - 多笔任务需要序号消歧；
-- 超时自动拒绝或转人工；
-- Resume 后 Tool 只执行一次；
-- 最终结果回到申请人会话。
+- 到期仍无有效批准时唯一进入 `declined`，不得升级备用主管、转无限待办、按风险改写结果或自动延长；
+- 迟到批准不能复活已超时 Approval；重新执行必须创建新的 Agent Run / Tool Call；
+- 超时拒绝同时通知申请人和本次请求的原审批主管；
+- 重复决议及批准/超时并发只产生一个最终结果，Tool 最多执行一次；
+- Approval 业务投影记录截止时间、最终结果和通知状态，但不是 Agent Run 的事实源；
+- timeout API、持久恢复和幂等协议由 #126 与兼容版本决策验证，本规格不假定 Mastra 已原生保证；
 
 ## 9.5 Driver 和 Gateway
 
