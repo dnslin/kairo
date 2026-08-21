@@ -906,8 +906,14 @@ packages/knowledge/src/
 - Markdown；
 - DOCX；
 - 文本型 PDF；
-- 扫描件和复杂 PDF 通过 Vision/OCR Adapter；
+- 扫描 PDF、复杂 PDF 和图片文档通过 Vision/OCR Adapter；
 - 旧版 DOC 明确拒绝。
+
+### Vision/OCR 完成门槛
+
+扫描 PDF、复杂 PDF 和图片文档属于本次重构必须交付的知识摄取能力，不是可选扩展。Vision/OCR Adapter 必须真实调用受支持的 OCR/Vision 能力，产出可继续进入规范化、AST Chunk 和索引流程的文本，并保留能够回到原文件及页或图像区域的来源定位。
+
+mock、空实现、人工预处理后再摄取，或仅支持文本层 PDF 的路径，均不能证明该能力完成。本节不锁定 Provider 或 Model，也不规定 OCR 失败后的回退、重试、原子替换和旧索引保留；这些边界分别由 [确定知识摄取故障与 OCR 回退语义](https://github.com/dnslin/kkbot/issues/130) 与 [确定 Knowledge 索引版本与原子替换协议](https://github.com/dnslin/kkbot/issues/136) 裁定。
 
 ### Chunk 规则
 
@@ -1876,7 +1882,10 @@ Tool：runId + toolCallId
 ## 9.6 Knowledge
 
 - Markdown、DOCX、文本 PDF；
-- 扫描件转 Vision/OCR；
+- 扫描 PDF 和图片文档由真实可运行的 Vision/OCR Adapter 处理，产出可索引文本；
+- 代表性扫描 PDF 与图片文档必须通过 fixture 驱动的真实 Adapter 验证，或分别执行真实文档冒烟；两种方式都不得 mock OCR/Vision 结果、使用空实现或依赖人工预处理；
+- OCR/Vision 产物可进入规范化、AST Chunk 和索引流程，并保留来源文件及页或图像区域定位；
+- 仅文本 PDF Adapter 通过不能视为扫描 PDF 或图片文档能力通过；
 - 损坏文件有明确错误；
 - AST 标题感知 Chunk；
 - 列表、表格、代码块不被腰斩；
@@ -1951,7 +1960,7 @@ Tool：runId + toolCallId
 7. 未交付生成结果不会被当作用户已经收到，其 Memory 提交或补偿协议由 #129 决定；
 8. Driver 能识别真实人工操作员消息，并只在一对一私聊中触发接管；
 9. EventBridge、Polling 和补偿扫描具备数据库级幂等；
-10. 企业知识通过正式摄取、AST Chunk 和混合检索进入 Agent；
+10. 企业知识通过正式摄取、AST Chunk 和混合检索进入 Agent；扫描 PDF 和图片文档必须具备真实可运行的 Vision/OCR 摄取路径，并产出可索引文本与来源定位；
 11. Agent 对企业制度回答必须具备来源，没有来源时拒绝编造；
 12. 整个应用由一个 YAML、一个启动命令、一个 Bootstrapper 启动；
 13. 全系统使用一个 LibSQL 数据库和一个 Mastra 实例；
