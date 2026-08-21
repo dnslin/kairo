@@ -67,7 +67,7 @@ KKBot 只服务 KK9 客户端，不建立通用 IM 平台抽象。
 
 ### 2.2 Mastra 是唯一 Agent Runtime
 
-以下能力统一由 Mastra 提供：
+以下生产运行能力统一由 Mastra 提供：
 
 - Agent Loop；
 - 模型调用；
@@ -79,10 +79,11 @@ KKBot 只服务 KK9 客户端，不建立通用 IM 平台抽象。
 - Workflow suspend/resume；
 - Schedule；
 - Agent Trace；
-- Scorer；
 - 模型重试与回退。
 
 KKBot 不再自行实现第二套 Agent Runtime。
+
+Scorer 不属于生产运行能力基线；仅在启用可选离线评测或质量评价时由 Mastra 提供，KKBot 不自研第二套评分运行时。
 
 “Mastra 原生能力”是指最终锁定的稳定兼容版本通过受支持的公开 API 执行该能力，并由 Mastra 持有对应的运行时状态机和执行语义。仅存在同名 API、博客示例，或需要 KKBot 辅助代码自行补出状态机，不算原生满足。
 
@@ -144,8 +145,12 @@ Delivery 从生成结果创建时起记录完整发送生命周期，必须区�
 | Workflow suspend / resume 与 snapshot | 需要补充信息、跨步骤等待或长流程恢复 | [Workflow snapshots](https://mastra.ai/en/reference/workflows/snapshots) |
 | Agent / Workflow Schedules | 主动提醒、定时推送和保留策略任务 | [Schedules](https://mastra.ai/blog/introducing-schedules-for-agents-and-workflows) |
 | Input / Output Processors | 注入防护、PII、安全过滤和输出清洗 | [Input processors](https://mastra.ai/blog/changelog-2025-07-30)、[Output processors](https://mastra.ai/blog/introducing-output-processors) |
-| Observability 与 OTel | Agent、模型、工具、Memory、Workflow 和 Token Trace | [Mastra observability](https://mastra.ai/ai-agent-observability) |
-| SensitiveDataFilter | Agent Trace 在导出前执行字段级敏感信息脱敏 | [Sensitive data redaction](https://mastra.ai/blog/introducing-sensitive-data-redaction) |
+| Observability 与 OTel | 生产运行必需的 Agent、模型、工具、Memory、Workflow、Token Trace 和运行诊断 | [Mastra observability](https://mastra.ai/ai-agent-observability) |
+| SensitiveDataFilter | 生产运行必需的 Agent Trace 导出前字段级敏感信息脱敏 | [Sensitive data redaction](https://mastra.ai/blog/introducing-sensitive-data-redaction) |
+
+Observability 是本次重构的生产必需能力。兼容版本必须支持 Trace 采集与导出、关联 ID 传播、敏感信息导出前脱敏，以及初始化、导出、Flush 和 Shutdown 故障的可诊断性。
+
+Scorer 只用于可选离线评测或质量评价，不属于启动、运行、迁移或重构完成门槛。缺失、未注册或禁用 Scorer 不得使 Bootstrapper、Agent、Delivery 或本规格验收失败；启用后的评分结果也只是派生评价数据，不得成为 Agent、Memory、Approval、Delivery 或其他 KKBot 业务事实源。本文不决定具体 Scorer、评价指标与阈值、采样率、存储保留策略或评测数据集。
 
 “兼容版本”是经后续版本决策验证的一组稳定 Mastra 依赖版本。兼容性必须同时满足：所需原生能力存在并受支持；Node.js 运行时与依赖引擎约束一致；类型定义和迁移说明支持目标用法；相关离线契约实验通过。只看到 API 存在不足以判定兼容。
 
@@ -201,7 +206,7 @@ KK 原生事件
 |---|---|---|
 | `@kkbot/driver` | KK CDP、事件、DOM、发送、撤回、红点、组织读取 | Agent、Memory、知识检索、审批状态 |
 | `@kkbot/gateway` | 入站消息按会话类型分流、群聊 Raw Store-only 短路、私聊防抖、人工接管、撤回、中断、会话模式、审批消息路由、串行发送 | 模型调用、工具循环、历史拼装、RAG 注入 |
-| `@kkbot/agent` | 定义 Mastra Agent、Tools、Processors、Workflows、Scorers | 自研 Runtime、自研 Provider、自研 Tool Executor |
+| `@kkbot/agent` | 定义 Mastra Agent、Tools、Processors、Workflows，以及启用时的 Scorers | 自研 Runtime、自研 Provider、自研 Tool Executor |
 | `@kkbot/store` | KK 原始消息、会话、组织、资产、配额、审批和交付投影 | Mastra Memory、Mastra Workflow 内部状态 |
 | `@kkbot/knowledge` | 文档摄取、规范化、Chunk、词法/向量/Rerank 检索 | Agent Loop、KK 发送 |
 | `apps/kkbot` | 唯一 Composition Root、配置、自检、启动、关闭 | 领域实现 |
@@ -220,7 +225,7 @@ KK 原生事件
 - MCP Client 配置；
 - Mastra Processors；
 - Mastra Workflows；
-- Mastra Scorers；
+- 启用可选质量评价时的 Mastra Scorers；
 - Agent RequestContext 类型。
 
 建议目录：
@@ -257,6 +262,8 @@ packages/agent/src/
     ├── grounded-answer.ts
     └── tool-correctness.ts
 ```
+
+`scorers/` 仅是启用可选质量评价时的结构示意；目录或 Scorer 未实现、未注册或被禁用时，Agent 主链路必须仍可完整运行。
 
 整个应用只创建一个 Mastra 实例：
 
@@ -1036,8 +1043,10 @@ data/kkbot.db
 - Workflow snapshots；
 - Schedules；
 - Agent traces；
-- Scorer 结果；
+- Scorer 结果（仅在启用可选质量评价时）；
 - suspended runs。
+
+Scorer 结果属于派生评价数据，不得作为 Agent、Memory、Approval、Delivery 或 KKBot 业务状态的事实源。
 
 ### KKBot Store 管理
 
@@ -1165,7 +1174,7 @@ generated / sending / sent / failed / unknown / aborted
 - 日志滚动；
 - PII 脱敏。
 
-### Mastra Observability
+### Mastra Observability（生产必需）
 
 负责 Agent 内部运行：
 
@@ -1177,9 +1186,17 @@ generated / sending / sent / failed / unknown / aborted
 - Workflow；
 - HITL；
 - Token Usage；
-- Scorer。
+- 初始化、导出、Flush 和 Shutdown 的运行诊断。
+
+生产配置必须启用 Mastra Observability。Bootstrapper 必须在开放消息处理前完成 Observability 初始化和配置校验；应用日志与 Agent Trace 必须分别在导出前完成敏感信息脱敏。初始化或配置校验失败必须阻止开放消息处理，导出、Flush 或 Shutdown 失败必须留下可定位的诊断，不得静默吞掉。
 
 不要再为 Agent Loop 自建第二套 Trace 系统。
+
+### Mastra Scorer（可选）
+
+Scorer 只用于离线评测或质量评价，不参与生产业务状态转换。缺失、未注册或禁用 Scorer 不得影响 Bootstrapper、Agent 调用、Delivery 状态转换或生产验收；启用后的评分结果不得决定模型路由、工具执行、审批、Memory 提交、发送重试或 Delivery 结论。
+
+本规格不锁定具体 Scorer、评价指标与阈值、采样率、存储保留策略或评测数据集。
 
 ---
 
@@ -1207,6 +1224,8 @@ interface KkTraceContext {
 - Delivery；
 - Knowledge Tool；
 - Store 操作。
+
+完整链路必须关联 `traceId`、`runId`、`sessionId` 和输入消息 ID；进入 Tool、Approval 和 Delivery 后，还必须用 `toolCallId`、`approvalTaskId`、`deliveryId` 与同一链路关联。Scorer 结果如存在，只能引用这些关联 ID，不得反向改写链路中的业务事实。
 
 禁止通过全局可变变量传播上下文。
 
@@ -1311,6 +1330,8 @@ Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例重写�
 22. 启动 Coordinator
 23. 开放消息处理
 ```
+
+Observability 初始化和必需的脱敏、导出、Flush、Shutdown 接线属于启动基线；Scorer 不在启动顺序中，其缺失、未注册或禁用不得导致配置校验、Preflight 或 Bootstrapper 失败。
 
 ### 关闭顺序
 
@@ -1911,14 +1932,19 @@ Tool：runId + toolCallId
 - 活跃 Run 被中断；
 - MCP、Driver、数据库和日志都被关闭。
 
-## 9.8 Observability
+## 9.8 Observability 与可选 Scorer
 
+- 生产启动在开放消息处理前完成 Mastra Observability 初始化和配置校验；
 - 进入 Agent 链的一对一私聊，其 `traceId` 在 Driver、Gateway、Mastra、Store 间一致；
 - 一对一私聊的 `runId` 与审批和 Delivery 对应；
+- `toolCallId`、`approvalTaskId`、`deliveryId` 可关联回同一条 `traceId / runId` 链路；
 - 并发私聊会话上下文不串线；
 - 一对一私聊的 Model、Tool、Memory、Workflow 有 Mastra Trace；
-- API Key、Cookie、Authorization、手机号和身份证号被脱敏；
-- Token Usage 可以按用户和日期查询。
+- API Key、Cookie、Authorization、手机号和身份证号在应用日志与 Agent Trace 导出前分别完成脱敏；
+- Observability 初始化、导出、Flush 和 Shutdown 故障有可定位诊断，不被静默吞掉；
+- Token Usage 可以按用户和日期查询；
+- Scorer 缺失、未注册或禁用时，Bootstrapper、Agent、Delivery 和上述验收仍通过；
+- 启用 Scorer 时，评分结果只用于离线评测或质量评价，不作为任何业务事实源。
 
 ---
 
@@ -1964,12 +1990,13 @@ Tool：runId + toolCallId
 11. Agent 对企业制度回答必须具备来源，没有来源时拒绝编造；
 12. 整个应用由一个 YAML、一个启动命令、一个 Bootstrapper 启动；
 13. 全系统使用一个 LibSQL 数据库和一个 Mastra 实例；
-14. Agent 内部使用 Mastra Observability，应用侧使用 UnifiedLogger；
-15. 进入 Agent 链的一对一私聊能通过 `traceId + runId + sessionId` 重建完整链路；
+14. Agent 内部必须使用 Mastra Observability，应用侧使用 UnifiedLogger，并在各自导出前完成敏感信息脱敏；
+15. 进入 Agent 链的一对一私聊能通过 `traceId + runId + sessionId` 以及后续的 `toolCallId + approvalTaskId + deliveryId` 重建完整链路；
 16. 所有高危写 Tool 都具备审批、权限、幂等和审计；
 17. 所有关键行为都有高层 Interface 和端到端测试；
 18. Issue #107 已关闭且全部需求完成迁移，后续只以本规格为实施依据；
-19. 群聊消息只幂等写入 KK Raw Store，所有 Agent、工具、知识、审批和交付下游均不会启动。
+19. 群聊消息只幂等写入 KK Raw Store，所有 Agent、工具、知识、审批和交付下游均不会启动；
+20. Scorer 可以缺失、未注册或禁用而不影响启动、运行、迁移、Delivery 或重构完成；启用后的评分结果不成为业务事实源。
 
 ---
 
@@ -2008,7 +2035,7 @@ Tool：runId + toolCallId
 - Workflow suspend/resume；
 - Schedule；
 - Agent Trace；
-- Scorer；
+- Scorer（仅用于可选离线评测或质量评价）；
 - Model Retry/Fallback。
 
 最终关系：
