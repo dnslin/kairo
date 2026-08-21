@@ -11,7 +11,7 @@
 
 KKBot v2 是一个面向 Windows 企业级客户端（KK9.exe）的现代 IM 机器人与 Agent 认知网关系统。在无需修改宿主 Electron 客户端源码的前提下，通过纯净独立的 CDP 驱动层（`@kkbot/driver`）与基于 Mastra 的现代认知微内核（`@kkbot/agent`），实现深层会话穿透、原生富文本/文件收发、双轨消息撤回闭环、企业组织架构同步、3-Tier 记忆系统、MCP 工具调用以及人机混合协作守护。
 
-本项目采用 **Driver First** 与 **Greenfield Monorepo** 架构，将旧版单体实现完整归档至 `legacy/`，重构为高内聚、低耦合的模块化体系。
+本项目采用 **Driver First** 与 **Greenfield Monorepo** 架构，重构为高内聚、低耦合的模块化体系。
 
 ---
 
@@ -24,7 +24,6 @@ kkbot/
 │   ├── agent/            # @kkbot/agent: Mastra 认知微内核 (Tool/MCP/Memory/RAG)
 │   ├── gateway/          # @kkbot/gateway: 调度中枢与 SQLite 状态持久化
 │   └── web/              # @kkbot/web: 独立运维前端 (Vite + React 19 + shadcn/ui)
-├── legacy/               # v1 单体架构归档代码
 ├── docs/                 # PRD, 开发规范, ADR, 探索研究报告
 ├── scripts/              # 真机 E2E、压测与调试诊断脚本
 └── .omp/                 # 团队共享 Agent Skills 与 MCP 扩展配置

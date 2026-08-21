@@ -32,9 +32,6 @@ kkbot/
 │   ├── agent/                    # @kkbot/agent: Mastra 认知微内核 (规划落地中)
 │   ├── gateway/                  # @kkbot/gateway: 调度中枢与 SQLite 状态机 (规划落地中)
 │   └── web/                      # @kkbot/web: Vite + React 19 + shadcn/ui 控制台 (规划落地中)
-├── legacy/                       # v1 单体架构代码完整归档 (供参考)
-│   ├── src/
-│   └── tests/
 ├── scripts/                      # 真机 E2E 验证、基准压测与交互脚本
 ├── docs/                         # PRD, 开发规范, ADR (0001, 0002), 探索研究报告
 │   ├── adr/                      # ADR 架构决策记录
@@ -62,7 +59,6 @@ kkbot/
 | 类型定义 | `packages/driver/src/types/index.ts` | 核心强类型定义（消息、会话、配置、员工档案等） |
 | 架构决策 (ADR) | `docs/adr/` | 0001 (Agent 架构与安全防护), 0002 (soul.md 人设与私聊边界) |
 | 领域术语表 | `CONTEXT.md` | 项目通用领域术语定义 |
-| 归档代码 (v1) | `legacy/` | 旧版单体 store、ops、policy 等实现参考 |
 
 ---
 

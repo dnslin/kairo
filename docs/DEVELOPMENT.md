@@ -35,9 +35,6 @@ kkbot/
 │   ├── agent/                    # @kkbot/agent: Mastra 认知内核 (规划中)
 │   ├── gateway/                  # @kkbot/gateway: 调度中枢与 SQLite 状态机 (规划中)
 │   └── web/                      # @kkbot/web: Vite React 运维控制台 (规划中)
-├── legacy/                       # v1 单体架构归档代码 (保留供参考)
-│   ├── src/
-│   └── tests/
 ├── scripts/                      # 真机 E2E 验证、基准压测与调试脚本
 ├── docs/                         # PRD、开发规范、ADR 架构决策、探索研究报告
 │   ├── adr/                      # ADR 0001, ADR 0002 等架构决策记录
