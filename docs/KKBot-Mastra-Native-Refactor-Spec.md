@@ -617,11 +617,14 @@ Mastra Agent Run 挂起
 → 写审批业务投影
 → 查找直属主管
 → KK 私聊发送审批提示
-→ 主管回复同意/拒绝
-→ Gateway 调用 Mastra approve/decline
-→ Mastra 恢复原 Agent Run
-→ Tool 执行
-→ Agent 生成最终回复
+→ 等待截止前有效决议
+├─ 批准：调用 Mastra approve
+│  → Mastra 恢复原 Agent Run
+│  → Tool 执行
+│  → Agent 生成最终回复
+└─ 拒绝或超时：以 declined 结算本次 Approval（具体协议见 #126）
+   → 原 Tool Call 不执行
+   → 通知申请人；超时同时通知本次请求的原审批主管
 ```
 
 当前 `ApprovalManager` 不再：
