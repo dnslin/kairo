@@ -78,6 +78,56 @@ The cron-based background scheduling engine allowing employees to register recur
 
 ### AsyncSubAgent
 The non-blocking task delegation mechanism where long-running multi-document analysis or crawling jobs are offloaded to background worker routines, releasing the chat session immediately and proactively pushing results upon completion.
+### SkillPackage
+A self-contained directory (`skills/<name>/`) bundling a business domain's behavioral instructions (`SKILL.md`), optional local knowledge base (`knowledge/`), and optional scoped MCP configuration (`mcp.json`).
+
+### SkillManifest
+The structured YAML Frontmatter metadata within `SKILL.md` specifying a skill's identifier, display name, intent trigger keywords/patterns, required permission scope, and tool bindings.
+
+### TwoStageSkillActivation
+The dual-phase skill dispatch strategy where lightweight skill routing manifests are compiled globally for intent recognition, while detailed operational instructions and domain knowledge are dynamically loaded into the context window only upon intent match.
+
+### DeclarativeMcpLoader
+The configuration-driven initialization engine that parses declarative JSON specifications (e.g. `config/mcp.json` or scoped `mcp.json`), establishing stdio/sse transport connections and mounting external tools into `ToolRegistry` with namespace isolation.
+### ToolNamespacingPolicy
+The deterministic naming scheme isolating global MCP tools (`global_${serverId}_${toolName}`) from skill-scoped tools (`skill_${skillName}_${toolName}`) within `ToolRegistry`.
+
+### BoundedMultiSkillActivation
+The dual-intent resolution policy allowing up to 2 high-confidence matching `SkillPackages` to be simultaneously injected into the context window, orchestrating segmented multi-goal responses without context blowout.
+### ScopedKnowledgeMerge
+The dynamic RAG retrieval strategy that selectively merges a `SkillPackage`'s local markdown documents (`skills/<name>/knowledge/`) into the active search space upon skill activation.
+
+### SkillFaultIsolation
+The resilience policy ensuring that YAML syntax errors or MCP connection failures in a single `SkillPackage` are isolated and logged without blocking the core Agent runtime or other healthy skills.
+
+### SkillApprovalInheritance
+The zero-trust security rule where a `SkillPackage` flagged with `requireApproval: true` automatically propagates HITL leader approval gates to all its mutation tools (`readOnly: false`).
+### UnifiedBootstrapper
+The top-level application entry point and configuration engine that parses `config/config.yaml` (with environment variable interpolation), orchestrating and initializing `@kkbot/driver`, `@kkbot/store`, `@kkbot/agent`, and `@kkbot/gateway` into a cohesive running process.
+
+### DualModeKnowledgeEngine
+The hybrid RAG architecture providing zero-cost, zero-latency local markdown chunk matching by default, while seamlessly upgrading to dense vector embeddings and neural reranking when external Embedding/Rerank API endpoints are configured.
+### CascadedGracefulShutdown
+The four-stage resource de-allocation sequence (Gateway in-flight drain -> Driver CDP disconnect -> Agent watcher release -> Store LibSQL WAL flush & close) triggered upon `SIGINT`/`SIGTERM` to guarantee zero state corruption.
+
+### KnowledgeFallbackPolicy
+### LeaderHierarchyResolution
+The three-tier deterministic manager lookup algorithm (Direct `leader_id` -> Nearest department leader in `ReportingLine` -> `fallbackLeaderId`) used to route approval requests without hardcoding.
+
+### AtomicVectorReplacement
+The transactional indexation strategy where all existing embedding vectors belonging to a document path (`filePath`) are purged atomically before inserting newly generated chunk vectors, preventing ghost chunk conflicts.
+
+### AssetRetentionPolicy
+The storage lifecycle governance policy where physical media and deliverable files older than 30 days are purged in daily maintenance cycles while preserving historical metadata in the database.
+### UnifiedLogger
+The centralized Pino-based logging infrastructure initialized by `UnifiedBootstrapper` that coordinates dual-output logging (human-readable console + daily rotating file logs), log-level cascading, and global PII data masking across all four packages.
+
+### TraceContextPropagation
+The end-to-end correlation identifier mechanism attaching a unique `traceId` and `sessionId` across Driver, Gateway, Agent, and Store to ensure single-message execution flows are traceable in high-concurrency environments.
+
+### PiiRedactionPolicy
+The automated logging safeguard redacting sensitive fields (API keys, mobile numbers, identity credentials, database passwords) before log serialization.
+The resilience rule automatically downgrading semantic vector search to local markdown chunk matching upon network timeouts or 5xx errors from remote Embedding/Rerank APIs without breaking the chat session.
 ## Organization & Directory
 
 ### Department
