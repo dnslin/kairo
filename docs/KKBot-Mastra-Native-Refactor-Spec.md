@@ -138,7 +138,7 @@ Delivery 从生成结果创建时起记录完整发送生命周期，必须区�
 | 能力 | 本规格中的用途 | 官方依据 |
 |---|---|---|
 | Agent Loop 与 Tool Calling | 取代 `KkbotAgentRuntime` 的自定义模型和工具循环 | [Agent orchestration](https://mastra.ai/blog/introducing-mastra-improved-agent-orchestration-ai-sdk-v5-support) |
-| 动态模型与 fallback array | 按 FAST / DEEP / VISION 选择模型并配置备用链 | [Dynamic model fallback arrays](https://mastra.ai/blog/changelog-2026-03-16) |
+| 动态模型与 fallback array | Agent 动态 model 从 `RequestContext` 读取 Model Tier，并返回配置好的 `ModelWithRetries[]`；重试与 fallback 状态由 Mastra 持有 | [Dynamic model fallback arrays](https://mastra.ai/blog/changelog-2026-03-16) |
 | Observational Memory | 取代自定义 L2 摘要和 L3 长期协同记忆 | [Observational Memory](https://mastra.ai/blog/observational-memory) |
 | Tool Approval | 高危工具执行前由主管批准或拒绝 | [Tool approval](https://mastra.ai/blog/tool-approval) |
 | Workflow suspend / resume 与 snapshot | 需要补充信息、跨步骤等待或长流程恢复 | [Workflow snapshots](https://mastra.ai/en/reference/workflows/snapshots) |
@@ -356,38 +356,40 @@ Mastra 模型链全部失败
 
 不再由 Agent 内部维护自定义 `FallbackHandler`。
 
+模型调用失败不得改变本次请求已经确定的 Model Tier。Mastra 在该 Tier 对应的模型配置内完成 retry 和 fallback；全部模型失败后由 Gateway 处理最终故障，但不得把 `FAST` 升级为 `DEEP`、把 `DEEP` 改为 `VISION`，也不得重新运行分类或自研模型路由循环。
+
 ---
 
 ## 4.5 把 `IntentModelRouter` 改成纯模型等级策略
 
-原有 Router 同时保存模型、备用模型和 Failover 逻辑，职责过重。
-
-改成：
+原有 Router 同时保存模型、备用模型和 Failover 逻辑，职责过重。重构后，`ModelTierPolicy` 只能根据当前请求的规范化输入计算初始能力与成本等级：
 
 ```ts
 type ModelTier = 'FAST' | 'DEEP' | 'VISION';
 
-function resolveModelTier(input: {
-  text: string;
-  attachments: Attachment[];
-}): ModelTier;
+function resolveModelTier(
+  input: NormalizedModelTierInput,
+  rulesVersion: string,
+): ModelTier;
 ```
 
-它只做分类：
+`NormalizedModelTierInput` 只包含分类所需的可观测本地事实：规范化文本，以及附件的媒体模态、可用文本表示及其完整性。附件事实必须来自确定性的本地解析、可信元数据或显式配置，不得包含上游预先给出的 Tier 或“是否需要视觉理解”结论，也不得由额外模型推断。相同规范化输入和同一规则版本必须产生相同 Tier。
 
-- 简单问候、简单组织查询：`FAST`；
-- 代码、分析、复杂方案：`DEEP`；
-- 图片或需要视觉理解：`VISION`。
+规则按以下固定优先级执行：
 
-结果写入 Mastra `requestContext`，由 Agent 动态选择模型。
+1. **视觉能力优先**：从可观测事实与显式文本规则推导视觉能力需求。附件属于视觉模态且缺少完整可信文本表示，或规范化文本显式要求分析图片内容、图表关系、颜色、位置或版面等视觉属性时，选择 `VISION`。附件存在本身不是条件；纯文本文件，以及已有完整可信文本表示且文本未要求视觉属性的附件，不得仅因是附件而进入 `VISION`。
+2. **复杂文本规则**：未命中视觉能力规则时，先匹配显式 `DEEP` 规则。代表性类别包括代码分析、复杂推理和多步骤方案综合；具体规则表由后续实施配置维护，本规格不锁定关键词清单或长度阈值。
+3. **简单文本规则**：未命中 `DEEP` 时，再匹配显式 `FAST` 规则。代表性类别包括简单问候、直接组织查询和简单操作性请求。
+4. **唯一默认路径**：仍未命中任何显式规则时固定选择 `DEEP`。未知文本无法被确定性证明为简单请求，因此默认保留更强文本能力；不得随机、调用模型或使用概率结果决定。
 
-该策略不能再：
+结果只作为 `ModelTier` 写入 Mastra `RequestContext`。Agent 的动态 model 函数读取该 Tier，再映射到后续决策锁定的模型配置和 `ModelWithRetries[]`。Tier 不是 provider、model ID 或 fallback 数组，也不保存这些配置。
 
-- 调用模型；
-- 管理备用节点；
-- 管理重试；
-- 管理超时；
-- 负责 Tool Loop。
+该策略不能：
+
+- 调用额外 LLM、Embedding、远端分类 API、Agent Tool 或概率模型；
+- 管理 provider、model ID、备用节点、重试或超时；
+- 因模型调用失败升级或重新分类 Tier；
+- 参与 Agent Loop、Tool 执行、Memory、Delivery 或失败恢复。
 
 ---
 
@@ -1327,24 +1329,8 @@ agent:
     lastMessages: 20
     observationalMemory: true
 
-  models:
-    fast:
-      provider: openai-compatible
-      baseUrl: ${FAST_MODEL_BASE_URL}
-      apiKey: ${FAST_MODEL_API_KEY}
-      model: ${FAST_MODEL_NAME}
-
-    deep:
-      provider: openai-compatible
-      baseUrl: ${DEEP_MODEL_BASE_URL}
-      apiKey: ${DEEP_MODEL_API_KEY}
-      model: ${DEEP_MODEL_NAME}
-
-    vision:
-      provider: openai-compatible
-      baseUrl: ${VISION_MODEL_BASE_URL}
-      apiKey: ${VISION_MODEL_API_KEY}
-      model: ${VISION_MODEL_NAME}
+  # provider、model ID、每 Tier fallback、retry 和 timeout
+  # 由后续专门决策锁定，不从 FAST、DEEP、VISION 名称直接推导。
 
 knowledge:
   sources: ./data/knowledge/sources
@@ -1372,6 +1358,8 @@ retention:
 ```
 
 所有凭据只能来自环境变量。
+
+Model Tier 配置只描述本地分类规则及其版本，不直接绑定 provider 或 model ID。Agent 的动态 model 函数负责把 `RequestContext` 中的 Tier 映射为后续锁定的 `ModelWithRetries[]`；本节不决定任何实际模型、fallback 顺序、retry 或 timeout 数值。
 
 ---
 
@@ -1524,7 +1512,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | R107-32 | 知识不足时明确未命中 | 改写后保留 | `Knowledge Tool + Grounding Processor` | 企业制度类回答无来源时禁止模型按常识编造。 |
 | R107-33 | 仅摄取 PublicKnowledge | 迁入独立子系统 | `KnowledgeIngestion Policy` | 未明确归类的文档不得进入全局知识。 |
 | R107-34 | 统一 Provider Adapter 接入模型 | 改写后保留 | `MastraModelFactory` | 删除自定义 LLMProvider，输出 Mastra/AI SDK 模型实例。 |
-| R107-35 | 配置 FAST、DEEP 和备用模型 | 改写后保留 | `ModelTierPolicy + Mastra fallback` | 策略只选 Tier，重试和 fallback 由 Mastra 执行。 |
+| R107-35 | 配置 FAST、DEEP 和备用模型 | 改写后保留 | `ModelTierPolicy + Mastra dynamic model` | 本地确定性策略只选 Tier；动态 model 映射到配置，重试和 fallback 由 Mastra 执行。 |
 | R107-36 | 集中配置 LLM、Embedding、Rerank | 改写后保留 | `Unified Config` | 模型配置不再映射到自定义 Runtime。 |
 | R107-37 | 四模块共享统一日志策略 | 改写后保留 | `UnifiedLogger` | 应用日志统一；Agent 内部 Trace 交给 Mastra Observability。 |
 | R107-38 | 日志保留 module 字段 | 直接保留 | `UnifiedLogger child logger` | Driver/Gateway/Store/Knowledge 可按模块筛选。 |
@@ -1804,11 +1792,12 @@ Tool：runId + toolCallId
 
 ## 9.2 Model Tier
 
-- 问候进入 FAST；
-- 复杂分析进入 DEEP；
-- 图片进入 VISION；
-- 自定义规则覆盖默认分类；
-- Model Tier 只决定模型等级，不参与执行。
+- 相同规范化输入和同一规则版本始终产生相同 Tier，分类过程不发起任何模型、Embedding、远端 API 或 Tool 调用；
+- 视觉模态附件缺少完整可信文本表示，或规范化文本显式要求分析图片内容、图表关系、颜色、位置或版面时优先进入 `VISION`；纯文本文件，以及已有完整可信文本表示且文本未要求视觉属性的附件不进入 `VISION`；
+- 未命中视觉规则时，明确的复杂文本请求进入 `DEEP`，简单请求进入 `FAST`，冲突时按 `DEEP` 规则优先于 `FAST` 规则处理；
+- 未命中显式规则时稳定进入默认 `DEEP`，显式 `FAST` 规则必须与默认路径产生可观察差异；
+- Model Tier 只写入 `RequestContext` 并决定初始能力等级，不绑定 provider、model ID 或 fallback 数组；
+- 模型失败、retry 和 fallback 不改变 Tier；Mastra 模型链全部失败后由 Gateway 处理最终故障，不重新分类或升级。
 
 ## 9.3 Memory
 
@@ -1949,6 +1938,7 @@ Tool：runId + toolCallId
 
 - KK 专属 I/O 和数据转换；
 - `requestContext`、`threadId`、`resourceId`、`traceId` 标识创建；
+- 纯本地、确定性、无状态或显式规则版本驱动的 Model Tier 分类；
 - KKBot 业务 Tool 定义和注册；
 - KK CDP Driver；
 - KK DOM 和原生事件桥；
