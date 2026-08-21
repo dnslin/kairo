@@ -859,6 +859,30 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
   });
 
   describe('4. 主动定时守护与推送 (Proactive Schedules)', () => {
+    it('当 scheduleManager.start 抛错时，SessionCoordinator 自动回滚并解绑监听，允许后续重试启动并成功', async () => {
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        scheduleManager,
+      });
+
+      // 1. 模拟 scheduleManager 首次启动失败
+      const startSpy = vi
+        .spyOn(scheduleManager, 'start')
+        .mockRejectedValueOnce(new Error('Mastra Worker 存储暂时不可用'));
+
+      await expect(coordinator.start()).rejects.toThrow('Mastra Worker 存储暂时不可用');
+
+      // 验证未处于 running 状态，且 Driver 监听器已成功被解绑
+      expect(coordinator.isRunningCoordinator).toBe(false);
+
+      // 2. 第二次启动成功
+      await expect(coordinator.start()).resolves.toBeUndefined();
+      expect(coordinator.isRunningCoordinator).toBe(true);
+
+      startSpy.mockRestore();
+    });
+
     it('基于 Mastra Schedules 注册 Cron 定时任务，持久化存储并支持手动触发推送且严格保留红点', async () => {
       coordinator = new SessionCoordinator({
         driver: mockDriver as unknown as KK9Driver,

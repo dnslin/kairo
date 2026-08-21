@@ -89,6 +89,13 @@ export class SessionCoordinator extends EventEmitter {
   private readonly sessionModeMap = new Map<string, SessionMode>();
   /** 运行状态标记 */
   private isRunning = false;
+  /**
+   * 获取当前编排器运行状态
+   */
+  public get isRunningCoordinator(): boolean {
+    return this.isRunning;
+  }
+
   /** 全局串行发送临界区排队锁 (防止并发跨会话发送导致会话切换串线) */
   private sendMutex = Promise.resolve();
 
@@ -197,13 +204,24 @@ export class SessionCoordinator extends EventEmitter {
     if (this.isRunning) {
       return;
     }
-    this.isRunning = true;
+
     this.driver.on('message', this.boundHandleMessage);
     this.driver.on('recalled', this.boundHandleRecalled);
 
     if (this.scheduleManager) {
-      await this.scheduleManager.start();
+      try {
+        await this.scheduleManager.start();
+      } catch (err) {
+        // 启动失败安全回滚：解绑 Driver 监听并恢复未运行状态，允许后续重试启动
+        this.driver.off('message', this.boundHandleMessage);
+        this.driver.off('recalled', this.boundHandleRecalled);
+        this.isRunning = false;
+        log.error({ err }, 'SessionCoordinator 启动主动调度管理器失败，已安全回滚');
+        throw err;
+      }
     }
+
+    this.isRunning = true;
 
     log.info(
       {
