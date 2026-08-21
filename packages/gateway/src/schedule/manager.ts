@@ -63,8 +63,7 @@ export declare interface ProactiveScheduleManager {
 export class ProactiveScheduleManager extends EventEmitter {
   private readonly client?: Client;
   private mastra?: Mastra;
-  private readonly driver?: KK9Driver;
-  private readonly dispatchReplyFn?: (
+  private dispatchReplyFn?: (
     sessionId: string,
     content: FormattedText,
     options?: DispatchReplyOptions
@@ -84,9 +83,22 @@ export class ProactiveScheduleManager extends EventEmitter {
     super();
     this.client = options?.client;
     this.mastra = options?.mastra;
-    this.driver = options?.driver;
     this.dispatchReplyFn = options?.dispatchReply;
   }
+  /**
+   * 显式绑定会话编排器的全局串行分发函数 (强制统一走 Coordinator.dispatchReply，保证会话切换与并发锁)
+   */
+  public bindDispatchReply(
+    fn: (
+      sessionId: string,
+      content: FormattedText,
+      options?: DispatchReplyOptions
+    ) => Promise<CoordinatorDispatchResult>
+  ): void {
+    this.dispatchReplyFn = fn;
+    log.info('已成功绑定 Coordinator 全局串行 dispatchReply 分发函数');
+  }
+
 
   /**
    * 初始化 Mastra Schedules 存储底座、Workflow 执行器与实例
@@ -428,51 +440,17 @@ export class ProactiveScheduleManager extends EventEmitter {
     let dispatchResult: CoordinatorDispatchResult;
 
     try {
-      if (this.dispatchReplyFn) {
-        dispatchResult = await this.dispatchReplyFn(
-          input.targetSessionId,
-          contentToPush,
-          { markRead: false }
+      if (!this.dispatchReplyFn) {
+        throw new Error(
+          'ProactiveScheduleManager 未绑定 dispatchReply 串行分发通道，无法安全执行跨会话定时推送'
         );
-      } else if (this.driver) {
-        if (typeof this.driver.selectSession === 'function') {
-          try {
-            const cur = await this.driver.getCurrentSession?.();
-            if (!cur || cur.id !== input.targetSessionId) {
-              await this.driver.selectSession(input.targetSessionId);
-            }
-          } catch (selErr) {
-            log.warn({ selErr, targetSessionId: input.targetSessionId }, '定时推送切换目标会话异常');
-          }
-        }
-        if (typeof contentToPush === 'string') {
-          const sendRes = await this.driver.sendText(contentToPush, {
-            targetSessionId: input.targetSessionId,
-          });
-          dispatchResult = {
-            action: sendRes.success ? 'message_sent' : 'send_failed',
-            success: sendRes.success,
-            sessionId: input.targetSessionId,
-            messageId: sendRes.messageId,
-            error: sendRes.error,
-            redDotCleared: false,
-          };
-        } else {
-          const sendRes = await this.driver.sendRichText(contentToPush, {
-            targetSessionId: input.targetSessionId,
-          });
-          dispatchResult = {
-            action: sendRes.success ? 'message_sent' : 'send_failed',
-            success: sendRes.success,
-            sessionId: input.targetSessionId,
-            messageId: sendRes.messageId,
-            error: sendRes.error,
-            redDotCleared: false,
-          };
-        }
-      } else {
-        throw new Error('未配置 dispatchReply 或 driver 实例，无法发送主动推送消息');
       }
+
+      dispatchResult = await this.dispatchReplyFn(
+        input.targetSessionId,
+        contentToPush,
+        { markRead: false }
+      );
       fakeSched.status = 'active';
       fakeSched.lastRunAt = Date.now();
       this.emit('executed', fakeSched, dispatchResult);

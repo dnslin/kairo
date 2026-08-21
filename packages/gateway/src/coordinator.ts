@@ -117,6 +117,13 @@ export class SessionCoordinator extends EventEmitter {
       knowledgeRetriever: options.config?.knowledgeRetriever,
     };
 
+    // 显式绑定 scheduleManager 的全局串行分发通道 (带 sendMutex 锁、自动会话切换与红点守护)
+    if (this.scheduleManager && typeof this.scheduleManager.bindDispatchReply === 'function') {
+      this.scheduleManager.bindDispatchReply(
+        (sid, content, opt) => this.dispatchReply(sid, content, opt)
+      );
+    }
+
     // 若同时装配了 scheduleManager 与 agentRuntime，自动在工具中心注册 register_proactive_schedule
     if (this.scheduleManager && this.agentRuntime) {
       const registry = this.agentRuntime.getToolRegistry?.();
@@ -670,7 +677,7 @@ export class SessionCoordinator extends EventEmitter {
 
     // 4. 自动发送模式 (auto)：在全局串行临界区中执行会话切换与消息发送
     const sendResult = await this.executeWithSendLock(async () => {
-      // 4.1 会话安全切换：若目标会话不是当前活跃会话，先切换到目标会话以保证 checkPreSendState 通过
+      // 4.1 会话安全切换 (Fail-Closed 安全防线)：若目标会话不是当前活跃会话，先切换到目标会话以保证 checkPreSendState 通过
       if (typeof this.driver.selectSession === 'function') {
         try {
           const current = await this.driver.getCurrentSession?.();
@@ -679,13 +686,30 @@ export class SessionCoordinator extends EventEmitter {
               { targetSessionId: sessionId, currentSessionId: current?.id },
               '切换目标会话以执行发送'
             );
-            await this.driver.selectSession(sessionId);
+            const switched = await this.driver.selectSession(sessionId);
+            if (!switched) {
+              log.error(
+                { targetSessionId: sessionId, currentSessionId: current?.id },
+                '切换目标会话失败 (selectSession 返回 false)，执行 Fail-Closed 安全拦截拒绝发送'
+              );
+              return {
+                success: false,
+                error: `切换目标会话失败: selectSession [${sessionId}] 返回 false`,
+              };
+            }
           }
         } catch (selErr) {
-          log.warn({ selErr, sessionId }, '切换目标会话异常，尝试继续执行发送');
+          const errMsg = selErr instanceof Error ? selErr.message : String(selErr);
+          log.error(
+            { selErr: errMsg, sessionId },
+            '切换目标会话抛出异常，执行 Fail-Closed 安全拦截拒绝发送'
+          );
+          return {
+            success: false,
+            error: `切换目标会话异常: ${errMsg}`,
+          };
         }
       }
-
       // 4.2 执行底层消息发送
       let res: SendResult;
       try {

@@ -806,10 +806,67 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       expect(res.action).toBe('message_sent');
       expect(mockDriver.activeSessionId).toBe('session_leader_chat');
     });
+
+    it('跨会话发送时若 selectSession 返回 false，执行 Fail-Closed 安全拦截，严禁调用 sendText', async () => {
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+      });
+      await coordinator.start();
+
+      mockDriver.activeSessionId = 'session_emp_001';
+      mockDriver.selectSession.mockResolvedValueOnce(false);
+
+      const res = await coordinator.dispatchReply('session_leader_chat', '【测试消息】');
+
+      // 验证返回 send_failed 且红点未被清除
+      expect(res.success).toBe(false);
+      expect(res.action).toBe('send_failed');
+      expect(res.redDotCleared).toBe(false);
+      expect(res.error).toContain('selectSession [session_leader_chat] 返回 false');
+
+      // 核心安全断言：切换失败时严禁调用底层的 sendText
+      expect(mockDriver.sendText).not.toHaveBeenCalledWith(
+        '【测试消息】',
+        expect.anything()
+      );
+    });
+
+    it('跨会话发送时若 selectSession 抛出异常，执行 Fail-Closed 安全拦截，严禁调用 sendText', async () => {
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+      });
+      await coordinator.start();
+
+      mockDriver.activeSessionId = 'session_emp_001';
+      mockDriver.selectSession.mockRejectedValueOnce(new Error('CDP 连接已断开'));
+
+      const res = await coordinator.dispatchReply('session_leader_chat', '【测试消息】');
+
+      // 验证返回 send_failed
+      expect(res.success).toBe(false);
+      expect(res.action).toBe('send_failed');
+      expect(res.redDotCleared).toBe(false);
+      expect(res.error).toContain('CDP 连接已断开');
+
+      // 核心安全断言：抛错时严禁调用底层 sendText 避免发到错误会话
+      expect(mockDriver.sendText).not.toHaveBeenCalledWith(
+        '【测试消息】',
+        expect.anything()
+      );
+    });
   });
 
   describe('4. 主动定时守护与推送 (Proactive Schedules)', () => {
     it('基于 Mastra Schedules 注册 Cron 定时任务，持久化存储并支持手动触发推送且严格保留红点', async () => {
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        scheduleManager,
+      });
+      await coordinator.start();
+
       const schedule = await scheduleManager.registerSchedule({
         id: 'daily_ticket_summary',
         name: '每日工单晨报',
@@ -826,7 +883,7 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       const list = await scheduleManager.listSchedules();
       expect(list.length).toBeGreaterThanOrEqual(1);
 
-      // 手动触发定时任务推送
+      // 手动触发定时任务推送 (统一走 Coordinator.dispatchReply 串行锁与会话切换)
       const dispatchRes = await scheduleManager.triggerSchedule(schedule.id);
       expect(dispatchRes).toBeDefined();
       // 核心断言：手动触发仅走单一执行源，sendText 恰好调用 1 次，杜绝重复双发
@@ -852,6 +909,13 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
     });
 
     it('Mastra 原生工作流步驱动的主动推送：通过 executeWorkflowPush 执行并严禁清除红点', async () => {
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        scheduleManager,
+      });
+      await coordinator.start();
+
       const pushRes = await scheduleManager.executeWorkflowPush({
         scheduleId: 'sched_wf_step_1',
         targetSessionId: 'session_emp_001',
