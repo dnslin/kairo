@@ -1,6 +1,7 @@
 import type {
   LLMMessage,
   LLMStreamChunk,
+  LLMToolDefinition,
   TokenUsage,
 } from '../types/index.js';
 import type {
@@ -241,11 +242,19 @@ export class ModelFailoverManager {
       signal?: AbortSignal;
       temperature?: number;
       maxTokens?: number;
+      tools?: LLMToolDefinition[];
     }
   ): Promise<{
     content: string;
     usage?: TokenUsage;
     finishReason?: string;
+    toolCalls?: Array<{
+      id?: string;
+      callId?: string;
+      name: string;
+      arguments?: Record<string, unknown>;
+      args?: Record<string, unknown>;
+    }>;
   }> {
     const timeoutMs = model.timeoutMs ?? this.defaultTimeoutMs;
     const timeoutController = new AbortController();
@@ -273,6 +282,7 @@ export class ModelFailoverManager {
         signal: timeoutController.signal,
         temperature: options?.temperature,
         maxTokens: options?.maxTokens,
+        tools: options?.tools,
       });
       return response;
     } catch (err: unknown) {
@@ -306,11 +316,19 @@ export class ModelFailoverManager {
       signal?: AbortSignal;
       temperature?: number;
       maxTokens?: number;
+      tools?: LLMToolDefinition[];
     }
   ): Promise<{
     content: string;
     usage?: TokenUsage;
     finishReason?: string;
+    toolCalls?: Array<{
+      id?: string;
+      callId?: string;
+      name: string;
+      arguments?: Record<string, unknown>;
+      args?: Record<string, unknown>;
+    }>;
     executedModel: ModelEndpointConfig;
   }> {
     if (candidateChain.length === 0) {
@@ -385,6 +403,7 @@ export class ModelFailoverManager {
       signal?: AbortSignal;
       temperature?: number;
       maxTokens?: number;
+      tools?: LLMToolDefinition[];
     }
   ): AsyncIterable<LLMStreamChunk & { executedModel?: ModelEndpointConfig }> {
     if (candidateChain.length === 0) {

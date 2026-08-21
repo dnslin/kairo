@@ -10,8 +10,10 @@ import {
   createAgentTool,
   createHitlStorage,
   createHitlWorkflow,
+  createRegisterProactiveScheduleTool,
   KkbotAgentRuntime,
   LeaderApprovalRouter,
+  ReadWriteSplitExecutor,
   StatefulApprovalMatcher,
   ToolRegistry,
   type LLMProvider,
@@ -824,8 +826,188 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       );
       expect(mockDriver.markSessionRead).not.toHaveBeenCalledWith('session_emp_001');
     });
-  });
 
+    it('自然语言主动定时任务注册 Tool：绑定 context.threadId 注册任务并在无 threadId 时 fail-closed 安全拦截', async () => {
+      const schedTool = createRegisterProactiveScheduleTool({
+        scheduleManager,
+      });
+      const toolRes = await schedTool.execute(
+        {
+          name: '每日站会提醒',
+          cron: '0 10 * * 1-5',
+          message: '请准时参加早 10 点晨会。',
+        },
+        {
+          threadId: 'session_emp_001',
+          senderId: 'emp_dev_1',
+        }
+      );
+
+      expect(toolRes.success).toBe(true);
+      expect(toolRes.scheduleId).toBeDefined();
+      expect(toolRes.message).toContain('每日站会提醒');
+
+      // 验证已落库 Mastra Schedules 且目标会话正确
+      const savedSched = await scheduleManager.getSchedule(toolRes.scheduleId!);
+      expect(savedSched?.targetSessionId).toBe('session_emp_001');
+
+      // 2. 核心安全防线 (Fail-Closed): 若缺少 context.threadId，拒绝跨会话越权注册
+      const failRes = await schedTool.execute(
+        {
+          name: '非法注入提醒',
+          cron: '0 10 * * *',
+          message: '恶意刷屏',
+        },
+        undefined
+      );
+
+      expect(failRes.success).toBe(false);
+      expect(failRes.error).toContain('缺少可信会话上下文');
+    });
+    it('员工自然语言消息 ➔ LLM 首轮接收 Draft-07 JSON Schema tools 并返回 toolCalls ➔ Runtime 执行 ➔ 二次回灌模型 ➔ 成功落库 Mastra Schedules 且自动私聊回复', async () => {
+      // 初始化 ToolRegistry 与 ReadWriteSplitExecutor (不手工注册 schedTool)
+      const toolRegistry = new ToolRegistry();
+      const toolExecutor = new ReadWriteSplitExecutor(toolRegistry);
+      let round = 0;
+      let receivedTools: unknown[] | undefined;
+      const mockReActLLM = {
+        chat: vi.fn().mockImplementation((messages: Array<{ role: string; content: unknown }>, options?: { tools?: unknown[] }) => {
+          round++;
+          if (round === 1) {
+            // 首轮：模型断言收到 JSON Schema tools 且结构合规，返回 register_proactive_schedule toolCalls
+            receivedTools = options?.tools;
+            return Promise.resolve({
+              content: '正在为您创建定时提醒...',
+              finishReason: 'tool_calls',
+              toolCalls: [
+                {
+                  id: 'call_sched_nl_001',
+                  name: 'register_proactive_schedule',
+                  arguments: {
+                    name: '工作日早晨站会提醒',
+                    cron: '0 9 * * 1-5',
+                    message: '早上好！9:30 组内站会请准备。',
+                  },
+                },
+              ],
+            });
+          }
+          // 第二轮：模型接收到了 role: 'tool' 的执行结果，生成最终回复
+          const toolMsg = messages.find(m => m.role === 'tool');
+          const toolContentStr =
+            typeof toolMsg?.content === 'string'
+              ? toolMsg.content
+              : JSON.stringify(toolMsg?.content || {});
+          return Promise.resolve({
+            content: `已为您成功设置【工作日早晨站会提醒】！触发结果: ${toolContentStr}`,
+            finishReason: 'stop',
+          });
+        }),
+      };
+
+      const reactAgentRuntime = new KkbotAgentRuntime({
+        llmProvider: mockReActLLM,
+        toolRegistry,
+        toolExecutor,
+      });
+      await reactAgentRuntime.init();
+
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        agentRuntime: reactAgentRuntime,
+        scheduleManager,
+        config: {
+          debounceMs: 20,
+        },
+      });
+      await coordinator.start();
+
+      // 员工发送自然语言请求
+      const nlMsg = createSampleMsg({
+        id: 'msg_nl_schedule_req',
+        content: '帮我定一个工作日早上 9 点提醒我开站会的闹钟',
+      });
+      mockDriver.emitMessage(nlMsg);
+
+      await new Promise(r => setTimeout(r, 80));
+
+      // 1. 验证首轮模型确实收到了包含 Draft-07 JSON Schema parameters 的 tools
+      expect(receivedTools).toBeDefined();
+      const schedDef = (receivedTools as Array<{ function: { name: string; parameters: Record<string, unknown> } }>).find(
+        t => t.function.name === 'register_proactive_schedule'
+      );
+      expect(schedDef).toBeDefined();
+      expect(schedDef?.function.parameters).toHaveProperty('type', 'object');
+      expect(schedDef?.function.parameters).toHaveProperty('properties');
+
+      // 2. 验证模型经过 2 轮调用（首轮 tool call + 次轮自然语言生成）
+      expect(mockReActLLM.chat).toHaveBeenCalledTimes(2);
+
+      // 3. 验证 Driver 成功向员工推送了最终回复
+      expect(mockDriver.sendText).toHaveBeenCalledWith(
+        expect.stringContaining('已为您成功设置【工作日早晨站会提醒】'),
+        expect.objectContaining({ targetSessionId: 'session_emp_001' })
+      );
+
+      // 4. 验证任务成功落库 Mastra Schedules 且目标会话严格绑定 session_emp_001
+      const schedules = await scheduleManager.listSchedules();
+      const createdSched = schedules.find(s => s.name === '工作日早晨站会提醒');
+      expect(createdSched).toBeDefined();
+      expect(createdSched?.targetSessionId).toBe('session_emp_001');
+      expect(createdSched?.cron).toBe('0 9 * * 1-5');
+    });
+
+    it('RAG 知识库检索集成：通过 knowledgeRetriever 注入事实切片到 Prompt 事实层', async () => {
+      let capturedPrompt = '';
+      const mockLLM = {
+        chat: vi.fn().mockImplementation((messages: Array<{ role: string; content: unknown }>) => {
+          const sysMsg = messages.find(m => m.role === 'system');
+          capturedPrompt = typeof sysMsg?.content === 'string' ? sysMsg.content : '';
+          return Promise.resolve({
+            content: '根据企业上线流程规定，需先在预发环境验证。',
+            finishReason: 'stop',
+          });
+        }),
+      };
+
+      const customAgent = new KkbotAgentRuntime({
+        llmProvider: mockLLM,
+      });
+      await customAgent.init();
+
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        agentRuntime: customAgent,
+        config: {
+          debounceMs: 20,
+          knowledgeRetriever: (query, _sid) => {
+            if (query.includes('上线流程')) {
+              return Promise.resolve(['【企业知识库】: 上线流程需提前 2 小时申请发布窗口并在预发验证通过。']);
+            }
+            return Promise.resolve([]);
+          },
+        },
+      });
+      await coordinator.start();
+
+      const msg = createSampleMsg({
+        id: 'msg_rag_query',
+        content: '请问我们系统的上线流程是什么？',
+      });
+      mockDriver.emitMessage(msg);
+
+      await new Promise(r => setTimeout(r, 60));
+
+      // 验证 RAG 事实已注入编译出的 System Prompt
+      expect(capturedPrompt).toContain('上线流程需提前 2 小时申请发布窗口');
+      expect(mockDriver.sendText).toHaveBeenCalledWith(
+        '根据企业上线流程规定，需先在预发环境验证。',
+        expect.objectContaining({ targetSessionId: 'session_emp_001' })
+      );
+    });
+  });
   describe('5. 视觉红点守卫原则与人工退避 (Visual Red Dot Guard & Takeover)', () => {
     it('人类操作员接入客户端 (isMe: true) -> 触发人工退避 10 分钟 -> 后续消息全部静默并严格保留未读红点', async () => {
       coordinator = new SessionCoordinator({

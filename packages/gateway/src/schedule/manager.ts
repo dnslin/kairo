@@ -97,15 +97,15 @@ export class ProactiveScheduleManager extends EventEmitter {
     }
 
     if (!this.mastra) {
-      const storage = this.client
-        ? new LibSQLStore({
-            id: 'kkbot-schedules-storage',
-            client: this.client,
-          })
-        : new LibSQLStore({
-            id: 'kkbot-schedules-memory',
-            url: 'file::memory:',
-          });
+      if (!this.client) {
+        throw new Error(
+          'ProactiveScheduleManager 初始化失败: 必须提供 client: Client 数据库客户端或已配置的 mastra 实例 (单库一致性约束)'
+        );
+      }
+      const storage = new LibSQLStore({
+        id: 'kkbot-schedules-storage',
+        client: this.client,
+      });
 
       await storage.init();
 
@@ -184,7 +184,9 @@ export class ProactiveScheduleManager extends EventEmitter {
       try {
         await this.mastra.startWorkers();
       } catch (err) {
-        log.debug({ err }, 'Mastra startWorkers 启动完成');
+        this.isRunning = false;
+        log.error({ err }, 'Mastra startWorkers 启动失败');
+        throw err;
       }
     }
 
@@ -208,7 +210,8 @@ export class ProactiveScheduleManager extends EventEmitter {
       try {
         await this.mastra.stopWorkers();
       } catch (err) {
-        log.debug({ err }, 'Mastra stopWorkers 停止完成');
+        log.error({ err }, 'Mastra stopWorkers 停止失败');
+        throw err;
       }
     }
 
@@ -339,7 +342,8 @@ export class ProactiveScheduleManager extends EventEmitter {
       log.info({ scheduleId }, '已在 Mastra Schedules 注销主动定时任务');
       this.emit('unregistered', scheduleId);
       return true;
-    } catch {
+    } catch (err) {
+      log.error({ err, scheduleId }, '注销主动定时任务失败');
       return false;
     }
   }

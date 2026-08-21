@@ -159,8 +159,7 @@ export class ApprovalManager extends EventEmitter {
       approvalTaskId: string;
       idempotencyKey: string;
       threadId: string;
-      applicantId?: string;
-      senderId?: string;
+      applicantId: string;
     }
   ) => Promise<unknown>;
   private readonly defaultTimeoutMs: number;
@@ -348,9 +347,7 @@ export class ApprovalManager extends EventEmitter {
                 idempotencyKey: task.id,
                 threadId: task.threadId,
                 applicantId: task.applicantId,
-                senderId: task.applicantId,
               });
-
               await this.client.execute({
                 sql: `UPDATE approval_tasks SET tool_execution_status = 'succeeded', tool_execution_result = ? WHERE id = ?`,
                 args: [safeJsonStringify(execRes), task.id],
@@ -803,7 +800,6 @@ export class ApprovalManager extends EventEmitter {
               idempotencyKey: task.id,
               threadId: task.threadId,
               applicantId: task.applicantId,
-              senderId: task.applicantId,
             }
           );
           toolExecutionStatus = 'succeeded';

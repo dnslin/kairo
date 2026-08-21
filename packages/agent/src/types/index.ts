@@ -266,25 +266,45 @@ export interface LLMStreamChunk {
   /** Token 消耗 (通常在最后一个 chunk 提供) */
   usage?: TokenUsage;
 }
+/**
+ * 结构化 LLM Function Tool 契约定义 (OpenAI / Anthropic 兼容 JSON Schema)
+ */
+export interface LLMToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    readOnly?: boolean;
+    requireApproval?: boolean;
+  };
+}
 
 /**
  * LLM 客户端抽象接口 (支持离线测试 Mock 与真实模型接入)
  */
 export interface LLMProvider {
-  /** 完整对话生成 */
+  /** 完整对话生成 (支持工具定义与 Tool Calls 输出) */
   chat(
     messages: LLMMessage[],
     options?: {
       signal?: AbortSignal;
       temperature?: number;
       maxTokens?: number;
+      tools?: LLMToolDefinition[];
     }
   ): Promise<{
     content: string;
     usage?: TokenUsage;
     finishReason?: string;
+    toolCalls?: Array<{
+      id?: string;
+      callId?: string;
+      name: string;
+      arguments?: Record<string, unknown>;
+      args?: Record<string, unknown>;
+    }>;
   }>;
-
   /** 流式对话生成 */
   chatStream?(
     messages: LLMMessage[],

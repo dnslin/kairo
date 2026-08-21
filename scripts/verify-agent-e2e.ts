@@ -24,7 +24,9 @@ import {
   ProactiveScheduleManager,
   type CoordinatorDispatchResult,
 } from '../packages/gateway/src/index.js';
+import { createChildLogger } from '../packages/gateway/src/utils/logger.js';
 
+const log = createChildLogger('verify-agent-e2e');
 /**
  * 带超时保护的事件等待工具函数 (杜绝无限阻塞悬挂)
  */

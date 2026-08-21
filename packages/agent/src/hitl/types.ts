@@ -164,8 +164,7 @@ export interface ApprovalManagerOptions {
       approvalTaskId: string;
       idempotencyKey: string;
       threadId: string;
-      applicantId?: string;
-      senderId?: string;
+      applicantId: string;
     }
   ) => Promise<unknown>;
   /** 默认审批超时毫秒数，默认 60000ms (60秒) */

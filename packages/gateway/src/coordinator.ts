@@ -7,15 +7,16 @@ import type {
   SendResult,
 } from '@kkbot/driver';
 import type { KKBotStore, SessionMode } from '@kkbot/store';
-import type {
-  AgentMemoryManager,
-  ApprovalManager,
-  EmployeeOrgContext,
-  KkbotAgentRuntime,
-  LeaderApprovalRouter,
-  LLMMessage,
-  StatefulApprovalMatcher,
-  UserProfilePreference,
+import {
+  createRegisterProactiveScheduleTool,
+  type AgentMemoryManager,
+  type ApprovalManager,
+  type EmployeeOrgContext,
+  type KkbotAgentRuntime,
+  type LeaderApprovalRouter,
+  type LLMMessage,
+  type StatefulApprovalMatcher,
+  type UserProfilePreference,
 } from '@kkbot/agent';
 import type {
   ConsolidatedMessage,
@@ -62,10 +63,16 @@ export class SessionCoordinator extends EventEmitter {
   public readonly statefulMatcher?: StatefulApprovalMatcher;
   public readonly scheduleManager?: ProactiveScheduleManager;
 
-  public readonly config: Required<Omit<CoordinatorConfig, 'onConsolidatedMessage'>> & {
+  public readonly config: Required<
+    Omit<CoordinatorConfig, 'onConsolidatedMessage' | 'knowledgeRetriever'>
+  > & {
     onConsolidatedMessage?: (
       message: ConsolidatedMessage
     ) => Promise<void | CoordinatorDispatchResult> | void;
+    knowledgeRetriever?: (
+      query: string,
+      sessionId: string
+    ) => Promise<string[] | undefined> | string[] | undefined;
   };
 
   /** 各会话防抖队列桶映射表 (sessionId -> PendingBucket) */
@@ -105,7 +112,24 @@ export class SessionCoordinator extends EventEmitter {
       autoMarkRead: options.config?.autoMarkRead ?? true,
       enableHitlRouter: options.config?.enableHitlRouter ?? true,
       onConsolidatedMessage: options.config?.onConsolidatedMessage,
+      knowledgeRetriever: options.config?.knowledgeRetriever,
     };
+
+    // 若同时装配了 scheduleManager 与 agentRuntime，自动在工具中心注册 register_proactive_schedule
+    if (this.scheduleManager && this.agentRuntime) {
+      const registry = this.agentRuntime.getToolRegistry?.();
+      if (registry && typeof registry.register === 'function') {
+        try {
+          const schedTool = createRegisterProactiveScheduleTool({
+            scheduleManager: this.scheduleManager,
+          });
+          registry.register(schedTool, { override: true });
+          log.info('已自动在 Agent 工具注册中心装配 register_proactive_schedule 工具');
+        } catch (regErr) {
+          log.debug({ regErr }, '自动装配 register_proactive_schedule 工具告警');
+        }
+      }
+    }
 
     this.boundHandleMessage = (msg: KK9Message): void => {
       this.handleInboundMessage(msg).catch(err => {
@@ -766,21 +790,26 @@ export class SessionCoordinator extends EventEmitter {
   /**
    * 消息压入待合并队列并重置防抖计时器
    */
-  private enqueueMessage(msg: KK9Message): void {
-    const sessionId = msg.sessionId;
+  /**
+   * 获取或初始化会话的防抖待处理桶
+   */
+  private getOrCreatePendingBucket(
+    sessionId: string,
+    sampleMsg: KK9Message,
+    firstReceivedAt = Date.now()
+  ): PendingBucket {
     let bucket = this.buckets.get(sessionId);
-
     if (!bucket) {
       bucket = {
         sessionId,
-        sessionName: msg.sessionName,
-        sessionType: msg.sessionType,
-        sender: msg.sender,
-        senderId: msg.senderId,
+        sessionName: sampleMsg.sessionName,
+        sessionType: sampleMsg.sessionType,
+        sender: sampleMsg.sender,
+        senderId: sampleMsg.senderId,
         messages: [],
         debounceTimer: null,
         maxWaitTimer: null,
-        firstReceivedAt: Date.now(),
+        firstReceivedAt,
       };
       this.buckets.set(sessionId, bucket);
 
@@ -791,18 +820,34 @@ export class SessionCoordinator extends EventEmitter {
         });
       }, this.config.maxWaitMs);
     }
+    return bucket;
+  }
 
-    bucket.messages.push(msg);
-
-    // 重置 1.5 秒滑动窗口防抖定时器
+  /**
+   * 重置滑动窗口防抖计时器
+   */
+  private resetDebounceTimer(
+    bucket: PendingBucket,
+    errorContext = '执行滑动窗口防抖合并异常'
+  ): void {
     if (bucket.debounceTimer) {
       clearTimeout(bucket.debounceTimer);
     }
     bucket.debounceTimer = setTimeout(() => {
-      this.flush(sessionId).catch(err => {
-        log.error({ err, sessionId }, '执行滑动窗口防抖合并异常');
+      this.flush(bucket.sessionId).catch(err => {
+        log.error({ err, sessionId: bucket.sessionId }, errorContext);
       });
     }, this.config.debounceMs);
+  }
+
+  /**
+   * 将新消息压入会话防抖队列
+   */
+  private enqueueMessage(msg: KK9Message): void {
+    const sessionId = msg.sessionId;
+    const bucket = this.getOrCreatePendingBucket(sessionId, msg);
+    bucket.messages.push(msg);
+    this.resetDebounceTimer(bucket, '执行滑动窗口防抖合并异常');
 
     log.debug(
       { sessionId, queueLength: bucket.messages.length, debounceMs: this.config.debounceMs },
@@ -819,28 +864,11 @@ export class SessionCoordinator extends EventEmitter {
     inFlightMessage: ConsolidatedMessage,
     newMsg: KK9Message
   ): void {
-    let bucket = this.buckets.get(sessionId);
-
-    if (!bucket) {
-      bucket = {
-        sessionId,
-        sessionName: newMsg.sessionName,
-        sessionType: newMsg.sessionType,
-        sender: newMsg.sender,
-        senderId: newMsg.senderId,
-        messages: [],
-        debounceTimer: null,
-        maxWaitTimer: null,
-        firstReceivedAt: inFlightMessage.firstReceivedAt || Date.now(),
-      };
-      this.buckets.set(sessionId, bucket);
-
-      bucket.maxWaitTimer = setTimeout(() => {
-        this.flush(sessionId).catch(err => {
-          log.error({ err, sessionId }, '执行最长等待超时防抖合并异常');
-        });
-      }, this.config.maxWaitMs);
-    }
+    const bucket = this.getOrCreatePendingBucket(
+      sessionId,
+      newMsg,
+      inFlightMessage.firstReceivedAt || Date.now()
+    );
 
     // 归并在途任务消息 (指纹去重)
     const existingIds = new Set(bucket.messages.map(m => m.id));
@@ -857,15 +885,7 @@ export class SessionCoordinator extends EventEmitter {
     }
 
     // 重置防抖计时器
-    if (bucket.debounceTimer) {
-      clearTimeout(bucket.debounceTimer);
-    }
-    bucket.debounceTimer = setTimeout(() => {
-      this.flush(sessionId).catch(err => {
-        log.error({ err, sessionId }, '执行重聚防抖合并异常');
-      });
-    }, this.config.debounceMs);
-
+    this.resetDebounceTimer(bucket, '执行重聚防抖合并异常');
     this.emit('in_flight_regrouped', sessionId, bucket.messages.length);
   }
 
@@ -997,10 +1017,26 @@ export class SessionCoordinator extends EventEmitter {
       }
     }
 
-    // 2. 调取 3-Tier 记忆上下文 (L1 会话消息历史 / L2 滚动摘要 / L3 实体画像)
+    // 2. 调取 3-Tier 记忆与 RAG 知识库上下文 (L1 消息历史 / L2 滚动摘要 / L3 实体画像 / RAG 知识切片)
     let historyMessages: LLMMessage[] | undefined = undefined;
     let retrievedFacts: string[] | undefined = undefined;
     let userProfile: UserProfilePreference | undefined = undefined;
+
+    // 知识库 RAG 检索 (注入 Layer 4 事实层)
+    if (this.config.knowledgeRetriever) {
+      try {
+        const kbFacts = await this.config.knowledgeRetriever(
+          consolidated.content,
+          sessionId
+        );
+        if (kbFacts && kbFacts.length > 0) {
+          retrievedFacts = [...(retrievedFacts ?? []), ...kbFacts];
+        }
+      } catch (kbErr) {
+        log.warn({ kbErr, sessionId }, '知识库 RAG 检索异常');
+      }
+    }
+
     if (this.memoryManager) {
       try {
         const memCtx = await this.memoryManager.getContext({
@@ -1022,7 +1058,8 @@ export class SessionCoordinator extends EventEmitter {
 
         // L2 滚动工作摘要 (放入 Layer 4 事实上下文)
         if (memCtx.l2Summary?.summary?.trim()) {
-          retrievedFacts = [`【前序对话工作摘要】: ${memCtx.l2Summary.summary.trim()}`];
+          const summaryFact = `【前序对话工作摘要】: ${memCtx.l2Summary.summary.trim()}`;
+          retrievedFacts = retrievedFacts ? [...retrievedFacts, summaryFact] : [summaryFact];
         }
 
         // L3 实体画像与偏好 (放入 Layer 2 用户画像)
@@ -1110,12 +1147,12 @@ export class SessionCoordinator extends EventEmitter {
     if (agentRes.content) {
       const dispatchRes = await this.dispatchReply(sessionId, agentRes.content);
       if (dispatchRes.success && this.memoryManager) {
-        try {
-          // 统一由 Store 持久化消息历史，此处仅异步尝试触发 L2 滚动摘要提炼
-          void this.memoryManager.maybeTriggerAsyncSummary(sessionId);
-        } catch (memErr) {
-          log.warn({ memErr, sessionId }, '触发 3-Tier 异步摘要异常');
-        }
+        // 统一由 Store 持久化消息历史，此处仅异步尝试触发 L2 滚动摘要提炼 (显式 catch 避免未捕获拒绝)
+        void this.memoryManager
+          .maybeTriggerAsyncSummary(sessionId)
+          .catch(memErr => {
+            log.warn({ memErr, sessionId }, '触发 3-Tier 异步摘要异常');
+          });
       }
     }
     this.emit('agent_completed', sessionId, agentRes);

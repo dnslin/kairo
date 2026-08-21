@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type {
   AgentExecuteOptions,
   AgentReplyResult,
@@ -5,6 +6,7 @@ import type {
   ConsolidatedMessage,
   LLMMessage,
   LLMProvider,
+  LLMToolDefinition,
   ModelEndpointConfig,
   TokenUsage,
   ToolExecutionRecord,
@@ -419,6 +421,38 @@ export class KkbotAgentRuntime {
       }
     }
 
+    // 准备归一化工具定义列表供模型调用 (Zod Schema 转标准 Draft-07 JSON Schema)
+    const zHelper = z as unknown as {
+      toJSONSchema?: (schema: unknown, options?: unknown) => Record<string, unknown>;
+    };
+
+    const modelTools: LLMToolDefinition[] | undefined = this.toolRegistry
+      ? this.toolRegistry.getAll().map(t => {
+          let parameters: Record<string, unknown>;
+          try {
+            if (typeof zHelper.toJSONSchema === 'function') {
+              parameters = zHelper.toJSONSchema(t.inputSchema, {
+                target: 'draft-07',
+                io: 'input',
+              });
+            } else {
+              parameters = (t.inputSchema as unknown as Record<string, unknown>) ?? {};
+            }
+          } catch {
+            parameters = {};
+          }
+          return {
+            type: 'function' as const,
+            function: {
+              name: t.id,
+              description: t.description,
+              parameters,
+              readOnly: t.readOnly,
+              requireApproval: t.requireApproval,
+            },
+          };
+        })
+      : undefined;
     // 6. 执行推理 (流式优先或阻塞模式，接入 Failover 与全局兜底)
     const isStreamMode =
       (options?.stream ?? false) ||
@@ -436,9 +470,9 @@ export class KkbotAgentRuntime {
             signal: options?.signal,
             temperature: options?.temperature,
             maxTokens: options?.maxTokens,
+            tools: modelTools,
           }
         );
-
         for await (const chunk of stream) {
           if (options?.signal?.aborted) {
             log.info({ threadId }, '流式生成过程中收到 AbortSignal 打断信号');
@@ -503,14 +537,94 @@ export class KkbotAgentRuntime {
             signal: options?.signal,
             temperature: options?.temperature,
             maxTokens: options?.maxTokens,
+            tools: modelTools,
           }
         );
-
         const cleaned = ThinkingTagCleaner.clean(resp.content);
         rawContent = cleaned.cleanedText;
         thinkingContent = cleaned.thinkingText;
         usage = resp.usage;
         finishReason = resp.finishReason ?? 'stop';
+
+        // 模型返回了 Tool Calls 或声明 finishReason === 'tool_calls'
+        const emittedToolCalls = resp.toolCalls ?? [];
+        if (emittedToolCalls.length > 0 && this.toolExecutor) {
+          const toolCallRequests = emittedToolCalls.map((tc, idx) => ({
+            callId: tc.callId || tc.id || `call_${Date.now()}_${idx}`,
+            toolName: tc.name,
+            args: tc.args || tc.arguments || {},
+          }));
+
+          const batchRes = await this.toolExecutor.executeBatch(toolCallRequests, {
+            threadId,
+            senderId: message.senderId,
+            signal: options?.signal,
+            approvedTaskId: options?.approvedTaskId,
+          });
+          for (const r of batchRes.results) {
+            const originalReq = toolCallRequests.find(c => c.callId === r.callId);
+            const contentStr =
+              typeof r.output === 'string'
+                ? r.output
+                : JSON.stringify(r.output ?? (r.error ? { error: r.error } : {}));
+
+            extraToolMessages.push({
+              role: 'tool',
+              name: r.toolName,
+              toolCallId: r.callId,
+              content: contentStr,
+            });
+
+            toolCalls.push({
+              toolCallId: r.callId,
+              toolName: r.toolName,
+              arguments: originalReq?.args ?? {},
+              result: r.output,
+              error: r.error,
+              status: r.suspended ? 'suspended' : r.success ? 'success' : 'error',
+              approvalTaskId: r.approvalTaskId,
+              durationMs: r.durationMs,
+            });
+          }
+
+          if (batchRes.suspendedCount > 0) {
+            const suspendedTask = batchRes.results.find(r => r.suspended);
+            let taskMsg = '该操作涉及敏感权限，已为您提交审批，等待主管决议中...';
+            if (
+              suspendedTask?.output &&
+              typeof suspendedTask.output === 'object' &&
+              'message' in suspendedTask.output &&
+              typeof suspendedTask.output.message === 'string'
+            ) {
+              taskMsg = suspendedTask.output.message;
+            }
+            return {
+              content: taskMsg,
+              toolCalls,
+              finishReason: 'tool_calls',
+              aborted: false,
+            };
+          }
+
+          // 所有工具执行成功，发起第二轮对话以回灌工具输出生成最终自然语言回复
+          const secondResp = await this.failoverManager.executeChat(
+            candidateChain,
+            buildMessagesForModel,
+            {
+              signal: options?.signal,
+              temperature: options?.temperature,
+              maxTokens: options?.maxTokens,
+            }
+          );
+          const secondCleaned = ThinkingTagCleaner.clean(secondResp.content);
+          rawContent = secondCleaned.cleanedText;
+          if (secondCleaned.thinkingText) {
+            thinkingContent = thinkingContent
+              ? `${thinkingContent}\n${secondCleaned.thinkingText}`
+              : secondCleaned.thinkingText;
+          }
+          finishReason = secondResp.finishReason ?? 'stop';
+        }
       } catch (err: unknown) {
         if (
           options?.signal?.aborted ||

@@ -106,6 +106,11 @@ export interface CoordinatorConfig {
   onConsolidatedMessage?: (
     message: ConsolidatedMessage
   ) => Promise<void | CoordinatorDispatchResult> | void;
+  /** 知识库检索回调函数 (可选，用于在 Agent 执行前检索相关知识切片注入 Layer 4 事实层) */
+  knowledgeRetriever?: (
+    query: string,
+    sessionId: string
+  ) => Promise<string[] | undefined> | string[] | undefined;
 }
 
 /**
