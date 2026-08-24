@@ -528,21 +528,49 @@ Mastra Agent 以 readOnly 生成最终回复
 `sent` 已持久化但 Memory 尚未提交时形成可恢复的 `sent-but-uncommitted` 检查点。恢复任务只补交 Memory，不再次发送 KK；若 `saveMessages` 已成功但提交完成标记尚未持久化，必须使用稳定 message ID 重放。底层稳定 ID 的串行、并发和重启幂等语义通过 LibSQL 契约实验前，本规格不声称该窗口已实现 exactly-once。
 
 
-### 一对一私聊中的人工操作员消息
+### 中断、撤回、接管与合规删除的共同边界
 
-- 来源识别为 `operator`；
-- 进入人工接管状态；
-- 作为真实 assistant/operator 消息同步到 Mastra Thread；
-- 不与 Bot 回显重复入库。
+根据[《确定中断与撤回后的 Memory 清理协议》](https://github.com/dnslin/kkbot/issues/128)的正式决定，KK Raw Store、Delivery、Mastra Run/Trace 和外部 Tool 副作用记录用于表达“实际发生过什么”；Mastra Thread 与 Observational Memory 用于表达“下一轮 Agent 可以使用什么上下文”。中断、普通撤回和人工接管不得通过跨存储删除补偿改写已发生事实；Abort 只停止后续计算和仍可阻止的发送，不回滚已经提交的 user、已经执行的 Tool、已经送达的 assistant 或 Trace。
 
-### 一对一私聊撤回
+显式 user/operator/assistant Message 可以按稳定 message ID 移出活动上下文。Observational Memory 没有经过验证的来源级反向删除合同时，只能清空每个可能包含目标内容的完整 Thread/resource scope，再只从仍可见且已经提交的 user、operator 与 `sent` assistant 重新形成观察。OM scope reset 是撤回与合规删除的保守清理原语，不是发送失败、中断或接管后的事务补偿。
 
-- 防抖期撤回：从 Pending Bucket 删除；
-- Agent 运行中撤回：Abort 当前 Mastra Run；
-- 已进入 Memory：删除对应 Memory Message；
-- Raw Store 保留记录并标记 `is_recalled = 1`。
+被普通撤回或合规删除的稳定 ID 必须保留最小 tombstone/去重身份，永不复用。tombstone 只允许保存阻止复活所需的最小身份和删除状态，不得保存合规删除要求擦除的正文。
+
+### 同一私聊的新消息中断
+
+- 防抖期尚未启动 Run 时，旧、新入站消息分别按自身稳定 ID 保留；被重聚的真实消息不得覆盖旧 ID。
+- Run 执行中时 Abort 当前 readOnly Run；已提交的旧 user 保留，新一轮只提交新 user，旧历史由 Thread 读取。中断本身不移除旧 user，也不执行 OM scope reset。
+- Delivery=`generated` 或能够证明尚未触发发送时可以进入 `aborted`；发送动作可能已触发或边界不可判定时必须进入 `unknown`；已经 `sent` 的 Delivery 与 assistant Memory 保留。所有非 `sent` assistant 均不进入长期对话 Memory。
+
+### 一对一私聊中的人工操作员消息与接管
+
+- 来源识别为 `operator`，进入 HumanTakeover，并作为真实 assistant/operator 消息以自身稳定 ID 同步到 Store 与 Mastra Thread；不得与 Bot 回显重复入库。
+- 接管终止仍在执行的自动 Run，并清空尚未启动的 Pending 自动回复输入；已有 user、Tool、Trace 和 Delivery 事实继续保留。
+- 接管发生在 `generated` 或可证明未发送阶段时，Bot Delivery 进入 `aborted` 且不提交 assistant；发生在 `unknown` 时不提交、不自动补发；发生在 `sent` 后时保留已送达 assistant 及其 Memory。接管本身不执行 OM scope reset。
+
+### 一对一私聊普通撤回
+
+- 防抖期撤回：从 Pending Bucket 移除，不创建 user Memory；Raw Store 保留原消息、稳定 ID 和 MessageRecall 事实。
+- user 已提交或 Run 正在执行时：按原 user message ID 将正文移出活动上下文并 Abort 当前 Run；不删除 Raw Store 原消息、Tool/Trace、已经执行的外部副作用或 Delivery 事实。
+- Delivery=`generated` 或能够证明未发送时进入 `aborted`；`unknown` 保持人工门禁，不提交、不删除审计内容且不自动补发；已经 `sent` 的 assistant 及其 Memory 继续保留，`sent-but-uncommitted` 仍按本节既有规则只补交 Memory。
+- 若不能证明被撤回 user 从未进入 Observational Memory，则清空每个受影响的完整 Thread/resource scope；之后只允许从剩余可见且已提交的历史重新形成观察。
+- 普通撤回不是 ComplianceDeletion。它保留原消息正文和已发生事实，只阻止原 user 正文继续作为活动上下文；若要求正文及其副本消失，必须执行正式合规删除。
 
 群聊撤回只更新 Raw Store 中对应原始消息的撤回标记；不得由此创建或中断 Agent Run，也不得触发 Memory、Tool、Knowledge、Approval 或 Delivery 补偿。
+
+### 正式合规删除
+
+- ComplianceDeletion 必须由单独授权、可审计的正式删除命令触发；该命令确定删除对象和覆盖范围，优先于普通撤回语义。所有仍使用范围内内容的 Run 必须终止，尚未 `sent` 的输出继续隔离。
+- 对范围内的 Raw Store 正文、附件及派生文件、显式 user/operator/assistant Memory、Delivery 正文与附件、Tool 参数/结果正文、Trace prompt/span 正文执行删除或不可逆脱敏；只保留法律或策略允许的最小身份、删除范围、操作者、时间、结果、Delivery 状态和 tombstone。只有政策明确允许时才保留内容哈希。
+- `sent` 仍表示当时发生过交付；已完成的外部 Tool 副作用也不能由 Memory 清理伪造成未发生。覆盖范围内的内部正文副本必须擦除，外部业务事实由其权威事实源按自身合规策略处理。
+- 必须清空所有可能包含被删正文或派生观察的完整 Observational Memory scope。不能证明 scope 已完整清理时，相关 OM 必须保持禁用或空白并进入人工合规处理，不得从旧观察恢复。
+- 合规删除不自动级联删除整个 user→assistant→Tool→Trace→Delivery 因果链；每个内容副本按正式命令范围擦除，范围外的真实状态事实继续保留。
+
+### tombstone 与防复活合同
+
+- 同一稳定 ID 在普通撤回或合规删除生效后，串行重放必须被拒绝，不得再次进入活动上下文、启动 Run、创建 Delivery 或提交 Memory；替代消息必须使用新稳定 ID。
+- 并发路径必须满足 tombstone 优先：生效后尚未完成的保存、恢复和补交流程不得重新写入正文。已经跨过发送不可逆边界或已经完成的 Tool 动作仍按真实结果记录，再应用普通撤回或合规删除的对应内容规则。
+- 进程重启、日志重放、缓存、恢复扫描或任何未来 Outbox 都必须先遵守持久化 tombstone；不得恢复、补发或重新写入被撤回/删除 ID 的正文。`unknown` 仍不得据此自动裁定或补发。
 
 ---
 
@@ -820,14 +848,14 @@ KK 继续以单条完整消息发送，不引入长文本拆包。
 
 旧方式会把旧批次消息和新消息重新拼成一个 `ConsolidatedMessage`，迁移到 Mastra Memory 后容易重复写入。
 
-新规则：
+新规则统一遵守 4.7 节：
 
-1. 第一批用户消息已进入 Mastra Thread；
-2. 新消息到达时 Abort 当前 Run；
-3. 删除或排除未交付的 assistant/tool 中间结果；
-4. 新一轮只提交新消息；
-5. Mastra 从 Thread Memory 读取前一批用户消息；
-6. 不重新提交旧批次。
+1. 第一批用户消息已经以稳定 ID 进入 Mastra Thread；
+2. 同一 PrivateSession 的新消息到达时 Abort 当前 Run，但不删除旧 user、Tool/Trace、Delivery 或既有 Observational Memory；
+3. `generated` 或明确 pre-trigger 的输出进入 `aborted`，跨过发送边界或无法判定的输出进入 `unknown`，已经 `sent` 的输出和 Memory 保留；
+4. 非 `sent` assistant/tool 中间结果不进入长期对话 Memory；
+5. 新一轮只提交新消息，Mastra 从 Thread Memory 读取此前仍可见的历史；
+6. 不重新提交旧批次，也不因普通中断执行 OM scope reset。
 
 新的在途状态：
 
@@ -1696,6 +1724,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | N-14 | 知识查询由 Agent 主动 Tool Call | Gateway 不再提前执行知识检索并拼入 Prompt。 |
 | N-15 | 完整 Run 关联 | traceId、runId、sessionId、toolCallId、approvalTaskId、deliveryId 可重建完整链路。 |
 | N-16 | 单库双 Client 单 Storage | Composition Root 只解析一个规范化数据库路径；KKBot Client 与唯一 Mastra Storage 自有 Client 分离，不承诺跨 Client、跨 domain 原子事务。 |
+| N-17 | 事实保留与活动上下文清理 | 新消息中断和接管只停止未来动作；普通撤回移除原 user 正文并在必要时重置受影响的完整 OM scope；合规删除擦除授权范围正文并保留 tombstone；不得级联改写真实 Delivery、Tool、Trace 或外部副作用事实。 |
 
 ### 6.5 Testing Decisions 迁移
 
@@ -1766,13 +1795,14 @@ sequenceDiagram
 ## 7.2 一对一私聊新消息到达时中断
 
 ```text
-Agent Run 正在执行
-→ 同一会话收到新消息
+Agent Run 或 Delivery 正在处理
+→ 同一 PrivateSession 收到新消息
 → Gateway Abort 当前 Run
-→ 保留已显式写入的真实 user message
-→ readOnly 保证本轮 assistant/tool 未进入长期 Memory
-→ 只以稳定原始消息 ID 显式提交新 user message
-→ Mastra 从 Thread Memory 读取此前上下文
+→ 保留已显式写入的旧 user、Tool/Trace、Delivery 和既有观察
+→ generated/pre-trigger 输出进入 aborted；发送边界不明进入 unknown；sent 保持已交付
+→ 非 sent assistant 不进入长期 Memory，且不执行 OM scope reset
+→ 只以新消息的稳定原始 ID 显式提交新 user
+→ Mastra 从 Thread Memory 读取此前仍可见的上下文
 ```
 
 ## 7.3 一对一私聊人工接管
@@ -1781,10 +1811,11 @@ Agent Run 正在执行
 Driver 捕获当前账号发出的消息
 → 不是 bot_echo
 → 标记 origin=operator
-→ Gateway Abort 当前 Agent Run
-→ 清空 Pending Bucket
-→ 写入 Human Takeover 截止时间
-→ operator 消息进入 Store 和 Mastra Thread
+→ Gateway Abort 当前 Agent Run，并清空 Pending Bucket
+→ generated/pre-trigger Bot 输出进入 aborted；unknown 不补发；sent 保留
+→ 写入 HumanTakeover 截止时间
+→ operator 消息以自身稳定 ID 进入 Store 和 Mastra Thread
+→ 接管本身不清空既有 Observational Memory
 → 退避期内外部消息只存储，不自动回复
 ```
 
@@ -1937,7 +1968,13 @@ Tool：runId + toolCallId
 - `sent-but-uncommitted` 恢复扫描只补交 Memory，不再次发送 KK；`saveMessages` 成功但 `memory_committed_at` 写入前崩溃时，以相同稳定 ID 重放并验证最终只有一条逻辑 assistant 消息；
 - `unknown` 不自动提交；只有人工正式裁定为已发送、先持久化为 `sent` 后才能补交，裁定未发送或仍不可判定时继续隔离；
 - 同一 LibSQL Client/Storage 下的 WAL、事务可见性、并发条件更新和重启恢复顺序满足 user 前置提交、`sent` 后置提交与 `sent-but-uncommitted` 扫描检查点；
-- 人工 operator 消息进入 Thread；撤回消息从 Agent 上下文删除；新消息中断后不重复提交旧消息；
+- 同一私聊新消息在 Pending、Run 执行中、`generated`、发送边界不明和 `sent` 阶段到达时，分别满足 4.7/4.15 的终止与保留语义：旧 user 不重复提交，非 `sent` assistant 不进入 Memory，`unknown` 不补发，`sent` 与既有 OM 保留且中断本身不 reset；
+- operator 在 Pending、Run 执行中、`generated`、`unknown` 和 `sent` 阶段接管时，真实 operator 消息进入 Thread，自动 Run/Pending 被停止，Delivery 与 Memory 按真实状态保留，接管本身不 reset OM；
+- 普通撤回在 user 尚未提交、user 已提交且 Run 执行中、Tool 已产生外部副作用、Delivery=`unknown` 和 assistant 已 `sent` 的场景下，均保留 Raw Store、MessageRecall、Tool/Trace、Delivery 与外部事实；只移除原 user 正文，必要时 reset 每个受影响的完整 OM scope，已 `sent` assistant 保留；
+- 显式消息按稳定 ID 移出活动上下文后，契约实验必须证明下一轮不可再读取该 user 正文；OM scope reset 后不得读取旧观察，只能从仍可见且已提交的 user、operator 与 `sent` assistant 重新形成；
+- ComplianceDeletion 覆盖 Raw Store 正文、附件及派生文件、显式 Memory、Delivery 内容、Tool 参数/结果和 Trace prompt/span 时，所有范围内正文均被删除或不可逆脱敏，Delivery/Tool 已发生状态保留为最小事实，相关完整 OM scope 必须清空；
+- 普通撤回与合规删除的稳定 ID tombstone 在串行、并发和跨进程重启重放中都阻止正文复活、Run/Delivery 重建和 Memory 重写；已经真实跨过发送边界的结果仍按 `sent` 或 `unknown` 记录，`unknown` 不自动裁定或补发；
+- 目标 Mastra/LibSQL 兼容版本必须通过显式 message ID 删除、OM 完整 scope clear、readOnly 隔离、稳定 ID/tombstone 并发与重启恢复的契约验证。任一关键合同缺失时按 #117 返回 Wayfinder，并保持最终验收 #124 阻塞；不得用来源过滤层、删除补偿、Outbox 或第二套 Memory Runtime 回补；
 - 群聊消息不创建 Thread、不写入 Memory，也不触发任何 Memory 提交或补偿。
 
 ## 9.4 HITL
