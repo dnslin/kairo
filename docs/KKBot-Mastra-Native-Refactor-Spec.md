@@ -4,7 +4,7 @@
 > 文档状态：待确认 / 新重构执行规格
 > 取代来源：关闭后的 Issue #107《统一启动器、知识库摄取与生产级运行保障》
 > 需求迁移：Issue #107 的 54 条 User Story 均已建立去向
-> 技术基线：Mastra 是唯一 Agent Runtime，不研发自定义 AgentRunner
+> 技术基线：Node.js `>=22.13`；生产部署与 CI 仅支持仍处于官方维护期的 LTS；Mastra 是唯一 Agent Runtime，不研发自定义 AgentRunner
 > 适用范围：仅支持 KK 单一 IM 客户端，不建设多渠道适配层
 > 编制日期：2026-08-21
 
@@ -87,7 +87,7 @@ Scorer 不属于生产运行能力基线；仅在启用可选离线评测或质�
 
 “Mastra 原生能力”是指最终锁定的稳定兼容版本通过受支持的公开 API 执行该能力，并由 Mastra 持有对应的运行时状态机和执行语义。仅存在同名 API、博客示例，或需要 KKBot 辅助代码自行补出状态机，不算原生满足。
 
-稳定兼容版本已经原生提供所需能力时，优先选择该版本，不在 KKBot 内复制该能力。若不存在可接受的稳定兼容版本，则将对应需求返回 Wayfinder 重新裁定、缩减、替换或删除；不得以自研 Runtime 回补。本原则不锁定具体 Mastra 版本或 Node.js 基线。
+稳定兼容版本已经原生提供所需能力时，优先选择该版本，不在 KKBot 内复制该能力。若不存在可接受的稳定兼容版本，则将对应需求返回 Wayfinder 重新裁定、缩减、替换或删除；不得以自研 Runtime 回补。本原则不锁定具体 Mastra 版本；Node.js 运行时基线由 2.7 节明确。
 
 ### 2.3 不研发 AgentRunner
 
@@ -159,9 +159,16 @@ Observability 是本次重构的生产必需能力。兼容版本必须支持 Tr
 
 Scorer 只用于可选离线评测或质量评价，不属于启动、运行、迁移或重构完成门槛。缺失、未注册或禁用 Scorer 不得使 Bootstrapper、Agent、Delivery 或本规格验收失败；启用后的评分结果也只是派生评价数据，不得成为 Agent、Memory、Approval、Delivery 或其他 KKBot 业务事实源。本文不决定具体 Scorer、评价指标与阈值、采样率、存储保留策略或评测数据集。
 
-“兼容版本”是经后续版本决策验证的一组稳定 Mastra 依赖版本。兼容性必须同时满足：所需原生能力存在并受支持；Node.js 运行时与依赖引擎约束一致；类型定义和迁移说明支持目标用法；相关离线契约实验通过。只看到 API 存在不足以判定兼容。
+“兼容版本”是经后续版本决策验证的一组稳定 Mastra 依赖版本。兼容性必须同时满足：所需原生能力存在并受支持；依赖引擎约束覆盖本规格的 Node.js 运行时基线；类型定义和迁移说明支持目标用法；最低 Node.js 版本与实际生产 LTS 上的相关离线契约实验均通过。只看到 API 存在不足以判定兼容。
 
-版本选择必须优先寻找满足上述条件且原生提供能力的组合。若没有可接受组合，对应需求必须返回 Wayfinder 重新裁定，不得用 KKBot 辅助代码补成第二套 Runtime。具体 Mastra 依赖版本和 Node.js 基线由后续专门决策锁定，本节不提前指定。
+版本选择必须优先寻找满足上述条件且原生提供能力的组合。若没有可接受组合，对应需求必须返回 Wayfinder 重新裁定，不得用 KKBot 辅助代码补成第二套 Runtime。具体 Mastra 依赖精确兼容组仍由 [#131《锁定 Mastra 兼容版本组》](https://github.com/dnslin/kkbot/issues/131)决定，本节不提前指定。
+
+### 2.7 Node.js 运行时基线
+
+- 所有工作区依赖、开发工具和应用入口的最低运行时统一为 Node.js `>=22.13`。
+- 生产部署与 CI 只支持验证或部署时仍处于 Node.js 官方维护期的 LTS，且该版本必须同时满足 `>=22.13`；达到依赖下限不等于获得已停止维护版本或非 LTS 版本的生产支持承诺。
+- Node.js 20 已于 2026-04-30 EOL，不属于支持矩阵，不保留安装、类型、构建、运行或回归兼容承诺。
+- 本基线只确定 Node.js 支持政策与验证矩阵，不锁定具体 Mastra 版本；Mastra Core、Memory、LibSQL 及相关包的精确兼容组仍由 #131 统一验证和锁定。
 
 ---
 
@@ -1501,10 +1508,11 @@ catalog:
 
 要求：
 
-- 锁定经过验证的一组兼容版本；
+- 由 #131 锁定经过验证的一组 Mastra 精确兼容版本，本规格不提前指定版本号；
 - 不允许不同包分别使用 `^` 漂移；
 - 统一 Zod 和 AI SDK 版本；
-- 升级时执行完整 Memory、Tool、HITL、Workflow 契约测试。
+- 候选兼容组的依赖引擎必须覆盖 Node.js `>=22.13`，并通过 9.10 节规定的双环境验证；
+- 升级时重新执行 9.10 节规定的完整验证。
 
 ---
 
@@ -1994,6 +2002,14 @@ Tool：runId + toolCallId
 - 契约测试明确证明只保证单个 Client transaction/batch 内的原子性，不声明 KKBot 与 Mastra 跨 Client、跨 domain 原子事务；
 - SIGINT 和启动失败回滚路径中，Observability 停止写入后再关闭 Mastra；Mastra Storage 自有 Client 与 KKBot Client 各关闭一次，关闭后不再写入。
 
+## 9.10 Node.js 与 Mastra 兼容矩阵
+
+- #131 锁定的 Mastra 精确兼容组必须分别在最低 Node.js `22.13` 和实际生产 LTS 的干净环境中完成验证；实际生产 LTS 必须在验证时仍处于官方维护期并满足 `>=22.13`。
+- 两个环境都必须使用锁文件完成冻结安装，并分别通过 TypeScript 类型检查、工作区构建和 Mastra 契约测试；任何一个环境失败都不能判定该兼容组可用。
+- Mastra 契约至少覆盖动态模型 fallback、Memory、Storage 生命周期与迁移、Workflow suspend/resume 与 snapshot、Schedule 重启与竞争，以及 Observability Flush/Shutdown。
+- 支持矩阵中的生产 LTS 退出官方维护期时，部署与 CI 必须移除该版本并在新的实际生产 LTS 上重新执行上述完整验证。
+- Node.js 20 不属于验收环境；缺少 Node.js 20 兼容测试或其执行失败不构成本规格回归。
+
 ---
 
 ## 10. 明确不做的内容
@@ -2121,7 +2137,8 @@ Tool：runId + toolCallId
 
 本文描述的是能力边界和目标架构，不把博客示例代码视为稳定 API 契约。开始实施前必须：
 
-1. 锁定一组兼容的 Mastra 精确版本；
-2. 根据该版本的类型定义更新所有示例调用；
-3. 运行 Agent Loop、Memory、Tool Approval、Workflow、Schedule 和 Observability 契约测试；
-4. 禁止各 package 单独升级 Mastra 依赖。
+1. 统一使用 Node.js `>=22.13`，并确保部署与 CI 选择的实际生产版本仍处于官方维护期的 LTS；
+2. 由 #131 锁定一组兼容的 Mastra 精确版本，本规格不提前指定版本号；
+3. 根据该版本的类型定义更新所有示例调用；
+4. 在最低 Node.js `22.13` 与实际生产 LTS 上分别验证冻结安装、类型检查、工作区构建和 9.10 节规定的 Mastra 契约；
+5. 禁止各 package 单独升级 Mastra 依赖。
