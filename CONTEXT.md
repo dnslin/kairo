@@ -60,6 +60,18 @@ _Avoid_: 写死在代码中的系统提示词
 所有获准使用的 Employee 共享、只读企业知识集合。
 _Avoid_: PrivateMemory, Prompt Context
 
+**KnowledgeSource**:
+PublicKnowledge 中可独立更新或失效的逻辑来源；文件型来源以受管来源根下的规范化相对路径保持身份，重命名表示旧来源失效并新增来源。
+_Avoid_: 内容相同即同一来源、文件系统 inode
+
+**SourceVersion**:
+KnowledgeSource 在特定源内容、转换/OCR 与规范化规则下形成的不可变知识版本；任一输入或规则变化都会产生新版本。
+_Avoid_: 覆盖更新的文档行、可变当前版本
+
+**KnowledgeGeneration**:
+一次完整且不可变的 PublicKnowledge 查询快照；它把每个有效 KnowledgeSource 映射到恰好一个 SourceVersion，并包含同一代的 Chunk、词法索引与能力配置要求的向量索引。
+_Avoid_: 单来源版本、可变活动索引、跨代候选集合
+
 **PrivateMemory**:
 只属于一个 Employee 与其 PrivateSession 边界的对话记忆，不能跨员工共享。
 _Avoid_: 跨员工共享记忆、PublicKnowledge
