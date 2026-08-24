@@ -64,6 +64,14 @@ _Avoid_: PrivateMemory, Prompt Context
 只属于一个 Employee 与其 PrivateSession 边界的对话记忆，不能跨员工共享。
 _Avoid_: 跨员工共享记忆、PublicKnowledge
 
+**KnowledgeAvailability**:
+一次 PublicKnowledge 查询的能力健康度；`available` 表示完整可用，`degraded` 表示部分能力失效但仍能安全查询，`unavailable` 表示无法安全查询。
+_Avoid_: KnowledgeRetrievalOutcome, Not Found
+
+**KnowledgeRetrievalOutcome**:
+一次已安全完成的 PublicKnowledge 查询是否得到可用于 Grounding 的依据；`found` 表示存在依据，`not_found` 表示查询完成后没有依据。它不描述系统健康度，`unavailable` 也不是 `not_found`。
+_Avoid_: KnowledgeAvailability, System Failure
+
 ## 安全与交付
 
 **Approval**:
