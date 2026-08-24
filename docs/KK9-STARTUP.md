@@ -1,69 +1,107 @@
-# KK9 客户端 CDP 启动指南
+# KK9 客户端 CDP 启动与排障
 
-## 概述
+本文只说明如何在 Windows 上以本机 CDP 端口启动 KK9、验证渲染页可达，并运行仓库中的真机检查。开发命令和代码规范见 [`DEVELOPMENT.md`](./DEVELOPMENT.md)。
 
-KKBot 通过 Chrome DevTools Protocol (CDP) 连接到 KK9 Electron 客户端。要启用此功能，需要使用特定参数启动 KK9。
+## 1. 前置条件
 
-## 启动命令
+- 已安装并能正常登录 KK9。
+- 已关闭现有 KK9 进程，避免旧实例复用后忽略新的启动参数。
+- 本机 `9222` 端口未被其他程序占用。
+- CDP 只允许绑定回环地址，不得暴露到局域网或公网。
 
-### Windows
+## 2. 启动 KK9
+
+在 PowerShell 中执行：
 
 ```powershell
-# 方式一：命令行启动
-"C:\Path\To\KK9.exe" --remote-debugging-port=9222
-
-# 方式二：创建快捷方式
-# 1. 右键 KK9.exe -> 创建快捷方式
-# 2. 右键快捷方式 -> 属性
-# 3. 在「目标」末尾添加参数：--remote-debugging-port=9222
-# 4. 完整示例："C:\Program Files\KK9\KK9.exe" --remote-debugging-port=9222
+& "C:\Path\To\KK9.exe" `
+  --remote-debugging-address=127.0.0.1 `
+  --remote-debugging-port=9222
 ```
 
-## 验证连接
+也可以创建专用快捷方式，在“目标”末尾追加：
 
-启动后，在浏览器访问以下地址验证 CDP 是否可用：
-
+```text
+--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 ```
+
+不要修改日常使用的快捷方式；调试端口只应在需要运行 KKBot 或真机验证时开启。
+
+## 3. 验证 CDP 端点
+
+等待 KK9 主界面加载完成，然后访问：
+
+```text
 http://127.0.0.1:9222/json
 ```
 
-成功响应示例：
+成功条件：
+
+- 响应是 JSON 数组；
+- 至少存在一个 `type` 为 `page` 的目标；
+- 目标 `url` 或 `title` 能识别 KK9 渲染页；
+- 目标包含 `webSocketDebuggerUrl`。
+
+返回值示意：
+
 ```json
 [
   {
-    "description": "",
-    "devtoolsFrontendUrl": "...",
-    "id": "...",
-    "title": "KK9",
     "type": "page",
-    "url": "file:///...renderer.html",
+    "title": "KK9",
+    "url": "file:///.../renderer.html",
     "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/page/..."
   }
 ]
 ```
 
-## 运行 KKBot
+如果实际渲染页不包含 `renderer.html`，后续脚本需要通过 `PAGE_MATCH` 指定稳定的标题或 URL 片段。
 
-```bash
-# 开发模式
-pnpm dev
+## 4. 配置当前终端
 
-# 运行稳定性测试（10分钟）
-pnpm tsx scripts/stability-test.ts
+仓库脚本默认使用 `http://127.0.0.1:9222` 和 `renderer.html`。需要覆盖时，在同一 PowerShell 窗口设置：
+
+```powershell
+$env:CDP_URL = "http://127.0.0.1:9222"
+$env:PAGE_MATCH = "renderer.html"
 ```
 
-## 注意事项
+环境变量只影响当前终端。不要把账号、Cookie 或其他客户端凭据写入仓库。
 
-1. **窗口状态**：KK9 客户端窗口必须保持非最小化状态，否则 DOM 可能不可靠
-2. **安全性**：CDP 端口仅监听 127.0.0.1，仅本机可访问
-3. **端口冲突**：确保 9222 端口未被其他程序占用
-4. **单实例**：同一时间只能运行一个带 CDP 参数的 KK9 实例
+## 5. 运行真机检查
 
-## 故障排查
+### EventBridge 交互验证
 
-| 问题 | 原因 | 解决方案 |
-|------|------|----------|
-| 无法连接 127.0.0.1:9222 | KK9 未启动或未带参数 | 确认使用 --remote-debugging-port=9222 启动 |
-| 连接超时 | 端口被防火墙阻止 | 检查 Windows 防火墙设置 |
-| 找不到 renderer.html 页面 | KK9 尚未完全加载 | 等待 KK9 完全启动后再运行 KKBot |
-| 连接不稳定 | 窗口被最小化 | 使用 Win+Tab 将 KK9 放到独立虚拟桌面 |
+```bash
+pnpm verify:bridge
+```
+
+该脚本会连接真实 KK9，并提供以下交互命令：
+
+- `status`：查看桥接状态；
+- `sessions`：读取会话列表；
+- `send <sessionId> <text>`：向指定会话发送真实消息；
+- `exit`：断开并退出。
+
+### 增强链路验证
+
+```bash
+pnpm tsx scripts/e2e-live-verification.ts
+```
+
+该脚本包含固定会话 ID，会发送真实富文本和文件。运行前必须打开脚本核对目标，不得在生产会话中直接执行。
+
+## 6. 故障排查
+
+| 现象                         | 检查                                        | 处理                                                |
+| ---------------------------- | ------------------------------------------- | --------------------------------------------------- |
+| `127.0.0.1:9222` 拒绝连接    | KK9 是否由专用命令启动                      | 完全退出 KK9 后重新启动                             |
+| `/json` 返回空数组           | KK9 主渲染页是否加载完成                    | 等待登录和主界面完成，再刷新端点                    |
+| 脚本找不到页面               | `PAGE_MATCH` 是否匹配实际目标               | 从 `/json` 复制稳定的标题或 URL 片段                |
+| 端口已占用                   | 是否已有 KK9 或其他调试进程                 | 关闭占用者，或统一修改启动端口与 `CDP_URL`          |
+| DOM 操作不稳定               | 窗口是否最小化、页面是否切换                | 恢复窗口并重新执行；EventBridge 与 DOM 路径分开诊断 |
+| EventBridge 已连接但没有事件 | Hook 是否成功注入、测试消息是否到达目标账号 | 运行 `status`，重新连接后执行跨会话接收测试         |
+
+## 7. 结束调试
+
+先退出验证脚本，再关闭带调试参数启动的 KK9。确认不再需要调试后，不要让 `9222` 端口长期保持开放。
