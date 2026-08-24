@@ -48,52 +48,55 @@ kkbot/
 
 ## WHERE TO LOOK
 
-| Task | Location | Notes |
-| --- | --- | --- |
-| Driver 核心入口 | `packages/driver/src/driver.ts` | `KK9Driver` 主类，集成 CDP、DOM 模块与事件系统 |
-| CDP 通信客户端 | `packages/driver/src/cdp/client.ts` | 原生 WebSocket 封装、自动重连与心跳管理 |
-| 会话操作与穿透 | `packages/driver/src/dom/session-ops.ts` | 会话列表读取、未读会话过滤、会话切换 |
-| 消息解析与指纹 | `packages/driver/src/dom/message-ops.ts` | 消息历史提取、SHA-256 去重指纹、@提及与引用提取 |
-| 发送与富文本 | `packages/driver/src/dom/send-ops.ts`, `rich-text.ts` | 文本、格式化富文本片段、文件卡片、图片发送 |
-| 选择器与配置 | `packages/driver/src/dom/selectors.ts` | DOM 选择器配置与默认值解析 |
-| 类型定义 | `packages/driver/src/types/index.ts` | 核心强类型定义（消息、会话、配置、员工档案等） |
-| 架构决策 (ADR) | `docs/adr/` | 0001 (Agent 架构与安全防护), 0002 (soul.md 人设与私聊边界) |
-| 领域术语表 | `CONTEXT.md` | 项目通用领域术语定义 |
+| Task            | Location                                              | Notes                                                      |
+| --------------- | ----------------------------------------------------- | ---------------------------------------------------------- |
+| Driver 核心入口 | `packages/driver/src/driver.ts`                       | `KK9Driver` 主类，集成 CDP、DOM 模块与事件系统             |
+| CDP 通信客户端  | `packages/driver/src/cdp/client.ts`                   | 原生 WebSocket 封装、自动重连与心跳管理                    |
+| 会话操作与穿透  | `packages/driver/src/dom/session-ops.ts`              | 会话列表读取、未读会话过滤、会话切换                       |
+| 消息解析与指纹  | `packages/driver/src/dom/message-ops.ts`              | 消息历史提取、SHA-256 去重指纹、@提及与引用提取            |
+| 发送与富文本    | `packages/driver/src/dom/send-ops.ts`, `rich-text.ts` | 文本、格式化富文本片段、文件卡片、图片发送                 |
+| 选择器与配置    | `packages/driver/src/dom/selectors.ts`                | DOM 选择器配置与默认值解析                                 |
+| 类型定义        | `packages/driver/src/types/index.ts`                  | 核心强类型定义（消息、会话、配置、员工档案等）             |
+| 架构决策 (ADR)  | `docs/adr/`                                           | 0001 (Agent 架构与安全防护), 0002 (soul.md 人设与私聊边界) |
+| 领域术语表      | `CONTEXT.md`                                          | 项目通用领域术语定义                                       |
 
 ---
 
 ## CODE MAP
 
-| Symbol | Type | Location | Role |
-| --- | --- | --- | --- |
-| `KK9Driver` | class | `packages/driver/src/driver.ts:33` | 统一事件驱动入口，暴露收发、轮询、事件监听等接口 |
-| `CdpClient` | class | `packages/driver/src/cdp/client.ts:37` | 底层 WebSocket CDP 通信客户端 |
-| `SessionOps` | class | `packages/driver/src/dom/session-ops.ts:24` | 会话列表获取与切换逻辑 |
-| `MessageOps` | class | `packages/driver/src/dom/message-ops.ts:24` | 消息提取、去重指纹计算、结构化解析 |
-| `SendOps` | class | `packages/driver/src/dom/send-ops.ts:34` | 纯文本、富文本、文件与图片发送操作 |
-| `KK9Session` | interface | `packages/driver/src/types/index.ts:113` | 聊天会话元数据 |
-| `KK9Message` | interface | `packages/driver/src/types/index.ts:126` | 结构化消息实体（含指纹、@信息、引用信息、多模态附件） |
-| `KK9Employee` | interface | `packages/driver/src/types/index.ts` | 员工档案与组织架构类型 |
-| `SendResult` | interface | `packages/driver/src/types/index.ts:195` | 发送操作结果与快捷撤回方法 |
-| `createChildLogger` | function | `packages/driver/src/utils/logger.ts:21` | pino 子日志器工厂函数 |
+| Symbol              | Type      | Location                                    | Role                                                  |
+| ------------------- | --------- | ------------------------------------------- | ----------------------------------------------------- |
+| `KK9Driver`         | class     | `packages/driver/src/driver.ts:33`          | 统一事件驱动入口，暴露收发、轮询、事件监听等接口      |
+| `CdpClient`         | class     | `packages/driver/src/cdp/client.ts:37`      | 底层 WebSocket CDP 通信客户端                         |
+| `SessionOps`        | class     | `packages/driver/src/dom/session-ops.ts:24` | 会话列表获取与切换逻辑                                |
+| `MessageOps`        | class     | `packages/driver/src/dom/message-ops.ts:24` | 消息提取、去重指纹计算、结构化解析                    |
+| `SendOps`           | class     | `packages/driver/src/dom/send-ops.ts:34`    | 纯文本、富文本、文件与图片发送操作                    |
+| `KK9Session`        | interface | `packages/driver/src/types/index.ts:113`    | 聊天会话元数据                                        |
+| `KK9Message`        | interface | `packages/driver/src/types/index.ts:126`    | 结构化消息实体（含指纹、@信息、引用信息、多模态附件） |
+| `KK9Employee`       | interface | `packages/driver/src/types/index.ts`        | 员工档案与组织架构类型                                |
+| `SendResult`        | interface | `packages/driver/src/types/index.ts:195`    | 发送操作结果与快捷撤回方法                            |
+| `createChildLogger` | function  | `packages/driver/src/utils/logger.ts:21`    | pino 子日志器工厂函数                                 |
 
 ---
 
 ## CONVENTIONS
 
 **TypeScript:**
+
 - Strict mode ALL checks enabled（严格类型检查）
 - 严禁 `any` 或 `as any`（ESLint 强制报错）
 - ESM NodeNext 规范：所有相对路径导入必须携带 `.js` 扩展名
 - 类型导入导出统一使用 `import type` 与 `export type`
 
 **模块规范:**
+
 - 子包 `src/index.ts` 集中导出公开 API
 - 自定义错误继承 `Error` 并保留 `originalCause`
 - 模块顶部统一声明 `const log = createChildLogger('module-name')`
 - 日志与代码注释一律使用**中文**
 
 **命名规范:**
+
 - 文件名：kebab-case (`cdp-client.ts`, `session-ops.ts`)
 - 类名：PascalCase (`KK9Driver`, `CdpClient`)
 - 函数与变量：camelCase (`getRecentMessages`, `sendText`)
@@ -184,6 +187,16 @@ Electron (KK9.exe: 9222)
 
 ---
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues (`gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context (`CONTEXT.md` + `docs/adr/`). See `docs/agents/domain.md`.
+
 ## Architecture Design
 
 - Do not add compatibility layers, fallback paths, or migrations for unconfirmed compatibility requirements. If the task involves public APIs, persisted data, external consumers, or rolling deployments, first identify the actual compatibility constraints. If none exist, remove obsolete paths directly.
@@ -217,6 +230,7 @@ Electron (KK9.exe: 9222)
 ## Communication Style
 
 When explaining work to the user:
+
 - Use natural, direct Chinese by default.
 - Give the conclusion first, followed by the reasons and relevant details.
 - Do not explain one abstract concept using another abstract concept.
@@ -232,3 +246,25 @@ When explaining work to the user:
   3. what result this step will produce;
   4. what the user needs to do next.
 - Unless explicitly requested, avoid stiff academic language, marketing language, and unnatural translated phrasing.
+
+## Engineering Safety Boundaries
+
+- Prefer the simplest design that correctly solves the real problem.
+
+- Do not introduce additional security, safety, validation, locking, privilege separation, signing, pinning, or defensive abstractions unless there is a concrete threat model or a real system boundary that requires them.
+
+- Do not treat normal operational states as unsafe. A missing file may simply mean the system has not been initialized. A stale file does not imply that a process is still running. `unknown` is not automatically an error. A symlink containing `..` is not automatically a path traversal.
+
+- Trust controlled internal components according to their actual trust boundary. Do not repeatedly re-validate successful internal operations or discard useful internal output as untrusted without a concrete reason.
+
+- Preserve observability. Do not hide paths, URLs, logs, or diagnostic information unless they contain actual sensitive information.
+
+- For installation, deployment, migration, and similar workflows, prefer idempotent operations, short recoverable steps, and correct handling of interruption or cancellation. Do not default to large transactions or fail-closed state machines.
+
+- Do not make artifact identity depend on incidental build paths or temporary execution state. Avoid redundant seals, pins, hashes, copies, or provenance mechanisms that do not defend against a concrete attacker.
+
+- Use subagents where useful, but coordinate them according to actual modification boundaries instead of locking the entire repository.
+
+- When reviewing an existing design, actively remove complexity that exists only because the previous implementation attempted to be “extra safe.”
+
+- Before adding any defensive mechanism, ask: **What concrete failure does this prevent, or which attacker does it defend against?** If there is no concrete answer, do not add it.
