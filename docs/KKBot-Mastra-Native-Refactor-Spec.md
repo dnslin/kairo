@@ -50,15 +50,15 @@ KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话�
 
 #### 当前替代索引
 
-| 历史 ADR    | 当前替代                                                                                            | 已生效决议                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 仍待裁定                                                                   |
-| ----------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| ADR 0002    | 本规格 §3.1、§4.7、§12                                                                              | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                          |
-| ADR 0003    | 本规格 §4.7、§4.21–§4.23、§4.27、§12                                                                | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                          |
-| ADR 0004    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)                         | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161) |
-| ADR 0006    | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)                           | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                               | [#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)    |
-| ADR 0007 §2 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.18–§4.19、§9.6 | [#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | —                                                                          |
-| ADR 0007 §3 | 本规格 §4.27（30 天物理淘汰规则继续有效）                                                           | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | —                                                                          |
-| ADR 0008    | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md)                              | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                | [#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)    |
+| 历史 ADR    | 当前替代                                                                                            | 已生效决议                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 仍待裁定                                                                                                                                    |
+| ----------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| ADR 0002    | 本规格 §3.1、§4.7、§12                                                                              | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                                                                                           |
+| ADR 0003    | 本规格 §4.7、§4.21–§4.23、§4.27、§12                                                                | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                                                                                           |
+| ADR 0004    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)                         | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)                                                                  |
+| ADR 0006    | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)                           | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)      | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
+| ADR 0007 §2 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.18–§4.19、§9.6 | [#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | —                                                                                                                                           |
+| ADR 0007 §3 | 本规格 §4.27（30 天物理淘汰规则继续有效）                                                           | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | —                                                                                                                                           |
+| ADR 0008    | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md)                              | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)                                                                                                                                                                                                                                                       | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
 
 ---
 
@@ -907,8 +907,9 @@ Driver 必须派发 `operator`。Gateway 只对一对一私聊中的 `operator` 
 - 去重使用 `(sessionId, messageId)`；
 - 数据库提供唯一约束；
 - 内存 Set 只做短期优化，不能作为最终幂等保证；
-- CDP 重连后重新注入 EventBridge；
-- 重连补偿只扫描断线窗口内的消息；
+- CDP、EventBridge 或连接身份失效属于启动代次的关键运行事实失效，必须先关闭唯一 Work Admission Gate，再进入统一 Shutdown；同一进程不得原地重连、重新注入或恢复流量；
+- 进程退出后由进程管理器启动新的启动代次；新代次重新连接 CDP、注入 EventBridge，并在 Ready Barrier 开门后扫描上一代断线窗口内的消息；
+- 补偿扫描使用原生 messageId 与数据库唯一约束去重，不建设持久 backlog 或第二套消息准入路径；
 - 撤回事件同样遵守幂等。
 
 ---
@@ -965,7 +966,7 @@ packages/knowledge/src/
 
 ### Vision/OCR 能力与故障门槛
 
-扫描 PDF、复杂 PDF 和图片文档属于本次重构必须交付的知识摄取能力，不是可选扩展。至少一个真实调用受支持 OCR/Vision 能力的 Adapter 通过 Preflight，才可以声明具备这些来源的摄取能力；本节只确定 Knowledge 能力事实，是否因此阻止整个应用开放消息处理仍由 [#138](https://github.com/dnslin/kkbot/issues/138) 裁定。
+扫描 PDF、复杂 PDF 和图片文档属于本次重构必须交付的知识摄取能力，不是可选扩展。至少一个真实调用受支持 OCR/Vision 能力的 Adapter 必须通过无业务副作用的 Preflight 并进入同一启动代次的 Ready Barrier；未通过时唯一 Work Admission Gate 保持关闭，不得把该能力标为 optional 或只声明其他来源可用。
 
 本地与云端真实 Adapter 都配置且通过 Preflight 时，固定先执行本地 Adapter，再以云端 Adapter 兜底。数据驻留规则禁止外发时，云端 Adapter 不进入尝试链；本地路径失败即本轮构建失败，不得为可用性绕过数据驻留规则。
 
@@ -1199,7 +1200,7 @@ KKBot Client 执行全部待应用 KKBot migrations
 
 KKBot migration ledger 与 Mastra 内部迁移状态互不读取、互不写入。KKBot migration 只允许创建、修改或删除 KKBot 所有表和索引，禁止对 Mastra 内部表执行 `CREATE`、`ALTER`、`DROP`、`INSERT`、`UPDATE` 或 `DELETE`，也不得依赖 Mastra 内部列或迁移编号。`storage.init()` 只负责最终锁定兼容版本定义的 Mastra domain；具体 API 签名和内部表名不在本规格中冻结。
 
-KKBot migrations 与 `storage.init()` 是两个顺序执行、可独立诊断和重试的阶段，不存在合并为一个跨 Client 回滚事务的承诺。空库、仅含旧 KKBot schema、仅含旧 Mastra schema、两者并存的库都必须通过启动契约测试；任一步失败后重试不得产生半套 KKBot schema、重复 ledger 记录或第二套 Mastra 表。
+KKBot migrations 与 `storage.init()` 是两个顺序执行、可独立诊断和重试的阶段，不存在合并为一个跨 Client 回滚事务的承诺。空库、仅含旧 KKBot schema、仅含旧 Mastra schema、两者并存的库都必须通过启动契约测试；任一步失败后重试不得产生半套 KKBot schema、重复 ledger 记录或第二套 Mastra 表。已经提交的 KKBot migration 是持久 schema 事实，不是 Acquisition Ledger 中可由进程 Shutdown 撤销的资源；后续启动失败不得执行 down migration 或伪装成进程级回滚。
 
 消息写入使用幂等 Upsert 或 `ON CONFLICT DO NOTHING`。
 
@@ -1428,72 +1429,94 @@ deleting --失败或执行租约过期--> delete_marked
 
 ## 4.28 重写 UnifiedBootstrapper
 
-Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例、唯一进程级 MCP Client 和单库双 Client 边界重写。
+Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例、唯一进程级 MCP Client、单库双 Client、单一严格屏障和依赖图逆拓扑 Shutdown 重写。一个进程只有一个正式启动入口、一个启动代次和一条关闭路径。
 
-### 启动顺序
+### 启动代次、Static Validation 与唯一准入门
+
+每次进程启动立即分配一个不可复用的 `startupGenerationId`。该代次从 Static Validation 开始，贯穿资源取得、Preflight、Ready Barrier、运行与 Shutdown；任一步失败都结束本代次，不在同一进程内原地重建或开始第二代。
+
+Static Validation 只读取 Node.js 版本、YAML、环境变量和文件系统元数据，不取得进程级资源，不连接网络，不创建目录、数据库、锁或业务记录。它必须在任何真实初始化前完成：
+
+1. Node.js 版本满足 §2.7；
+2. 环境变量插值完整，Zod Schema 和跨字段约束通过；
+3. 数据库、日志、Knowledge、资产与受管根路径能够规范化，且别名、相对路径或工作目录差异不会产生第二个数据库或越界路径；
+4. MCP transport、`required`、权限、白名单、Tool 命名和 timeout 配置合法；
+5. Model、Processor、Grounding、Quota、Observability、Trace 脱敏以及当前生效产品范围要求的能力配置完整。
+
+真实 Preflight 在资源取得后执行，用真实对象证明运行事实，可以创建目录、取得锁、执行 KKBot migrations、执行 `storage.init()`、建立网络连接并写入 Mastra 自有基础设施状态；这些动作不是 Static Validation。Preflight 探针不得创建 Delivery、Approval、Mastra Memory、KnowledgeGeneration、Schedule trigger、Worker 业务 claim、发送尝试、第三方业务写入或其他 KKBot 业务事实。Model 探针必须关闭 Tool 与 Memory；MCP 只做连接和 Tool discovery，不执行 Tool；Knowledge 使用不可发布的固定 fixture；Driver/EventBridge 只证明连接、注入和事件身份，不发送消息；Gateway 与 Coordinator 只证明接线，不接纳真实工作。
+
+唯一 `Work Admission Gate` 从代次开始保持关闭，是消息、Schedule trigger、Worker claim、Coordinator dispatch 和任何新 Mastra Run 的唯一准入点。Ready Barrier 成功后它最多打开一次；关闭后在同一代次内不可重新打开。不得建设按能力拆分的多门、`QUARANTINED` 原地重建状态机、持久 backlog 或部分服务产品语义。Gate 关闭期间到达的消息不形成进程内或持久待处理队列；新代次只从 Driver/Store 的权威消息事实执行有界补偿扫描。
+
+### Acquisition Ledger 与所有权转移
+
+Composition Root 为每个已成功取得的进程资源维护同代 Acquisition Ledger。每条记录至少绑定资源身份、`startupGenerationId`、当前 owner、依赖资源、唯一 finalizer、取得完成状态和所有权转移状态。只有资源取得成功且 finalizer 已知后才能登记；未成功取得的对象不得假装需要关闭。
+
+所有权转移只在接收方已经成功接管资源且其公开 Shutdown 路径可用后生效。转移必须把 Ledger 中的唯一 finalizer 从原 owner 替换为接收方的聚合 finalizer，任何时刻不得同时存在两个 closer。Composition Root 是唯一关闭编排者，但不是每个子资源的直接 closer；它只调用 Ledger 当前记录的公开关闭入口。
+
+唯一 `LibSQLStore` 及其自有 Client 在 Mastra 成功接管前由 Composition Root 的独立 Storage finalizer 关闭。Mastra 成功接管并建立 `mastra.shutdown()` 契约后，独立 Storage finalizer 必须从 Ledger 移除；此后只允许 `mastra.shutdown()` 关闭 Storage 及其自有 Client。Observability、Trace `SensitiveDataFilter` 和其他被 Mastra 接管的组件遵守同一唯一 closer 原则。KKBot Client 始终由 Composition Root 独立关闭。
+
+已经提交的 KKBot migration 只记录为启动事实，不登记为可释放资源。后续 Preflight 或启动失败只关闭 Client 和其他进程资源，不执行 down migration，不修改已提交 migration ledger。
+
+### 取得、构造、注册与激活顺序
+
+固定顺序为：
 
 ```text
-1. 加载 YAML、环境变量插值并完成 Zod 校验
-2. 校验 MCP required/transport/权限/白名单/timeout、Processor、Grounding、Quota 和 Trace 脱敏规则
-3. 初始化 UnifiedLogger，解析唯一数据库路径并获取单实例锁
-4. 创建 KKBot Client，执行 KKBot migrations
-5. 创建唯一 LibSQLStore 及其自有 Client，显式执行 storage.init()
-6. 创建 Knowledge、Models、Memory 和 Quota Repository
-7. 构造静态 Agent Content Processors
-8. 构造 Observability 并启用 Trace SensitiveDataFilter
-9. 构造唯一进程级 MCPClient，执行有界逐 Server Tool discovery
-10. 用固定 MCP Tool 集合、Memory 和固定 Processor 数组创建 Agents
-11. 创建 Workflows 和 Schedules
-12. 创建使用唯一 Storage/Observability 的唯一 Mastra 实例
-13. 创建 KK Driver、Gateway 和 Coordinator
-14. 执行 required MCP、Processor 注册、Quota 原子准入、Grounding fixture、Trace 脱敏和关闭接线 Preflight
-15. 连接 CDP、注入 EventBridge 并开放消息处理
+1. 分配 startupGenerationId，关闭 Work Admission Gate，完成 Static Validation
+2. 初始化 UnifiedLogger，解析唯一规范化路径，取得数据目录单实例锁
+3. 验证受管路径与权限，创建 KKBot Client，执行并提交全部 KKBot migrations
+4. 创建唯一 LibSQLStore 及其自有 Client，显式执行 storage.init()
+5. 构造 KKBot repositories、Knowledge、Models、Memory、Quota、Processors 和 Observability
+6. 构造唯一 MCPClient，完成有界逐 Server 连接与 Tool discovery
+7. 构造 Agents、Workflows、内部维护 Schedules 和唯一 Mastra；成功后转移 Mastra 子资源所有权
+8. 构造 Driver、Gateway、Workers 与 Coordinator；连接 CDP 并注入 EventBridge
+9. 执行全部真实 Preflight，注册固定能力集合和关闭依赖图
+10. 在 Gate 仍关闭时激活 Schedules、Workers 与 Coordinator；激活不得越过 Gate 产生工作
+11. Ready Barrier 同时确认全部必需事实后，唯一一次打开 Work Admission Gate
 ```
 
-所有 Agent Content Processors、Quota、Grounding、Observability 和 Trace `SensitiveDataFilter` 都是生产启动必需能力。Scorer 不在启动顺序中，其缺失、未注册或禁用不得导致配置校验、Preflight 或 Bootstrapper 失败。
+“构造”只创建对象和依赖，不启动定时器、监听器或业务循环；“注册”只把固定 Agent、Tool、Processor、Workflow、Schedule、Worker 和路由集合接入唯一 Mastra 或 Coordinator；“激活”才启动运行循环。构造和注册可以在 Ready Barrier 前完成，激活也必须先在关闭的 Gate 后取得成功确认；任何 trigger、claim、dispatch 或 Run 都必须等待 Gate 打开。用户可见主动 Schedule 仍按 §4.20 不存在，内部维护 Schedule 也不得把 missed fire 变成 backlog。
 
-### 初始化、运行和关闭故障矩阵
+### Ready Barrier 必须同时证明的事实
 
-| 阶段与故障                                                                                           | 处置                                                                                  |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| MCP、Processor、Grounding、Quota 或 Trace 脱敏配置非法；凭据缺失；Tool 命名冲突或权限覆盖非法        | 禁止启动；静态错误不得通过降级掩盖                                                    |
-| required MCP 连接、鉴权、Tool discovery 失败或启动 timeout                                           | 禁止启动并逆序回滚                                                                    |
-| optional MCP 连接、发现失败或启动 timeout                                                            | 允许明确 `degraded`；记录 Server 和原因，其 Tools 完全缺席，本进程不热加              |
-| Agent Content Processor、Quota、Grounding、Observability 或 Trace `SensitiveDataFilter` 初始化失败   | 禁止启动并逆序回滚                                                                    |
-| MCP Tool 单次执行错误或 timeout                                                                      | 留在当前 Mastra Run；Gateway 不重试；无法形成安全最终结果时拒绝本轮                   |
-| 输入安全策略命中或 Quota 达限                                                                        | 不调用模型或继续执行；返回固定、可理解的本轮拒绝                                      |
-| 输入 Processor 自身异常或 timeout                                                                    | 拒绝本轮；不得跳过后继续调用模型                                                      |
-| Quota 准入或整 Run 执行权领取发生 Repository 错误、timeout、`SQLITE_BUSY` 重试耗尽或 commit 响应丢失 | 按相同 `runId` 回读权威状态；准入或唯一执行权未确认时不调用模型，不猜测余额或重复预留 |
-| 模型已执行但完整 Usage、结算 commit 或权威结算状态不可确认                                           | 保留整份预留并拒绝本轮；按相同 `runId` 恢复，确认结算前不得创建 Delivery              |
-| 完整权威 `actual > reserved_max`                                                                     | 保留原预留与实际值，标记相关全局桶和用户桶完整性破坏并停止其后续准入                  |
-| Grounding 适用但没有可信来源                                                                         | 用固定“未找到企业依据”结果安全替换，不让模型常识补写企业事实                          |
-| Grounding 自身异常、来源 Schema 损坏或 timeout                                                       | 拒绝本轮；不得伪装成普通未命中                                                        |
-| SensitiveOutput 可确定性完整脱敏                                                                     | 仅在 Quota 结算已经权威确认后发送变换后的结果                                         |
-| SensitiveOutput 无法安全脱敏、自身异常或 timeout                                                     | 拒绝本轮并禁止 Delivery 原始输出；已结算的实际 Token 不退款                           |
-| Trace 单字段脱敏失败                                                                                 | 只导出 Mastra 原生错误标记，不导出原字段；不改变用户 Run                              |
-| Trace 导出瞬时失败                                                                                   | 允许明确遥测 `degraded` 并诊断；不得导出未脱敏原文                                    |
-| 关闭动作失败或 timeout                                                                               | 不重新开放流量；继续关闭其余独立所有者资源并汇总诊断                                  |
+Ready Barrier 只能对当前 `startupGenerationId` 的单份不可变检查结果提交成功，并且必须同时证明：
 
-### 关闭顺序
+1. Node.js、配置、规范化路径和单实例锁属于当前代次且仍有效；
+2. 同一规范化数据库文件上只有一个 KKBot Client 和一个 LibSQLStore 自有 Client；KKBot migrations 已提交，`storage.init()` 已成功；
+3. Logger、应用日志脱敏、Mastra Observability、Trace `SensitiveDataFilter`、Flush 和唯一 Shutdown 接线通过；
+4. 当前生效产品范围要求的 Model、Memory、Agent、Workflow、内部 Schedule 和其他 Mastra 能力使用最终候选公开 API 完成真实探测；
+5. 所有生产必需 Agent Content Processors、Quota、Grounding、Tool result Processor 和固定 Agent 注册集合完整且顺序固定；
+6. 所有 `required: true` 的 MCP Server 已连接、鉴权并完成 Tool discovery；`required: false` 的 Server 失败时其 Tools 完全缺席并记录明确 `degraded`；
+7. Knowledge 当前 Head 与查询完整性可证明，当前 profile 的必需检索层健康，并且至少一个真实 OCR/Vision Adapter 通过固定 fixture；Rerank 继续遵守 §4.18 的可选语义；
+8. 资产维护 Workflow、内部 Schedule、Worker 与 owner reconciler 已构造、注册并可激活，但 Preflight 没有触发清理或改变 AssetReference、AssetLease 和资产状态；
+9. Driver 已连接目标 KK9，EventBridge 已注入且事件身份可验证，Gateway 与 Coordinator 已激活并仍被关闭的 Gate 阻挡；
+10. Acquisition Ledger 的每项资源只有一个 owner、一个 finalizer 和完整依赖边，Storage 所有权状态无歧义，所有关闭入口可诊断。
+
+能力的必需性只来自 `master` 上当前生效产品范围，不由实现者新增配置开关擅自降为 optional。当前明确允许缺失的只有可选 Scorer、显式 `required: false` 的 MCP Server 及其 Tools，以及 §4.18 已定义的可选 Rerank；它们不得反向削弱其他必需能力。当前生效产品范围要求的 Mastra 能力必须全部通过；[#161](https://github.com/dnslin/kkbot/issues/161)决定高危 Tool Approval 的最终能力集合，本节不提前裁定具体高危 Tool 范围或 Approval 版本。[#124](https://github.com/dnslin/kkbot/issues/124)仍负责最终验收矩阵，本节不替其关闭验收边界。
+
+### 统一失败与 Shutdown 路径
+
+初始化失败、Ready Barrier 失败、`SIGINT`、`SIGTERM`，以及单实例锁、数据库、Mastra、必需能力、CDP、EventBridge、Gateway 或其他 Ready Barrier 关键运行事实失效，都进入同一个幂等 Shutdown。第一动作始终是关闭 Work Admission Gate；之后不得重新开放流量。普通单次 Model、Tool、Trace 导出或 Knowledge 查询故障继续按各节既有降级或本轮拒绝语义处理，只有 Ready Barrier 的持续关键事实已经失效时才触发进程级 Shutdown。
+
+同一代次不重连 CDP、不热加 MCP Tool、不原地重建 Mastra 或 Knowledge、不进入 `QUARANTINED`。Shutdown 完整尝试释放全部 Ledger 资源后退出；需要恢复时由进程管理器启动新代次，新代次重新执行全部 Static Validation、资源取得、Preflight 和 Ready Barrier。
+
+Finalizer 按 Acquisition Ledger 的依赖图执行逆拓扑释放，不机械倒读启动步骤。依赖边决定先关闭使用者、后关闭其依赖；只有互不依赖的节点才允许用取得顺序的逆序作为稳定并列规则。每个 finalizer 在一个 Shutdown 中最多调用一次，并使用有界 deadline。
+
+最低关闭先后约束为：
 
 ```text
-停止接收新消息
-→ Abort 并等待活跃 Mastra Runs（此后不得再开始 MCP Tool Call）
-→ 停止 Schedules 和 Workers
-→ 停止 Coordinator
-→ 断开 Driver
-→ 调用唯一 MCPClient.disconnect() 一次
+关闭 Work Admission Gate
+→ 停止 Coordinator、Schedules 和 Workers，Abort 并等待活跃 Mastra Runs
+→ 断开 EventBridge / Driver，并调用唯一 MCPClient.disconnect() 一次
 → Observability.flush()，等待其 Storage 写入完成
 → 调用 mastra.shutdown() 一次
    （由 Mastra 关闭 Observability、Trace SensitiveDataFilter、注册组件、Storage 及其自有 Client）
 → 关闭 KKBot Client 一次
-→ Flush 并关闭 Logger
-→ 释放单实例锁
+→ 在全部数据库、文件和外部资源完成关闭尝试后释放单实例锁
+→ 最后 Flush 并关闭 Logger
 ```
 
-Composition Root 是唯一 closer，即唯一关闭编排者。它可以调用各资源公开的关闭入口，但不得重复关闭非自身所有资源：不得再次直接调用 `SensitiveDataFilter.shutdown()`，不得在 `mastra.shutdown()` 之外再次关闭 Mastra Storage 或其 Client，也不得让 KKBot Store 关闭 Mastra Client。唯一 MCP Client 只由 Composition Root `disconnect()` 一次；KKBot Client 只由 Composition Root 关闭一次。
-
-任何启动失败都只回滚已经成功取得所有权的资源，并按取得顺序严格逆序关闭。任一关闭动作失败时记录中文诊断并继续后续独立资源；若最终兼容版本不能满足上述关闭所有权与时序，则该版本组不兼容，必须按 #117 返回 Wayfinder 重新裁定。
+某个 finalizer 失败或 timeout 时，记录资源身份、owner、阶段和原始错误，继续执行图中其余尚未调用的 finalizer；不得因一个 closer 失败而跳过其他独立资源，也不得为补偿而调用已转移资源的第二个 closer。Shutdown 最终聚合原始触发错误与全部关闭错误，保持 Gate 关闭并以失败状态退出。若最终兼容版本不能满足上述所有权、Flush、Shutdown 与错误聚合合同，则该版本组不兼容，必须按 #117 返回 Wayfinder 重新裁定。
 
 ---
 
@@ -1687,12 +1710,12 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | R107-02 | 配置支持环境变量插值                       | 直接保留       | `ConfigLoader`                                      | 未解析变量和空凭据在启动前报错。                                                     |
 | R107-03 | 中文字段级配置错误                         | 直接保留       | `Zod Config Schema`                                 | 错误包含字段路径、原因和修复提示。                                                   |
 | R107-04 | 单一命令启动 Driver、Store、Agent、Gateway | 直接保留       | `apps/kkbot`                                        | 只有一个正式启动入口和生命周期。                                                     |
-| R107-05 | 按依赖顺序初始化模块                       | 改写后保留     | `UnifiedBootstrapper`                               | 先创建唯一 Mastra 实例和存储，再开放 Gateway 消息处理。                              |
-| R107-06 | 启动前检查目录、数据库、CDP 和 LLM         | 改写后保留     | `PreflightHealthcheck`                              | LLM 检查改由 Mastra ModelFactory/模型实例执行。                                      |
-| R107-07 | 同一数据目录单实例运行                     | 直接保留       | `InstanceLock`                                      | 第二实例拒绝启动，陈旧锁仅在进程不存在时清理。                                       |
-| R107-08 | Ctrl+C / 容器停止时级联释放                | 改写后保留     | `CascadedGracefulShutdown`                          | 停止接收消息、Abort Mastra Runs、停止 Schedule、关闭 CDP/MCP/DB。                    |
-| R107-09 | KK9 重启后 CDP 自动重连                    | 直接保留       | `@kkbot/driver`                                     | 有界指数退避并重新注入事件桥。                                                       |
-| R107-10 | CDP 重连后补偿未处理消息                   | 直接保留       | `Driver + Gateway + Store`                          | 补偿扫描依赖原生消息 ID 和数据库唯一约束去重。                                       |
+| R107-05 | 按依赖顺序初始化模块                       | 改写后保留     | `UnifiedBootstrapper`                               | 同一 startup generation 完成依赖取得和 Ready Barrier 后，唯一 Gate 才开放。          |
+| R107-06 | 启动前检查目录、数据库、CDP 和 LLM         | 改写后保留     | `Static Validation + PreflightHealthcheck`          | 纯静态校验与真实无业务副作用探测分离；全部必需事实进入同一 Ready Barrier。           |
+| R107-07 | 同一数据目录单实例运行                     | 直接保留       | `InstanceLock`                                      | 第二实例拒绝启动；锁保持到数据库、文件和外部资源完成关闭尝试后再释放。               |
+| R107-08 | Ctrl+C / 容器停止时级联释放                | 改写后保留     | `CascadedGracefulShutdown`                          | 与初始化失败和关键运行事实失效共用幂等 Shutdown，按依赖图逆拓扑释放并聚合错误。      |
+| R107-09 | KK9 重启后 CDP 自动重连                    | 改写后保留     | `Process manager + @kkbot/driver`                   | 本代先关 Gate 并完整退出；进程管理器启动新代次后重新连接并注入 EventBridge。         |
+| R107-10 | CDP 重连后补偿未处理消息                   | 改写后保留     | `Driver + Gateway + Store`                          | 新代次 Ready 后扫描上一代断线窗口，依赖原生消息 ID 和数据库唯一约束去重。            |
 | R107-11 | Markdown 文档摄取                          | 迁入独立子系统 | `@kkbot/knowledge`                                  | 源文档可被规范化、切片和索引。                                                       |
 | R107-12 | DOCX 转换为规范化 Markdown                 | 迁入独立子系统 | `@kkbot/knowledge / DOCX Adapter`                   | 保留标题、段落、列表和表格语义。                                                     |
 | R107-13 | 文本型 PDF 转换                            | 迁入独立子系统 | `@kkbot/knowledge / PDF Adapter`                    | 保留页和段落边界并产生诊断信息。                                                     |
@@ -1761,9 +1784,9 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | UnifiedLogger 覆盖完整 Agent Trace       | 改写后保留 | 应用日志由 UnifiedLogger，Agent Trace 由 Mastra Observability。                                  |
 | TraceContextPropagation                  | 改写后保留 | 同时写入 Pino context、Mastra requestContext 和 tracingContext。                                 |
 | PiiRedactionPolicy                       | 改写后保留 | 应用日志规则与 Mastra SensitiveDataFilter 双层覆盖。                                             |
-| PreflightHealthcheck                     | 改写后保留 | 模型与 Mastra Storage 也纳入检查。                                                               |
-| 单实例锁                                 | 直接保留   | 保持数据目录作用域。                                                                             |
-| CDP 重连和补偿扫描                       | 直接保留   | 增加数据库唯一约束作为最终幂等防线。                                                             |
+| PreflightHealthcheck                     | 改写后保留 | 分为无资源副作用的 Static Validation 与真实无业务事实 Preflight，并由唯一 Ready Barrier 汇总。   |
+| 单实例锁                                 | 改写后保留 | 保持数据目录作用域；在数据库、文件和外部资源完成关闭尝试后释放，Logger 最后关闭。                |
+| CDP 重连和补偿扫描                       | 改写后保留 | 取消同进程原地重连；关键事实失效后完整退出，由新代次重连并执行有界补偿扫描。                     |
 | Token 配额                               | 改写后保留 | usage 来源改为完整 Mastra Run。                                                                  |
 | AssetRetentionPolicy                     | 改写后保留 | 由 Mastra Schedule 触发 Workflow，物理删除由 KKBot Repository 执行。                             |
 | LeaderHierarchyResolution                | 直接保留   | 保持三级寻路和 Fail-Closed。                                                                     |
@@ -1793,6 +1816,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | N-15 | 完整 Run 关联                          | traceId、runId、sessionId、toolCallId、approvalTaskId、deliveryId 可重建完整链路。                                                                                                                   |
 | N-16 | 单库双 Client 单 Storage               | Composition Root 只解析一个规范化数据库路径；KKBot Client 与唯一 Mastra Storage 自有 Client 分离，不承诺跨 Client、跨 domain 原子事务。                                                              |
 | N-17 | 事实保留与活动上下文清理               | 新消息中断和接管只停止未来动作；普通撤回移除原 user 正文并在必要时重置受影响的完整 OM scope；合规删除擦除授权范围正文并保留 tombstone；不得级联改写真实 Delivery、Tool、Trace 或外部副作用事实。     |
+| N-18 | 单一启动屏障与逆拓扑 Shutdown          | 每个进程只有一个 startup generation、一个 Work Admission Gate 和一条幂等 Shutdown；Ready Barrier 通过前不接纳工作，finalizer 按依赖图逆拓扑全部尝试并聚合错误。                                      |
 
 ### 6.5 Testing Decisions 迁移
 
@@ -1941,17 +1965,21 @@ sequenceDiagram
 → 未命中则明确说明没有找到依据
 ```
 
-## 7.6 CDP 重连
+## 7.6 CDP 失效后的进程重启与补偿
 
 ```text
-CDP 断开
-→ Gateway 暂停新 Agent Run
-→ Driver 有界指数退避重连
-→ 重注入 EventBridge
-→ 根据断线时间窗执行补偿扫描
-→ 数据库唯一约束去重
-→ 恢复消息处理
+CDP、EventBridge 或连接身份失效
+→ 立即关闭唯一 Work Admission Gate
+→ 进入统一幂等 Shutdown，按依赖图逆拓扑尝试释放全部资源
+→ 进程退出，由进程管理器启动新的 startup generation
+→ 新代次重新执行 Static Validation、资源取得和真实 Preflight
+→ 重新连接 CDP、注入 EventBridge，并通过 Ready Barrier
+→ Gate 打开后扫描上一代断线窗口
+→ 使用原生 messageId 与数据库唯一约束去重
+→ 正常处理补偿消息与新消息
 ```
+
+同一进程不得指数退避重连、重新注入后恢复流量或建设 `QUARANTINED` 状态机。补偿扫描不是持久 backlog；它只依据 Driver/Store 权威事实恢复断线窗口内尚未幂等处理的消息。
 
 ---
 
