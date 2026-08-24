@@ -183,7 +183,7 @@ Scorer 只用于可选离线评测或质量评价，不属于启动、运行、�
 
 Tool Approval 还有独立的能力门槛。兼容版本必须通过契约实验证明：持久 Storage 中的 suspended Run 可跨进程重启发现；可按 `runId + toolCallId` 读取 Approval 的权威状态；可提交带前置条件的批准或拒绝；可判定已经存在的终态与新决议是否冲突；重复提交相同或相反决议均安全；deadline、批准和拒绝竞态最多接受一个终态且原 Tool 最多执行一次。本文不锁定实现这些能力的具体 API、Mastra 版本或审批超时时长。
 
-版本选择必须优先寻找满足上述条件且原生提供能力的组合。若没有可接受组合，或 Tool Approval 任一契约实验不通过，对应需求必须按 [#117《确定 Mastra 原生能力缺口的处理原则》](https://github.com/dnslin/kkbot/issues/117)返回 Wayfinder 重新裁定，不得退化为 Projection CAS + Outbox、自动重放决议或 KKBot 本地 Approval Runtime。具体 Mastra 依赖精确兼容组仍由 [#131《锁定 Mastra 兼容版本组》](https://github.com/dnslin/kkbot/issues/131)决定，本节不提前指定。
+[#131 兼容版本研究](./research/mastra-compatible-version-set.md) 已在 Node.js `22.13.1` 与 `24.14.0` 的冻结环境中验证两组精确候选：A 为 Core `1.60.0` / Memory `1.27.0` / LibSQL `1.21.0`，B 为 Core `1.61.0` / Memory `1.27.0` / LibSQL `1.21.1`，两组共同使用 Observability `1.17.1`、MCP `1.17.1` 与 Zod `4.4.3`。两组均通过安装、类型、最小构建、持久 suspended discovery 与基础运行面，但都缺少 Approval 权威终态读取和带前置条件的决议 API；并发批准/拒绝不能证明唯一终态，Schedule 同一 fire 的竞争唯一性也未证实。因此当前**没有可锁定兼容版本组**，依赖占位保持未锁；后续必须按 [#117《确定 Mastra 原生能力缺口的处理原则》](https://github.com/dnslin/kkbot/issues/117)重裁高危 Tool/HITL 与主动 Schedule 范围，禁止以 Projection CAS + Outbox、自动重放决议或 KKBot 本地 Approval Runtime 回补。
 
 ### 2.7 Node.js 运行时基线
 
@@ -1523,7 +1523,7 @@ catalog:
 
 要求：
 
-- 由 #131 锁定经过验证的一组 Mastra 精确兼容版本，本规格不提前指定版本号；
+- #131 已验证的候选 A/B 均未通过 Approval 与 Schedule 兼容门，当前不得把任一版本写入 catalog；只有 Wayfinder 完成最小重裁且新候选通过 9.10 节完整双环境验证后，才能锁定一组精确版本；
 - 不允许不同包分别使用 `^` 漂移；
 - 统一 Zod 和 AI SDK 版本；
 - 候选兼容组的依赖引擎必须覆盖 Node.js `>=22.13`，并通过 9.10 节规定的双环境验证；
@@ -2033,9 +2033,10 @@ Tool：runId + toolCallId
 
 ## 9.10 Node.js 与 Mastra 兼容矩阵
 
-- #131 锁定的 Mastra 精确兼容组必须分别在最低 Node.js `22.13` 和实际生产 LTS 的干净环境中完成验证；实际生产 LTS 必须在验证时仍处于官方维护期并满足 `>=22.13`。
-- 两个环境都必须使用锁文件完成冻结安装，并分别通过 TypeScript 类型检查、工作区构建和 Mastra 契约测试；任何一个环境失败都不能判定该兼容组可用。
-- Mastra 契约至少覆盖动态模型 fallback、Memory、Storage 生命周期与迁移、Workflow suspend/resume 与 snapshot、Schedule 重启与竞争，以及 Observability Flush/Shutdown。
+- #131 的候选组必须分别在最低 Node.js `22.13.x` 和验证时仍处官方维护期的实际生产 LTS 干净环境中验证；本轮精确环境为 Node.js `22.13.1` 与 `24.14.0`。
+- 两个环境都必须使用锁文件完成冻结安装，并分别通过 TypeScript 类型检查、最小构建和 Mastra 契约测试；任何一个环境失败或关键合同未证实，都不能判定该兼容组可用。
+- Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage init/close、Tool Approval 跨进程 suspended discovery、`runId + toolCallId` 权威终态、条件决议与重复/相反/deadline 竞态、Workflow 跨进程 snapshot/resume、Schedule 重启与同一 fire 竞争、Observability Flush/Shutdown、Processors 和 MCP 生命周期。
+- [#131 研究矩阵](./research/mastra-compatible-version-set.md) 已确认候选 A/B 的基础能力通过，但 Approval 权威终态、条件决议和竞态唯一性失败，Schedule 竞争唯一性未证实；因此当前验证门不通过且无版本组可锁。
 - 支持矩阵中的生产 LTS 退出官方维护期时，部署与 CI 必须移除该版本并在新的实际生产 LTS 上重新执行上述完整验证。
 - Node.js 20 不属于验收环境；缺少 Node.js 20 兼容测试或其执行失败不构成本规格回归。
 
