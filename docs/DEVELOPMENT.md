@@ -2,14 +2,34 @@
 
 本文只说明如何在当前仓库中安装依赖、修改代码和验证结果。产品范围见 [`kkbot-prd.md`](./kkbot-prd.md)，KK9 客户端启动见 [`KK9-STARTUP.md`](./KK9-STARTUP.md)，底层私有接口证据见 [`KK9-LOWLEVEL-RESEARCH.md`](./KK9-LOWLEVEL-RESEARCH.md)。架构边界和实施规格不在本文重复。
 
-## 1. 开发环境
+## 1. 仓库导航
+
+本节只提供按任务查找代码的稳定入口，不缓存完整目录树、符号行号或目标架构。当前实现与目标规格不一致时，以生效规格和对应决议决定改造方向。
+
+| 任务                                | 起点                                                                                                                        |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Driver 公开 API 与生命周期          | `packages/driver/src/index.ts`, `packages/driver/src/driver.ts`                                                             |
+| CDP 连接、重连与调用                | `packages/driver/src/cdp/client.ts`                                                                                         |
+| 原生事件桥与消息转换                | `packages/driver/src/bridge/`                                                                                               |
+| 会话、消息、发送和组织读取          | `packages/driver/src/dom/`                                                                                                  |
+| 卡片模板与 Canvas 渲染              | `packages/driver/src/canvas/`                                                                                               |
+| Gateway 会话协调与主动任务          | `packages/gateway/src/coordinator.ts`, `packages/gateway/src/schedule/`                                                     |
+| Agent 当前运行时、模型路由与 Memory | `packages/agent/src/runtime.ts`, `packages/agent/src/routing/`, `packages/agent/src/memory/`                                |
+| Tool、MCP、HITL 与输入输出防护      | `packages/agent/src/tools/`, `packages/agent/src/hitl/`, `packages/agent/src/guardrails/`                                   |
+| 数据库、Repository、媒体与导出      | `packages/store/src/database/`, `packages/store/src/repository/`, `packages/store/src/media/`, `packages/store/src/export/` |
+| 公开类型和包出口                    | 各包 `src/types/` 与 `src/index.ts`                                                                                         |
+| 行为测试                            | 对应包的 `tests/`                                                                                                           |
+
+需要理解统一领域语言时读取根目录 `CONTEXT.md`；需要判断产品范围时读取 [`kkbot-prd.md`](./kkbot-prd.md)；需要判断目标架构或迁移边界时读取当前总规格与有效 ADR。
+
+## 2. 开发环境
 
 - 使用 Windows 运行需要连接真实 KK9 客户端的脚本。
 - 使用 pnpm 工作区管理依赖；工作区范围由根目录 `pnpm-workspace.yaml` 定义。
 - 项目目标运行时基线是 Node.js `>=22.13`。当前根 `package.json` 仍声明 `>=20.0.0`，属于待收敛的仓库元数据差异；开发和验证不得因此降回 Node.js 20。
 - 首次进入仓库后运行 `pnpm install`，后续安装必须复用锁文件，避免无意漂移依赖版本。
 
-## 2. 常用命令
+## 3. 常用命令
 
 以下命令均从仓库根目录执行。
 
@@ -40,7 +60,7 @@ pnpm --filter @kkbot/driver build
 
 只有跨包契约发生变化时，才需要扩大到根级构建、类型检查和测试。
 
-## 3. 修改流程
+## 4. 修改流程
 
 1. 阅读目标实现、类型、调用方和相邻测试，确认现有边界。
 2. 修改最小必要范围；不要顺带重构无关模块。
@@ -48,7 +68,7 @@ pnpm --filter @kkbot/driver build
 4. 再运行与改动直接相关的类型检查、Lint 和构建。
 5. 行为变化必须更新可观察合同测试；文档变化必须核对命令、路径和链接确实存在。
 
-## 4. 代码约束
+## 5. 代码约束
 
 ### TypeScript 与模块
 
@@ -70,7 +90,7 @@ pnpm --filter @kkbot/driver build
 - 不在后台静默清除未读红点。
 - DOM、运行时对象和 IPC 返回值必须先规范化，再进入公开类型。
 
-## 5. 验证类型
+## 6. 验证类型
 
 ### 离线验证
 
@@ -85,7 +105,7 @@ pnpm --filter @kkbot/driver build
 
 `e2e-live-verification.ts` 当前包含固定会话 ID，并会发送真实消息和文件。运行前必须检查目标账号、会话 ID 和测试数据，不能把它当作无副作用测试。
 
-## 6. 文档维护规则
+## 7. 文档维护规则
 
 - 产品需求只写入 `kkbot-prd.md`，不在开发指南复制架构或实施状态。
 - KK9 启动参数和 CDP 排障只写入 `KK9-STARTUP.md`。
