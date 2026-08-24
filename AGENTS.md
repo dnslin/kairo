@@ -91,3 +91,5 @@ When explaining work to the user:
 - When reviewing an existing design, actively remove complexity that exists only because the previous implementation attempted to be “extra safe.”
 
 - Before adding any defensive mechanism, ask: **What concrete failure does this prevent, or which attacker does it defend against?** If there is no concrete answer, do not add it.
+
+Explanations in plain language (ELI5). When explaining a topic, default to plain human language as if the audience knows nothing about it: use everyday words, replace or define jargon and acronyms, and lead with the big picture or mental model before layering in detail. Keep the explanation short and proportional to the task, and present it as direct prose in the reply
