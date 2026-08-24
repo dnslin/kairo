@@ -52,11 +52,11 @@ KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话�
 
 | 历史 ADR | 当前替代 | 已生效决议 | 仍待裁定 |
 |---|---|---|---|
-| ADR 0002 | 本规格 §3.1、§4.7、§12 | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112) | [#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135) |
+| ADR 0002 | 本规格 §3.1、§4.7、§12 | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | — |
 | ADR 0003 | 本规格 §4.7、§4.21–§4.23、§12 | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847) | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137) |
-| ADR 0004 | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md) | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634) | [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135) |
-| ADR 0006 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md) | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634) | [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138) |
-| ADR 0008 | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md) | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634) | [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138) |
+| ADR 0004 | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md) | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161) |
+| ADR 0006 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md) | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | [#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138) |
+| ADR 0008 | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md) | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | [#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138) |
 
 ---
 
@@ -183,14 +183,14 @@ Scorer 只用于可选离线评测或质量评价，不属于启动、运行、�
 
 Tool Approval 还有独立的能力门槛。兼容版本必须通过契约实验证明：持久 Storage 中的 suspended Run 可跨进程重启发现；可按 `runId + toolCallId` 读取 Approval 的权威状态；可提交带前置条件的批准或拒绝；可判定已经存在的终态与新决议是否冲突；重复提交相同或相反决议均安全；deadline、批准和拒绝竞态最多接受一个终态且原 Tool 最多执行一次。本文不锁定实现这些能力的具体 API、Mastra 版本或审批超时时长。
 
-[#131 兼容版本研究](./research/mastra-compatible-version-set.md) 已在 Node.js `22.13.1` 与 `24.14.0` 的冻结环境中验证两组精确候选：A 为 Core `1.60.0` / Memory `1.27.0` / LibSQL `1.21.0`，B 为 Core `1.61.0` / Memory `1.27.0` / LibSQL `1.21.1`，两组共同使用 Observability `1.17.1`、MCP `1.17.1` 与 Zod `4.4.3`。两组均通过安装、类型、最小构建、持久 suspended discovery 与基础运行面，但都缺少 Approval 权威终态读取和带前置条件的决议 API；并发批准/拒绝不能证明唯一终态，Schedule 同一 fire 的竞争唯一性也未证实。因此当前**没有可锁定兼容版本组**，依赖占位保持未锁；后续必须按 [#117《确定 Mastra 原生能力缺口的处理原则》](https://github.com/dnslin/kkbot/issues/117)重裁高危 Tool/HITL 与主动 Schedule 范围，禁止以 Projection CAS + Outbox、自动重放决议或 KKBot 本地 Approval Runtime 回补。
+[#131 兼容版本研究](./research/mastra-compatible-version-set.md) 已在 Node.js `22.13.1` 与 `24.14.0` 的冻结环境中验证两组精确候选：A 为 Core `1.60.0` / Memory `1.27.0` / LibSQL `1.21.0`，B 为 Core `1.61.0` / Memory `1.27.0` / LibSQL `1.21.1`，两组共同使用 Observability `1.17.1`、MCP `1.17.1` 与 Zod `4.4.3`；候选 B 同时覆盖六个目标包的 stable latest。两组均通过安装、类型、最小构建、持久 suspended discovery 与基础运行面，且已发布 `sendToolApproval` 可跨重启定位 suspended Run，但它只在恢复调用成功后返回固定 `accepted: true`，不能按 `runId + toolCallId` 回读 approved/declined/deadline 权威终态，也不提供带前置条件的批准或拒绝。当前因此**没有可锁定兼容版本组**。#125 已使 Schedule exactly-once 退出锁版门；唯一最小失败合同是 #126 保留的 Approval 权威终态与条件仲裁。高危 Tool/HITL 的本期产品范围已返回 [#161](https://github.com/dnslin/kkbot/issues/161)重裁，禁止以 Projection CAS + Outbox、自动重放决议或 KKBot 本地 Approval Runtime 回补。
 
 ### 2.7 Node.js 运行时基线
 
 - 所有工作区依赖、开发工具和应用入口的最低运行时统一为 Node.js `>=22.13`。
 - 生产部署与 CI 只支持验证或部署时仍处于 Node.js 官方维护期的 LTS，且该版本必须同时满足 `>=22.13`；达到依赖下限不等于获得已停止维护版本或非 LTS 版本的生产支持承诺。
 - Node.js 20 已于 2026-04-30 EOL，不属于支持矩阵，不保留安装、类型、构建、运行或回归兼容承诺。
-- 本基线只确定 Node.js 支持政策与验证矩阵，不锁定具体 Mastra 版本；Mastra Core、Memory、LibSQL 及相关包的精确兼容组仍由 #131 统一验证和锁定。
+- 本基线只确定 Node.js 支持政策与验证矩阵。#131 已确认当前稳定 Mastra 无可锁定精确兼容组；后续版本选择必须等待 #161 裁定高危 Tool/HITL 范围，再按生效范围重新执行完整兼容研究。
 
 ---
 
@@ -669,7 +669,7 @@ interface KkToolPolicy {
 - optional Server 在进程运行中恢复时不热加 Tool，不使用缓存旧 Tool，不改变并发 Run 的 Tool 表面；恢复能力必须通过受控重启获得；
 - 成功 discovery 后用固定 MCP Tool 集合创建 Agents，进程运行期不热加、热删或重新转换 Tools。
 
-每个 MCP Tool 结果必须先经过 §4.9 的 Tool result Processor 安全检查，才能进入下一模型 Step。MCP Tool 执行错误或 timeout 留在当前 Mastra Run 内，由 Mastra 原生 Agent Loop 决定是否形成安全最终答复；Gateway 不重试、不切换自研 Tool，也不实现重连状态机。兼容版本不能满足逐 Server 错误归属、timeout、原生 reconnect、Tool result 检查、父 `AbortSignal` 传播或 `disconnect()` 资源释放合同时，返回 #131 / #117 重新裁定，不补写兼容层。
+每个 MCP Tool 结果必须先经过 §4.9 的 Tool result Processor 安全检查，才能进入下一模型 Step。MCP Tool 执行错误或 timeout 留在当前 Mastra Run 内，由 Mastra 原生 Agent Loop 决定是否形成安全最终答复；Gateway 不重试、不切换自研 Tool，也不实现重连状态机。最终兼容版本不能满足逐 Server 错误归属、timeout、原生 reconnect、Tool result 检查、父 `AbortSignal` 传播或 `disconnect()` 资源释放合同时，必须按 #117 返回 Wayfinder 重新裁定，不补写兼容层。
 
 ---
 
@@ -1294,7 +1294,7 @@ Agent Loop 完成、失败、Abort 或 timeout 后，`QuotaUsageProcessor` 都�
 
 结算成功后只释放未消耗的预留。Run 失败、timeout、Usage 不明、Repository 错误、`SQLITE_BUSY` 或结算失败时不得按零消耗释放预算，必须保守保留预留并拒绝本轮，直到可诊断恢复流程完成。达到配额属于可解释的业务拒绝，返回限制原因与恢复时间；Quota Processor 或 Repository 自身异常一律 fail-closed。
 
-表至少需要按 `runId` 保存准入、预留和结算幂等事实，并保留按日期、用户汇总的实际 Usage；精确 Schema 与未知 Usage 的释放合同由 #131 的兼容版本实验固定。
+表至少需要按 `runId` 保存准入、预留和结算幂等事实，并保留按日期、用户汇总的实际 Usage；精确 Schema 与未知 Usage 的释放合同由最终兼容版本的 Usage 契约实验固定。
 
 ---
 
@@ -1396,7 +1396,7 @@ Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例、唯�
 
 Composition Root 是唯一 closer，即唯一关闭编排者。它可以调用各资源公开的关闭入口，但不得重复关闭非自身所有资源：不得再次直接调用 `SensitiveDataFilter.shutdown()`，不得在 `mastra.shutdown()` 之外再次关闭 Mastra Storage 或其 Client，也不得让 KKBot Store 关闭 Mastra Client。唯一 MCP Client 只由 Composition Root `disconnect()` 一次；KKBot Client 只由 Composition Root 关闭一次。
 
-任何启动失败都只回滚已经成功取得所有权的资源，并按取得顺序严格逆序关闭。任一关闭动作失败时记录中文诊断并继续后续独立资源；若最终兼容版本不能满足上述关闭所有权与时序，则该版本组不兼容，返回 #131 处理。
+任何启动失败都只回滚已经成功取得所有权的资源，并按取得顺序严格逆序关闭。任一关闭动作失败时记录中文诊断并继续后续独立资源；若最终兼容版本不能满足上述关闭所有权与时序，则该版本组不兼容，必须按 #117 返回 Wayfinder 重新裁定。
 
 ---
 
@@ -1523,7 +1523,7 @@ catalog:
 
 要求：
 
-- #131 已验证的候选 A/B 均未通过 Approval 与 Schedule 兼容门，当前不得把任一版本写入 catalog；只有 Wayfinder 完成最小重裁且新候选通过 9.10 节完整双环境验证后，才能锁定一组精确版本；
+- #131 已验证候选 A/B，且候选 B 覆盖六个目标包的 stable latest；两组均未通过 Approval 权威终态与条件仲裁门，当前不得把任一版本写入 catalog。只有 #161 完成高危 Tool/HITL 范围重裁，且后续候选通过 9.10 节完整双环境验证后，才能锁定一组精确版本；
 - 不允许不同包分别使用 `^` 漂移；
 - 统一 Zod 和 AI SDK 版本；
 - 候选兼容组的依赖引擎必须覆盖 Node.js `>=22.13`，并通过 9.10 节规定的双环境验证；
@@ -2043,7 +2043,7 @@ Tool：runId + toolCallId
 
 ## 9.10 Node.js 与 Mastra 兼容矩阵
 
-- #131 的候选组必须分别在最低 Node.js `22.13.x` 和验证时仍处官方维护期的实际生产 LTS 干净环境中验证；本轮精确环境为 Node.js `22.13.1` 与 `24.14.0`。
+- 每组版本候选必须分别在最低 Node.js `22.13.x` 和验证时仍处官方维护期的实际生产 LTS 干净环境中验证；#131 本轮精确环境为 Node.js `22.13.1` 与 `24.14.0`。
 - 两个环境都必须使用锁文件完成冻结安装，并分别通过 TypeScript 类型检查、工作区构建和 Mastra 契约测试；任何一个环境失败或关键合同未证实，都不能判定该兼容组可用。
 - Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage 生命周期与迁移、Tool Approval 跨进程 suspended discovery、`runId + toolCallId` 权威终态、条件决议与重复/相反/deadline 竞态、Workflow 跨进程 snapshot/resume、内部维护 Schedule 的创建、重启读取和重复触发，以及 Observability Flush/Shutdown。Schedule 实验不得声称同一 fire 或并发 resume 唯一；验收必须证明重复 run 不创建 Delivery、高危 Tool 或第三方写副作用，未形成原生持久 run 的 missed fire 不由 KKBot 补建或逐次回放。
 - Mastra MCP 契约必须覆盖 `listToolsWithErrors()` 的逐 Server timeout、错误归属、成功 Tool 保留、固定 Tool 集合、父 `AbortSignal` 传播、原生 reconnect 和 `disconnect()` 释放；
@@ -2187,7 +2187,7 @@ Projection 与 Mastra 冲突时以 Mastra 权威状态为准。任何让 KKBot �
 本文描述的是能力边界和目标架构，不把博客示例代码视为稳定 API 契约。开始实施前必须：
 
 1. 统一使用 Node.js `>=22.13`，并确保部署与 CI 选择的实际生产版本仍处于官方维护期的 LTS；
-2. 由 #131 锁定一组兼容的 Mastra 精确版本，本规格不提前指定版本号；
+2. #131 已确认当前稳定 Mastra 无可锁定精确兼容组；待 #161 正式裁定高危 Tool/HITL 范围后，由后续兼容研究按生效范围锁定全部精确版本；
 3. 根据该版本的公开 API、类型定义和迁移说明更新所有示例调用；
 4. 在最低 Node.js `22.13` 与实际生产 LTS 上分别验证冻结安装、类型检查、工作区构建和 9.10 节规定的 Mastra 契约，并对 Tool Approval 单独证明持久 suspended discovery、`runId + toolCallId` 权威状态读取、条件决议、终态冲突判定、重复决议安全及 deadline 竞态唯一终态；任一 Tool Approval 实验失败时按 #117 返回 Wayfinder 重裁，不得补写 Projection CAS + Outbox 或本地 Approval Runtime；
 5. 禁止各 package 单独升级 Mastra 依赖。
