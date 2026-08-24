@@ -170,7 +170,7 @@ Delivery 从生成结果创建时起记录完整发送生命周期，必须区�
 | Observational Memory | 取代自定义 L2 摘要和 L3 长期协同记忆 | [Observational Memory](https://mastra.ai/blog/observational-memory) |
 | Tool Approval | 高危工具执行前由主管批准或拒绝 | [Tool approval](https://mastra.ai/blog/tool-approval) |
 | Workflow suspend / resume 与 snapshot | 需要补充信息、跨步骤等待或长流程恢复 | [Workflow snapshots](https://mastra.ai/en/reference/workflows/snapshots) |
-| Agent / Workflow Schedules | 主动提醒、定时推送和保留策略任务 | [Schedules](https://mastra.ai/blog/introducing-schedules-for-agents-and-workflows) |
+| Agent / Workflow Schedules | 仅触发不创建 Delivery、无高危 Tool 或第三方写副作用、重复执行安全的内部维护 | [Schedules](https://mastra.ai/blog/introducing-schedules-for-agents-and-workflows) |
 | Input / Output Processors | 注入防护、PII、安全过滤和输出清洗 | [Input processors](https://mastra.ai/blog/changelog-2025-07-30)、[Output processors](https://mastra.ai/blog/introducing-output-processors) |
 | Observability 与 OTel | 生产运行必需的 Agent、模型、工具、Memory、Workflow、Token Trace 和运行诊断 | [Mastra observability](https://mastra.ai/ai-agent-observability) |
 | SensitiveDataFilter | 生产运行必需的 Agent Trace 导出前字段级敏感信息脱敏 | [Sensitive data redaction](https://mastra.ai/blog/introducing-sensitive-data-redaction) |
@@ -281,8 +281,7 @@ packages/agent/src/
 ├── tools/
 │   ├── search-organization.ts
 │   ├── query-public-knowledge.ts
-│   ├── generate-file-deliverable.ts
-│   └── register-proactive-schedule.ts
+│   └── generate-file-deliverable.ts
 ├── processors/
 │   ├── prompt-injection.ts
 │   ├── sensitive-input.ts
@@ -292,7 +291,6 @@ packages/agent/src/
 │   └── quota.ts
 ├── workflows/
 │   ├── knowledge-ingestion.ts
-│   ├── proactive-message.ts
 │   └── asset-retention.ts
 └── scorers/
     ├── grounded-answer.ts
@@ -311,7 +309,6 @@ const mastra = new Mastra({
   },
   workflows: {
     knowledgeIngestion: knowledgeIngestionWorkflow,
-    proactiveMessage: proactiveMessageWorkflow,
     assetRetention: assetRetentionWorkflow,
   },
   observability,
@@ -580,29 +577,33 @@ Instructions 只负责：
 
 ---
 
-## 4.9 把输入输出安全逻辑改成 Mastra Processors
+## 4.9 把输入输出安全逻辑改成静态 Mastra Processors
 
-原有能力可以保留，但运行位置改变。
+原有确定性规则可以保留，但必须由唯一 Mastra Agent 以固定数组顺序执行；Processor 实例不得保存跨请求可变业务状态，请求内状态使用 Mastra Processor `state` 或 `RequestContext`。
 
-建议 Processor：
+单轮顺序固定为：
 
 ```text
-Input Processors
-├── UnicodeNormalizer
-├── PromptInjectionProcessor
-├── SensitiveInputProcessor
-└── QuotaProcessor
-
-Output Processors
-├── ThinkingTagProcessor
-├── SensitiveOutputProcessor
-├── KnowledgeGroundingProcessor
-└── OutputLengthProcessor
+Gateway 创建 RequestContext / AbortSignal
+→ Mastra Memory input processors
+→ UnicodeNormalizer
+→ PromptInjectionProcessor
+→ SensitiveInputProcessor
+→ QuotaAdmissionProcessor（原子准入并预留预算）
+→ Mastra Agent Loop（Model / Tools / MCP / Approval）
+→ 每个 Tool 结果先经过 processToolResult 安全检查，再进入下一模型 Step
+→ QuotaUsageProcessor（按完整 Run usage 幂等结算）
+→ ThinkingTagProcessor
+→ KnowledgeGroundingProcessor
+→ OutputLengthProcessor（必须保留来源块）
+→ SensitiveOutputProcessor（最后一道 Agent 内容安全门）
+→ Mastra Memory output processors
+→ Gateway 只接收全部 Processor 完成后的最终结果
 ```
 
-`SensitiveFilter` 和 `ThinkingTagCleaner` 不再嵌在自定义 Runtime 中。
+`SensitiveFilter` 和 `ThinkingTagCleaner` 不再嵌在自定义 Runtime 中；规则可以继续由 KKBot 定义，但不得在 Gateway 或自研 Agent Loop 中旁路执行。MCP 与本地 Tool 结果都是下一模型 Step 的输入，注入和敏感内容规则必须通过 `processToolResult` 或兼容版本提供的等价 Processor 钩子覆盖它们。
 
-它们可以继续使用项目自己的规则，但必须作为 Mastra Processor 运行。
+策略命中使用 Mastra 的确定性拒绝语义，不请求 Processor retry。输入安全、Quota、Grounding 和输出安全 Processor 自身异常或超时一律拒绝本轮；不得返回原始输入、原始模型输出、未经检查的 Tool 结果或未验证答案。Grounding 适用但没有可信来源属于可解释的安全结果，必须替换为固定“未找到企业依据”答复；Grounding 自身异常、来源 Schema 损坏或超时则拒绝本轮。
 
 ---
 
@@ -655,21 +656,20 @@ interface KkToolPolicy {
 
 ---
 
-## 4.11 MCP 直接接入 Mastra
+## 4.11 使用唯一进程级 Mastra MCP Client
 
-不再把 MCP Tool 转换到自定义 Registry 再执行。
+自定义 `McpClientManager`、自定义 `ToolRegistry` 转换层和 Gateway MCP 重试器均不属于目标架构。唯一 Composition Root 只构造一个长生命周期 Mastra `MCPClient`，Agent 只持有该 Client 在启动期发现的 Mastra Tools，不持有 Client 或第二套 Tool Runtime。
 
-新的 MCP 层只负责：
+所有 MCP 配置必须在连接前严格校验，包括 transport、URL/command、允许的主机、环境变量白名单、Tool 白名单、命名冲突、权限覆盖和 timeout。每个 Server 可以显式声明 `required: false`；未声明时 `required` 默认 `true`。
 
-- MCP Server 配置；
-- 生命周期；
-- Tool 白名单；
-- 命名冲突；
-- 权限覆盖；
-- 高危 Tool 标记；
-- 启动失败诊断。
+启动时使用有界的逐 Server Tool discovery：
 
-Agent 直接使用 Mastra MCP Client 获取的 Tools。
+- required Server 连接、鉴权、发现或 timeout 失败时禁止启动并逆序回滚；
+- optional Server 失败时记录包含 Server 与原因的可诊断 `degraded` 状态，其 Tools 完全不进入本进程的 Agent；
+- optional Server 在进程运行中恢复时不热加 Tool，不使用缓存旧 Tool，不改变并发 Run 的 Tool 表面；恢复能力必须通过受控重启获得；
+- 成功 discovery 后用固定 MCP Tool 集合创建 Agents，进程运行期不热加、热删或重新转换 Tools。
+
+每个 MCP Tool 结果必须先经过 §4.9 的 Tool result Processor 安全检查，才能进入下一模型 Step。MCP Tool 执行错误或 timeout 留在当前 Mastra Run 内，由 Mastra 原生 Agent Loop 决定是否形成安全最终答复；Gateway 不重试、不切换自研 Tool，也不实现重连状态机。兼容版本不能满足逐 Server 错误归属、timeout、原生 reconnect、Tool result 检查、父 `AbortSignal` 传播或 `disconnect()` 资源释放合同时，返回 #131 / #117 重新裁定，不补写兼容层。
 
 ---
 
@@ -1008,38 +1008,22 @@ Agent 应主动调用该 Tool，不再由 Gateway 在调用 Agent 前预先检�
 
 ---
 
-## 4.20 主动任务使用 Mastra Schedule + Workflow
+## 4.20 用户可见主动任务不进入本期范围
 
-保留主动任务能力，但由 Mastra 正式管理。
+根据[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)的正式决定，本期不提供定时提醒、定时推送、主动文件交付或其他会由 Schedule 创建用户可见 KK Delivery 的产品能力。配置、Tool、Workflow、注册入口和完成门槛中不得保留此类能力；未来如需恢复，必须重新进入 Wayfinder 裁定可接受的交付合同。
 
-建议 Workflow：
+本节的“用户可见主动任务”不包括由既有入站请求产生的审批请求、审批结果和审批超时通知。它们仍是 4.12 节原 Approval 生命周期中的独立 Delivery，并继续受 Mastra Tool Approval 能力门槛约束。
 
-```text
-proactiveMessageWorkflow
-```
+Mastra Schedule 只允许作为内部维护的唤醒信号。内部维护不得创建 Delivery、调用高危 Tool 或产生第三方业务写入；每项维护必须基于当前业务事实执行 reconciliation，并由所属业务域证明重复执行、并发执行和中断恢复安全。Schedule fire 本身不得被解释为唯一业务事件，也不得作为删除、提交或其他不可逆副作用的安全证明。
 
-流程：
+恢复语义统一为：
 
-```text
-读取任务
-→ 可选调用 kkAssistant 生成内容
-→ 调用 KK OutboundDispatcher
-→ 写入 Delivery
-→ 保存执行结果
-```
+- 未形成 Mastra 原生持久 run/snapshot 的 missed fire 不补建、不扫描本地时间窗回放，也不逐 tick 追赶；下一次唤醒只检查当前事实；
+- 重启只恢复 Mastra 公开能力可发现的持久 run/snapshot，不得从 Delivery、资产引用、Outbox、本地到期时间或自建 occurrence 表反向创建或恢复 run；
+- 重复 trigger、重复 run 和并发 resume 必须视为正常输入；若所属业务域不能证明重复安全，该维护不得启用；
+- KKBot 不建设 fire claim、resume 去重循环、Schedule Outbox、启动补跑器或第二套 Scheduler Runtime。
 
-所有主动发送必须经过 Gateway 的 OutboundDispatcher，不能直接调用 `driver.sendText()`。
-
-主动消息与普通回复共享同一 outbound 结果语义。主动发送进入 `unknown` 后，Schedule、Workflow 和补偿逻辑都不得自动再次发送；重启后的恢复与人工决议后的继续方式由[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)决定。
-
-这样可以继续保证：
-
-- 全局发送锁；
-- 会话切换；
-- 人工接管检查；
-- 红点策略；
-- 发送持久化；
-- 失败诊断。
+资产保留可以继续作为内部维护，但 Schedule 唯一性不能承担删除安全。物理清理必须等待[《确定资产保留、引用与清理恢复协议》](https://github.com/dnslin/kkbot/issues/137)正式解决并把可验证协议写入本规格；在此之前只保留保护与诊断，不执行依赖未生效候选方案的物理删除。
 
 ---
 
@@ -1186,7 +1170,7 @@ generated / sending / sent / failed / unknown / aborted
 - `aborted` 仅能用于能够证明发送动作尚未触发的主动中止；中止发生在边界之后或边界位置不可判定时仍必须记为 `unknown`。
 - `unknown` 必须进入人工处理路径；人工决议前禁止任何自动补发。
 - 内容哈希、DOM 历史扫描、bot_echo、本地 ID 集合和幂等键都不能证明一次具体 outbound 调用是否发生，不得据此把 `unknown` 自动改写为 `sent` 或 `failed`，也不得据此授权补发。
-- 普通回复与主动消息必须使用同一状态定义和发送边界。
+- 用户可见主动消息不在本期范围；未来如重新引入，必须重新进入 Wayfinder，且不得获得比普通回复更宽松的发送边界。
 
 Delivery 创建时必须确定由 `deliveryId` 派生的稳定 `mastra_message_id`；它只标识最终 assistant 对话消息，不标识 tool 中间消息。`memory_committed_at` 仅能在 `Memory.saveMessages` 成功后写入。`status = 'sent' AND memory_committed_at IS NULL` 是恢复扫描的 `sent-but-uncommitted` 条件；恢复只补交 Memory，不再次触发 OutboundDispatcher。
 
@@ -1199,7 +1183,7 @@ Delivery 创建时必须确定由 `deliveryId` 派生的稳定 `mastra_message_i
 - 中断内容与已交付事实隔离；
 - 审计用户实际收到或可能收到的内容。
 
-本节同时定义 Delivery 与 Mastra Memory 的提交边界：只有 `sent` 允许显式提交最终 assistant 消息；`generated`、`sending`、`failed`、`unknown`、`aborted` 不自动提交，tool 中间消息不进入长期对话 Memory。重启后的主动任务恢复语义仍由[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)裁定。
+本节同时定义 Delivery 与 Mastra Memory 的提交边界：只有 `sent` 允许显式提交最终 assistant 消息；`generated`、`sending`、`failed`、`unknown`、`aborted` 不自动提交，tool 中间消息不进入长期对话 Memory。根据[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)，本期不存在需要跨重启恢复的用户可见主动 Delivery；内部维护 Schedule 不得创建 Delivery。
 
 ---
 
@@ -1240,9 +1224,11 @@ Delivery 创建时必须确定由 `deliveryId` 派生的稳定 `mastra_message_i
 - Token Usage；
 - 初始化、导出、Flush 和 Shutdown 的运行诊断。
 
-生产配置必须启用 Mastra Observability。Bootstrapper 必须在开放消息处理前完成 Observability 初始化和配置校验；应用日志与 Agent Trace 必须分别在导出前完成敏感信息脱敏。初始化或配置校验失败必须阻止开放消息处理，导出、Flush 或 Shutdown 失败必须留下可定位的诊断，不得静默吞掉。
+生产配置必须启用 Mastra Observability，并显式启用 Trace `SensitiveDataFilter`。该对象是 Observability Span Output Processor，只负责 Agent Trace 导出前的字段脱敏；它不是 §4.9 的 `SensitiveInputProcessor` / `SensitiveOutputProcessor`，不得用 Trace 脱敏替代 Agent 内容安全门，也不得把两者合并为同一生命周期对象。
 
-不要再为 Agent Loop 自建第二套 Trace 系统。
+Bootstrapper 必须在开放消息处理前完成 Observability 与 Trace `SensitiveDataFilter` 的初始化和配置校验；失败必须阻止启动。单个 Trace 顶层字段处理失败时只允许按 Mastra 原生语义导出脱敏失败标记，不得导出该字段原文；瞬时导出失败可以进入明确 `degraded` 并留下诊断，但不得改变 Agent、Delivery 或其他业务事实。
+
+应用日志与 Agent Trace 分别在各自导出前完成敏感信息脱敏。Observability/Mastra 持有 Trace `SensitiveDataFilter` 的关闭所有权；Composition Root 负责 Flush 接线并只调用一次 `mastra.shutdown()`，不得再次直接调用 `SensitiveDataFilter.shutdown()`。不要再为 Agent Loop 自建第二套 Trace 系统。
 
 ### Mastra Scorer（可选）
 
@@ -1285,14 +1271,19 @@ interface KkTraceContext {
 
 ## 4.26 Token 配额接入 Mastra Usage
 
-调用前检查：
+Quota Repository 是 KKBot 业务事实源，只接收 KKBot Client；它不接管 Agent Loop，也不能使用 Mastra `TokenCostControl` 等异步、best-effort 阈值替代硬日配额。
+
+调用前由 `QuotaAdmissionProcessor` 使用稳定 `runId` 完成单次原子准入和预算预留，同时检查：
 
 - 全局每日 Token 上限；
 - 单用户每日请求上限；
 - 单用户每日 Token 上限；
-- 配置时区的日界线。
+- 配置时区的日界线；
+- 每个 Run 可证明的最大预算。
 
-调用后按实际 Mastra Usage 原子累加：
+禁止“先查询余额、后单独累加”。并发请求的原子准入必须保证已结算 Usage 与有效预留之和不越过硬上限；相同 `runId` 重放不得重复占用请求次数或预算。
+
+Agent Loop 完成、失败、Abort 或 timeout 后，`QuotaUsageProcessor` 都必须使用相同 `runId`，按完整 Run 的累计 Mastra Usage 幂等结算：
 
 - Input Tokens；
 - Output Tokens；
@@ -1301,28 +1292,13 @@ interface KkTraceContext {
 - 多轮 Tool Loop 总消耗；
 - Fallback 模型实际消耗。
 
-表建议：
+结算成功后只释放未消耗的预留。Run 失败、timeout、Usage 不明、Repository 错误、`SQLITE_BUSY` 或结算失败时不得按零消耗释放预算，必须保守保留预留并拒绝本轮，直到可诊断恢复流程完成。达到配额属于可解释的业务拒绝，返回限制原因与恢复时间；Quota Processor 或 Repository 自身异常一律 fail-closed。
 
-```sql
-token_usage_daily (
-  usage_date,
-  user_id,
-  request_count,
-  input_tokens,
-  output_tokens,
-  reasoning_tokens,
-  cached_tokens,
-  total_tokens,
-  updated_at,
-  PRIMARY KEY (usage_date, user_id)
-)
-```
-
-达到配额后返回明确提示，不静默失败。
+表至少需要按 `runId` 保存准入、预留和结算幂等事实，并保留按日期、用户汇总的实际 Usage；精确 Schema 与未知 Usage 的释放合同由 #131 的兼容版本实验固定。
 
 ---
 
-## 4.27 资产保留使用 Schedule + Workflow
+## 4.27 资产保留使用内部 Schedule + Workflow
 
 新增：
 
@@ -1349,63 +1325,78 @@ assetRetentionWorkflow
 
 数据库保留必要元数据和删除状态。
 
+`assetRetentionWorkflow` 属于 4.20 节允许的内部维护：重复 trigger、重复 run、并发 resume 和中断恢复都不能造成重复副作用，missed fire 只在下一次唤醒时检查当前事实，不逐次回放。Schedule 只负责唤醒，资产引用、删除资格和恢复状态必须由资产业务域持有。
+
+资产引用模型、删除状态机和清理恢复协议仍由[《确定资产保留、引用与清理恢复协议》](https://github.com/dnslin/kkbot/issues/137)裁定。其正式 resolution 进入本规格前，本文不把该票的人类选择或 Decision brief 写成既成事实，也不启用依赖这些候选语义的物理删除。
+
 ---
 
 ## 4.28 重写 UnifiedBootstrapper
 
-Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例和单库双 Client 边界重写。
+Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例、唯一进程级 MCP Client 和单库双 Client 边界重写。
 
 ### 启动顺序
 
 ```text
-1. 加载 YAML
-2. 环境变量插值
-3. Zod 校验
-4. 初始化 UnifiedLogger
-5. 解析唯一规范化数据库绝对路径和 file: URL
-6. 获取单实例锁
-7. 创建 KKBot Client
-8. 执行 KKBot migrations
-9. 创建唯一 LibSQLStore 及其自有 Client
-10. 显式执行 storage.init()
-11. 创建 Knowledge 组件
-12. 创建 Models
-13. 创建 Tools 和 MCP Client
-14. 创建 Memory
-15. 创建 Agents
-16. 创建 Workflows 和 Schedules
-17. 创建 Observability
-18. 创建使用唯一 Storage 的唯一 Mastra 实例
-19. 创建 KK Driver
-20. 创建 Gateway
-21. 执行 Preflight
-22. 连接 CDP
-23. 注入 EventBridge
-24. 启动 Coordinator
-25. 开放消息处理
+1. 加载 YAML、环境变量插值并完成 Zod 校验
+2. 校验 MCP required/transport/权限/白名单/timeout、Processor、Grounding、Quota 和 Trace 脱敏规则
+3. 初始化 UnifiedLogger，解析唯一数据库路径并获取单实例锁
+4. 创建 KKBot Client，执行 KKBot migrations
+5. 创建唯一 LibSQLStore 及其自有 Client，显式执行 storage.init()
+6. 创建 Knowledge、Models、Memory 和 Quota Repository
+7. 构造静态 Agent Content Processors
+8. 构造 Observability 并启用 Trace SensitiveDataFilter
+9. 构造唯一进程级 MCPClient，执行有界逐 Server Tool discovery
+10. 用固定 MCP Tool 集合、Memory 和固定 Processor 数组创建 Agents
+11. 创建 Workflows 和 Schedules
+12. 创建使用唯一 Storage/Observability 的唯一 Mastra 实例
+13. 创建 KK Driver、Gateway 和 Coordinator
+14. 执行 required MCP、Processor 注册、Quota 原子准入、Grounding fixture、Trace 脱敏和关闭接线 Preflight
+15. 连接 CDP、注入 EventBridge 并开放消息处理
 ```
 
-Observability 初始化和必需的脱敏、导出、Flush、Shutdown 接线属于启动基线；Scorer 不在启动顺序中，其缺失、未注册或禁用不得导致配置校验、Preflight 或 Bootstrapper 失败。
+所有 Agent Content Processors、Quota、Grounding、Observability 和 Trace `SensitiveDataFilter` 都是生产启动必需能力。Scorer 不在启动顺序中，其缺失、未注册或禁用不得导致配置校验、Preflight 或 Bootstrapper 失败。
+
+### 初始化、运行和关闭故障矩阵
+
+| 阶段与故障 | 处置 |
+|---|---|
+| MCP、Processor、Grounding、Quota 或 Trace 脱敏配置非法；凭据缺失；Tool 命名冲突或权限覆盖非法 | 禁止启动；静态错误不得通过降级掩盖 |
+| required MCP 连接、鉴权、Tool discovery 失败或启动 timeout | 禁止启动并逆序回滚 |
+| optional MCP 连接、发现失败或启动 timeout | 允许明确 `degraded`；记录 Server 和原因，其 Tools 完全缺席，本进程不热加 |
+| Agent Content Processor、Quota、Grounding、Observability 或 Trace `SensitiveDataFilter` 初始化失败 | 禁止启动并逆序回滚 |
+| MCP Tool 单次执行错误或 timeout | 留在当前 Mastra Run；Gateway 不重试；无法形成安全最终结果时拒绝本轮 |
+| 输入安全策略命中或 Quota 达限 | 不调用模型或继续执行；返回固定、可理解的本轮拒绝 |
+| 输入 Processor 自身异常或 timeout | 拒绝本轮；不得跳过后继续调用模型 |
+| Quota Repository 准入、预留、结算错误或 timeout | 拒绝本轮并保守保留预算；不得视为仍有额度或零消耗 |
+| Grounding 适用但没有可信来源 | 用固定“未找到企业依据”结果安全替换，不让模型常识补写企业事实 |
+| Grounding 自身异常、来源 Schema 损坏或 timeout | 拒绝本轮；不得伪装成普通未命中 |
+| SensitiveOutput 可确定性完整脱敏 | 发送变换后的结果，并按完整 Usage 结算 |
+| SensitiveOutput 无法安全脱敏、自身异常或 timeout | 拒绝本轮并禁止 Delivery 原始输出；仍按已消耗 Usage 结算 |
+| Trace 单字段脱敏失败 | 只导出 Mastra 原生错误标记，不导出原字段；不改变用户 Run |
+| Trace 导出瞬时失败 | 允许明确遥测 `degraded` 并诊断；不得导出未脱敏原文 |
+| 关闭动作失败或 timeout | 不重新开放流量；继续关闭其余独立所有者资源并汇总诊断 |
 
 ### 关闭顺序
 
 ```text
 停止接收新消息
-→ Abort 并等待活跃 Mastra Runs 结束
+→ Abort 并等待活跃 Mastra Runs（此后不得再开始 MCP Tool Call）
 → 停止 Schedules 和 Workers
 → 停止 Coordinator
 → 断开 Driver
-→ 关闭 MCP
-→ Flush Observability 并等待其存储写入完成
-→ 调用 mastra.shutdown()，由唯一 Mastra 生命周期关闭 Storage 及其自有 Client 一次
+→ 调用唯一 MCPClient.disconnect() 一次
+→ Observability.flush()，等待其 Storage 写入完成
+→ 调用 mastra.shutdown() 一次
+   （由 Mastra 关闭 Observability、Trace SensitiveDataFilter、注册组件、Storage 及其自有 Client）
 → 关闭 KKBot Client 一次
 → Flush 并关闭 Logger
 → 释放单实例锁
 ```
 
-Composition Root 是唯一关闭编排者。不得在 `mastra.shutdown()` 之外再次直接关闭同一 Storage 或其 Client，也不得让 KKBot Store 关闭 Mastra Client；每个 Client 只能由其所有者关闭一次。若最终兼容版本在 Storage 关闭后仍会产生 Observability 写入，或 `mastra.shutdown()` 不能满足该关闭契约，则该版本组不兼容，返回版本决策处理。
+Composition Root 是唯一 closer，即唯一关闭编排者。它可以调用各资源公开的关闭入口，但不得重复关闭非自身所有资源：不得再次直接调用 `SensitiveDataFilter.shutdown()`，不得在 `mastra.shutdown()` 之外再次关闭 Mastra Storage 或其 Client，也不得让 KKBot Store 关闭 Mastra Client。唯一 MCP Client 只由 Composition Root `disconnect()` 一次；KKBot Client 只由 Composition Root 关闭一次。
 
-任何启动失败都必须按已初始化资源的逆序回滚，并遵守同一所有权和“每个 Client 关闭一次”约束。
+任何启动失败都只回滚已经成功取得所有权的资源，并按取得顺序严格逆序关闭。任一关闭动作失败时记录中文诊断并继续后续独立资源；若最终兼容版本不能满足上述关闭所有权与时序，则该版本组不兼容，返回 #131 处理。
 
 ---
 
@@ -1428,6 +1419,12 @@ mastra:
   observability:
     enabled: true
     redactSensitiveData: true
+
+mcp:
+  perServerTimeoutMs: 5000
+  servers:
+    enterprise-search:
+      required: true
 
 agent:
   id: kk-assistant
@@ -1466,6 +1463,9 @@ retention:
 ```
 
 所有凭据只能来自环境变量。
+
+每个 MCP Server 的 `required` 未声明时默认 `true`；只有显式 `required: false` 才允许在启动 discovery 失败时进入可诊断降级。MCP 配置变化、optional Server 恢复或 Tool 清单变化均通过受控重启生效，不支持运行时热加或热删 Agent Tools。
+
 
 Model Tier 配置只描述本地分类规则及其版本，不直接绑定 provider 或 model ID。Agent 的动态 model 函数负责把 `RequestContext` 中的 Tier 映射为后续锁定的 `ModelWithRetries[]`；本节不决定任何实际模型、fallback 顺序、retry 或 timeout 数值。
 
@@ -1549,8 +1549,8 @@ catalog:
 | `ApprovalManager` | 改为审批业务投影、路由和超时协调，不执行 Tool |
 | `LeaderApprovalRouter` | 保留 |
 | `StatefulApprovalMatcher` | 保留 |
-| MCP Manager | 简化为 Mastra MCP Client 生命周期和策略 |
-| `ProactiveScheduleManager` | 改成 Mastra Schedule + Workflow |
+| 自定义 `McpClientManager` | 删除；Composition Root 只创建并关闭唯一进程级 Mastra `MCPClient` |
+| `ProactiveScheduleManager` | 删除；本期不提供用户可见主动 Schedule，也不保留兼容入口 |
 | `SessionCoordinator` | 保留并简化 |
 | `KK9Driver` | 保留，修复 operator/bot_echo 来源识别 |
 | `KK9EventBridge` | 保留，作为主事件入口 |
@@ -1910,7 +1910,10 @@ Tool：runId + toolCallId
 - 达到 `maxSteps` 时安全停止；
 - 无 Tool Call 时正常结束；
 - Fallback 后仍能完成；
-- 非重试错误不会无意义重试。
+- 非重试错误不会无意义重试；
+- Agent Content Processors 按 §4.9 固定顺序执行，Memory input/output processors 的相对位置不被改写；
+- MCP 与本地 Tool 结果在进入下一模型 Step 前均经过 `processToolResult` 或等价安全检查；检查异常或 timeout 不会把原结果继续传入模型；
+- Input/Output Processor 的确定性拒绝与自身异常可区分，安全、Quota、Grounding 异常均拒绝本轮且不触发默认 retry。
 
 ## 9.2 Model Tier
 
@@ -1973,7 +1976,7 @@ Tool：runId + toolCallId
 - 无法证明发送动作尚未触发时按 `unknown` 处理；
 - `unknown` 在人工处理前不会被自动重试或补发；
 - 内容哈希、DOM 历史、bot_echo 和幂等键不能自动消除 `unknown`；
-- 主动消息与普通回复遵守相同的发送边界和 Delivery 状态。
+- 用户可见主动 Schedule 的配置、注册、Workflow 和 Delivery 路径不存在；Approval 生命周期通知不属于该产品能力，继续按 9.4 和 Delivery 规则验收。
 
 ## 9.6 Knowledge
 
@@ -1992,20 +1995,25 @@ Tool：runId + toolCallId
 - Rerank 超时自动回退；
 - 鉴权错误在 Preflight 暴露；
 - 无命中时 Agent 不编造；
-- 最终回答保留来源。
+- 最终回答保留来源；
+- Grounding 适用但无可信来源时返回固定安全结果；Grounding 自身异常、来源 Schema 损坏或 timeout 时拒绝本轮；
+- OutputLength 变换保留来源块，SensitiveOutput 作为最后一道内容门，失败时原始模型输出不会进入 Delivery 或发送。
 
 ## 9.7 Bootstrapper
 
-- 配置合法时完整启动；
+- 配置合法且所有 required MCP 可用时完整启动；
+- MCP `required` 缺省值为 `true`，只有显式 optional Server 可在启动失败时进入包含原因的 `degraded`；
+- optional Server 的 Tools 在本进程完全缺席，恢复后不热加；受控重启后才重新 discovery；
+- 构造观测证明全进程只有一个 Mastra `MCPClient`，不存在自定义 `McpClientManager` / `ToolRegistry` 执行路径；
 - 缺失环境变量返回中文字段错误；
-- 非法 URL 启动前失败；
+- 非法 URL、MCP 权限覆盖、Tool 命名冲突、Processor/Quota/Grounding/Trace 脱敏配置错误均在启动前失败；
 - 第二实例被拒绝；
 - 陈旧锁可安全恢复；
 - Preflight 未通过时不开放消息处理；
-- 任一步初始化失败都逆序回滚；
+- 任一步初始化失败只回滚已取得所有权的资源，并严格逆序关闭；
 - Ctrl+C 完整级联关闭；
-- 活跃 Run 被中断；
-- MCP、Driver、Logger、Mastra Storage 自有 Client 和 KKBot Client 都按所有权关闭，两个数据库 Client 各关闭一次。
+- 活跃 Run 被中断后不再开始新的 MCP Tool Call；
+- Composition Root 是唯一 closer：MCPClient、Driver、Logger、Mastra 和 KKBot Client 各按所有权关闭一次，Trace `SensitiveDataFilter` 与 Mastra Storage 不被重复直接关闭。
 
 ## 9.8 Observability 与可选 Scorer
 
@@ -2017,6 +2025,8 @@ Tool：runId + toolCallId
 - 一对一私聊的 Model、Tool、Memory、Workflow 有 Mastra Trace；
 - API Key、Cookie、Authorization、手机号和身份证号在应用日志与 Agent Trace 导出前分别完成脱敏；
 - Observability 初始化、导出、Flush 和 Shutdown 故障有可定位诊断，不被静默吞掉；
+- Trace `SensitiveDataFilter` 与 Agent 内容 `SensitiveInputProcessor` / `SensitiveOutputProcessor` 是独立对象、独立职责，前者由 Mastra 生命周期关闭；
+- Trace 单字段脱敏失败只导出错误标记而不导出原字段；Trace 导出降级不改变 Agent、Delivery 或配额业务事实；
 - Token Usage 可以按用户和日期查询；
 - Scorer 缺失、未注册或禁用时，Bootstrapper、Agent、Delivery 和上述验收仍通过；
 - 启用 Scorer 时，评分结果只用于离线评测或质量评价，不作为任何业务事实源。
@@ -2034,9 +2044,12 @@ Tool：runId + toolCallId
 ## 9.10 Node.js 与 Mastra 兼容矩阵
 
 - #131 的候选组必须分别在最低 Node.js `22.13.x` 和验证时仍处官方维护期的实际生产 LTS 干净环境中验证；本轮精确环境为 Node.js `22.13.1` 与 `24.14.0`。
-- 两个环境都必须使用锁文件完成冻结安装，并分别通过 TypeScript 类型检查、最小构建和 Mastra 契约测试；任何一个环境失败或关键合同未证实，都不能判定该兼容组可用。
-- Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage init/close、Tool Approval 跨进程 suspended discovery、`runId + toolCallId` 权威终态、条件决议与重复/相反/deadline 竞态、Workflow 跨进程 snapshot/resume、Schedule 重启与同一 fire 竞争、Observability Flush/Shutdown、Processors 和 MCP 生命周期。
-- [#131 研究矩阵](./research/mastra-compatible-version-set.md) 已确认候选 A/B 的基础能力通过，但 Approval 权威终态、条件决议和竞态唯一性失败，Schedule 竞争唯一性未证实；因此当前验证门不通过且无版本组可锁。
+- 两个环境都必须使用锁文件完成冻结安装，并分别通过 TypeScript 类型检查、工作区构建和 Mastra 契约测试；任何一个环境失败或关键合同未证实，都不能判定该兼容组可用。
+- Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage 生命周期与迁移、Tool Approval 跨进程 suspended discovery、`runId + toolCallId` 权威终态、条件决议与重复/相反/deadline 竞态、Workflow 跨进程 snapshot/resume、内部维护 Schedule 的创建、重启读取和重复触发，以及 Observability Flush/Shutdown。Schedule 实验不得声称同一 fire 或并发 resume 唯一；验收必须证明重复 run 不创建 Delivery、高危 Tool 或第三方写副作用，未形成原生持久 run 的 missed fire 不由 KKBot 补建或逐次回放。
+- Mastra MCP 契约必须覆盖 `listToolsWithErrors()` 的逐 Server timeout、错误归属、成功 Tool 保留、固定 Tool 集合、父 `AbortSignal` 传播、原生 reconnect 和 `disconnect()` 释放；
+- Processor 契约必须覆盖固定顺序、普通异常传播、TripWire 非重试、Tool result 检查、最终 Output Processor 完成前不暴露文本，以及安全门失败时不进入 Memory/Delivery；
+- Quota 契约必须覆盖成功、模型错误、Tool 错误、Processor 拒绝、Abort、timeout、重启和并发硬上限，未知 Usage 按保守预留处理；
+- [#131 研究矩阵](./research/mastra-compatible-version-set.md) 已确认候选 A/B 的基础能力通过，但 Approval 权威终态、条件决议和竞态唯一性失败；因此当前验证门不通过且无版本组可锁。
 - 支持矩阵中的生产 LTS 退出官方维护期时，部署与 CI 必须移除该版本并在新的实际生产 LTS 上重新执行上述完整验证。
 - Node.js 20 不属于验收环境；缺少 Node.js 20 兼容测试或其执行失败不构成本规格回归。
 
@@ -2091,6 +2104,10 @@ Tool：runId + toolCallId
 18. Issue #107 已关闭且全部需求完成迁移，后续只以本规格为实施依据；
 19. 群聊消息只幂等写入 KK Raw Store，所有 Agent、工具、知识、审批和交付下游均不会启动；
 20. Scorer 可以缺失、未注册或禁用而不影响启动、运行、迁移、Delivery 或重构完成；启用后的评分结果不成为业务事实源。
+21. 全进程只有一个由 Composition Root 持有的 Mastra `MCPClient`；required MCP 默认阻止启动，只有显式 optional MCP 可在启动时降级，运行期 Tool 集合保持静态；
+22. Agent Content Processors、Tool result 检查、Quota 原子准入/预留/结算和 Grounding/输出安全门按固定顺序 fail-closed；
+23. Trace `SensitiveDataFilter` 与 Agent 内容过滤职责和生命周期分离，Composition Root 作为唯一 closer 不重复关闭 Mastra 所有资源；
+24. 用户可见主动 Schedule 的配置、Tool、Workflow、注册入口和 Delivery 路径均不存在；仅保留重复执行安全的内部维护，且不把 Schedule fire 或本地恢复器当作唯一业务事件；
 
 ---
 
@@ -2127,7 +2144,7 @@ Tool：runId + toolCallId
 - 长会话观察和压缩；
 - Tool Approval；
 - Workflow suspend/resume；
-- Schedule；
+- Schedule（仅用于 4.20 节定义的内部维护触发）；
 - Agent Trace；
 - Scorer（仅用于可选离线评测或质量评价）；
 - Model Retry/Fallback。
