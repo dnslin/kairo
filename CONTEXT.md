@@ -84,6 +84,24 @@ _Avoid_: KnowledgeRetrievalOutcome, Not Found
 一次已安全完成的 PublicKnowledge 查询是否得到可用于 Grounding 的依据；`found` 表示存在依据，`not_found` 表示查询完成后没有依据。它不描述系统健康度，`unavailable` 也不是 `not_found`。
 _Avoid_: KnowledgeAvailability, System Failure
 
+## 资产生命周期
+
+**ManagedAsset**:
+KKBot 受管目录中的独立字节对象，使用永不复用的身份与唯一物理位置表示；原文件、OCR 中间文件、Knowledge 生成物和交付附件是不同资产。
+_Avoid_: 用文件路径代替资产身份、把派生产物视为原文件
+
+**AssetReference**:
+一个明确业务 owner 对 ManagedAsset 的持久保护关系；只有 owner 的终态或替换事实已经持久化后，该关系才能释放。
+_Avoid_: ref_count、目录扫描结果、隐式路径所有权
+
+**AssetLease**:
+处理器正在读取或写入 ManagedAsset 时持有的短期保护；它只证明当前 I/O 活跃，不能替代长期 AssetReference。
+_Avoid_: 持久业务引用、自动续期的所有权
+
+**AssetRetentionDeadline**:
+ManagedAsset 最早允许物理删除的时间；到期不保证立即删除，任何活跃 AssetReference 或 AssetLease 都会继续阻止删除。
+_Avoid_: 保证删除时间、最后访问时间
+
 ## 安全与交付
 
 **Approval**:

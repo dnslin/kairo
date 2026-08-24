@@ -50,14 +50,15 @@ KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话�
 
 #### 当前替代索引
 
-| 历史 ADR    | 当前替代                                                                                            | 已生效决议                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 仍待裁定                                                                                                                                       |
-| ----------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| ADR 0002    | 本规格 §3.1、§4.7、§12                                                                              | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                                                                                              |
-| ADR 0003    | 本规格 §4.7、§4.21–§4.23、§12                                                                       | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                          |
-| ADR 0004    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)                         | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)                                                                     |
-| ADR 0006    | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)                           | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                      | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138) |
-| ADR 0007 §2 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.18–§4.19、§9.6 | [#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                          |
-| ADR 0008    | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md)                              | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                | [#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)                                                                        |
+| 历史 ADR    | 当前替代                                                                                            | 已生效决议                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 仍待裁定                                                                   |
+| ----------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| ADR 0002    | 本规格 §3.1、§4.7、§12                                                                              | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                          |
+| ADR 0003    | 本规格 §4.7、§4.21–§4.23、§4.27、§12                                                                | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                          |
+| ADR 0004    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)                         | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161) |
+| ADR 0006    | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)                           | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                               | [#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)    |
+| ADR 0007 §2 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.18–§4.19、§9.6 | [#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | —                                                                          |
+| ADR 0007 §3 | 本规格 §4.27（30 天物理淘汰规则继续有效）                                                           | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | —                                                                          |
+| ADR 0008    | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md)                              | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                | [#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)    |
 
 ---
 
@@ -1016,7 +1017,7 @@ CAS 受影响行数不为一表示 base 已过期。冲突候选永不 committed
 
 进程启动先按 generationId 重读唯一 Head。Head 已指向的 Generation 视为提交成功；其余由前一进程遗留的 `building` 或 `ready` 一律以中断原因进入 `failed`，并用新的 generationId 重建，不自动提交、不跨崩溃续建。Head 缺失、Head 指向非 committed Generation，或 committed Generation 的结构完整性无法证明时，Knowledge 为 `unavailable`；不得自动选择 retired Generation 形成第二个可见性规则。
 
-构建诊断绑定 generationId、source/SourceVersion、stage、adapter/provider/model/version、attempt、base/head revision、输入与规则 fingerprint、错误分类、重试决定、首次/最近发生时间、最终状态和实际服务的 Head。失败候选保持不可查询且可追踪。查询在本地候选和来源元数据物化期间持有对固定 Generation 的活动引用；清理不得删除 Head 指向或仍被查询引用的 Generation，也不得删除任何 retained Generation 仍引用的不可变产物。活动引用的持久化方式、租约、宽限期、rollback 保留数量与清理恢复继续由 [#137](https://github.com/dnslin/kkbot/issues/137) 裁定。
+构建诊断绑定 generationId、source/SourceVersion、stage、adapter/provider/model/version、attempt、base/head revision、输入与规则 fingerprint、错误分类、重试决定、首次/最近发生时间、最终状态和实际服务的 Head。失败候选保持不可查询且可追踪。查询在本地候选和来源元数据物化期间持有对固定 Generation 的 AssetLease；清理不得删除 Head 指向、最近一个自动保留的 retired Generation、仍被查询租约保护的 Generation，或这些 Generation 仍引用的不可变产物。新 Generation 提交时，原 Head 成为唯一自动保留的 retired Generation，并在同一 KKBot Client 事务中释放更旧 retired Generation 的 AssetReference；它不构成第二个查询 Head，也不得被自动选为故障回退。完整清理与恢复协议见 §4.27。
 
 ### 检索策略
 
@@ -1100,7 +1101,7 @@ Mastra Schedule 只允许作为内部维护的唤醒信号。内部维护不得�
 - 重复 trigger、重复 run 和并发 resume 必须视为正常输入；若所属业务域不能证明重复安全，该维护不得启用；
 - KKBot 不建设 fire claim、resume 去重循环、Schedule Outbox、启动补跑器或第二套 Scheduler Runtime。
 
-资产保留可以继续作为内部维护，但 Schedule 唯一性不能承担删除安全。物理清理必须等待[《确定资产保留、引用与清理恢复协议》](https://github.com/dnslin/kkbot/issues/137)正式解决并把可验证协议写入本规格；在此之前只保留保护与诊断，不执行依赖未生效候选方案的物理删除。
+资产保留可以继续作为内部维护，但 Schedule 只负责唤醒，不能承担删除安全。物理清理必须遵守 §4.27 的持久 AssetReference、短期 AssetLease、两阶段 Mark/Sweep 和崩溃恢复合同；重复或漏失 Schedule fire 不得改变删除资格，也不得成为删除已经完成的证明。
 
 ---
 
@@ -1379,36 +1380,49 @@ Mastra `TokenCostControl` 基于异步 Observability 聚合，只能用于告警
 
 ---
 
-## 4.27 资产保留使用内部 Schedule + Workflow
+## 4.27 资产引用保护与可恢复清理
 
-新增：
+根据[《确定资产保留、引用与清理恢复协议》](https://github.com/dnslin/kkbot/issues/137)的正式决定，采用持久化类型引用、短期租约与两阶段 Mark/Sweep。`assetRetentionWorkflow` 只是 §4.20 定义的内部维护；Schedule 只负责唤醒，重复 trigger、重复 run、并发 resume、missed fire 和进程中断都不得改变资产 owner 的业务事实或授权物理删除。
+
+### 统一事实模型
+
+- `ManagedAsset` 是受管根目录中的独立字节对象，具有永不复用的 `assetId` 和唯一规范化 locator。接收媒体、OCR 页图、规范化中间文件、Knowledge Generation 产物和 Delivery 附件分别建模，不能用路径、内容哈希或目录位置隐式表达所有权。
+- `AssetReference` 是明确 owner 对资产的持久保护关系，至少区分 owner 身份、用途与 `active/released`。业务状态仍由 Message、Delivery、Approval、Workflow 和 Knowledge 各自持有；资产域只记录它们是否仍要求字节存在，不得反向改写业务终态。
+- `AssetLease` 是处理器读取或写入资产时持有的短期、可续租保护。租约到期只表示本次 I/O 保护失效，不表示任何持久 owner 已释放；长期引用不得只靠续租或 TTL 表达。
+- `AssetRetentionDeadline` 是物理删除最早允许时间，不是保证删除时间。接收媒体从资产进入 `ready` 起计算 30 天；生成交付物从对应 Delivery 持久化为 `sent`、`failed` 或 `aborted` 后计算 30 天。`generated`、`sending` 与 `unknown` 不产生起算终态并持续持有引用。重试、重启、文件 mtime、目录扫描或普通读取不得把 deadline 提前或重新滚动。
+- Message 附件、Delivery 历史和 Knowledge 来源定位等审计关系在业务处理结束后可以只保留元数据；审计引用本身不永久阻止物理淘汰。物理删除后仍保留最小资产 tombstone、owner/ref 历史、checksum、大小、deadline、删除原因、时间、尝试与最后错误。
+
+`ref_count` 汇总、内存集合、打开的文件句柄、mtime、DOM、内容哈希、搜索结果、UI 链接和目录扫描都只是缓存或观测，不能单独授权删除或释放引用。跨 KKBot Client 与 Mastra Storage Client 的边界统一采用 **protect-before-publish**：先在 KKBot Client 持久化 ManagedAsset 与首个 AssetReference，再把 `assetId` 暴露给 Mastra、Driver、Knowledge 或其他 owner。跨 Client 崩溃窗口只允许多保留可审计孤儿，不允许发布未受保护资产。
+
+### 删除阻断与引用释放
+
+以下任一事实存在都阻断删除：非终态 Workflow 仍需该资产；pending Approval 的详情或后续执行依赖该资产；Delivery 为 `generated`、`sending` 或 `unknown`；Knowledge Generation 为 `building`、`ready`、当前 Head，或最近一个自动保留的 retired Generation；Message 附件仍被非终态处理、审批或 Knowledge 摄取使用；存在未过期 AssetLease 或显式人工保留。当前范围不存在会复用主动发送资产的用户可见 Schedule；未来恢复该产品能力必须重新进入 Wayfinder。
+
+owner 的终态或替换事实必须先持久化，之后才能把对应 AssetReference 改为 `released`。Mastra owner 无法确认权威终态时保持引用。Delivery=`unknown` 在人工结果持久化前无限期保护资产；清理结果、文件缺失、内容哈希、KK DOM 历史或 bot echo 都不能反向裁定 Delivery。Knowledge Head CAS 提交时，原 Head 成为唯一自动保留的 retired Generation，同时释放更旧 retired Generation 的持久引用；查询只能使用唯一 Head，retained Generation 不构成自动回退路径。
+
+### 状态机与两阶段删除
 
 ```text
-assetRetentionWorkflow
+staging -> ready -> delete_marked -> deleting -> deleted
+    |         ^          |              |
+    |         |          +--新引用------+  （仅 deleting 前）
+    +--过期 staging / 失败残留进入 delete_marked
+ready -------------------------------> missing
+deleting --失败或执行租约过期--> delete_marked
 ```
 
-定期处理：
+1. **创建**：先把字节写入受管根下的唯一 staging locator；同一 KKBot Client 事务创建 ManagedAsset 与首个 AssetReference，再原子发布为 `ready`。未完成发布的 staging 由创建租约保护，locator 和 assetId 永不复用。
+2. **Mark**：只有 deadline 已到、没有 active AssetReference、没有未过期 AssetLease 或人工保留，并且每类 owner reconciler 的检查水位仍新鲜时，才能用 CAS 从 `ready` 进入 `delete_marked`，持久化原因、`markedAt` 与 grace 截止时间。Mark 不删除字节。
+3. **竞争保护**：grace 期间新 owner 可以在同一 KKBot Client 事务创建引用并把资产恢复为 `ready`。Sweep 取得 `deleting` 后拒绝新引用；调用方只能等待本次删除结束、从权威来源恢复，或创建新的 assetId，不能与物理删除竞速。
+4. **Sweep**：grace 到期后再次检查引用、租约、人工保留、deadline 与 owner 水位，再以 CAS 取得一次删除执行租约。只允许删除规范化后仍位于已注册 managed root、与 assetId 唯一 locator 匹配且不是目录或越界 symlink 的对象。
+5. **幂等结果**：`deleted` 重放无副作用；已有删除意图时遇到 `ENOENT` 视为字节已删除并提交 `deleted`。没有删除意图却发现文件缺失必须进入 `missing` 并告警，不能伪造成功清理。
+6. **失败重试**：删除失败持久化 attempt、错误分类、最后错误和下次尝试时间，再回到 `delete_marked` 使用有界退避重试。路径越界、locator/checksum 冲突、权限策略或其他确定性错误进入人工处理，不得热循环。
 
-- 接收图片；
-- 接收文件；
-- OCR 中间文件；
-- 规范化临时文件；
-- 生成交付物；
-- 失败任务残留。
+### 崩溃恢复与对账
 
-删除前检查：
+启动和定期维护只按持久化状态恢复过期 staging 创建租约、过期 deleting 执行租约和待 Sweep mark；每一步都以 CAS 和不可复用 assetId 保证重复执行安全。字节存在但没有元数据时先登记为隔离 orphan 并经过 grace，首次发现不得直接删除；元数据存在但字节缺失时进入 `missing`。owner-specific reconciler 只能依据 owner 权威状态释放过期引用，或为仍活跃但引用缺失的 owner 补建保护；任一 owner 来源不可读或检查水位过旧时本轮 Fail-Closed，不得 Mark。
 
-- 是否被消息引用；
-- 是否被未完成 Workflow 引用；
-- 是否处于审批中；
-- 是否处于发送中；
-- 是否被知识索引引用。
-
-数据库保留必要元数据和删除状态。
-
-`assetRetentionWorkflow` 属于 4.20 节允许的内部维护：重复 trigger、重复 run、并发 resume 和中断恢复都不能造成重复副作用，missed fire 只在下一次唤醒时检查当前事实，不逐次回放。Schedule 只负责唤醒，资产引用、删除资格和恢复状态必须由资产业务域持有。
-
-资产引用模型、删除状态机和清理恢复协议仍由[《确定资产保留、引用与清理恢复协议》](https://github.com/dnslin/kkbot/issues/137)裁定。其正式 resolution 进入本规格前，本文不把该票的人类选择或 Decision brief 写成既成事实，也不启用依赖这些候选语义的物理删除。
+清理优先选择“多保留一个可诊断孤儿”，绝不选择“少一条保护引用”。物理清理不删除业务事实、AssetReference 历史或资产 tombstone；审计元数据的最终淘汰属于单独合规策略，不能由 sweeper 顺带执行。实现必须用故障注入证明 protect-before-publish、终态后 release、grace 二次检查、重复 Sweep、`ENOENT`、权限失败、路径越界、进程在删除前后崩溃、缺失引用补建和引用泄漏告警均保持上述不变量。
 
 ---
 
@@ -2117,8 +2131,8 @@ Generation：generationId；manifestHash 只校验完整性
 - Head CAS base 过期时验证旧 base 不盲重试、冲突候选不提交，并从最新 Head 以新 generationId 有界重建；响应丢失只通过权威读取确认；
 - 进程重启先确认 Head；未被 Head 引用的遗留 `building/ready` 一律失败并以新 generationId 重建，不自动提交、不跨崩溃续建；
 - 构建与查询诊断绑定 generationId、source/SourceVersion、stage、adapter/provider/model/version、attempt、base/head revision 和实际服务 Head；长期降级、鉴权/协议错误与重试耗尽进入健康状态、指标和告警；
-- 查询引用释放前不得清理固定 Generation；Head 指向、查询仍引用或 retained Generation 仍引用的产物不得删除；租约、宽限期、rollback 保留与清理恢复继续由 #137 裁定；
-- 最终验收 #124 必须以代表性真实 OCR 文档和故障注入覆盖上述完整构建、Head CAS、查询快照、来源失效、Embedding 重建、结构损坏、进程恢复、诊断与引用保护合同；#137、#138 未正式 resolution 的候选方向不得作为通过前提。
+- 查询物化期间必须持有固定 Generation 的 AssetLease；Head、最近一个自动保留的 retired Generation、仍被查询租约保护的 Generation 及其引用产物不得清理。新代提交时验证原 Head 成为唯一 retained Generation、更旧 retired Generation 的 AssetReference 在同一 KKBot Client 事务释放，且 retained Generation 不参与自动查询回退；
+- 最终验收 #124 必须以代表性真实 OCR 文档和故障注入覆盖上述完整构建、Head CAS、查询快照、来源失效、Embedding 重建、结构损坏、进程恢复、诊断与引用保护合同；#138 未正式 resolution 的候选方向不得作为通过前提。
 
 ## 9.7 Bootstrapper
 
