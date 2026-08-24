@@ -968,11 +968,15 @@ packages/knowledge/src/
 - 扫描 PDF、复杂 PDF 和图片文档通过 Vision/OCR Adapter；
 - 旧版 DOC 明确拒绝。
 
-### Vision/OCR 完成门槛
+### Vision/OCR 能力与故障门槛
 
-扫描 PDF、复杂 PDF 和图片文档属于本次重构必须交付的知识摄取能力，不是可选扩展。Vision/OCR Adapter 必须真实调用受支持的 OCR/Vision 能力，产出可继续进入规范化、AST Chunk 和索引流程的文本，并保留能够回到原文件及页或图像区域的来源定位。
+扫描 PDF、复杂 PDF 和图片文档属于本次重构必须交付的知识摄取能力，不是可选扩展。至少一个真实调用受支持 OCR/Vision 能力的 Adapter 通过 Preflight，才可以声明具备这些来源的摄取能力；本节只确定 Knowledge 能力事实，是否因此阻止整个应用开放消息处理仍由 [#138](https://github.com/dnslin/kkbot/issues/138) 裁定。
 
-mock、空实现、人工预处理后再摄取，或仅支持文本层 PDF 的路径，均不能证明该能力完成。本节不锁定 Provider 或 Model，也不规定 OCR 失败后的回退、重试、原子替换和旧索引保留；这些边界分别由 [确定知识摄取故障与 OCR 回退语义](https://github.com/dnslin/kkbot/issues/130) 与 [确定 Knowledge 索引版本与原子替换协议](https://github.com/dnslin/kkbot/issues/136) 裁定。
+本地与云端真实 Adapter 都配置且通过 Preflight 时，固定先执行本地 Adapter，再以云端 Adapter 兜底。数据驻留规则禁止外发时，云端 Adapter 不进入尝试链；本地路径失败即本轮构建失败，不得为可用性绕过数据驻留规则。
+
+一次 OCR/Vision 尝试只有同时产出非空可索引文本、正确页序以及能够回到原文件、页或图像区域的完整来源定位，才算成功。HTTP 200、空白或乱码文本、页序错误、定位缺失、schema 或协议错误都属于失败；可以继续尝试链中的下一个真实 Adapter，但不能把无效结果当作健康空文档。
+
+每次尝试必须把 adapter、provider、model、version、输入 checksum、页或区域范围、结果文本 hash、定位完整性和错误分类写入产物 fingerprint 或持久诊断。mock、空实现、人工预处理后再摄取，或仅支持文本层 PDF 的路径，均不能证明该能力完成。
 
 ### Chunk 规则
 
@@ -984,6 +988,28 @@ mock、空实现、人工预处理后再摄取，或仅支持文本层 PDF 的�
 - Chunk ID 稳定；
 - 源内容不变时不重复向量化。
 
+### 构建候选完整性门禁
+
+每次构建在开始前固定能力 profile。候选中的所有必需来源必须完成 OCR/Vision（适用时）、规范化、AST 解析、Chunk 和 FTS；profile 启用 Vector 时，每个必需 Chunk 还必须具有与该 profile 完全一致的 Embedding 和 Vector 记录。任一来源或任一必需阶段不完整，整个候选都不得进入 `ready` 或 `committed`；Rerank 不参与 generation 构建完整性门禁。
+
+构建完成后必须核对 manifest、来源和 SourceVersion 覆盖率、规范化文档与 Chunk 覆盖率、FTS/Vector 行数、校验和、模型与规则 fingerprint。任一不一致都使候选失败，当前 committed generation 保持不变。Vector profile 已启用时，不得因本次 Embedding 失败而临时降成 FTS-only 后提交；关闭 Vector 必须形成新的 profile/fingerprint 和完整候选。
+
+缓存只允许在输入 checksum、adapter/provider/model/version、规范化与 Chunk 规则、Embedding fingerprint 以及来源定位完整性全部一致，并且缓存自身通过行数和校验和验证时复用。失败、部分完成或无法证明完整的结果不得作为成功缓存。失败候选不得原地修补为 committed；后续尝试必须创建新的 build 身份。查询不得把失败候选、不同 generation 或同一来源的新旧 SourceVersion 拼接为一组候选。
+
+### 来源失效门禁
+
+来源删除、过期或人工禁用必须先持久化为单调的 deny 事实；持久化成功前，请求不得返回“失效已生效”。该事实只能禁止来源继续返回，不能选择新的 SourceVersion，也不能成为第二个索引 head。失效事实生效后开始的新查询必须同时读取固定的 committed generation 和适用的失效记录，并在返回候选前过滤失效来源。
+
+后续完整 generation 负责从 manifest、FTS 和 Vector 正式移除该来源。移除构建失败时，旧 committed generation 可以继续服务其他来源，但不能返回已失效来源。在途查询的精确快照切点仍由 [#136](https://github.com/dnslin/kkbot/issues/136) 裁定；本节不把该票的开放候选或 Draft PR 写成生效协议。
+
+### 重试、CAS 与诊断
+
+瞬态错误仅包括有界网络或资源错误、超时、429、5xx 和可恢复锁竞争；自动重试必须使用退避、抖动、`Retry-After`、全局并发上限和熔断，并由 checksum/fingerprint 保证同一输入幂等。鉴权、配置、schema、维度、协议、路径越界、损坏或不支持输入，以及确定性规范化、AST 或 Chunk 不变量失败，不得进入自动热重试；只有来源、凭据、配置或实现 fingerprint 改变，或显式人工触发新的 build，才允许再次尝试。
+
+如果后续索引版本协议使用 base/head CAS，base 过期产生的 CAS 冲突不是网络瞬态错误，同一旧 base 上不得再次 CAS。系统读取最新权威 head、合并重复触发并在有界次数内创建新的 build；冲突候选永不 committed。CAS 响应丢失或进程崩溃导致结果不确定时，只允许通过稳定 build/generation 身份权威读取 head 和构建状态；head 已指向候选才算提交成功，否则候选仍不可查询，禁止再次盲切。
+
+构建诊断必须绑定 build/generation、source/SourceVersion、stage、adapter/provider/model/version、attempt、base/head revision、输入与规则 fingerprint、错误分类、重试决定、首次/最近发生时间、最终候选状态和实际仍服务的 committed generation。查询诊断必须记录固定 generation、实际执行的 FTS/Vector/Rerank 层、可用性、检索结果、降级原因和耗时。长期 `degraded`、鉴权或协议错误、重试耗尽必须进入健康状态、指标与告警；失败候选资产必须保持不可查询且可追踪，具体引用保护与回收机制仍由 [#137](https://github.com/dnslin/kkbot/issues/137) 裁定。
+
 ### 检索策略
 
 ```text
@@ -994,7 +1020,7 @@ LibSQL Vector
 可选 Rerank
 ```
 
-远程 Embedding/Rerank 超时、429、5xx 时回退本地检索；鉴权和配置错误在 Preflight 暴露。
+构建期 Embedding 必须遵守候选完整性门禁；查询期 query Embedding、Vector 或 Rerank 的超时、429、5xx 只允许在同一 committed generation 内按下节降级。鉴权、配置、维度和协议错误必须进入诊断与健康状态，不得通过静默回退伪装成健康未命中。
 
 ---
 
@@ -1006,11 +1032,14 @@ LibSQL Vector
 query_public_knowledge
 ```
 
-输出至少包含：
+Tool 的逻辑输出至少表达以下事实；具体字段名由实施类型确定，不得合并可用性与命中结果：
 
 ```ts
 {
-  found: boolean;
+  availability: 'available' | 'degraded' | 'unavailable';
+  outcome: 'found' | 'not_found' | null;
+  generationId: string | null;
+  degradationReasons: string[];
   chunks: Array<{
     chunkId: string;
     title: string;
@@ -1025,14 +1054,22 @@ query_public_knowledge
 
 Agent 应主动调用该 Tool，不再由 Gateway 在调用 Agent 前预先检索并拼入 Prompt。
 
-知识回答规则：
+查询开始时固定一个 committed generation，并在同一查询视图中读取适用的来源失效事实。可用性与检索结果是两个独立事实：
 
-- 企业制度、规范、流程问题必须先检索；
-- 未命中时明确说明没有找到依据；
-- 不允许用模型常识编造内部政策；
-- 最终结果保留来源信息；
-- 删除或过期文档不能继续被召回；
-- PublicKnowledge 与个人 Memory 完全分离。
+- `available`：当前 profile 期望的查询层全部健康执行；未启用的层不构成故障。
+- `degraded`：至少一个期望查询层失败，但 FTS 或 Vector 至少一个基础检索层在同一 generation 内安全执行。
+- `unavailable`：不存在 committed generation、FTS 与 Vector 都无法安全执行，或 committed generation 的读取完整性无法证明；此时 `outcome` 必须为空，不能写成 `not_found`。
+- `found`：来源失效过滤后至少存在一个可用于 Grounding 的候选。
+- `not_found`：至少一个基础检索层健康执行，但来源失效过滤后没有候选；`degraded + not_found` 是合法组合，不能因此隐藏降级事实。
+
+查询降级只允许关闭读取增强层，不能改变 generation 或来源版本：
+
+- query Embedding 或 Vector 失败且 FTS 健康时，返回同代 FTS-only 结果；
+- FTS 失败且 Vector 健康时，返回同代 Vector-only 结果；
+- Rerank 失败、超时、429、鉴权失效、协议错误或返回候选集外内容时，丢弃本次 Rerank，返回同代 FTS/Vector 融合后的限定候选；
+- FTS 与 Vector 都失败时返回 `unavailable`，不得伪装成健康未命中。
+
+Rerank 只能重排输入的同代限定候选，不能补查、跨 generation 或引入候选集外内容。所有 `available` 或 `degraded` 结果仍必须保留来源、执行失效过滤并遵守 Grounding。企业制度、规范、流程问题必须先检索；`unavailable` 或没有可信来源时，Agent 不得用模型常识编造内部政策或事实。PublicKnowledge 与个人 Memory 完全分离。
 
 ---
 
@@ -2035,6 +2072,21 @@ Tool：runId + toolCallId
 - 最终回答保留来源；
 - Grounding 适用但无可信来源时返回固定安全结果；Grounding 自身异常、来源 Schema 损坏或 timeout 时拒绝本轮；
 - OutputLength 变换保留来源块，SensitiveOutput 作为最后一道内容门，失败时原始模型输出不会进入 Delivery 或发送。
+- 至少一个真实 OCR/Vision Adapter 通过 Preflight；本地与云端都可用时验证本地优先、云端兜底，数据驻留禁止外发时验证云端完全不被调用；
+- OCR/Vision HTTP 200 但空白、页序错误、定位缺失、schema 或协议错误均使尝试失败；所有真实路径失败时禁止候选 `ready/commit`，不得产生健康空文档；
+- OCR、规范化、AST、Chunk、FTS 或 profile 要求的任一 Vector 不完整时，整个候选失败且旧 committed generation 不变；Rerank 不参与构建门禁；
+- manifest、来源/SourceVersion、Chunk、FTS/Vector 行数、校验和、fingerprint 与覆盖率任一不完整时禁止发布；失败候选不得原地补成 committed，不得跨 generation 拼接查询候选；
+- 首次构建失败且没有 committed generation 时，Knowledge 返回 `unavailable`，不得返回 `not_found` 或空 committed generation；
+- 同一来源新版本构建失败时，旧且仍获授权的 SourceVersion 继续服务；来源删除、过期或人工禁用事实生效后，旧索引即使物理存在也不得继续返回该来源；
+- 删除请求只在失效事实持久化成功后返回生效；不含该来源的新 generation 构建失败时，旧 generation 继续服务其他来源且失效来源保持 deny；
+- query Embedding/Vector 失败验证同代 FTS-only，FTS 失败验证同代 Vector-only，Rerank 失败或越界验证返回未重排限定候选，两个基础层同时失败验证 `unavailable`；
+- 可用性与检索结果分别验证 `available/degraded/unavailable` 和 `found/not_found`，包括 `degraded + not_found`；任何 `unavailable` 都不得伪装成 `not_found`；
+- Head CAS base 过期时验证旧 base 不盲重试、冲突候选不提交，并从最新 head 有界创建新 build；响应丢失或进程崩溃时只通过权威读取确认提交结果；
+- 瞬态错误验证有界退避、抖动、`Retry-After`、并发上限与熔断；鉴权、配置、schema、维度、协议、损坏输入和确定性解析/Chunk 错误验证不自动热重试；
+- 构建与查询诊断绑定 generation/build、source/SourceVersion、stage、adapter/provider/model/version、attempt、base/head revision 和实际服务 generation；长期降级、鉴权/协议错误与重试耗尽进入健康状态、指标和告警；
+- Rerank 永远不能引入候选集外、跨 generation 或已失效来源；所有降级结果保留来源并通过 Grounding，Knowledge 不可用时 Agent 不得凭模型常识回答企业内部事实；
+- 失败、building、committed、rollback generation 相关资产在清理前遵守对应保护边界；重试耗尽或构建失败不得造成资产失去身份，也不得为释放空间提前删除 committed、rollback 或其他仍受保护资产；
+- 最终验收 #124 必须以代表性真实 OCR 文档和故障注入覆盖上述构建、查询、来源失效、CAS、重试、诊断与资产保护合同；#136、#137、#138 未正式 resolution 的候选方向不得作为通过前提。
 
 ## 9.7 Bootstrapper
 
