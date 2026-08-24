@@ -1,7 +1,14 @@
 # ADR 0004: 基于 Mastra LibSQL 统一底座的全栈认知微内核与双通道 HITL 架构设计
 
 ## Status
-Accepted
+Superseded
+
+- **Superseded on**: 2026-08-24
+- **Superseded by**: [ADR 0009：Mastra 运行时与 KKBot 业务事实边界](./0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)
+- **Current specification**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §2.2–§2.7、§4.12–§4.13、§4.21–§4.23、§12
+- **Resolved by**: [#117《确定 Mastra 原生能力缺口的处理原则》](https://github.com/dnslin/kkbot/issues/117)、[#123《确定审批超时的唯一语义》](https://github.com/dnslin/kkbot/issues/123)、[#126《确定 Approval 投影与 Mastra Run 的恢复边界》](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127《确定单数据库下的 Storage 连接边界》](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#133《确定 Node.js 运行时基线》](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)
+- **Pending decisions**: [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135)
+- **Historical note**: 以下 Context、Decision 与 Consequences 保留原文，仅用于说明当时的决策背景，不再作为当前 Runtime、审批、Storage、版本或通道设计依据。
 
 ## Context
 在 KKBot v2 的智能认知微内核（`@kkbot/agent`）与数据持久化架构选型中，为了彻底避免多数据库文件割裂（如同时存在多个 `.db` 文件导致跨库事务无法回滚、备份困难）以及重复造轮子的问题，系统需要确立一个统一、现代且高内聚的存储与认知调度底座。

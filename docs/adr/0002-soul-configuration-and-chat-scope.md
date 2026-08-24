@@ -1,7 +1,13 @@
 # ADR 0002: 人设配置解耦 (soul.md)、单聊边界约束与异常降级策略
 
 ## Status
-Accepted
+Superseded
+
+- **Superseded on**: 2026-08-24
+- **Current replacement**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §3.1、§4.7、§12
+- **Resolved by**: [#112《确定群聊消息进入系统的边界》](https://github.com/dnslin/kkbot/issues/112)
+- **Pending decisions**: [#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135)
+- **Historical note**: 以下 Context、Decision 与 Consequences 保留原文，仅用于说明当时的决策背景；其中“群聊完全 Out of Scope”不再是当前边界。
 
 ## Context
 在 KKBot v2 的智能对话设计中，需要进一步明确人设配置模式、会话适用范围（单聊 vs 群聊）、知识库未命中兜底策略，以及外部工具/MCP 发生故障时的容错机制。
