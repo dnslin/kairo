@@ -926,11 +926,46 @@ packages/knowledge/src/
 → 规范化 Markdown
 → Remark/Unified AST 解析
 → 标题感知 Chunk
-→ 写入文档和 Chunk
-→ 可选 Embedding
-→ 原子替换旧索引
-→ 保存摄取状态
+→ 构建不可见候选 KnowledgeGeneration 的 ChunkSet、LexicalPart 与 VectorPart
+→ 完整性校验通过后标记 ready
+→ 以 KKBot Client 的短事务 CAS 切换唯一 Head
+→ 保存摄取状态与失败诊断
 ```
+
+### 一致性模型与原子替换
+
+Knowledge 的一致性单元不是单个来源行、Chunk 行或某次 Embedding 请求，而是 **不可变全局 `KnowledgeGeneration` manifest 及其引用的全部不可变产物**。本节只冻结领域语义；具体表结构、DDL、迁移和物理命名留给实现计划。
+
+- **Source**：按规范化 `sourcePath` 标识的稳定逻辑来源；来源内容更新不会创建第二个 Source。
+- **SourceVersion**：不可变派生输入，至少由 `sourceHash`、转换器/OCR 指纹、规范化指纹与 `normalizedDocumentHash` 标识；任一转换或规范化规则变化都产生新版本，不覆盖旧版本。
+- **ChunkSet**：由 `SourceVersion + chunkerFingerprint` 唯一确定的不可变 Chunk 集；Chunk 保留稳定 ID、标题链、内容哈希和来源定位。
+- **LexicalPart**：由 ChunkSet 与 `lexicalFingerprint` 派生；指纹至少覆盖 tokenizer、企业词典和索引规则版本。
+- **VectorPart**：由 Chunk 内容与 `embeddingFingerprint` 派生；只有完整指纹相同才允许复用向量。指纹至少覆盖 provider、model、model revision、dimension、输入规范化版本、向量归一化方式和 distance metric。
+- **KnowledgeGeneration**：一次完整、全局可查询的 PublicKnowledge 快照；manifest 将每个仍存在的 Source 映射到恰好一个 SourceVersion，并引用同一 generation 的 Chunk、FTS 与 Vector 物理索引部分。来源删除通过新 manifest 不再包含该 Source 表达。
+
+FTS 与 Vector 必须使用 generation-scoped 物理 namespace，并由 generation 元数据登记数量、校验和、覆盖率和全部规则指纹。新旧 generation 不得共享无 generation 边界的活动索引；Embedding dimension 或 distance metric 变化必须创建新的 Vector namespace，禁止原地修改活动索引或混用旧向量。
+
+状态机固定为：
+
+```text
+building ──完整性校验通过──> ready ──Head CAS 短事务──> committed ──后继提交──> retired ──安全回收──> collected
+    └────────转换 / Chunk / FTS / Vector 任一步失败────────> failed ───────────────> collected
+```
+
+切换只能由 KKBot Client 在同一规范化 LibSQL 文件中执行短事务：验证候选 generation 已 `ready`，且 manifest、FTS、Vector 的数量、校验和、覆盖率与指纹完整；再以 `baseGenerationId + headRevision` 为比较条件 CAS 更新唯一 Head，同时将候选改为 `committed`、旧 committed generation 改为 `retired`。耗时转换、OCR、Chunk、Embedding 和索引构建全部在事务外、候选不可见时完成；不得借 Mastra Storage 或跨 Client 事务伪造原子性。
+
+以下不变量必须同时成立：
+
+- 对外提供查询时，唯一 Head 恰好指向一个 `committed` generation；`building`、`ready`、`failed`、`retired` 和 `collected` 均不能被新查询选中。
+- 查询在同一数据库读事务中只读取一次 Head，并显式使用该 generation 的 FTS 与 Vector namespace；候选和来源元数据物化后立即结束事务，远程 Rerank 只能重排这批候选，不能跨 generation 补查。
+- 更新只重建受影响 SourceVersion 的派生产物；未变化 SourceVersion、ChunkSet 和完全同指纹向量可以复用，但候选必须先形成全量 manifest 与完整 generation-scoped 索引再切换。
+- 删除在候选 manifest 中移除 Source，并构建不含该来源的 FTS/Vector 部分；切换后新查询立即不可召回，旧 generation 仅供已固定旧 Head 的读者完成。
+- Embedding 指纹任一兼容性字段变化时，所有当前活动 Chunk 必须在候选 generation 中具有新指纹向量；缺失任一向量都不能进入 `ready`。规范化文档、ChunkSet 和 LexicalPart 仅在各自指纹不变时复用。
+- 任一 SourceVersion、ChunkSet、LexicalPart 或 VectorPart 失败都阻止整代提交；失败诊断绑定 build、generation 和 source，Head 保持不变，旧 generation 继续服务。
+- 并发构建记录各自的 `baseGenerationId`；CAS 败者不得用旧 manifest 覆盖胜者，必须基于新 Head 重新构建或重放 manifest。
+- 切换事务崩溃只允许全部提交或全部回滚；若提交成功但调用方未收到响应，必须通过 build ID 与 Head 重读幂等确认，禁止盲目再次切换。
+- 启动时发现遗留 `building` 或 `ready` 不得自动提交；最小安全策略是标记 `failed` 后重建，不在本规格中设计跨崩溃续建。
+- `retired` 或 `failed` generation 只有在不再是 Head、进程内查询引用计数为零并超过保守宽限期后，才可删除其专属 FTS/Vector namespace；不可变文档、Chunk 和向量缓存仅在所有保留 generation 都不再引用时清理。至少保留最近一个 retired generation 用于诊断；源资产保留时长与恢复策略仍由 #137 裁定。
 
 ### 支持格式
 
@@ -944,7 +979,7 @@ packages/knowledge/src/
 
 扫描 PDF、复杂 PDF 和图片文档属于本次重构必须交付的知识摄取能力，不是可选扩展。Vision/OCR Adapter 必须真实调用受支持的 OCR/Vision 能力，产出可继续进入规范化、AST Chunk 和索引流程的文本，并保留能够回到原文件及页或图像区域的来源定位。
 
-mock、空实现、人工预处理后再摄取，或仅支持文本层 PDF 的路径，均不能证明该能力完成。本节不锁定 Provider 或 Model，也不规定 OCR 失败后的回退、重试、原子替换和旧索引保留；这些边界分别由 [确定知识摄取故障与 OCR 回退语义](https://github.com/dnslin/kkbot/issues/130) 与 [确定 Knowledge 索引版本与原子替换协议](https://github.com/dnslin/kkbot/issues/136) 裁定。
+mock、空实现、人工预处理后再摄取，或仅支持文本层 PDF 的路径，均不能证明该能力完成。本节不锁定 Provider 或 Model；OCR 失败后的回退与重试由 [确定知识摄取故障与 OCR 回退语义](https://github.com/dnslin/kkbot/issues/130) 裁定。OCR/Vision 产物一旦进入候选 generation，即必须遵守本节按 [#136 人类选择 A](https://github.com/dnslin/kkbot/issues/136#issuecomment-5389748422) 冻结的原子替换和旧 generation 保留协议。
 
 ### Chunk 规则
 
@@ -1603,13 +1638,13 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | R107-14 | 扫描件/复杂 PDF 路由 Vision/OCR | 迁入独立子系统 | `@kkbot/knowledge / OCR Adapter` | 不静默输出乱码，明确记录转换路径和置信度。 |
 | R107-15 | 旧版 DOC 或损坏文件明确失败 | 迁入独立子系统 | `KnowledgeIngestion` | 返回结构化失败结果，不进入索引。 |
 | R107-16 | 原始文件和规范化 Markdown 分离 | 迁入独立子系统 | `Knowledge Storage` | 源文件不被覆盖，生成物可复核。 |
-| R107-17 | 记录来源哈希、转换器版本和状态 | 迁入独立子系统 | `knowledge_sources` | 每个来源可追踪其摄取版本和失败原因。 |
-| R107-18 | 未变化文件跳过重复解析和向量化 | 迁入独立子系统 | `KnowledgeIngestion` | 相同来源哈希返回 skipped。 |
-| R107-19 | 源文件修改后增量重建 | 迁入独立子系统 | `KnowledgeIngestion` | 只更新受影响文档。 |
-| R107-20 | 源文件删除后传播删除 | 迁入独立子系统 | `KnowledgeIngestion` | 规范化文件、Chunk、FTS 和向量同步删除。 |
-| R107-21 | 更新时原子替换旧 Chunk/向量 | 迁入独立子系统 | `AtomicKnowledgeReplacement` | 任何时刻不得同时召回同一来源的新旧版本。 |
-| R107-22 | Embedding 模型或维度变化要求重建 | 迁入独立子系统 | `knowledge_indexes` | 索引保存 provider/model/dimension/version 指纹。 |
-| R107-23 | Chunk 携带完整来源元数据 | 迁入独立子系统 | `knowledge_chunks` | 包含标题、标题链、来源、哈希、更新时间。 |
+| R107-17 | 记录来源哈希、转换器版本和状态 | 迁入独立子系统 | `Source / SourceVersion` | Source 保持稳定身份；来源字节、转换/OCR 或规范化指纹变化均形成不可变 SourceVersion，并保留失败诊断。 |
+| R107-18 | 未变化文件跳过重复解析和向量化 | 迁入独立子系统 | `SourceVersion / ChunkSet / VectorPart` | 各层指纹完全相同时复用不可变产物；Embedding 完整指纹不同不得复用向量。 |
+| R107-19 | 源文件修改后增量重建 | 迁入独立子系统 | `KnowledgeIngestion` | 只重建受影响来源的派生产物，但提交前必须形成完整候选 generation manifest 与索引 namespace。 |
+| R107-20 | 源文件删除后传播删除 | 迁入独立子系统 | `KnowledgeGeneration manifest` | 新 manifest 移除来源并构建不含该来源的 FTS/Vector 部分；Head 切换后新查询不可召回。 |
+| R107-21 | 更新时原子替换旧 Chunk/向量 | 迁入独立子系统 | `KnowledgeGeneration + Head CAS` | 不可见候选完整校验后以短事务 CAS 切换唯一 Head；一次查询只读取一个 committed generation。 |
+| R107-22 | Embedding 模型或维度变化要求重建 | 迁入独立子系统 | `VectorPart / embeddingFingerprint` | 指纹覆盖 provider/model/revision/dimension/输入规范化/向量归一化/distance metric；不兼容变化创建新 Vector namespace 并全量覆盖活动 Chunk。 |
+| R107-23 | Chunk 携带完整来源元数据 | 迁入独立子系统 | `ChunkSet` | ChunkSet 由 SourceVersion 与 chunkerFingerprint 唯一确定；Chunk 包含稳定 ID、标题链、来源定位和内容哈希。 |
 | R107-24 | 按章节语义切片 | 迁入独立子系统 | `Markdown AST Chunker` | 不得按固定字符截断句子、列表或表格。 |
 | R107-25 | Chunk 继承文档标题和标题链 | 迁入独立子系统 | `Markdown AST Chunker` | Chunk 脱离原文仍具备自包含语义。 |
 | R107-26 | 中文、英文缩写、工单号、系统代号可检索 | 迁入独立子系统 | `LexicalTokenizer` | 保留中文 Bigram、英文数字和连字符 Token。 |
@@ -1660,7 +1695,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | Markdown/DOCX/PDF/OCR Adapter | 直接保留 | 保持格式边界和失败诊断。 |
 | Markdown AST 标题感知 Chunker | 直接保留 | 保持节点原子性、自包含标题链和稳定 ID。 |
 | 本地词法 + Vector + Rerank | 改写后保留 | 检索实现保留；Agent 使用方式改为 Mastra Tool。 |
-| AtomicVectorReplacement | 直接保留 | 扩展为 Chunk、FTS、Vector 的单来源原子替换。 |
+| AtomicVectorReplacement | 改写后保留 | 扩展为全局不可变 `KnowledgeGeneration` 与唯一 Head CAS；Chunk、FTS、Vector 必须作为同代一致性单元切换。 |
 | PublicKnowledge 单一知识域 | 直接保留 | 保持，权限知识库继续 Out of Scope。 |
 | UnifiedLogger 覆盖完整 Agent Trace | 改写后保留 | 应用日志由 UnifiedLogger，Agent Trace 由 Mastra Observability。 |
 | TraceContextPropagation | 改写后保留 | 同时写入 Pino context、Mastra requestContext 和 tracingContext。 |
@@ -1873,9 +1908,13 @@ knowledge_sources
 knowledge_documents
 knowledge_chunks
 knowledge_indexes
+knowledge_generation_sources
+knowledge_index_head
 token_usage_daily
 asset_references
 ```
+
+上述 Knowledge 名称只表达最小逻辑记录职责，不冻结 DDL：`knowledge_sources` 保存稳定 Source 与观测诊断，`knowledge_documents` 保存不可变 SourceVersion 和规范化文档，`knowledge_chunks` 保存不可变 ChunkSet，`knowledge_indexes` 登记 generation、状态、基线、指纹、namespace、数量、校验和与失败原因，`knowledge_generation_sources` 保存完整 manifest，`knowledge_index_head` 保存唯一 committed generation 与单调 revision。
 
 ### 8.1 关键唯一约束
 
@@ -1883,7 +1922,7 @@ asset_references
 (session_id, message_id)
 (run_id, tool_call_id)
 (run_id, session_id, content_hash)
-(source_id, chunk_id)
+(generation_id, source_id)
 (usage_date, user_id)
 ```
 
@@ -1893,8 +1932,9 @@ asset_references
 消息：sessionId + nativeMessageId
 Tool：runId + toolCallId
 发送：runId + contentHash
-摄取：sourcePath + sourceHash + converterVersion
-向量：chunkId + embeddingModelFingerprint
+摄取：sourcePath + sourceHash + converter/OCR fingerprint + normalization fingerprint
+Chunk：sourceVersionId + chunkerFingerprint
+向量：chunkContentHash + embeddingFingerprint
 ```
 
 `runId + contentHash` 标识一个 Delivery，只约束 KKBot 本地的重复记录和并发创建；它既不标识单次发送尝试，也不能证明某次 KK 发送动作是否发生。发送记录进入 `unknown` 后，不得用该幂等键、DOM 历史或内容相似性将其自动改写为 `sent` / `failed`，也不得据此自动补发。
@@ -1985,10 +2025,14 @@ Tool：runId + toolCallId
 - 损坏文件有明确错误；
 - AST 标题感知 Chunk；
 - 列表、表格、代码块不被腰斩；
-- 未变化文件跳过；
-- 修改文件增量替换；
-- 删除文件传播到 Chunk 和 Vector；
-- Embedding 模型变化要求重建；
+- 未变化的 SourceVersion、ChunkSet 和完全同指纹向量可复用；
+- 修改文件只重建受影响来源，但通过完整全局候选 generation 一次提交；
+- 删除来源通过新 manifest 缺席表达，切换后新查询在 FTS 和 Vector 均不可召回；
+- Embedding provider/model/revision/dimension/输入规范化/向量归一化/distance metric 任一变化形成新指纹；不兼容变化使用新 Vector namespace 并覆盖全部活动 Chunk；
+- 候选依次经历 `building → ready → committed → retired → collected`，任一转换、Chunk、FTS 或 Vector 失败进入 `failed` 且不改变 Head；
+- 唯一 Head 只通过 KKBot Client 短事务 CAS 切换；CAS 失败的并发构建不能覆盖胜者；
+- 一次查询只固定一个 committed generation，FTS、Vector、来源元数据和后续 Rerank 不得跨 generation；
+- retired/failed generation 仅在无查询引用并超过宽限期后安全回收，且至少保留最近一个 retired generation；
 - Rerank 超时自动回退；
 - 鉴权错误在 Preflight 暴露；
 - 无命中时 Agent 不编造；
