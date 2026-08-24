@@ -119,8 +119,15 @@ const result = await agent.generate(/* ... */);
 - 单 KK 客户端；
 - 单进程；
 - 单数据目录；
-- 单 LibSQL 数据库；
+- 单 LibSQL 数据库文件；
+- 单 Mastra Storage；
 - 单 Mastra 实例。
+
+“单数据库”约束的是同一个规范化本地文件路径，不等于共享同一个 Client。唯一 Composition Root 必须只解析一次数据库配置，创建一个 KKBot Client，并通过同一规范化 `file:` URL 创建一个且仅一个 `LibSQLStore` 及其自有 Client；唯一 Mastra 实例只能使用该 Storage。任何 Memory、Workflow、Schedule、Observability 或其他 Mastra component 都不得私自创建 Storage、Client 或第二个数据库文件。
+
+KKBot Client 与 Mastra Storage 自有 Client 的事务和关闭责任相互独立。共享文件不构成跨 Client、跨 domain 原子事务；需要业务一致性的流程必须依赖所属事实源、状态转换和幂等键，不得伪装成共享数据库事务。
+
+本节不锁定具体 Mastra 版本或构造器细节。最终兼容版本必须通过单库双 Client、唯一 Storage、初始化和关闭契约验证；验证失败时返回 Wayfinder 重新裁定，不自研 Storage 语义补缺口。
 
 不引入 Kafka、Redis、分布式锁或多主高可用。
 
@@ -1019,21 +1026,26 @@ proactiveMessageWorkflow
 
 ---
 
-## 4.21 统一单库和单 Storage
+## 4.21 统一单库、双 Client 和单 Mastra Storage
 
-统一数据库：
+配置只声明一个数据库位置。唯一 Composition Root 必须把它解析为唯一规范化绝对文件路径和对应的 `file:` URL；相对路径、工作目录差异或重复配置不得产生第二个数据库文件。
+
+默认数据库：
 
 ```text
 data/kkbot.db
 ```
 
-应用启动时创建：
+应用启动时只能创建：
 
 ```text
-一个 LibSQL Client
-一个 Mastra Storage
-一个 Mastra Instance
+同一规范化数据库文件
+├── 一个 KKBot Client
+└── 一个 LibSQLStore 及其自有 Client
+    └── 一个 Mastra Instance
 ```
+
+KKBot repositories 只接收 KKBot Client，不持有 Mastra Storage。唯一 Mastra 实例只接收该 `LibSQLStore`；Memory、Workflow、Schedule、Observability 以及启用时的 Scorer 复用这一个 composite Storage，不得分别新建 Storage 或额外 Client。不得为了共享对象而把 KKBot Client 注入 `LibSQLStore`；共享 Client 不能提供跨 domain 原子性，只会合并关闭责任。
 
 ### Mastra 管理
 
@@ -1060,7 +1072,11 @@ Scorer 结果属于派生评价数据，不得作为 Agent、Memory、Approval�
 - Token quotas；
 - Asset references。
 
-KKBot 不修改 Mastra 内部表结构。
+KKBot migrations 和 repositories 只操作 KKBot 所有表、索引和 migration ledger。禁止对 Mastra 内部表执行 DDL 或 DML，也禁止依赖其内部列、表名或迁移实现；Mastra 内部表只由最终锁定兼容版本的 Storage 初始化逻辑管理。
+
+两个 Client 依靠同一文件上的 SQLite 锁和 WAL 协调，但对象分离不代表写入不会竞争。最终兼容版本和连接配置必须通过 WAL、busy timeout、并发写入、事务创建连接以及 `SQLITE_BUSY` 诊断契约测试；锁冲突不得被静默吞掉。
+
+每个 Client 内由其公开 transaction/batch API 执行的语句可以按该 API 的契约原子提交。KKBot repository 写入与 Mastra Memory、Workflow、Schedule 或 Observability 写入不属于同一 Client transaction，也不承诺跨 Client、跨 domain 原子提交。
 
 ---
 
@@ -1079,10 +1095,10 @@ packages/store/migrations/
 └── 0007_asset_references.sql
 ```
 
-至少增加：
+KKBot 使用独立且明确归属的 migration ledger：
 
 ```sql
-CREATE TABLE schema_migrations (
+CREATE TABLE kkbot_schema_migrations (
   version INTEGER PRIMARY KEY,
   applied_at INTEGER NOT NULL
 );
@@ -1091,6 +1107,20 @@ CREATE UNIQUE INDEX uniq_session_native_message
 ON session_messages(session_id, message_id)
 WHERE message_id IS NOT NULL;
 ```
+
+持有单实例锁后，启动顺序固定为：
+
+```text
+KKBot Client 执行全部待应用 KKBot migrations
+→ KKBot migration 成功提交
+→ 创建唯一 LibSQLStore
+→ 显式执行 storage.init()
+→ 创建并启动唯一 Mastra 实例
+```
+
+KKBot migration ledger 与 Mastra 内部迁移状态互不读取、互不写入。KKBot migration 只允许创建、修改或删除 KKBot 所有表和索引，禁止对 Mastra 内部表执行 `CREATE`、`ALTER`、`DROP`、`INSERT`、`UPDATE` 或 `DELETE`，也不得依赖 Mastra 内部列或迁移编号。`storage.init()` 只负责最终锁定兼容版本定义的 Mastra domain；具体 API 签名和内部表名不在本规格中冻结。
+
+KKBot migrations 与 `storage.init()` 是两个顺序执行、可独立诊断和重试的阶段，不存在合并为一个跨 Client 回滚事务的承诺。空库、仅含旧 KKBot schema、仅含旧 Mastra schema、两者并存的库都必须通过启动契约测试；任一步失败后重试不得产生半套 KKBot schema、重复 ledger 记录或第二套 Mastra 表。
 
 消息写入使用幂等 Upsert 或 `ON CONFLICT DO NOTHING`。
 
@@ -1301,7 +1331,7 @@ assetRetentionWorkflow
 
 ## 4.28 重写 UnifiedBootstrapper
 
-Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例重写。
+Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例和单库双 Client 边界重写。
 
 ### 启动顺序
 
@@ -1310,25 +1340,27 @@ Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例重写�
 2. 环境变量插值
 3. Zod 校验
 4. 初始化 UnifiedLogger
-5. 获取单实例锁
-6. 创建 LibSQL Client
-7. 执行 KKBot migrations
-8. 创建 Mastra Storage
-9. 创建 Knowledge 组件
-10. 创建 Models
-11. 创建 Tools 和 MCP Client
-12. 创建 Memory
-13. 创建 Agents
-14. 创建 Workflows 和 Schedules
-15. 创建 Observability
-16. 创建唯一 Mastra 实例
-17. 创建 KK Driver
-18. 创建 Gateway
-19. 执行 Preflight
-20. 连接 CDP
-21. 注入 EventBridge
-22. 启动 Coordinator
-23. 开放消息处理
+5. 解析唯一规范化数据库绝对路径和 file: URL
+6. 获取单实例锁
+7. 创建 KKBot Client
+8. 执行 KKBot migrations
+9. 创建唯一 LibSQLStore 及其自有 Client
+10. 显式执行 storage.init()
+11. 创建 Knowledge 组件
+12. 创建 Models
+13. 创建 Tools 和 MCP Client
+14. 创建 Memory
+15. 创建 Agents
+16. 创建 Workflows 和 Schedules
+17. 创建 Observability
+18. 创建使用唯一 Storage 的唯一 Mastra 实例
+19. 创建 KK Driver
+20. 创建 Gateway
+21. 执行 Preflight
+22. 连接 CDP
+23. 注入 EventBridge
+24. 启动 Coordinator
+25. 开放消息处理
 ```
 
 Observability 初始化和必需的脱敏、导出、Flush、Shutdown 接线属于启动基线；Scorer 不在启动顺序中，其缺失、未注册或禁用不得导致配置校验、Preflight 或 Bootstrapper 失败。
@@ -1337,17 +1369,21 @@ Observability 初始化和必需的脱敏、导出、Flush、Shutdown 接线属�
 
 ```text
 停止接收新消息
-→ Abort 活跃 Mastra Runs
-→ 停止 Schedules
+→ Abort 并等待活跃 Mastra Runs 结束
+→ 停止 Schedules 和 Workers
 → 停止 Coordinator
 → 断开 Driver
 → 关闭 MCP
-→ Flush Trace 和 Logger
-→ 关闭数据库
+→ Flush Observability 并等待其存储写入完成
+→ 调用 mastra.shutdown()，由唯一 Mastra 生命周期关闭 Storage 及其自有 Client 一次
+→ 关闭 KKBot Client 一次
+→ Flush 并关闭 Logger
 → 释放单实例锁
 ```
 
-任何启动失败都必须按已初始化资源的逆序回滚。
+Composition Root 是唯一关闭编排者。不得在 `mastra.shutdown()` 之外再次直接关闭同一 Storage 或其 Client，也不得让 KKBot Store 关闭 Mastra Client；每个 Client 只能由其所有者关闭一次。若最终兼容版本在 Storage 关闭后仍会产生 Observability 写入，或 `mastra.shutdown()` 不能满足该关闭契约，则该版本组不兼容，返回版本决策处理。
+
+任何启动失败都必须按已初始化资源的逆序回滚，并遵守同一所有权和“每个 Client 关闭一次”约束。
 
 ---
 
@@ -1363,9 +1399,10 @@ kk:
   maxWaitMs: 5000
   takeoverMinutes: 10
 
+storage:
+  url: file:./data/kkbot.db
+
 mastra:
-  storage:
-    url: file:./data/kkbot.db
   observability:
     enabled: true
     redactSensitiveData: true
@@ -1631,10 +1668,11 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | N-09 | Mastra Tool Approval 为唯一执行状态源 | 审批投影不得自行执行高危 Tool。 |
 | N-10 | Tool Approval 与 Workflow Suspend 分离 | 风险确认使用 Approval；补充信息和多步骤等待使用 suspend/resume。 |
 | N-11 | 中断后不重放旧用户消息 | Abort 当前 Run 后只提交新消息，旧内容由 thread memory 提供。 |
-| N-12 | 正式数据库迁移 | KKBot 业务表使用版本化 migration，不再只依赖 CREATE TABLE IF NOT EXISTS。 |
+| N-12 | 正式数据库迁移 | KKBot 业务表使用独立 `kkbot_schema_migrations` ledger 和版本化 migration；完成后再执行 Mastra `storage.init()`，不得操作 Mastra 内部表。 |
 | N-13 | Mastra 依赖版本锁定 | Core、Memory、LibSQL、MCP、RAG、Observability 使用经契约测试验证的兼容版本组。 |
 | N-14 | 知识查询由 Agent 主动 Tool Call | Gateway 不再提前执行知识检索并拼入 Prompt。 |
 | N-15 | 完整 Run 关联 | traceId、runId、sessionId、toolCallId、approvalTaskId、deliveryId 可重建完整链路。 |
+| N-16 | 单库双 Client 单 Storage | Composition Root 只解析一个规范化数据库路径；KKBot Client 与唯一 Mastra Storage 自有 Client 分离，不承诺跨 Client、跨 domain 原子事务。 |
 
 ### 6.5 Testing Decisions 迁移
 
@@ -1651,7 +1689,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | 自定义 Failover 测试 | Mastra fallback chain 契约测试 |
 | 单模块脚本装配测试 | `UnifiedBootstrapper` 最高层启动/关闭测试 |
 
-仍需覆盖：配置、知识摄取、AST Chunk、词法/向量/Rerank、日志脱敏、并发 Trace、单实例锁、CDP 重连补偿、Token 配额、资产清理、主管寻路和真机冒烟。
+仍需覆盖：配置、知识摄取、AST Chunk、词法/向量/Rerank、日志脱敏、并发 Trace、单实例锁、单库双 Client 的 WAL/timeout/`SQLITE_BUSY` 与关闭顺序、CDP 重连补偿、Token 配额、资产清理、主管寻路和真机冒烟。
 
 ### 6.6 Issue #107 关闭后的处理
 
@@ -1792,7 +1830,7 @@ CDP 断开
 KKBot 自有表建议至少包括：
 
 ```text
-schema_migrations
+kkbot_schema_migrations
 sessions
 session_messages
 message_deliveries
@@ -1930,7 +1968,7 @@ Tool：runId + toolCallId
 - 任一步初始化失败都逆序回滚；
 - Ctrl+C 完整级联关闭；
 - 活跃 Run 被中断；
-- MCP、Driver、数据库和日志都被关闭。
+- MCP、Driver、Logger、Mastra Storage 自有 Client 和 KKBot Client 都按所有权关闭，两个数据库 Client 各关闭一次。
 
 ## 9.8 Observability 与可选 Scorer
 
@@ -1945,6 +1983,16 @@ Tool：runId + toolCallId
 - Token Usage 可以按用户和日期查询；
 - Scorer 缺失、未注册或禁用时，Bootstrapper、Agent、Delivery 和上述验收仍通过；
 - 启用 Scorer 时，评分结果只用于离线评测或质量评价，不作为任何业务事实源。
+
+## 9.9 单数据库 Storage 连接边界
+
+- 不同相对路径写法只解析为一个规范化数据库文件，运行期不存在额外数据库文件；
+- 构造观测证明只有一个 KKBot Client、一个 `LibSQLStore`、该 Storage 的一个自有 Client 和一个 Mastra 实例；Memory、Workflow、Schedule、Observability 和启用时的 Scorer 不私建 Storage；
+- 空库、旧 KKBot 库、旧 Mastra 库和两者并存库都按“KKBot migrations → `storage.init()`”启动，失败重试不产生半套 KKBot schema、重复 ledger 或第二套 Mastra 表；
+- KKBot migration SQL 对 Mastra 内部表零 DDL、零 DML，且不依赖 Mastra 内部列、表名或迁移编号；
+- 双 Client 在 WAL 和最终 timeout 配置下的并发写行为确定，`SQLITE_BUSY` 可诊断且不被静默吞掉；
+- 契约测试明确证明只保证单个 Client transaction/batch 内的原子性，不声明 KKBot 与 Mastra 跨 Client、跨 domain 原子事务；
+- SIGINT 和启动失败回滚路径中，Observability 停止写入后再关闭 Mastra；Mastra Storage 自有 Client 与 KKBot Client 各关闭一次，关闭后不再写入。
 
 ---
 
@@ -1989,7 +2037,7 @@ Tool：runId + toolCallId
 10. 企业知识通过正式摄取、AST Chunk 和混合检索进入 Agent；扫描 PDF 和图片文档必须具备真实可运行的 Vision/OCR 摄取路径，并产出可索引文本与来源定位；
 11. Agent 对企业制度回答必须具备来源，没有来源时拒绝编造；
 12. 整个应用由一个 YAML、一个启动命令、一个 Bootstrapper 启动；
-13. 全系统使用一个 LibSQL 数据库和一个 Mastra 实例；
+13. 全系统只解析一个规范化 LibSQL 数据库文件路径，使用一个 KKBot Client、一个 Mastra Storage 及其自有 Client，并只创建一个使用该 Storage 的 Mastra 实例；
 14. Agent 内部必须使用 Mastra Observability，应用侧使用 UnifiedLogger，并在各自导出前完成敏感信息脱敏；
 15. 进入 Agent 链的一对一私聊能通过 `traceId + runId + sessionId` 以及后续的 `toolCallId + approvalTaskId + deliveryId` 重建完整链路；
 16. 所有高危写 Tool 都具备审批、权限、幂等和审计；
