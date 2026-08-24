@@ -161,7 +161,9 @@ Scorer 只用于可选离线评测或质量评价，不属于启动、运行、�
 
 “兼容版本”是经后续版本决策验证的一组稳定 Mastra 依赖版本。兼容性必须同时满足：所需原生能力存在并受支持；依赖引擎约束覆盖本规格的 Node.js 运行时基线；类型定义和迁移说明支持目标用法；最低 Node.js 版本与实际生产 LTS 上的相关离线契约实验均通过。只看到 API 存在不足以判定兼容。
 
-版本选择必须优先寻找满足上述条件且原生提供能力的组合。若没有可接受组合，对应需求必须返回 Wayfinder 重新裁定，不得用 KKBot 辅助代码补成第二套 Runtime。具体 Mastra 依赖精确兼容组仍由 [#131《锁定 Mastra 兼容版本组》](https://github.com/dnslin/kkbot/issues/131)决定，本节不提前指定。
+Tool Approval 还有独立的能力门槛。兼容版本必须通过契约实验证明：持久 Storage 中的 suspended Run 可跨进程重启发现；可按 `runId + toolCallId` 读取 Approval 的权威状态；可提交带前置条件的批准或拒绝；可判定已经存在的终态与新决议是否冲突；重复提交相同或相反决议均安全；deadline、批准和拒绝竞态最多接受一个终态且原 Tool 最多执行一次。本文不锁定实现这些能力的具体 API、Mastra 版本或审批超时时长。
+
+版本选择必须优先寻找满足上述条件且原生提供能力的组合。若没有可接受组合，或 Tool Approval 任一契约实验不通过，对应需求必须按 [#117《确定 Mastra 原生能力缺口的处理原则》](https://github.com/dnslin/kkbot/issues/117)返回 Wayfinder 重新裁定，不得退化为 Projection CAS + Outbox、自动重放决议或 KKBot 本地 Approval Runtime。具体 Mastra 依赖精确兼容组仍由 [#131《锁定 Mastra 兼容版本组》](https://github.com/dnslin/kkbot/issues/131)决定，本节不提前指定。
 
 ### 2.7 Node.js 运行时基线
 
@@ -641,87 +643,77 @@ Agent 直接使用 Mastra MCP Client 获取的 Tools。
 
 ## 4.12 使用 Mastra 原生 Tool Approval
 
-高危单工具统一配置：
-
-```ts
-requireApproval: true
-```
-
-当模型调用高危工具时：
+高危单工具必须启用兼容 Mastra 版本提供的原生 Tool Approval。配置字段和决议方法的具体名称以最终锁定版本的公开 API 与类型定义为准；本文只规定状态权威、输入输出和故障边界。
 
 ```text
-Mastra Agent Run 挂起
-→ Gateway 得到 runId / toolCallId
-→ 写审批业务投影
-→ 查找直属主管
-→ KK 私聊发送审批提示
-→ 等待截止前有效决议
-├─ 批准：调用 Mastra approve
-│  → Mastra 恢复原 Agent Run
-│  → Tool 执行
-│  → Agent 生成最终回复
-└─ 拒绝或超时：以 declined 结算本次 Approval（具体协议见 #126）
-   → 原 Tool Call 不执行
-   → 通知申请人；超时同时通知本次请求的原审批主管
+Mastra 在 Tool 执行前挂起 Agent Run
+→ Gateway 获得 runId / toolCallId 并写入审批业务投影
+→ Gateway 按 approval_route_key 定位原审批主管
+→ 审批请求通过独立 Delivery 发送
+→ Gateway 校验外部决议输入的身份、路由和 deadline
+→ Gateway 调用 Mastra 的条件决议原语
+→ Gateway 读取 Mastra 权威结果并重投影
+├─ 权威结果为 approved：Mastra 恢复原 Run、授权并执行原 Tool Call、继续 Agent Loop
+└─ 权威结果为 declined：Mastra 阻止原 Tool Call、终止该 Approval 分支并继续产生最终结果
+→ 申请人结果与超时主管通知分别通过独立 Delivery 发送
 ```
 
-当前 `ApprovalManager` 不再：
+`ApprovalManager` 不得自行执行 Tool、恢复或终止 Agent Run、维护第二套 Agent/Workflow 状态、审批后再次手工调用 Tool，或把本地终态写入后再要求 Mastra 跟随。保留的 KK 审批能力只有主管匹配、多笔待办消歧、deadline 检测、外部决议输入校验、Projection、通知与通知重试，以及调用 Mastra 公开决议 API。
 
-- 自行执行 Tool；
-- 同时维护第二套 Agent Workflow 状态；
-- 审批后再次手工调用 Tool；
-- 负责 Agent Loop 恢复。
-
-保留的 KK 审批能力：
-
-- `LeaderApprovalRouter`；
-- `StatefulApprovalMatcher`；
-- 多笔待办消歧；
-- 主管私聊通知；
-- 申请人结果通知；
-- 超时策略；
-- 审计投影；
-- Fail-Closed。
-
-审批投影建议：
+审批投影的最小字段如下；实现可以增加索引和通用审计列，但不得删除或合并这些语义：
 
 ```sql
 approval_tasks (
-  id,
+  approval_task_id,
   run_id,
   tool_call_id,
+  trace_id,
   tool_name,
+  args_hash,
   applicant_id,
   applicant_session_id,
   approver_id,
-  args_hash,
+  approval_route_key,
+  routing_state,
   status,
   expires_at,
+  decision_received_at,
   resolved_at,
+  resolution_reason,
+  decided_by,
+  mastra_observed_state,
+  mastra_observed_at,
+  request_delivery_id,
+  applicant_result_delivery_id,
+  timeout_approver_delivery_id,
   created_at,
   updated_at
 )
 ```
 
-该表是业务投影，不是 Agent Run 的事实源。
+字段语义固定如下：
 
-审批请求带不可自动延长的绝对截止时间 `expires_at`。审批的业务终态只有 `approved` 或 `declined`；到达截止时间仍未形成有效批准时，唯一结果是 `declined`，`timeout` 只作为拒绝原因，对用户显示为“已拒绝”，不得建立可恢复的 `timed_out` 终态。
+- `approval_task_id` 是 KKBot 投影标识；`run_id + tool_call_id` 是连接 Mastra 权威 Approval 的恢复键；`trace_id + tool_name + args_hash` 用于链路审计，不授权执行。
+- `applicant_id`、`applicant_session_id`、`approver_id` 和稳定的 `approval_route_key` 只重建 KK 私聊路由。`routing_state` 只允许 `ready | incomplete | quarantined`，分别表示路由完整、路由信息不足和人工隔离；它不得替代 Approval `status`。
+- `status` 只允许 `pending | approved | declined`，并且只能依据 Mastra 权威状态重投影。`decision_received_at` 记录进入仲裁的人工决议到达时间，deadline 拒绝时为空；`decided_by` 记录提交该人工决议的审批人，deadline 拒绝时记录系统 deadline actor。`resolved_at` 记录 Mastra 权威终态形成时间；`resolution_reason` 只允许 `manual_approve | manual_decline | deadline`。
+- `mastra_observed_state` 与 `mastra_observed_at` 只是最近一次权威读取的观察缓存。字段名必须显式保留 `observed`，不得把缓存值当作独立事实源或据此直接恢复 Run、执行 Tool。
+- 三个通知引用分别指向审批请求、申请人结果和超时主管通知的独立 Delivery。投递状态由各自 Delivery 持有，不复制进 Approval `status`；通知失败、重试或 `unknown` 均不得改变、重开或复活 Approval。
 
-只有在 `expires_at` 之前被决议协议有效接受的批准才可能生效；在截止时刻或之后收到，或者虽先收到但截至截止时刻仍未被有效接受的批准，均为无效的迟到批准。截止时间只裁定本次 Approval 是否形成有效批准，不要求已获有效批准的 Tool 必须在截止前执行完成。
+审批请求带不可自动延长的绝对截止时间 `expires_at`。只有在 `expires_at` 之前被 Mastra 条件决议原语有效接受的批准才可能生效；在截止时刻或之后收到，或者虽先收到但截至截止时刻仍未被 Mastra 有效接受的批准，均为无效的迟到批准。截止时间只裁定本次 Approval 是否形成有效批准，不要求已获有效批准的 Tool 必须在截止前执行完成。
 
-超时统一 Fail-Closed：
+到达 deadline 时仍无有效批准，Gateway 只能请求 Mastra 以 deadline 原因为本次 Approval 提交条件拒绝；Projection 不得先写 `declined`、自行终止 Run 或执行 Tool。超时不得升级或改派备用主管、转成无限期人工待办、按风险等级改变结果、自动延长截止时间，或把同一 Approval 留作可重试批准。批准、人工拒绝和 deadline 拒绝并发时，由 Mastra 权威条件决议选出唯一终态；Gateway 读取结果后重投影。终态形成后，迟到批准、重复批准和重复拒绝不得改变终态，原 Tool 最多执行一次。若仍需执行，申请人必须发起新的 Agent Run / Tool Call。
 
-- 不升级或改派备用主管；本规则不改变本次请求在创建时采用的主管路由；
-- 不转成无限期人工待办；
-- 不按风险等级改变超时结果；
-- 不自动延长截止时间；
-- 不把超时视为可对同一 Approval 重试批准。
+重启恢复必须按以下顺序执行：
 
-超时形成 `declined` 后，迟到批准、重复批准和重复拒绝均不得改变终态；迟到批准不得使原 Agent Run 以批准方式恢复，也不得执行原 Tool Call。若仍需执行，申请人必须重新发起新的 Agent Run / Tool Call。批准、拒绝与超时并发时只能产生一个最终结果，Tool 最多执行一次；这是 KKBot 的产品与安全不变量，不代表 Mastra 已原生证明重复决议幂等。
+1. 只从持久 Mastra Storage 的受支持 suspended discovery 能力发现仍挂起的 Agent Run，并以 `runId + toolCallId` 连接 Projection；不得从 KKBot Outbox 或本地状态机恢复 Approval。
+2. suspended Run 缺少 Projection 时，只能补建 `pending` 且路由不完整的审计投影，或进入人工隔离；不得猜测申请人、审批主管或路由，不得自动批准、拒绝或执行 Tool。
+3. `pending` Projection 未出现在 suspended 集合中时，不得用“缺席”推断已批准、已拒绝或已完成；必须通过 Mastra 公开能力读取该 `runId + toolCallId` 的权威状态或事件后重投影。权威读取暂时失败时保持可诊断隔离，不得制造本地终态。
+4. 仍 suspended 且已过 `expires_at` 的 Approval，只能向 Mastra 提交条件 deadline 拒绝，再按 Mastra 权威结果重投影。
+5. 权威状态重建完成后，才按三个独立 Delivery 的现有投递状态恢复通知；通知补偿不得触发 Approval 决议重放。
 
-超时拒绝后必须通知申请人和本次请求的原审批主管，明确该次高危操作已拒绝，若仍需执行必须重新发起请求。审批投影可以记录 `expires_at`、最终结果、拒绝原因和双方通知状态，但通知投递状态与审批终态分离，且投影不是 Agent Run 的事实源，不得自行执行 Tool、恢复 Run 或伪造 Mastra 已恢复。
+Mastra 专属动作包括：提交 Approval 状态转换、恢复或终止原 Agent Run、授权或阻止原 Tool Call、执行 Tool、继续 Agent Loop，以及产生最终 Agent 结果。Projection 与 Mastra 发生冲突时以 Mastra 权威状态为准；KKBot 只重投影或隔离异常，不得用本地状态覆盖 Mastra。
 
-超时扫描组件或 API、进程重启后过期 suspended runs 的发现与处理、投影和 Mastra Run 的条件更新或幂等协议、兼容 Mastra 版本是否提供原生 timeout，以及具体超时时长，统一留给 [#126《确定 Approval 投影与 Mastra Run 的恢复边界》](https://github.com/dnslin/kkbot/issues/126)及兼容版本决策；本节不提前实现或承诺。
+上述协议的实施前提是 2.6 所列 Tool Approval 契约实验全部通过。任一能力缺失时必须返回 Wayfinder 重裁，不得改用 Projection CAS + Outbox 自动重放，也不得补写本地 Approval Runtime。本文不指定具体 API、兼容版本或 `expires_at` 时长。
 
 ---
 
@@ -729,17 +721,11 @@ approval_tasks (
 
 ### Tool Approval
 
-用于单个高危动作是否允许执行：
-
-- 删除；
-- 修改权限；
-- 更新业务数据；
-- 大范围发送；
-- 资金或敏感操作。
+用于裁定单个高危动作是否允许执行，例如删除、修改权限、更新业务数据、大范围发送、资金或敏感操作。Mastra Tool Approval 是该动作挂起、决议、恢复和执行的唯一运行时状态源；KKBot 只提供 Projection、主管路由、deadline 输入和通知。
 
 ### Workflow Suspend/Resume
 
-用于多步骤业务流程：
+用于多步骤业务流程等待补充信息或跨步骤恢复：
 
 ```text
 提交申请
@@ -750,15 +736,7 @@ approval_tasks (
 → 通知申请人
 ```
 
-禁止同一个审批同时使用：
-
-```text
-自定义 Approval 状态机
-+ Mastra Tool Approval
-+ Mastra Workflow Suspend
-```
-
-必须明确唯一状态源。
+同一个高危 Tool Approval 不得再由自定义 Approval 状态机或 Mastra Workflow suspend/resume 包裹。Projection、条件决议调用和通知 Delivery 都是集成边界，不构成第二个 Approval 状态机；任何自行持有挂起、终态、恢复或执行语义的代码均越界。
 
 ---
 
@@ -1775,36 +1753,41 @@ Driver 捕获当前账号发出的消息
 ```mermaid
 sequenceDiagram
     participant U as 申请员工
-    participant A as Mastra Agent
+    participant M as Mastra Runtime
     participant G as Gateway
     participant S as Store
-    participant L as 直属主管
+    participant L as 原审批主管
 
-    U->>A: 发起高危操作
-    A->>A: Tool requireApproval
-    A-->>G: Run suspended + toolCallId
-    G->>S: 创建 approval projection
-    G->>L: KK 私聊审批通知（含截止时间）
-    alt 截止前有效批准
-        L->>G: 同意
-        G->>A: approveToolCall
-        A->>A: 恢复 Run 并继续 Tool Loop
-        A-->>G: Tool 执行后的最终结果
-        G->>U: KK 通知最终结果
-    else 截止前有效拒绝或超时拒绝
-        opt 主管截止前有效拒绝
-            L->>G: 拒绝
-        end
-        Note over G,A: 以 declined 结算本次 Approval；具体协议见 #126
-        A-->>G: 原 Tool Call 已拒绝，不执行 Tool
-        G->>U: KK 通知已拒绝；如仍需执行须重新发起
-        opt 超时拒绝
-            G->>L: KK 通知该次高危操作已超时拒绝
+    U->>M: 发起高危操作
+    M->>M: Tool 执行前挂起 Approval
+    M-->>G: runId + toolCallId
+    G->>S: 创建 Approval Projection
+    G->>L: 独立 Delivery 发送审批请求和 deadline
+    alt 截止前收到人工决议
+        L->>G: 批准或拒绝
+        G->>M: 提交带恢复键和前置条件的决议
+    else 到达 deadline 仍无有效批准
+        G->>M: 提交带恢复键的条件 deadline 拒绝
+    end
+    M->>M: 权威仲裁唯一终态
+    M-->>G: approved / declined 或终态冲突结果
+    G->>S: 依据 Mastra 权威结果重投影
+    alt approved
+        M->>M: 恢复原 Run 并执行原 Tool Call
+        M-->>G: 最终 Agent 结果
+        G->>U: 独立 Delivery 发送最终结果
+    else declined
+        M->>M: 阻止原 Tool Call
+        G->>U: 独立 Delivery 通知已拒绝
+        opt deadline 拒绝
+            G->>L: 独立 Delivery 通知已超时拒绝
         end
     end
 ```
 
-该时序图只表达业务交互，不指定超时扫描、持久恢复或条件更新由哪个组件或 API 完成。超时、迟到批准和并发决议统一遵循 4.12；实现边界由 #126 决定。
+该时序图不指定条件决议、权威读取或 suspended discovery 的具体 API。进程重启后，Gateway 先从持久 Mastra Storage 发现 suspended Runs，以 `runId + toolCallId` 重连 Projection；缺失 Projection 时只补建路由不完整投影或人工隔离，Projection 缺席于 suspended 集合时必须再读 Mastra 权威状态，已过期且仍 suspended 时只能向 Mastra 提交条件 deadline 拒绝。
+
+决议响应丢失、进程崩溃或 Projection 与 Mastra 冲突时，不得依据本地 `status` 猜测结果或从 Approval Outbox 自动重放。Gateway 必须重新读取 Mastra 权威状态，再重投影并按各 Delivery 状态恢复通知。超时、迟到批准、重复决议和通知分离统一遵循 4.12。
 
 ## 7.5 一对一私聊知识问答
 
@@ -1912,18 +1895,20 @@ Tool：runId + toolCallId
 
 ## 9.4 HITL
 
-- Tool Approval 正确挂起；
-- 创建审批业务投影；
-- 直属主管批准；
-- 直属主管拒绝；
-- 非主管无法审批；
-- 多笔任务需要序号消歧；
-- 到期仍无有效批准时唯一进入 `declined`，不得升级备用主管、转无限待办、按风险改写结果或自动延长；
+- Tool Approval 在原 Tool 执行前正确挂起，并暴露可跨重启关联的 `runId + toolCallId`；
+- Approval Projection 包含 4.12 规定的关联、路由、deadline、决议、Mastra 观察缓存和三个独立 Delivery 引用字段；
+- 直属主管可提交批准或拒绝，非主管无法审批，多笔任务必须通过稳定路由键和序号消歧；
+- 兼容 Mastra 版本的契约实验能跨进程重启发现持久 suspended Runs，并按 `runId + toolCallId` 读取权威 Approval 状态；
+- 契约实验能证明条件批准、条件拒绝与 deadline 前置条件由 Mastra 权威仲裁，已经存在的终态冲突可被无歧义判定；
+- 契约实验能证明重复提交相同或相反决议均安全，批准、拒绝与 deadline 竞态最多接受一个终态，原 Tool 最多执行一次；
+- suspended Run 缺少 Projection 时只补建路由不完整投影或人工隔离，不猜测审批人，不自动决议或执行 Tool；
+- `pending` Projection 缺席于 suspended 集合时不会被当作完成证据，必须读取 Mastra 权威状态后重投影；
+- 到期仍无有效批准时只通过 Mastra 条件决议形成 `declined`，不得升级备用主管、转无限待办、按风险改写结果或自动延长；
 - 迟到批准不能复活已超时 Approval；重新执行必须创建新的 Agent Run / Tool Call；
-- 超时拒绝同时通知申请人和本次请求的原审批主管；
-- 重复决议及批准/超时并发只产生一个最终结果，Tool 最多执行一次；
-- Approval 业务投影记录截止时间、最终结果和通知状态，但不是 Agent Run 的事实源；
-- timeout API、持久恢复和幂等协议由 #126 与兼容版本决策验证，本规格不假定 Mastra 已原生保证；
+- 审批请求、申请人结果和超时主管通知分别使用独立 Delivery，通知失败或补偿不改变 Approval 终态；
+- 决议响应丢失、进程重启或状态冲突时以 Mastra 权威读取结果重投影，不从 Approval Outbox 自动重放决议；
+- 任一权威读取、条件决议、终态冲突判定或重复决议安全实验不通过时，按 #117 返回 Wayfinder 重裁，不得退化为 Projection CAS + Outbox 或本地 Approval Runtime；
+- 验收不锁定具体 Mastra API、依赖版本或审批超时时长。
 
 ## 9.5 Driver 和 Gateway
 
@@ -2106,7 +2091,9 @@ Tool：runId + toolCallId
 
 > **KKBot 可靠捕获 KK 的真实事件；群聊事件只沉淀为 KK Raw Store 事实，获准进入 Agent 链的一对一私聊事件、企业上下文和业务 Tool 才交给 Mastra；Mastra 完成 Agent 推理与执行后，KKBot 再把已完成结果可靠地交付给 KK 私聊用户。**
 
-边界按事实权威判断，而不是按包名或类名判断：KKBot 可以负责 KK I/O、业务数据、群聊 Raw Store-only 短路、投影和可靠交付；Mastra 必须负责获准进入 Agent 链后的 Agent、模型、工具、Memory、Approval、Workflow、Schedule 和 Failover 运行时状态机与执行语义。任何让 KKBot 成为这些状态转换事实权威的辅助代码，均属于禁止的自研 Runtime 回补；任何让群聊越过 Raw Store 短路进入这些状态机或交付链的实现，同样违反本规格。
+边界按事实权威判断，而不是按包名或类名判断：KKBot 可以负责 KK I/O、业务数据、群聊 Raw Store-only 短路、Approval Projection、主管路由、deadline 检测、外部决议输入校验、通知和可靠交付；Mastra 必须负责获准进入 Agent 链后的 Agent、模型、工具、Memory、Approval、Workflow、Schedule 和 Failover 运行时状态机与执行语义。Approval 的状态转换、原 Run 恢复或终止、原 Tool Call 授权或阻止、Tool 执行、Agent Loop 继续和最终结果生成只能由 Mastra 完成。
+
+Projection 与 Mastra 冲突时以 Mastra 权威状态为准。任何让 KKBot 成为这些状态转换事实权威的辅助代码，或用 Projection CAS + Outbox、自动决议重放、本地恢复器补足 Mastra Approval 能力的实现，均属于禁止的自研 Runtime 回补；任何让群聊越过 Raw Store 短路进入这些状态机或交付链的实现，同样违反本规格。兼容版本不能通过 2.6 和 9.4 所列 Approval 契约实验时，唯一后续动作是返回 Wayfinder 重裁。
 
 ---
 
@@ -2139,6 +2126,6 @@ Tool：runId + toolCallId
 
 1. 统一使用 Node.js `>=22.13`，并确保部署与 CI 选择的实际生产版本仍处于官方维护期的 LTS；
 2. 由 #131 锁定一组兼容的 Mastra 精确版本，本规格不提前指定版本号；
-3. 根据该版本的类型定义更新所有示例调用；
-4. 在最低 Node.js `22.13` 与实际生产 LTS 上分别验证冻结安装、类型检查、工作区构建和 9.10 节规定的 Mastra 契约；
+3. 根据该版本的公开 API、类型定义和迁移说明更新所有示例调用；
+4. 在最低 Node.js `22.13` 与实际生产 LTS 上分别验证冻结安装、类型检查、工作区构建和 9.10 节规定的 Mastra 契约，并对 Tool Approval 单独证明持久 suspended discovery、`runId + toolCallId` 权威状态读取、条件决议、终态冲突判定、重复决议安全及 deadline 竞态唯一终态；任一 Tool Approval 实验失败时按 #117 返回 Wayfinder 重裁，不得补写 Projection CAS + Outbox 或本地 Approval Runtime；
 5. 禁止各 package 单独升级 Mastra 依赖。
