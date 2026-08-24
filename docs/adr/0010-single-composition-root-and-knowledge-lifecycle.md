@@ -21,7 +21,7 @@ Accepted
 
 `apps/kkbot` 是唯一 Composition Root，负责配置校验、依赖构造、唯一 Mastra 实例、运行前自检以及进程级启动和关闭编排。各领域模块不私自创建第二个 Composition Root、Mastra 实例或独立生命周期。
 
-每个进程只有一个 startup generation 和一个 Work Admission Gate。Static Validation 不取得资源；真实 Preflight 使用已取得的真实对象证明当前生效范围的全部必需事实，但不得创建 Delivery、Approval、Memory、Schedule trigger、发送或其他业务事实。只有同代 Ready Barrier 同时通过后才开放工作准入；初始化失败、关键运行事实失效和进程信号都先关 Gate，再进入同一幂等 Shutdown。
+每个进程只有一个 startup generation 和一个 Work Admission Gate。Static Validation 不取得资源；真实 Preflight 使用已取得的真实对象证明当前生效范围的全部必需事实，但不得创建 Delivery、Memory、Schedule trigger、发送或其他业务事实。只有同代 Ready Barrier 同时通过后才开放工作准入；初始化失败、关键运行事实失效和进程信号都先关 Gate，再进入同一幂等 Shutdown。
 
 Composition Root 用 Acquisition Ledger 记录资源依赖与唯一 finalizer，并按依赖图逆拓扑释放。资源所有权转移必须替换唯一 closer：Mastra 接管 Storage 前由 Composition Root 关闭，接管后只由 `mastra.shutdown()` 关闭。已提交 migration 是持久 schema 事实，不是可回滚进程资源；CDP/EventBridge 失效时完整退出，由进程管理器启动新代次，不在原进程重建部分服务。
 
@@ -41,11 +41,12 @@ PublicKnowledge 的查询一致性单元是全局不可变 KnowledgeGeneration�
 - [#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)
 - [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)
 - [#133 Node.js 运行时基线 resolution](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)
-- [#131 Mastra 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)
+- [#131 Mastra 兼容版本历史研究](https://github.com/dnslin/kkbot/issues/131)
 - [#138 Bootstrapper Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)
+- [#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)
 - [libSQL Client 事务契约](https://github.com/tursodatabase/libsql-client-ts/blob/main/packages/libsql-core/src/api.ts)
 - [Turso / libSQL Vector 索引契约](https://docs.turso.tech/features/ai-and-embeddings)
 
 ## Open boundaries
 
-[#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)决定当前产品最终要求的 Mastra Approval 能力集合；[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)决定最终验收覆盖。本 ADR 不提前裁定两票，也不锁定具体 Mastra API、版本或进程退出码。
+[#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)按当前能力范围锁定精确版本；[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)决定最终验收覆盖。本 ADR 不锁定具体 Mastra API、版本或进程退出码。

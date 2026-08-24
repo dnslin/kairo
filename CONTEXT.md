@@ -5,7 +5,7 @@
 ## 人员与组织
 
 **Employee**:
-企业内部使用 KKBot、发起会话或参与审批的人员身份。
+企业内部使用 KKBot 或发起会话的人员身份。
 _Avoid_: 外部客户身份、泛化用户身份
 
 **Department**:
@@ -31,7 +31,7 @@ KKBot 与单个 Employee 之间的一对一私聊连续会话；上下文明确�
 _Avoid_: 公共会话、群聊会话
 
 **GroupSession**:
-多个成员参与的群聊。群聊消息只保留为 KK Raw Store 原始事实，不形成 Agent、Memory、Tool、Approval 或 Delivery 处理链。
+多个成员参与的群聊。群聊消息只保留为 KK Raw Store 原始事实，不形成 Agent、Memory、Tool 或 Delivery 处理链。
 _Avoid_: 视为完全不进入系统、PrivateSession
 
 **InboundMessage**:
@@ -103,10 +103,6 @@ ManagedAsset 最早允许物理删除的时间；到期不保证立即删除，�
 _Avoid_: 保证删除时间、最后访问时间
 
 ## 安全与交付
-
-**Approval**:
-针对一个高危动作的人工授权请求。业务终态只有 `approved` 或 `declined`；超时是 `declined` 的原因，不是独立终态。
-_Avoid_: 第二套审批任务模型、独立超时终态
 
 **Delivery**:
 一份准备发送给 Employee 的生成结果及其交付生命周期的唯一业务身份；只有 `sent` 表示 Employee 已收到。
