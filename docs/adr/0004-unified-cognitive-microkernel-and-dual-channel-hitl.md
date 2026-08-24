@@ -1,19 +1,22 @@
 # ADR 0004: 基于 Mastra LibSQL 统一底座的全栈认知微内核与双通道 HITL 架构设计
 
 ## Status
+
 Superseded
 
 - **Superseded on**: 2026-08-24
 - **Superseded by**: [ADR 0009：Mastra 运行时与 KKBot 业务事实边界](./0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)
 - **Current specification**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §2.2–§2.7、§4.12–§4.13、§4.21–§4.23、§12
-- **Resolved by**: [#117《确定 Mastra 原生能力缺口的处理原则》](https://github.com/dnslin/kkbot/issues/117)、[#123《确定审批超时的唯一语义》](https://github.com/dnslin/kkbot/issues/123)、[#126《确定 Approval 投影与 Mastra Run 的恢复边界》](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127《确定单数据库下的 Storage 连接边界》](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#133《确定 Node.js 运行时基线》](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)
-- **Pending decisions**: [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135)
+- **Resolved by**: [#117《确定 Mastra 原生能力缺口的处理原则》](https://github.com/dnslin/kkbot/issues/117)、[#123《确定审批超时的唯一语义》](https://github.com/dnslin/kkbot/issues/123)、[#126《确定 Approval 投影与 Mastra Run 的恢复边界》](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127《确定单数据库下的 Storage 连接边界》](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#133《确定 Node.js 运行时基线》](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135《确定 MCP 与 Processor 的生命周期和故障边界》](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161《重裁高危 Tool Approval 的本期产品范围》](https://github.com/dnslin/kkbot/issues/161)
+- **Open boundaries**: [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)
 - **Historical note**: 以下 Context、Decision 与 Consequences 保留原文，仅用于说明当时的决策背景，不再作为当前 Runtime、审批、Storage、版本或通道设计依据。
 
 ## Context
+
 在 KKBot v2 的智能认知微内核（`@kkbot/agent`）与数据持久化架构选型中，为了彻底避免多数据库文件割裂（如同时存在多个 `.db` 文件导致跨库事务无法回滚、备份困难）以及重复造轮子的问题，系统需要确立一个统一、现代且高内聚的存储与认知调度底座。
 
 面临的核心诉求：
+
 1. **统一单库与全量生态复用**：全系统所有数据（会话、消息、L1/L2/L3 记忆、RAG 向量索引、Workflow 审批挂起与组织架构树）统一收敛在单个 SQLite 文件（`data/kkbot.db`）中；
 2. **充分榨取开源生态红利**：直接复用 Mastra 全家桶（`@mastra/core`、`@mastra/libsql`、`@mastra/memory`、`@mastra/rag`）开箱即用的 3-Tier 记忆抽取（Working & Observational Memory）、向量库（`LibSQLVector`）、Workflow 审批挂起恢复（`suspend/resume`）与 MCP 客户端能力；
 3. **企业组织架构与异步驱动统一**：全系统底层存储统一迁移至 `@libsql/client` 异步连接池，`@kkbot/store` 负责在同一个 LibSQL 实例上管理企业专有领域（`org_departments`、`org_employees`、拼音快搜与 Windows 文件锁防御）；
@@ -67,6 +70,7 @@ Superseded
    - **实体交付物输出 (FileDeliverable)**：支持将报表或技术纪要直接生成 `.csv` / `.md` 文件并通过 KK9 发送给员工；
    - **主动定时调度 (ProactiveSchedule)**：支持自然语言设定工作提醒与定时周报/工单关怀推送（基于 Mastra Schedules）；
    - **异步长任务委托 (AsyncSubAgent)**：耗时重型任务立即确认并后台异步处理，完成后主动推送回执。
+
 ## Consequences
 
 - **Positive**:

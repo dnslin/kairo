@@ -17,7 +17,7 @@
 1. 确立 KKBot 的 Mastra-native 目标架构和一次性完整改造范围；
 2. 将 Issue #107 的产品需求、运行保障、知识库要求和测试要求迁移到新架构，并明确旧技术决策的去向。
 
-KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话编排、记忆、工具、MCP、HITL、主动任务和知识检索等能力，但 Agent 主链路仍然同时存在两套运行逻辑：
+KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话编排、记忆、工具、MCP、主动任务和知识检索等能力，但 Agent 主链路仍然同时存在两套运行逻辑：
 
 - Mastra 提供部分 Memory、Workflow、Schedule、Tool 和 Storage 能力；
 - `KkbotAgentRuntime` 又自行负责模型调用、Tool Call 解析、工具执行、Failover、Prompt 拼装和第二轮模型调用。
@@ -26,7 +26,7 @@ KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话�
 
 本规格把项目收敛为：
 
-> **KKBot 负责 KK 客户端接入、KK 专属业务约束和企业数据；Mastra 负责 Agent 推理、Agent Loop、Memory、Tool Calling、MCP、HITL、Workflow、Schedule 和 Agent Observability。**
+> **KKBot 负责 KK 客户端接入、KK 专属业务约束和企业数据；Mastra 负责 Agent 推理、Agent Loop、Memory、Tool Calling、MCP、Workflow、Schedule 和 Agent Observability。**
 
 本次不引入自研 `AgentRunner`，不构建多 IM Adapter，不拆微服务。Issue #107 的 54 条 User Story 没有被直接丢弃；需求全部迁入本规格，旧 Runtime 相关实现决策则被替换。
 
@@ -50,15 +50,18 @@ KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话�
 
 #### 当前替代索引
 
-| 历史 ADR    | 当前替代                                                                                            | 已生效决议                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 仍待裁定                                                                                                                                    |
-| ----------- | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| ADR 0002    | 本规格 §3.1、§4.7、§12                                                                              | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                                                                                           |
-| ADR 0003    | 本规格 §4.7、§4.21–§4.23、§4.27、§12                                                                | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                                                                                           |
-| ADR 0004    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)                         | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290) | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)                                                                  |
-| ADR 0006    | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)                           | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)      | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
-| ADR 0007 §2 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.18–§4.19、§9.6 | [#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | —                                                                                                                                           |
-| ADR 0007 §3 | 本规格 §4.27（30 天物理淘汰规则继续有效）                                                           | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | —                                                                                                                                           |
-| ADR 0008    | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md)                              | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)                                                                                                                                                                                                                                                       | [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
+| 历史 ADR    | 当前替代                                                                                                                                                                        | 已生效决议                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 仍待裁定                                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| ADR 0001    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)、[ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.7、§4.10、§12 | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#125 移除用户可见主动 Schedule](https://github.com/dnslin/kkbot/issues/125)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                        | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
+| ADR 0002    | 本规格 §3.1、§4.7、§12                                                                                                                                                          | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | —                                                                                                                                |
+| ADR 0003    | 本规格 §4.7、§4.21–§4.23、§4.27、§12                                                                                                                                            | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | —                                                                                                                                |
+| ADR 0004    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)                                                                                                     | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161) | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
+| ADR 0005    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)、本规格 §4.10–§4.11                                                                                 | [#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
+| ADR 0006    | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)                                                                                                       | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)      | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
+| ADR 0007 §1 | 本规格 §4.10、§6.2、§12                                                                                                                                                         | [#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | —                                                                                                                                |
+| ADR 0007 §2 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.18–§4.19、§9.6                                                                             | [#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | —                                                                                                                                |
+| ADR 0007 §3 | 本规格 §4.27（30 天物理淘汰规则继续有效）                                                                                                                                       | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | —                                                                                                                                |
+| ADR 0008    | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md)                                                                                                          | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                       | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
 
 ---
 
@@ -97,7 +100,6 @@ KKBot 只服务 KK9 客户端，不建立通用 IM 平台抽象。
 - MCP Tool；
 - Memory；
 - 长会话观察与压缩；
-- Tool Approval；
 - Workflow suspend/resume；
 - Schedule；
 - Agent Trace；
@@ -127,11 +129,11 @@ const result = await agent.generate(/* ... */);
 
 1. 处理 KK 专属 I/O 和数据转换，把 KK 聚合消息转换为 Agent 输入；
 2. 创建 `requestContext`、`threadId`、`resourceId`、`traceId`；
-3. 定义和注册 KKBot 业务 Tool，并把外部上下文或决议路由给 Mastra 公开 API；
-4. 把 Mastra 事件投影为 Delivery、Approval 等 KKBot 可查询和审计的业务状态；
+3. 定义和注册 KKBot 业务 Tool，并把外部上下文传给 Mastra 公开 API；
+4. 把 Mastra 事件投影为 Delivery 等 KKBot 可查询和审计的业务状态；
 5. 调用 Mastra Agent，并把最终结果交给 KK 发送层执行 KK 专属的可靠交付。
 
-投影不是运行时事实源。若辅助代码自行持有或决定 Agent/模型重试循环、工具循环、第二套 Agent Memory、Memory 提交或回滚、审批挂起或恢复、调度触发、模型回退等状态转换，它就是被禁止的“自研 Runtime 回补”；即使命名为 Gateway、Coordinator、Adapter 或 Wrapper 也不改变性质。KK 专属发送重试和交付补偿不在此列，但不得反向改变 Mastra 的 Agent 执行语义。
+投影不是运行时事实源。若辅助代码自行持有或决定 Agent/模型重试循环、工具循环、第二套 Agent Memory、Memory 提交或回滚、Workflow 挂起或恢复、调度触发、模型回退等状态转换，它就是被禁止的“自研 Runtime 回补”；即使命名为 Gateway、Coordinator、Adapter 或 Wrapper 也不改变性质。KK 专属发送重试和交付补偿不在此列，但不得反向改变 Mastra 的 Agent 执行语义。
 
 ### 2.4 单进程、单数据库、单 Mastra 实例
 
@@ -170,7 +172,6 @@ Delivery 从生成结果创建时起记录完整发送生命周期，必须区�
 | Agent Loop 与 Tool Calling            | 取代 `KkbotAgentRuntime` 的自定义模型和工具循环                                                                               | [Agent orchestration](https://mastra.ai/blog/introducing-mastra-improved-agent-orchestration-ai-sdk-v5-support)                            |
 | 动态模型与 fallback array             | Agent 动态 model 从 `RequestContext` 读取 Model Tier，并返回配置好的 `ModelWithRetries[]`；重试与 fallback 状态由 Mastra 持有 | [Dynamic model fallback arrays](https://mastra.ai/blog/changelog-2026-03-16)                                                               |
 | Observational Memory                  | 取代自定义 L2 摘要和 L3 长期协同记忆                                                                                          | [Observational Memory](https://mastra.ai/blog/observational-memory)                                                                        |
-| Tool Approval                         | 高危工具执行前由主管批准或拒绝                                                                                                | [Tool approval](https://mastra.ai/blog/tool-approval)                                                                                      |
 | Workflow suspend / resume 与 snapshot | 需要补充信息、跨步骤等待或长流程恢复                                                                                          | [Workflow snapshots](https://mastra.ai/en/reference/workflows/snapshots)                                                                   |
 | Agent / Workflow Schedules            | 仅触发不创建 Delivery、无高危 Tool 或第三方写副作用、重复执行安全的内部维护                                                   | [Schedules](https://mastra.ai/blog/introducing-schedules-for-agents-and-workflows)                                                         |
 | Input / Output Processors             | 注入防护、PII、安全过滤和输出清洗                                                                                             | [Input processors](https://mastra.ai/blog/changelog-2025-07-30)、[Output processors](https://mastra.ai/blog/introducing-output-processors) |
@@ -179,20 +180,20 @@ Delivery 从生成结果创建时起记录完整发送生命周期，必须区�
 
 Observability 是本次重构的生产必需能力。兼容版本必须支持 Trace 采集与导出、关联 ID 传播、敏感信息导出前脱敏，以及初始化、导出、Flush 和 Shutdown 故障的可诊断性。
 
-Scorer 只用于可选离线评测或质量评价，不属于启动、运行、迁移或重构完成门槛。缺失、未注册或禁用 Scorer 不得使 Bootstrapper、Agent、Delivery 或本规格验收失败；启用后的评分结果也只是派生评价数据，不得成为 Agent、Memory、Approval、Delivery 或其他 KKBot 业务事实源。本文不决定具体 Scorer、评价指标与阈值、采样率、存储保留策略或评测数据集。
+Scorer 只用于可选离线评测或质量评价，不属于启动、运行、迁移或重构完成门槛。缺失、未注册或禁用 Scorer 不得使 Bootstrapper、Agent、Delivery 或本规格验收失败；启用后的评分结果也只是派生评价数据，不得成为 Agent、Memory、Delivery 或其他 KKBot 业务事实源。本文不决定具体 Scorer、评价指标与阈值、采样率、存储保留策略或评测数据集。
 
 “兼容版本”是经后续版本决策验证的一组稳定 Mastra 依赖版本。兼容性必须同时满足：所需原生能力存在并受支持；依赖引擎约束覆盖本规格的 Node.js 运行时基线；类型定义和迁移说明支持目标用法；最低 Node.js 版本与实际生产 LTS 上的相关离线契约实验均通过。只看到 API 存在不足以判定兼容。
 
-Tool Approval 还有独立的能力门槛。兼容版本必须通过契约实验证明：持久 Storage 中的 suspended Run 可跨进程重启发现；可按 `runId + toolCallId` 读取 Approval 的权威状态；可提交带前置条件的批准或拒绝；可判定已经存在的终态与新决议是否冲突；重复提交相同或相反决议均安全；deadline、批准和拒绝竞态最多接受一个终态且原 Tool 最多执行一次。本文不锁定实现这些能力的具体 API、Mastra 版本或审批超时时长。
+[#131 兼容版本研究](./research/mastra-compatible-version-set.md)已在 Node.js `22.13.1` 与 `24.14.0` 的冻结环境中验证两组精确候选，并证明当时唯一最小失败合同来自已退出当前产品范围的 Tool Approval 权威终态与条件仲裁。该研究继续保留事实与审计价值，但候选 A/B 不因产品范围变化自动成为已锁定版本。
 
-[#131 兼容版本研究](./research/mastra-compatible-version-set.md) 已在 Node.js `22.13.1` 与 `24.14.0` 的冻结环境中验证两组精确候选：A 为 Core `1.60.0` / Memory `1.27.0` / LibSQL `1.21.0`，B 为 Core `1.61.0` / Memory `1.27.0` / LibSQL `1.21.1`，两组共同使用 Observability `1.17.1`、MCP `1.17.1` 与 Zod `4.4.3`；候选 B 同时覆盖六个目标包的 stable latest。两组均通过安装、类型、最小构建、持久 suspended discovery 与基础运行面，且已发布 `sendToolApproval` 可跨重启定位 suspended Run，但它只在恢复调用成功后返回固定 `accepted: true`，不能按 `runId + toolCallId` 回读 approved/declined/deadline 权威终态，也不提供带前置条件的批准或拒绝。当前因此**没有可锁定兼容版本组**。#125 已使 Schedule exactly-once 退出锁版门；唯一最小失败合同是 #126 保留的 Approval 权威终态与条件仲裁。高危 Tool/HITL 的本期产品范围已返回 [#161](https://github.com/dnslin/kkbot/issues/161)重裁，禁止以 Projection CAS + Outbox、自动重放决议或 KKBot 本地 Approval Runtime 回补。
+本期不注册或调用高风险写 Tool，不创建 Approval，不进入 suspend/resume，也不把人工操作结果转换为 Runtime 终态。高风险意图只形成明确说明“外部操作未执行”的普通 assistant 建议、拟写内容或操作清单；它们遵守既有 Delivery 与 Memory 合同，不形成独立 Draft 或未来自动执行身份。[#168](https://github.com/dnslin/kkbot/issues/168)必须按该生效能力范围重新验证并锁定精确稳定版本组。
 
 ### 2.7 Node.js 运行时基线
 
 - 所有工作区依赖、开发工具和应用入口的最低运行时统一为 Node.js `>=22.13`。
 - 生产部署与 CI 只支持验证或部署时仍处于 Node.js 官方维护期的 LTS，且该版本必须同时满足 `>=22.13`；达到依赖下限不等于获得已停止维护版本或非 LTS 版本的生产支持承诺。
 - Node.js 20 已于 2026-04-30 EOL，不属于支持矩阵，不保留安装、类型、构建、运行或回归兼容承诺。
-- 本基线只确定 Node.js 支持政策与验证矩阵。#131 已确认当前稳定 Mastra 无可锁定精确兼容组；后续版本选择必须等待 #161 裁定高危 Tool/HITL 范围，再按生效范围重新执行完整兼容研究。
+- 本基线只确定 Node.js 支持政策与验证矩阵。#131 的旧候选不自动锁定；后续版本选择由 [#168](https://github.com/dnslin/kkbot/issues/168)按当前生效能力范围重新研究。
 
 ---
 
@@ -203,7 +204,7 @@ flowchart TB
     KK[KK9.exe]
     Driver[@kkbot/driver\nCDP / EventBridge / DOM / Send]
     Gateway[@kkbot/gateway\n防抖 / 撤回 / 接管 / 串行发送]
-    Mastra[Mastra Runtime\nAgent / Memory / Tools / MCP / HITL / Workflow]
+    Mastra[Mastra Runtime\nAgent / Memory / Tools / MCP / Workflow]
     Store[@kkbot/store\nKK业务数据 / 组织 / 消息 / 投影 / 配额]
     Knowledge[@kkbot/knowledge\n摄取 / AST Chunk / FTS / Vector / Rerank]
     App[apps/kkbot\nBootstrapper / Config / Preflight / Shutdown]
@@ -230,7 +231,7 @@ KK 原生事件
 → Driver 标准化
 → Gateway 防抖与业务校验
 → Mastra Agent
-→ Mastra Memory / Tools / MCP / HITL
+→ Mastra Memory / Tools / MCP
 → Gateway 收集最终结果
 → KK 串行发送
 → Delivery 持久化
@@ -240,14 +241,14 @@ KK 原生事件
 
 ### 3.2 模块边界
 
-| 模块               | 核心职责                                                                                                           | 不再负责                                        |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| `@kkbot/driver`    | KK CDP、事件、DOM、发送、撤回、红点、组织读取                                                                      | Agent、Memory、知识检索、审批状态               |
-| `@kkbot/gateway`   | 入站消息按会话类型分流、群聊 Raw Store-only 短路、私聊防抖、人工接管、撤回、中断、会话模式、审批消息路由、串行发送 | 模型调用、工具循环、历史拼装、RAG 注入          |
-| `@kkbot/agent`     | 定义 Mastra Agent、Tools、Processors、Workflows，以及启用时的 Scorers                                              | 自研 Runtime、自研 Provider、自研 Tool Executor |
-| `@kkbot/store`     | KK 原始消息、会话、组织、资产、配额、审批和交付投影                                                                | Mastra Memory、Mastra Workflow 内部状态         |
-| `@kkbot/knowledge` | 文档摄取、规范化、Chunk、词法/向量/Rerank 检索                                                                     | Agent Loop、KK 发送                             |
-| `apps/kkbot`       | 唯一 Composition Root、配置、自检、启动、关闭                                                                      | 领域实现                                        |
+| 模块               | 核心职责                                                                                             | 不再负责                                        |
+| ------------------ | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `@kkbot/driver`    | KK CDP、事件、DOM、发送、撤回、红点、组织读取                                                        | Agent、Memory、知识检索、业务状态               |
+| `@kkbot/gateway`   | 入站消息按会话类型分流、群聊 Raw Store-only 短路、私聊防抖、人工接管、撤回、中断、会话模式、串行发送 | 模型调用、工具循环、历史拼装、RAG 注入          |
+| `@kkbot/agent`     | 定义 Mastra Agent、Tools、Processors、Workflows，以及启用时的 Scorers                                | 自研 Runtime、自研 Provider、自研 Tool Executor |
+| `@kkbot/store`     | KK 原始消息、会话、组织、资产、配额和交付投影                                                        | Mastra Memory、Mastra Workflow 内部状态         |
+| `@kkbot/knowledge` | 文档摄取、规范化、Chunk、词法/向量/Rerank 检索                                                       | Agent Loop、KK 发送                             |
+| `apps/kkbot`       | 唯一 Composition Root、配置、自检、启动、关闭                                                        | 领域实现                                        |
 
 ---
 
@@ -348,7 +349,7 @@ Gateway 以后直接调用 Mastra Agent：
 ConsolidatedMessage
 → RequestContext
 → Mastra Agent
-→ Final Response / Tool Approval / Error
+→ Final Response / Error
 ```
 
 ---
@@ -490,7 +491,7 @@ Driver 收到消息
 
 user message 表达“员工确实说过这句话”，与 Bot 后续是否发送成功无关，因此必须在 Agent 运行前独立提交。显式保存成功是调用 Agent 的前置条件；Raw Store 已成功而 Memory 尚未成功时，恢复或重放必须复用同一个稳定 message ID，不得创建第二条 user message。新一轮只提交本轮新 user message，旧输入由 Thread Memory 读取。
 
-本轮 Agent 必须使用 `memory.options.readOnly = true`：允许读取包含上述 user message 的既有 Thread 和 Observational Memory，但不得由 Agent 自动保存本轮 input、assistant 输出、tool call、tool result 或本轮观察结果。tool 中间结果只保留在 Mastra Run/Trace；有副作用的真实结果由目标业务系统及 Approval/审计记录保存，不进入长期对话 Memory。用户可见结论只由最终 assistant 消息承载。
+本轮 Agent 必须使用 `memory.options.readOnly = true`：允许读取包含上述 user message 的既有 Thread 和 Observational Memory，但不得由 Agent 自动保存本轮 input、assistant 输出、tool call、tool result 或本轮观察结果。tool 中间结果只保留在 Mastra Run/Trace；有副作用的真实结果由目标业务系统及其审计记录保存，不进入长期对话 Memory。用户可见结论只由最终 assistant 消息承载。
 
 ### 群聊消息
 
@@ -502,7 +503,7 @@ Driver 捕获并标准化群聊消息
 → 写入完成后立即结束处理
 ```
 
-群聊消息不得进入 Pending Bucket 或防抖，不得创建或中断 Mastra Agent Run，不得写入 Mastra Memory，不得触发 Model Tier、Processor、Tool、MCP、Knowledge 检索、Tool Approval、Workflow、Schedule、Delivery 或任何 KK 发送。群聊消息也不得触发人工接管、主动回复、自动回复、审批通知、结果通知、文件交付或其他交付链路。
+群聊消息不得进入 Pending Bucket 或防抖，不得创建或中断 Mastra Agent Run，不得写入 Mastra Memory，不得触发 Model Tier、Processor、Tool、MCP、Knowledge 检索、Workflow、Schedule、Delivery 或任何 KK 发送。群聊消息也不得触发人工接管、主动回复、自动回复、结果通知、文件交付或其他交付链路。
 
 Raw Store 写入失败时必须保留可诊断错误并结束本次群聊处理；不得为了继续下游处理而绕过持久化，也不得把群聊升级为私聊流程。
 
@@ -554,7 +555,7 @@ Mastra Agent 以 readOnly 生成最终回复
 - 若不能证明被撤回 user 从未进入 Observational Memory，则清空每个受影响的完整 Thread/resource scope；之后只允许从剩余可见且已提交的历史重新形成观察。
 - 普通撤回不是 ComplianceDeletion。它保留原消息正文和已发生事实，只阻止原 user 正文继续作为活动上下文；若要求正文及其副本消失，必须执行正式合规删除。
 
-群聊撤回只更新 Raw Store 中对应原始消息的撤回标记；不得由此创建或中断 Agent Run，也不得触发 Memory、Tool、Knowledge、Approval 或 Delivery 补偿。
+群聊撤回只更新 Raw Store 中对应原始消息的撤回标记；不得由此创建或中断 Agent Run，也不得触发 Memory、Tool、Knowledge 或 Delivery 补偿。
 
 ### 正式合规删除
 
@@ -616,7 +617,7 @@ Gateway 创建 RequestContext / AbortSignal
 → PromptInjectionProcessor
 → SensitiveInputProcessor
 → QuotaAdmissionProcessor（原子准入并预留预算）
-→ Mastra Agent Loop（Model / Tools / MCP / Approval）
+→ Mastra Agent Loop（Model / Tools / MCP）
 → 每个 Tool 结果先经过 processToolResult 安全检查，再进入下一模型 Step
 → QuotaUsageProcessor（只按权威完整 Run Usage 幂等结算；未确认结算时中止且不形成 Delivery）
 → ThinkingTagProcessor
@@ -647,38 +648,39 @@ packages/agent/src/tools/executor.ts
 可以保留一个小型 `createKkTool()` 工厂，统一添加：
 
 - Zod 输入输出 Schema；
-- 风险等级；
-- 是否写操作；
+- 只读或低风险写操作分类；
 - 权限要求；
 - 幂等键；
 - 审计字段；
 - 超时；
 - 结果裁剪。
 
-但它必须返回 Mastra Tool，不能自行接管 Tool Call 执行。
+但它必须返回 Mastra Tool，不能自行接管 Tool Call 执行。所有注册给 Agent 的 Tool 必须属于只读或产品明确列入范围的低风险能力；无法明确证明为低风险的写动作一律按高风险意图处理，不得进入 Tool 定义、MCP allowlist 或 Agent Tool 集合。
 
 建议工具元数据：
 
 ```ts
 interface KkToolPolicy {
   effect: 'read' | 'write';
-  risk: 'low' | 'medium' | 'high';
-  requireApproval: boolean;
+  risk: 'low';
   requiredPermission?: string;
   serialKey?: 'session' | 'employee' | 'entity';
 }
 ```
 
-### 写操作
+### 低风险写操作
 
-所有写工具必须：
+允许注册的低风险写 Tool 必须：
 
+- 无需人工授权即可执行；
 - 支持稳定 `idempotencyKey`；
-- 有数据库唯一约束；
+- 有数据库或目标业务域唯一约束；
 - 防止重试重复副作用；
 - 对相同业务实体串行；
 - 校验 `outputSchema`；
 - 大结果只返回摘要和引用。
+
+删除、修改权限、大范围发送、资金、敏感数据变更及其他不能明确归入低风险的写动作不属于本期 Tool 表面。
 
 ---
 
@@ -699,102 +701,34 @@ interface KkToolPolicy {
 
 ---
 
-## 4.12 使用 Mastra 原生 Tool Approval
+## 4.12 高风险意图只生成无副作用内容
 
-高危单工具必须启用兼容 Mastra 版本提供的原生 Tool Approval。配置字段和决议方法的具体名称以最终锁定版本的公开 API 与类型定义为准；本文只规定状态权威、输入输出和故障边界。
+当一对一私聊表达删除、修改权限、更新敏感业务数据、大范围发送、资金或其他高风险写意图时，Agent 只能生成无外部副作用的建议、拟写内容或人工操作清单。
 
-```text
-Mastra 在 Tool 执行前挂起 Agent Run
-→ Gateway 获得 runId / toolCallId 并写入审批业务投影
-→ Gateway 按 approval_route_key 定位原审批主管
-→ 审批请求通过独立 Delivery 发送
-→ Gateway 校验外部决议输入的身份、路由和 deadline
-→ Gateway 调用 Mastra 的条件决议原语
-→ Gateway 读取 Mastra 权威结果并重投影
-├─ 权威结果为 approved：Mastra 恢复原 Run、授权并执行原 Tool Call、继续 Agent Loop
-└─ 权威结果为 declined：Mastra 阻止原 Tool Call、终止该 Approval 分支并继续产生最终结果
-→ 申请人结果与超时主管通知分别通过独立 Delivery 发送
-```
+用户可见结果必须同时满足：
 
-`ApprovalManager` 不得自行执行 Tool、恢复或终止 Agent Run、维护第二套 Agent/Workflow 状态、审批后再次手工调用 Tool，或把本地终态写入后再要求 Mastra 跟随。保留的 KK 审批能力只有主管匹配、多笔待办消歧、deadline 检测、外部决议输入校验、Projection、通知与通知重试，以及调用 Mastra 公开决议 API。
+1. 明确说明 KKBot **没有执行**外部操作；
+2. 不创建人工授权请求或任何独立授权生命周期；
+3. 不调用本地或 MCP 副作用 Tool；
+4. 不进入 Tool Approval、Workflow suspend/resume 或其他挂起恢复路径；
+5. 不自动等待、轮询、恢复或补执行人类在 Runtime 外完成的操作；
+6. 不根据后续对话、外部数据变化或人工回复猜测该操作已经完成。
 
-审批投影的最小字段如下；实现可以增加索引和通用审计列，但不得删除或合并这些语义：
+建议、拟写内容和操作清单只是普通 assistant 内容。模型生成后由同一个 Delivery 进入 `generated`，只有真实 KK 发送成功才进入 `sent` 并按 §4.7 提交 assistant Memory；它们不形成独立 Draft、Repository、状态机、Projection 或持久化事实，不表示外部动作已经完成，也不产生后续自动执行身份。
 
-```sql
-approval_tasks (
-  approval_task_id,
-  run_id,
-  tool_call_id,
-  trace_id,
-  tool_name,
-  args_hash,
-  applicant_id,
-  applicant_session_id,
-  approver_id,
-  approval_route_key,
-  routing_state,
-  status,
-  expires_at,
-  decision_received_at,
-  resolved_at,
-  resolution_reason,
-  decided_by,
-  mastra_observed_state,
-  mastra_observed_at,
-  request_delivery_id,
-  applicant_result_delivery_id,
-  timeout_approver_delivery_id,
-  created_at,
-  updated_at
-)
-```
+人类如需执行，应在 KKBot Agent Runtime 外使用目标系统的正常界面或流程。KKBot 不接收“已人工完成”作为 Tool 恢复信号，不创建执行回执投影，也不把人工结果转换成授权终态或 Tool 结果。
 
-字段语义固定如下：
+本期清洁删除 `requireApproval`、Approval Projection、主管审批路由、deadline 检测、审批请求与结果 Delivery、自动决议重放和相关 Preflight/完成门槛。不得以 Projection CAS、Approval Outbox、Workflow 包装、本地恢复器或其他兼容层恢复这些路径。
 
-- `approval_task_id` 是 KKBot 投影标识；`run_id + tool_call_id` 是连接 Mastra 权威 Approval 的恢复键；`trace_id + tool_name + args_hash` 用于链路审计，不授权执行。
-- `applicant_id`、`applicant_session_id`、`approver_id` 和稳定的 `approval_route_key` 只重建 KK 私聊路由。`routing_state` 只允许 `ready | incomplete | quarantined`，分别表示路由完整、路由信息不足和人工隔离；它不得替代 Approval `status`。
-- `status` 只允许 `pending | approved | declined`，并且只能依据 Mastra 权威状态重投影。`decision_received_at` 记录进入仲裁的人工决议到达时间，deadline 拒绝时为空；`decided_by` 记录提交该人工决议的审批人，deadline 拒绝时记录系统 deadline actor。`resolved_at` 记录 Mastra 权威终态形成时间；`resolution_reason` 只允许 `manual_approve | manual_decline | deadline`。
-- `mastra_observed_state` 与 `mastra_observed_at` 只是最近一次权威读取的观察缓存。字段名必须显式保留 `observed`，不得把缓存值当作独立事实源或据此直接恢复 Run、执行 Tool。
-- 三个通知引用分别指向审批请求、申请人结果和超时主管通知的独立 Delivery。投递状态由各自 Delivery 持有，不复制进 Approval `status`；通知失败、重试或 `unknown` 均不得改变、重开或复活 Approval。
-
-审批请求带不可自动延长的绝对截止时间 `expires_at`。只有在 `expires_at` 之前被 Mastra 条件决议原语有效接受的批准才可能生效；在截止时刻或之后收到，或者虽先收到但截至截止时刻仍未被 Mastra 有效接受的批准，均为无效的迟到批准。截止时间只裁定本次 Approval 是否形成有效批准，不要求已获有效批准的 Tool 必须在截止前执行完成。
-
-到达 deadline 时仍无有效批准，Gateway 只能请求 Mastra 以 deadline 原因为本次 Approval 提交条件拒绝；Projection 不得先写 `declined`、自行终止 Run 或执行 Tool。超时不得升级或改派备用主管、转成无限期人工待办、按风险等级改变结果、自动延长截止时间，或把同一 Approval 留作可重试批准。批准、人工拒绝和 deadline 拒绝并发时，由 Mastra 权威条件决议选出唯一终态；Gateway 读取结果后重投影。终态形成后，迟到批准、重复批准和重复拒绝不得改变终态，原 Tool 最多执行一次。若仍需执行，申请人必须发起新的 Agent Run / Tool Call。
-
-重启恢复必须按以下顺序执行：
-
-1. 只从持久 Mastra Storage 的受支持 suspended discovery 能力发现仍挂起的 Agent Run，并以 `runId + toolCallId` 连接 Projection；不得从 KKBot Outbox 或本地状态机恢复 Approval。
-2. suspended Run 缺少 Projection 时，只能补建 `pending` 且路由不完整的审计投影，或进入人工隔离；不得猜测申请人、审批主管或路由，不得自动批准、拒绝或执行 Tool。
-3. `pending` Projection 未出现在 suspended 集合中时，不得用“缺席”推断已批准、已拒绝或已完成；必须通过 Mastra 公开能力读取该 `runId + toolCallId` 的权威状态或事件后重投影。权威读取暂时失败时保持可诊断隔离，不得制造本地终态。
-4. 仍 suspended 且已过 `expires_at` 的 Approval，只能向 Mastra 提交条件 deadline 拒绝，再按 Mastra 权威结果重投影。
-5. 权威状态重建完成后，才按三个独立 Delivery 的现有投递状态恢复通知；通知补偿不得触发 Approval 决议重放。
-
-Mastra 专属动作包括：提交 Approval 状态转换、恢复或终止原 Agent Run、授权或阻止原 Tool Call、执行 Tool、继续 Agent Loop，以及产生最终 Agent 结果。Projection 与 Mastra 发生冲突时以 Mastra 权威状态为准；KKBot 只重投影或隔离异常，不得用本地状态覆盖 Mastra。
-
-上述协议的实施前提是 2.6 所列 Tool Approval 契约实验全部通过。任一能力缺失时必须返回 Wayfinder 重裁，不得改用 Projection CAS + Outbox 自动重放，也不得补写本地 Approval Runtime。本文不指定具体 API、兼容版本或 `expires_at` 时长。
+未来如需重新启用高风险自动执行，必须重新进入 Wayfinder，重新裁定产品合同，并先通过届时稳定 Mastra 原生 Tool Approval 的权威状态、条件决议、并发唯一终态和响应丢失恢复研究；不得直接复用本期删除的接口或配置。
 
 ---
 
-## 4.13 区分 Tool Approval 和 Workflow Suspend
+## 4.13 Workflow Suspend/Resume 不承担外部授权
 
-### Tool Approval
+Workflow suspend/resume 只用于当前产品明确需要的补充信息或多步骤流程等待。它不得包裹高风险写动作，不得等待人类在 Runtime 外完成操作后继续执行副作用，也不得作为被删除授权生命周期的替代状态机。
 
-用于裁定单个高危动作是否允许执行，例如删除、修改权限、更新业务数据、大范围发送、资金或敏感操作。Mastra Tool Approval 是该动作挂起、决议、恢复和执行的唯一运行时状态源；KKBot 只提供 Projection、主管路由、deadline 输入和通知。
-
-### Workflow Suspend/Resume
-
-用于多步骤业务流程等待补充信息或跨步骤恢复：
-
-```text
-提交申请
-→ 查找审批人
-→ 等待补充信息
-→ 等待主管
-→ 执行业务
-→ 通知申请人
-```
-
-同一个高危 Tool Approval 不得再由自定义 Approval 状态机或 Mastra Workflow suspend/resume 包裹。Projection、条件决议调用和通知 Delivery 都是集成边界，不构成第二个 Approval 状态机；任何自行持有挂起、终态、恢复或执行语义的代码均越界。
+高风险意图在普通 assistant 内容成功交付后即结束本轮自动处理。后续消息只能作为新的用户输入开始新的 Agent Run；它不能恢复旧 Tool Call、继承旧执行身份或授权补执行。
 
 ---
 
@@ -812,10 +746,9 @@ Mastra 专属动作包括：提交 Approval 状态转换、恢复或终止原 Ag
 - 全局串行发送；
 - KK 会话切换；
 - Bot 回显识别；
-- 跨 KK 会话审批通知；
 - CDP 重连补偿。
 
-以上防抖、中断、人工接管和审批路由只适用于一对一私聊。群聊消息在 Raw Store 幂等写入后已经结束处理，不进入 `SessionCoordinator` 的这些协调状态。
+以上防抖、中断和人工接管只适用于一对一私聊。群聊消息在 Raw Store 幂等写入后已经结束处理，不进入 `SessionCoordinator` 的这些协调状态。
 
 删除：
 
@@ -1091,8 +1024,6 @@ Agent 应主动调用该 Tool，不再由 Gateway 在调用 Agent 前预先检�
 
 根据[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)的正式决定，本期不提供定时提醒、定时推送、主动文件交付或其他会由 Schedule 创建用户可见 KK Delivery 的产品能力。配置、Tool、Workflow、注册入口和完成门槛中不得保留此类能力；未来如需恢复，必须重新进入 Wayfinder 裁定可接受的交付合同。
 
-本节的“用户可见主动任务”不包括由既有入站请求产生的审批请求、审批结果和审批超时通知。它们仍是 4.12 节原 Approval 生命周期中的独立 Delivery，并继续受 Mastra Tool Approval 能力门槛约束。
-
 Mastra Schedule 只允许作为内部维护的唤醒信号。内部维护不得创建 Delivery、调用高危 Tool 或产生第三方业务写入；每项维护必须基于当前业务事实执行 reconciliation，并由所属业务域证明重复执行、并发执行和中断恢复安全。Schedule fire 本身不得被解释为唯一业务事件，也不得作为删除、提交或其他不可逆副作用的安全证明。
 
 恢复语义统一为：
@@ -1138,7 +1069,7 @@ KKBot repositories 只接收 KKBot Client，不持有 Mastra Storage。唯一 Ma
 - Scorer 结果（仅在启用可选质量评价时）；
 - suspended runs。
 
-Scorer 结果属于派生评价数据，不得作为 Agent、Memory、Approval、Delivery 或 KKBot 业务状态的事实源。
+Scorer 结果属于派生评价数据，不得作为 Agent、Memory、Delivery 或 KKBot 业务状态的事实源。
 
 ### KKBot Store 管理
 
@@ -1147,7 +1078,6 @@ Scorer 结果属于派生评价数据，不得作为 Agent、Memory、Approval�
 - 组织架构；
 - 媒体与文件；
 - Delivery；
-- Approval Projection；
 - Knowledge source metadata；
 - Token quotas；
 - Asset references。
@@ -1169,10 +1099,9 @@ packages/store/migrations/
 ├── 0001_initial.sql
 ├── 0002_message_idempotency.sql
 ├── 0003_deliveries.sql
-├── 0004_approval_projection.sql
-├── 0005_knowledge.sql
-├── 0006_quotas.sql
-└── 0007_asset_references.sql
+├── 0004_knowledge.sql
+├── 0005_quotas.sql
+└── 0006_asset_references.sql
 ```
 
 KKBot 使用独立且明确归属的 migration ledger：
@@ -1299,7 +1228,6 @@ Delivery 创建时必须确定由 `deliveryId` 派生的稳定 `mastra_message_i
 - MCP；
 - Memory；
 - Workflow；
-- HITL；
 - Token Usage；
 - 初始化、导出、Flush 和 Shutdown 的运行诊断。
 
@@ -1311,7 +1239,7 @@ Bootstrapper 必须在开放消息处理前完成 Observability 与 Trace `Sensi
 
 ### Mastra Scorer（可选）
 
-Scorer 只用于离线评测或质量评价，不参与生产业务状态转换。缺失、未注册或禁用 Scorer 不得影响 Bootstrapper、Agent 调用、Delivery 状态转换或生产验收；启用后的评分结果不得决定模型路由、工具执行、审批、Memory 提交、发送重试或 Delivery 结论。
+Scorer 只用于离线评测或质量评价，不参与生产业务状态转换。缺失、未注册或禁用 Scorer 不得影响 Bootstrapper、Agent 调用、Delivery 状态转换或生产验收；启用后的评分结果不得决定模型路由、工具执行、Memory 提交、发送重试或 Delivery 结论。
 
 本规格不锁定具体 Scorer、评价指标与阈值、采样率、存储保留策略或评测数据集。
 
@@ -1337,12 +1265,11 @@ interface KkTraceContext {
 - Mastra `requestContext`；
 - Mastra `tracingContext`；
 - Tool context；
-- Approval Projection；
 - Delivery；
 - Knowledge Tool；
 - Store 操作。
 
-完整链路必须关联 `traceId`、`runId`、`sessionId` 和输入消息 ID；进入 Tool、Approval 和 Delivery 后，还必须用 `toolCallId`、`approvalTaskId`、`deliveryId` 与同一链路关联。Scorer 结果如存在，只能引用这些关联 ID，不得反向改写链路中的业务事实。
+完整链路必须关联 `traceId`、`runId`、`sessionId` 和输入消息 ID；进入 Tool 和 Delivery 后，还必须用 `toolCallId`、`deliveryId` 与同一链路关联。Scorer 结果如存在，只能引用这些关联 ID，不得反向改写链路中的业务事实。
 
 禁止通过全局可变变量传播上下文。
 
@@ -1388,7 +1315,7 @@ Mastra `TokenCostControl` 基于异步 Observability 聚合，只能用于告警
 ### 统一事实模型
 
 - `ManagedAsset` 是受管根目录中的独立字节对象，具有永不复用的 `assetId` 和唯一规范化 locator。接收媒体、OCR 页图、规范化中间文件、Knowledge Generation 产物和 Delivery 附件分别建模，不能用路径、内容哈希或目录位置隐式表达所有权。
-- `AssetReference` 是明确 owner 对资产的持久保护关系，至少区分 owner 身份、用途与 `active/released`。业务状态仍由 Message、Delivery、Approval、Workflow 和 Knowledge 各自持有；资产域只记录它们是否仍要求字节存在，不得反向改写业务终态。
+- `AssetReference` 是明确 owner 对资产的持久保护关系，至少区分 owner 身份、用途与 `active/released`。业务状态仍由 Message、Delivery、Workflow 和 Knowledge 各自持有；资产域只记录它们是否仍要求字节存在，不得反向改写业务终态。
 - `AssetLease` 是处理器读取或写入资产时持有的短期、可续租保护。租约到期只表示本次 I/O 保护失效，不表示任何持久 owner 已释放；长期引用不得只靠续租或 TTL 表达。
 - `AssetRetentionDeadline` 是物理删除最早允许时间，不是保证删除时间。接收媒体从资产进入 `ready` 起计算 30 天；生成交付物从对应 Delivery 持久化为 `sent`、`failed` 或 `aborted` 后计算 30 天。`generated`、`sending` 与 `unknown` 不产生起算终态并持续持有引用。重试、重启、文件 mtime、目录扫描或普通读取不得把 deadline 提前或重新滚动。
 - Message 附件、Delivery 历史和 Knowledge 来源定位等审计关系在业务处理结束后可以只保留元数据；审计引用本身不永久阻止物理淘汰。物理删除后仍保留最小资产 tombstone、owner/ref 历史、checksum、大小、deadline、删除原因、时间、尝试与最后错误。
@@ -1397,7 +1324,7 @@ Mastra `TokenCostControl` 基于异步 Observability 聚合，只能用于告警
 
 ### 删除阻断与引用释放
 
-以下任一事实存在都阻断删除：非终态 Workflow 仍需该资产；pending Approval 的详情或后续执行依赖该资产；Delivery 为 `generated`、`sending` 或 `unknown`；Knowledge Generation 为 `building`、`ready`、当前 Head，或最近一个自动保留的 retired Generation；Message 附件仍被非终态处理、审批或 Knowledge 摄取使用；存在未过期 AssetLease 或显式人工保留。当前范围不存在会复用主动发送资产的用户可见 Schedule；未来恢复该产品能力必须重新进入 Wayfinder。
+以下任一事实存在都阻断删除：非终态 Workflow 仍需该资产；Delivery 为 `generated`、`sending` 或 `unknown`；Knowledge Generation 为 `building`、`ready`、当前 Head，或最近一个自动保留的 retired Generation；Message 附件仍被非终态处理或 Knowledge 摄取使用；存在未过期 AssetLease 或显式人工保留。当前范围不存在会复用主动发送资产的用户可见 Schedule；未来恢复该产品能力必须重新进入 Wayfinder。
 
 owner 的终态或替换事实必须先持久化，之后才能把对应 AssetReference 改为 `released`。Mastra owner 无法确认权威终态时保持引用。Delivery=`unknown` 在人工结果持久化前无限期保护资产；清理结果、文件缺失、内容哈希、KK DOM 历史或 bot echo 都不能反向裁定 Delivery。Knowledge Head CAS 提交时，原 Head 成为唯一自动保留的 retired Generation，同时释放更旧 retired Generation 的持久引用；查询只能使用唯一 Head，retained Generation 不构成自动回退路径。
 
@@ -1443,7 +1370,7 @@ Static Validation 只读取 Node.js 版本、YAML、环境变量和文件系统�
 4. MCP transport、`required`、权限、白名单、Tool 命名和 timeout 配置合法；
 5. Model、Processor、Grounding、Quota、Observability、Trace 脱敏以及当前生效产品范围要求的能力配置完整。
 
-真实 Preflight 在资源取得后执行，用真实对象证明运行事实，可以创建目录、取得锁、执行 KKBot migrations、执行 `storage.init()`、建立网络连接并写入 Mastra 自有基础设施状态；这些动作不是 Static Validation。Preflight 探针不得创建 Delivery、Approval、Mastra Memory、KnowledgeGeneration、Schedule trigger、Worker 业务 claim、发送尝试、第三方业务写入或其他 KKBot 业务事实。Model 探针必须关闭 Tool 与 Memory；MCP 只做连接和 Tool discovery，不执行 Tool；Knowledge 使用不可发布的固定 fixture；Driver/EventBridge 只证明连接、注入和事件身份，不发送消息；Gateway 与 Coordinator 只证明接线，不接纳真实工作。
+真实 Preflight 在资源取得后执行，用真实对象证明运行事实，可以创建目录、取得锁、执行 KKBot migrations、执行 `storage.init()`、建立网络连接并写入 Mastra 自有基础设施状态；这些动作不是 Static Validation。Preflight 探针不得创建 Delivery、Mastra Memory、KnowledgeGeneration、Schedule trigger、Worker 业务 claim、发送尝试、第三方业务写入或其他 KKBot 业务事实。Model 探针必须关闭 Tool 与 Memory；MCP 只做连接和 Tool discovery，不执行 Tool；Knowledge 使用不可发布的固定 fixture；Driver/EventBridge 只证明连接、注入和事件身份，不发送消息；Gateway 与 Coordinator 只证明接线，不接纳真实工作。
 
 唯一 `Work Admission Gate` 从代次开始保持关闭，是消息、Schedule trigger、Worker claim、Coordinator dispatch 和任何新 Mastra Run 的唯一准入点。Ready Barrier 成功后它最多打开一次；关闭后在同一代次内不可重新打开。不得建设按能力拆分的多门、`QUARANTINED` 原地重建状态机、持久 backlog 或部分服务产品语义。Gate 关闭期间到达的消息不形成进程内或持久待处理队列；新代次只从 Driver/Store 的权威消息事实执行有界补偿扫描。
 
@@ -1492,7 +1419,7 @@ Ready Barrier 只能对当前 `startupGenerationId` 的单份不可变检查结�
 9. Driver 已连接目标 KK9，EventBridge 已注入且事件身份可验证，Gateway 与 Coordinator 已激活并仍被关闭的 Gate 阻挡；
 10. Acquisition Ledger 的每项资源只有一个 owner、一个 finalizer 和完整依赖边，Storage 所有权状态无歧义，所有关闭入口可诊断。
 
-能力的必需性只来自 `master` 上当前生效产品范围，不由实现者新增配置开关擅自降为 optional。当前明确允许缺失的只有可选 Scorer、显式 `required: false` 的 MCP Server 及其 Tools，以及 §4.18 已定义的可选 Rerank；它们不得反向削弱其他必需能力。当前生效产品范围要求的 Mastra 能力必须全部通过；[#161](https://github.com/dnslin/kkbot/issues/161)决定高危 Tool Approval 的最终能力集合，本节不提前裁定具体高危 Tool 范围或 Approval 版本。[#124](https://github.com/dnslin/kkbot/issues/124)仍负责最终验收矩阵，本节不替其关闭验收边界。
+能力的必需性只来自 `master` 上当前生效产品范围，不由实现者新增配置开关擅自降为 optional。当前明确允许缺失的只有可选 Scorer、显式 `required: false` 的 MCP Server 及其 Tools，以及 §4.18 已定义的可选 Rerank；它们不得反向削弱其他必需能力。本期高风险写 Tool、人工授权生命周期及其原生能力检查已退出 Preflight 和 Ready Barrier；Static Validation 只需证明 Agent 的固定 Tool 集合中不存在高风险副作用 Tool。由 [#168](https://github.com/dnslin/kkbot/issues/168)按生效范围锁定兼容版本，[#124](https://github.com/dnslin/kkbot/issues/124)仍负责最终验收矩阵。
 
 ### 统一失败与 Shutdown 路径
 
@@ -1642,7 +1569,7 @@ catalog:
 
 要求：
 
-- #131 已验证候选 A/B，且候选 B 覆盖六个目标包的 stable latest；两组均未通过 Approval 权威终态与条件仲裁门，当前不得把任一版本写入 catalog。只有 #161 完成高危 Tool/HITL 范围重裁，且后续候选通过 9.10 节完整双环境验证后，才能锁定一组精确版本；
+- #131 的旧候选 A/B 与失败证据继续保留，但不自动写入 catalog；只有 [#168](https://github.com/dnslin/kkbot/issues/168)按当前生效能力范围完成 9.10 节完整双环境验证后，才能锁定一组精确版本；
 - 不允许不同包分别使用 `^` 漂移；
 - 统一 Zod 和 AI SDK 版本；
 - 候选兼容组的依赖引擎必须覆盖 Node.js `>=22.13`，并通过 9.10 节规定的双环境验证；
@@ -1665,9 +1592,6 @@ catalog:
 | `ThinkingTagCleaner`       | 改为 Mastra Output Processor                                     |
 | `ToolRegistry`             | 删除，直接注册 Mastra Tools                                      |
 | `ReadWriteSplitExecutor`   | 删除，Mastra 负责 Tool Loop                                      |
-| `ApprovalManager`          | 改为审批业务投影、路由和超时协调，不执行 Tool                    |
-| `LeaderApprovalRouter`     | 保留                                                             |
-| `StatefulApprovalMatcher`  | 保留                                                             |
 | 自定义 `McpClientManager`  | 删除；Composition Root 只创建并关闭唯一进程级 Mastra `MCPClient` |
 | `ProactiveScheduleManager` | 删除；本期不提供用户可见主动 Schedule，也不保留兼容入口          |
 | `SessionCoordinator`       | 保留并简化                                                       |
@@ -1693,14 +1617,14 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | `separate` / 迁入独立子系统 | 需求仍属于本总规格，但主要由 Knowledge、Retention 等独立模块承担。 |
 | `drop` / 删除               | 仅用于旧技术实现决策；不再进入新代码。                             |
 
-结论：Issue #107 的 **54 条 User Story 全部有新归属，没有产品需求被直接丢弃**：
+结论：Issue #107 的 **54 条 User Story 全部有明确去向，没有遗漏**；其中 #161 正式使一条主管审批路由需求退出当前产品范围：
 
-- 16 条直接保留；
-- 14 条改写后保留；
+- 14 条直接保留；
+- 15 条改写后保留；
 - 24 条迁入 Knowledge、Retention 等独立子系统；
-- 0 条产品需求删除。
+- 1 条产品需求删除。
 
-被删除的是自研 Runtime、LLMProvider、Memory Manager、Tool Executor、Failover 和双重 HITL 等旧实现路径。
+被删除的是自研 Runtime、LLMProvider、Memory Manager、Tool Executor、Failover，以及旧 Tool Approval、主管路由和双重 HITL 等实现路径。
 
 ### 6.2 User Story 迁移台账
 
@@ -1749,14 +1673,14 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | R107-41 | API Key、Token、Cookie、手机号等脱敏       | 改写后保留     | `PiiRedactionPolicy + SensitiveDataFilter`          | 应用日志和 Mastra Trace 分别在导出前脱敏。                                           |
 | R107-42 | 开发可读日志、生产 JSON                    | 直接保留       | `UnifiedLogger`                                     | 开发 pino-pretty，生产结构化输出。                                                   |
 | R107-43 | 日志滚动与保留周期                         | 直接保留       | `Log Rotation Adapter`                              | 默认保留 7 天，可配置日期或大小轮转。                                                |
-| R107-44 | Tool/HITL 稳定审计字段                     | 改写后保留     | `Mastra Trace + approval projection`                | 使用 traceId/runId/toolCallId/approvalTaskId 串联。                                  |
+| R107-44 | Tool 稳定审计字段                          | 改写后保留     | `Mastra Trace + Delivery`                           | 使用 traceId/runId/toolCallId/deliveryId 串联。                                      |
 | R107-45 | 全局每日 Token 上限                        | 改写后保留     | `Quota Processor + token_usage_daily`               | 按完整 Mastra Run usage 原子累计。                                                   |
 | R107-46 | 单用户每日调用上限                         | 直接保留       | `Quota Repository`                                  | 并发调用不能越过上限。                                                               |
 | R107-47 | 达到配额后明确提示                         | 直接保留       | `Quota Processor / Gateway`                         | 返回可理解的恢复时间和限制原因。                                                     |
 | R107-48 | 媒体和交付物按策略清理                     | 迁入独立子系统 | `AssetRetention Workflow`                           | 默认 30 天并保护活跃引用。                                                           |
 | R107-49 | 访问已过期文件时明确提示                   | 迁入独立子系统 | `Asset Repository / Delivery Tool`                  | 保留元数据和 expired 状态。                                                          |
-| R107-50 | 三级主管寻路                               | 直接保留       | `LeaderApprovalRouter`                              | 直接 leaderId → ReportingLine/部门负责人 → fallbackLeaderId。                        |
-| R107-51 | 无主管时高危操作 Fail-Closed               | 直接保留       | `Approval Projection + Gateway`                     | 不得绕过 Mastra Tool Approval。                                                      |
+| R107-50 | 三级主管寻路                               | 删除           | —                                                   | 本期不存在高风险 Tool 授权请求；ReportingLine 只保留为只读组织信息。                 |
+| R107-51 | 无主管时高危操作 Fail-Closed               | 改写后保留     | `HighRiskIntentPolicy + Delivery`                   | 不调用副作用 Tool，明确回复外部操作未执行。                                          |
 | R107-52 | KK 长文本保持单条发送                      | 直接保留       | `KkOutboundDispatcher`                              | 不实现未经真机需求证明的拆包。                                                       |
 | R107-53 | 启动、摄取、日志暴露小而深接口             | 改写后保留     | `Bootstrapper / KnowledgeIngestion / UnifiedLogger` | 不新增 AgentRunner、LLMProvider、ToolExecutor 等重复接口。                           |
 | R107-54 | 通过最高层接口做确定性测试                 | 改写后保留     | `Test Harness`                                      | 使用 Fake Mastra Model、临时 Storage、Fake KK Driver 和临时知识目录。                |
@@ -1773,7 +1697,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | 复用现有 ModelFailoverManager            | 删除       | 使用 Mastra fallback array 和每模型重试配置。                                                    |
 | 复用现有 AgentMemoryManager              | 删除       | 使用 Mastra Memory/Observational Memory；KK 原始消息仍由 Store 管理。                            |
 | 复用 ToolRegistry/ReadWriteSplitExecutor | 删除       | Tool 直接注册给 Mastra Agent，由 Agent Loop 执行。                                               |
-| 自定义 ApprovalManager 执行高危 Tool     | 删除       | Mastra Tool Approval 为执行状态源；KKBot 只保存业务投影和主管路由。                              |
+| 自定义 ApprovalManager 执行高危 Tool     | 删除       | 整条授权、投影、主管路由和恢复路径退出目标架构；高风险意图只生成普通 assistant 内容。            |
 | Gateway 预读 Memory/RAG 并拼 Prompt      | 删除       | Memory 由 Mastra 注入；知识通过 `query_public_knowledge` Tool 获取。                             |
 | KnowledgeIngestion 高层模块              | 直接保留   | 保留并迁入 `@kkbot/knowledge`。                                                                  |
 | Markdown/DOCX/PDF/OCR Adapter            | 直接保留   | 保持格式边界和失败诊断。                                                                         |
@@ -1789,7 +1713,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | CDP 重连和补偿扫描                       | 改写后保留 | 取消同进程原地重连；关键事实失效后完整退出，由新代次重连并执行有界补偿扫描。                     |
 | Token 配额                               | 改写后保留 | usage 来源改为完整 Mastra Run。                                                                  |
 | AssetRetentionPolicy                     | 改写后保留 | 由 Mastra Schedule 触发 Workflow，物理删除由 KKBot Repository 执行。                             |
-| LeaderHierarchyResolution                | 直接保留   | 保持三级寻路和 Fail-Closed。                                                                     |
+| LeaderHierarchyResolution                | 删除       | 从高风险授权路径删除；ReportingLine 与 DepartmentLeader 只用于只读组织查询。                     |
 | 不做长文本拆包                           | 直接保留   | 保持。                                                                                           |
 | SkillPackage/DeclarativeMcpLoader 延后   | 直接保留   | 继续 Out of Scope；不建设空兼容层。                                                              |
 
@@ -1797,43 +1721,43 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 
 以下要求并非 Issue #107 原文完整覆盖，但它们是消除当前混合架构所必需的约束：
 
-| ID   | 新增要求                               | 说明                                                                                                                                                                                                 |
-| ---- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| N-01 | 唯一 Mastra Runtime                    | 整个进程只有一个根级 Mastra 实例，包内不得私自创建第二套 Agent Runtime。                                                                                                                             |
-| N-02 | 禁止自研 AgentRunner                   | Gateway 直接调用注册在 Mastra 中的 KK Agent；辅助函数只构造上下文。                                                                                                                                  |
-| N-03 | 单一 Agent Memory 事实源               | 自定义 L2/L3 表退出 Agent 记忆链，组织资料和公共知识保持独立领域数据。                                                                                                                               |
-| N-04 | KK 交付一致性                          | `generated`、`sending`、`sent`、`failed`、`unknown`、`aborted` 必须持久化；只有 `sent` 表示用户已经收到。                                                                                            |
-| N-05 | 未交付生成结果隔离                     | user message 在 Agent 前以原始消息稳定 ID 显式提交；本轮 Agent 使用 `readOnly`；只有 `sent` 后才以 Delivery 稳定 ID 显式提交最终 assistant，tool 中间结果与所有非 `sent` 内容不进入长期对话 Memory。 |
-| N-06 | 消息来源四分类                         | Driver 输出 external/operator/bot_echo/system，人工消息不得被 isMe 过滤。                                                                                                                            |
-| N-07 | 事件入口优先级                         | EventBridge 为主，Polling 为断线补偿，DOM 扫描为兜底。                                                                                                                                               |
-| N-08 | 数据库最终幂等                         | 以 `(session_id, message_id)` 唯一约束防止多事件路径重复入库。                                                                                                                                       |
-| N-09 | Mastra Tool Approval 为唯一执行状态源  | 审批投影不得自行执行高危 Tool。                                                                                                                                                                      |
-| N-10 | Tool Approval 与 Workflow Suspend 分离 | 风险确认使用 Approval；补充信息和多步骤等待使用 suspend/resume。                                                                                                                                     |
-| N-11 | 中断后不重放旧用户消息                 | Abort 当前 Run 后只提交新消息，旧内容由 thread memory 提供。                                                                                                                                         |
-| N-12 | 正式数据库迁移                         | KKBot 业务表使用独立 `kkbot_schema_migrations` ledger 和版本化 migration；完成后再执行 Mastra `storage.init()`，不得操作 Mastra 内部表。                                                             |
-| N-13 | Mastra 依赖版本锁定                    | Core、Memory、LibSQL、MCP、RAG、Observability 使用经契约测试验证的兼容版本组。                                                                                                                       |
-| N-14 | 知识查询由 Agent 主动 Tool Call        | Gateway 不再提前执行知识检索并拼入 Prompt。                                                                                                                                                          |
-| N-15 | 完整 Run 关联                          | traceId、runId、sessionId、toolCallId、approvalTaskId、deliveryId 可重建完整链路。                                                                                                                   |
-| N-16 | 单库双 Client 单 Storage               | Composition Root 只解析一个规范化数据库路径；KKBot Client 与唯一 Mastra Storage 自有 Client 分离，不承诺跨 Client、跨 domain 原子事务。                                                              |
-| N-17 | 事实保留与活动上下文清理               | 新消息中断和接管只停止未来动作；普通撤回移除原 user 正文并在必要时重置受影响的完整 OM scope；合规删除擦除授权范围正文并保留 tombstone；不得级联改写真实 Delivery、Tool、Trace 或外部副作用事实。     |
-| N-18 | 单一启动屏障与逆拓扑 Shutdown          | 每个进程只有一个 startup generation、一个 Work Admission Gate 和一条幂等 Shutdown；Ready Barrier 通过前不接纳工作，finalizer 按依赖图逆拓扑全部尝试并聚合错误。                                      |
+| ID   | 新增要求                        | 说明                                                                                                                                                                                                 |
+| ---- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| N-01 | 唯一 Mastra Runtime             | 整个进程只有一个根级 Mastra 实例，包内不得私自创建第二套 Agent Runtime。                                                                                                                             |
+| N-02 | 禁止自研 AgentRunner            | Gateway 直接调用注册在 Mastra 中的 KK Agent；辅助函数只构造上下文。                                                                                                                                  |
+| N-03 | 单一 Agent Memory 事实源        | 自定义 L2/L3 表退出 Agent 记忆链，组织资料和公共知识保持独立领域数据。                                                                                                                               |
+| N-04 | KK 交付一致性                   | `generated`、`sending`、`sent`、`failed`、`unknown`、`aborted` 必须持久化；只有 `sent` 表示用户已经收到。                                                                                            |
+| N-05 | 未交付生成结果隔离              | user message 在 Agent 前以原始消息稳定 ID 显式提交；本轮 Agent 使用 `readOnly`；只有 `sent` 后才以 Delivery 稳定 ID 显式提交最终 assistant，tool 中间结果与所有非 `sent` 内容不进入长期对话 Memory。 |
+| N-06 | 消息来源四分类                  | Driver 输出 external/operator/bot_echo/system，人工消息不得被 isMe 过滤。                                                                                                                            |
+| N-07 | 事件入口优先级                  | EventBridge 为主，Polling 为断线补偿，DOM 扫描为兜底。                                                                                                                                               |
+| N-08 | 数据库最终幂等                  | 以 `(session_id, message_id)` 唯一约束防止多事件路径重复入库。                                                                                                                                       |
+| N-09 | 高风险意图无副作用              | 无法明确归入低风险的写意图不得进入 Agent Tool 集合，只能生成明确说明“外部操作未执行”的普通 assistant 内容。                                                                                          |
+| N-10 | 人工操作不恢复 Runtime          | 建议或操作清单不形成 Draft、授权状态或执行身份；人类在 Runtime 外操作后，KKBot 不猜测结果、不恢复旧 Run 或补执行。                                                                                   |
+| N-11 | 中断后不重放旧用户消息          | Abort 当前 Run 后只提交新消息，旧内容由 thread memory 提供。                                                                                                                                         |
+| N-12 | 正式数据库迁移                  | KKBot 业务表使用独立 `kkbot_schema_migrations` ledger 和版本化 migration；完成后再执行 Mastra `storage.init()`，不得操作 Mastra 内部表。                                                             |
+| N-13 | Mastra 依赖版本锁定             | Core、Memory、LibSQL、MCP、RAG、Observability 使用经契约测试验证的兼容版本组。                                                                                                                       |
+| N-14 | 知识查询由 Agent 主动 Tool Call | Gateway 不再提前执行知识检索并拼入 Prompt。                                                                                                                                                          |
+| N-15 | 完整 Run 关联                   | traceId、runId、sessionId、toolCallId、deliveryId 可重建完整链路。                                                                                                                                   |
+| N-16 | 单库双 Client 单 Storage        | Composition Root 只解析一个规范化数据库路径；KKBot Client 与唯一 Mastra Storage 自有 Client 分离，不承诺跨 Client、跨 domain 原子事务。                                                              |
+| N-17 | 事实保留与活动上下文清理        | 新消息中断和接管只停止未来动作；普通撤回移除原 user 正文并在必要时重置受影响的完整 OM scope；合规删除擦除授权范围正文并保留 tombstone；不得级联改写真实 Delivery、Tool、Trace 或外部副作用事实。     |
+| N-18 | 单一启动屏障与逆拓扑 Shutdown   | 每个进程只有一个 startup generation、一个 Work Admission Gate 和一条幂等 Shutdown；Ready Barrier 通过前不接纳工作，finalizer 按依赖图逆拓扑全部尝试并聚合错误。                                      |
 
 ### 6.5 Testing Decisions 迁移
 
 原 Issue #107 的测试方向整体保留，测试 seam 调整如下：
 
-| 原测试 seam                         | 新测试 seam                                               |
-| ----------------------------------- | --------------------------------------------------------- |
-| Fake `LLMProvider`                  | Fake Mastra / AI SDK Model                                |
-| Fake `KkbotAgentRuntime`            | 真实 Mastra Agent 配置 + Fake Model                       |
-| Fake `AgentMemoryManager`           | 临时 Mastra Storage + Memory                              |
-| 自定义 ToolExecutor 测试            | Mastra Agent 多轮 Tool Call 契约测试                      |
-| 自定义 ApprovalManager 工具执行测试 | Mastra Tool Approval 挂起/批准/拒绝/恢复测试              |
-| Gateway 手工 RAG 注入测试           | `query_public_knowledge` Tool 和 Grounding Processor 测试 |
-| 自定义 Failover 测试                | Mastra fallback chain 契约测试                            |
-| 单模块脚本装配测试                  | `UnifiedBootstrapper` 最高层启动/关闭测试                 |
+| 原测试 seam                         | 新测试 seam                                                      |
+| ----------------------------------- | ---------------------------------------------------------------- |
+| Fake `LLMProvider`                  | Fake Mastra / AI SDK Model                                       |
+| Fake `KkbotAgentRuntime`            | 真实 Mastra Agent 配置 + Fake Model                              |
+| Fake `AgentMemoryManager`           | 临时 Mastra Storage + Memory                                     |
+| 自定义 ToolExecutor 测试            | Mastra Agent 多轮 Tool Call 契约测试                             |
+| 自定义 ApprovalManager 工具执行测试 | 高风险意图不调用副作用 Tool、只生成普通 assistant 内容的边界测试 |
+| Gateway 手工 RAG 注入测试           | `query_public_knowledge` Tool 和 Grounding Processor 测试        |
+| 自定义 Failover 测试                | Mastra fallback chain 契约测试                                   |
+| 单模块脚本装配测试                  | `UnifiedBootstrapper` 最高层启动/关闭测试                        |
 
-仍需覆盖：配置、知识摄取、AST Chunk、词法/向量/Rerank、日志脱敏、并发 Trace、单实例锁、单库双 Client 的 WAL/timeout/`SQLITE_BUSY` 与关闭顺序、CDP 重连补偿、Token 配额、资产清理、主管寻路和真机冒烟。
+仍需覆盖：配置、知识摄取、AST Chunk、词法/向量/Rerank、日志脱敏、并发 Trace、单实例锁、单库双 Client 的 WAL/timeout/`SQLITE_BUSY` 与关闭顺序、CDP 重连补偿、Token 配额、资产清理、高风险意图无副作用合同和真机冒烟。
 
 ### 6.6 Issue #107 关闭后的处理
 
@@ -1845,7 +1769,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 
 建议关闭说明：
 
-> Issue #107 的产品需求、知识库要求、生产保障和测试要求已完整迁入《KKBot Mastra-native 重构总规格》。原 Issue 中基于自研 Agent Runtime、LLMProvider、Memory Manager、Tool Executor 和双重 HITL 状态机的实现路径不再采用，因此关闭旧规格，后续以新总规格为唯一实施依据。
+> Issue #107 的产品需求、知识库要求、生产保障和测试要求已完整迁入《KKBot Mastra-native 重构总规格》。原 Issue 中基于自研 Agent Runtime、LLMProvider、Memory Manager、Tool Executor、Tool Approval 和双重 HITL 状态机的实现路径不再采用；高风险意图只形成普通 assistant 内容。后续以新总规格为唯一实施依据。
 
 ---
 
@@ -1911,46 +1835,23 @@ Driver 捕获当前账号发出的消息
 → 退避期内外部消息只存储，不自动回复
 ```
 
-## 7.4 高危 Tool 审批
+## 7.4 一对一私聊高风险意图
 
-```mermaid
-sequenceDiagram
-    participant U as 申请员工
-    participant M as Mastra Runtime
-    participant G as Gateway
-    participant S as Store
-    participant L as 原审批主管
-
-    U->>M: 发起高危操作
-    M->>M: Tool 执行前挂起 Approval
-    M-->>G: runId + toolCallId
-    G->>S: 创建 Approval Projection
-    G->>L: 独立 Delivery 发送审批请求和 deadline
-    alt 截止前收到人工决议
-        L->>G: 批准或拒绝
-        G->>M: 提交带恢复键和前置条件的决议
-    else 到达 deadline 仍无有效批准
-        G->>M: 提交带恢复键的条件 deadline 拒绝
-    end
-    M->>M: 权威仲裁唯一终态
-    M-->>G: approved / declined 或终态冲突结果
-    G->>S: 依据 Mastra 权威结果重投影
-    alt approved
-        M->>M: 恢复原 Run 并执行原 Tool Call
-        M-->>G: 最终 Agent 结果
-        G->>U: 独立 Delivery 发送最终结果
-    else declined
-        M->>M: 阻止原 Tool Call
-        G->>U: 独立 Delivery 通知已拒绝
-        opt deadline 拒绝
-            G->>L: 独立 Delivery 通知已超时拒绝
-        end
-    end
+```text
+Employee 提出删除、权限、资金、敏感数据变更或其他高风险写意图
+→ Gateway 创建普通 Agent Run
+→ Agent 不获得任何对应副作用 Tool
+→ Agent 生成建议、拟写内容或人工操作清单
+→ 最终内容明确说明“KKBot 未执行外部操作”
+→ Delivery 进入 generated
+→ KK 正向发送成功后 Delivery=sent
+→ sent 后按 4.7 提交 assistant Memory
+→ 本轮自动处理结束
 ```
 
-该时序图不指定条件决议、权威读取或 suspended discovery 的具体 API。进程重启后，Gateway 先从持久 Mastra Storage 发现 suspended Runs，以 `runId + toolCallId` 重连 Projection；缺失 Projection 时只补建路由不完整投影或人工隔离，Projection 缺席于 suspended 集合时必须再读 Mastra 权威状态，已过期且仍 suspended 时只能向 Mastra 提交条件 deadline 拒绝。
+该链路不创建授权请求、主管路由、deadline、Projection 或独立通知 Delivery，不进入 Tool Approval 或 Workflow suspend/resume。人类在 Runtime 外执行后，KKBot 不等待回执、不猜测结果，也不恢复旧 Run、旧 Tool Call 或补执行。
 
-决议响应丢失、进程崩溃或 Projection 与 Mastra 冲突时，不得依据本地 `status` 猜测结果或从 Approval Outbox 自动重放。Gateway 必须重新读取 Mastra 权威状态，再重投影并按各 Delivery 状态恢复通知。超时、迟到批准、重复决议和通知分离统一遵循 4.12。
+后续用户消息是新的输入，只能开始新的 Agent Run。即使用户表示“已经操作完成”，该陈述也只是用户消息，不能被投影为外部动作事实或 Runtime 终态。
 
 ## 7.5 一对一私聊知识问答
 
@@ -1992,7 +1893,6 @@ kkbot_schema_migrations
 sessions
 session_messages
 message_deliveries
-approval_tasks
 org_departments
 org_employees
 org_employee_departments
@@ -2082,22 +1982,17 @@ Generation：generationId；manifestHash 只校验完整性
 - 目标 Mastra/LibSQL 兼容版本必须通过显式 message ID 删除、OM 完整 scope clear、readOnly 隔离、稳定 ID/tombstone 并发与重启恢复的契约验证。任一关键合同缺失时按 #117 返回 Wayfinder，并保持最终验收 #124 阻塞；不得用来源过滤层、删除补偿、Outbox 或第二套 Memory Runtime 回补；
 - 群聊消息不创建 Thread、不写入 Memory，也不触发任何 Memory 提交或补偿。
 
-## 9.4 HITL
+## 9.4 高风险意图范围
 
-- Tool Approval 在原 Tool 执行前正确挂起，并暴露可跨重启关联的 `runId + toolCallId`；
-- Approval Projection 包含 4.12 规定的关联、路由、deadline、决议、Mastra 观察缓存和三个独立 Delivery 引用字段；
-- 直属主管可提交批准或拒绝，非主管无法审批，多笔任务必须通过稳定路由键和序号消歧；
-- 兼容 Mastra 版本的契约实验能跨进程重启发现持久 suspended Runs，并按 `runId + toolCallId` 读取权威 Approval 状态；
-- 契约实验能证明条件批准、条件拒绝与 deadline 前置条件由 Mastra 权威仲裁，已经存在的终态冲突可被无歧义判定；
-- 契约实验能证明重复提交相同或相反决议均安全，批准、拒绝与 deadline 竞态最多接受一个终态，原 Tool 最多执行一次；
-- suspended Run 缺少 Projection 时只补建路由不完整投影或人工隔离，不猜测审批人，不自动决议或执行 Tool；
-- `pending` Projection 缺席于 suspended 集合时不会被当作完成证据，必须读取 Mastra 权威状态后重投影；
-- 到期仍无有效批准时只通过 Mastra 条件决议形成 `declined`，不得升级备用主管、转无限待办、按风险改写结果或自动延长；
-- 迟到批准不能复活已超时 Approval；重新执行必须创建新的 Agent Run / Tool Call；
-- 审批请求、申请人结果和超时主管通知分别使用独立 Delivery，通知失败或补偿不改变 Approval 终态；
-- 决议响应丢失、进程重启或状态冲突时以 Mastra 权威读取结果重投影，不从 Approval Outbox 自动重放决议；
-- 任一权威读取、条件决议、终态冲突判定或重复决议安全实验不通过时，按 #117 返回 Wayfinder 重裁，不得退化为 Projection CAS + Outbox 或本地 Approval Runtime；
-- 验收不锁定具体 Mastra API、依赖版本或审批超时时长。
+- Agent 的固定 Tool 集合只包含只读或明确列入产品范围的低风险 Tool；不存在 `requireApproval`、Approval Projection、主管路由、deadline 或授权通知配置；
+- 删除、修改权限、大范围发送、资金、敏感数据变更及其他无法明确归入低风险的写意图不会触发本地或 MCP 副作用 Tool；
+- 高风险回复明确说明 KKBot 没有执行外部操作，并只提供建议、拟写内容或人工操作清单；
+- 上述内容使用普通 Delivery：生成时为 `generated`，只有真实 KK 发送成功才为 `sent`，并且只在 `sent` 后提交 assistant Memory；
+- 建议或操作清单不形成独立 Draft、Repository、Projection、授权终态或未来自动执行身份；
+- 高风险意图不进入 Tool Approval、Workflow suspend/resume、自动等待、轮询、恢复或补执行路径；
+- 人类在 Runtime 外完成操作后，后续消息不会恢复旧 Run 或 Tool Call，也不会让 KKBot 猜测外部动作结果；
+- Preflight 与 Ready Barrier 证明固定 Tool 集合中不存在高风险副作用 Tool，但不检查已退出范围的授权原生能力；
+- 仓库目标架构不存在 Projection CAS、Approval Outbox、自动决议重放、Workflow 包装授权或本地 Approval Runtime。
 
 ## 9.5 Driver 和 Gateway
 
@@ -2106,7 +2001,7 @@ Generation：generationId；manifestHash 只校验完整性
 - Bot 回显不触发接管；
 - EventBridge 主链路和 Polling 补偿不会重复入库；
 - 群聊消息由所有捕获路径按 `(session_id, message_id)` 唯一约束幂等写入 Raw Store；
-- 群聊消息写入后不进入防抖、Agent Run、Model Tier、Memory、Tool/MCP、Knowledge、Approval、Workflow、Schedule、Delivery 或 KK 发送；
+- 群聊消息写入后不进入防抖、Agent Run、Model Tier、Memory、Tool/MCP、Knowledge、Workflow、Schedule、Delivery 或 KK 发送；
 - 群聊中的 `@我`、`@全体`、operator、引用和附件不会改变 Raw Store-only 边界；
 - 一对一私聊撤回能中断当前 Run；
 - 两个会话并发生成不会串发；
@@ -2118,7 +2013,7 @@ Generation：generationId；manifestHash 只校验完整性
 - 无法证明发送动作尚未触发时按 `unknown` 处理；
 - `unknown` 在人工处理前不会被自动重试或补发；
 - 内容哈希、DOM 历史、bot_echo 和幂等键不能自动消除 `unknown`；
-- 用户可见主动 Schedule 的配置、注册、Workflow 和 Delivery 路径不存在；Approval 生命周期通知不属于该产品能力，继续按 9.4 和 Delivery 规则验收。
+- 用户可见主动 Schedule 的配置、注册、Workflow 和 Delivery 路径不存在。
 
 ## 9.6 Knowledge
 
@@ -2182,8 +2077,8 @@ Generation：generationId；manifestHash 只校验完整性
 
 - 生产启动在开放消息处理前完成 Mastra Observability 初始化和配置校验；
 - 进入 Agent 链的一对一私聊，其 `traceId` 在 Driver、Gateway、Mastra、Store 间一致；
-- 一对一私聊的 `runId` 与审批和 Delivery 对应；
-- `toolCallId`、`approvalTaskId`、`deliveryId` 可关联回同一条 `traceId / runId` 链路；
+- 一对一私聊的 `runId` 与 Delivery 对应；
+- `toolCallId`、`deliveryId` 可关联回同一条 `traceId / runId` 链路；
 - 并发私聊会话上下文不串线；
 - 一对一私聊的 Model、Tool、Memory、Workflow 有 Mastra Trace；
 - API Key、Cookie、Authorization、手机号和身份证号在应用日志与 Agent Trace 导出前分别完成脱敏；
@@ -2206,13 +2101,13 @@ Generation：generationId；manifestHash 只校验完整性
 
 ## 9.10 Node.js 与 Mastra 兼容矩阵
 
-- 每组版本候选必须分别在最低 Node.js `22.13.x` 和验证时仍处官方维护期的实际生产 LTS 干净环境中验证；#131 本轮精确环境为 Node.js `22.13.1` 与 `24.14.0`。
+- [#168](https://github.com/dnslin/kkbot/issues/168)的每组版本候选必须分别在最低 Node.js `22.13.x` 和验证时仍处官方维护期的实际生产 LTS 干净环境中验证；
 - 两个环境都必须使用锁文件完成冻结安装，并分别通过 TypeScript 类型检查、工作区构建和 Mastra 契约测试；任何一个环境失败或关键合同未证实，都不能判定该兼容组可用。
-- Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage 生命周期与迁移、Tool Approval 跨进程 suspended discovery、`runId + toolCallId` 权威终态、条件决议与重复/相反/deadline 竞态、Workflow 跨进程 snapshot/resume、内部维护 Schedule 的创建、重启读取和重复触发，以及 Observability Flush/Shutdown。Schedule 实验不得声称同一 fire 或并发 resume 唯一；验收必须证明重复 run 不创建 Delivery、高危 Tool 或第三方写副作用，未形成原生持久 run 的 missed fire 不由 KKBot 补建或逐次回放。
+- Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage 生命周期与迁移、Workflow 跨进程 snapshot/resume、内部维护 Schedule 的创建、重启读取和重复触发，以及 Observability Flush/Shutdown。Schedule 实验不得声称同一 fire 或并发 resume 唯一；验收必须证明重复 run 不创建 Delivery、高风险 Tool 或第三方写副作用，未形成原生持久 run 的 missed fire 不由 KKBot 补建或逐次回放。
 - Mastra MCP 契约必须覆盖 `listToolsWithErrors()` 的逐 Server timeout、错误归属、成功 Tool 保留、固定 Tool 集合、父 `AbortSignal` 传播、原生 reconnect 和 `disconnect()` 释放；
 - Processor 契约必须覆盖固定顺序、普通异常传播、TripWire 非重试、Tool result 检查、最终 Output Processor 完成前不暴露文本，以及安全门失败时不进入 Memory/Delivery；
 - Quota 契约必须完整覆盖 §9.11；任何调用前门禁或 Usage 完整性实验未通过，都不能判定兼容组支持硬配额。
-- [#131 研究矩阵](./research/mastra-compatible-version-set.md) 已确认候选 A/B 的基础能力通过，但 Approval 权威终态、条件决议和竞态唯一性失败；因此当前验证门不通过且无版本组可锁。
+- #131 研究矩阵及其候选 A/B 只保留历史事实，不自动成为锁定版本；#168 必须按当前无 Tool Approval 的能力范围重新验证并给出唯一精确版本组。
 - 支持矩阵中的生产 LTS 退出官方维护期时，部署与 CI 必须移除该版本并在新的实际生产 LTS 上重新执行上述完整验证。
 - Node.js 20 不属于验收环境；缺少 Node.js 20 兼容测试或其执行失败不构成本规格回归。
 
@@ -2256,7 +2151,7 @@ Generation：generationId；manifestHash 只校验完整性
 - 长文本消息拆包；
 - 目录式 Skill 热加载；
 - 部门级私有知识权限系统；
-- 群聊自动回复、主动回复、审批通知或任何群聊交付链路。
+- 群聊自动回复、主动回复或任何群聊交付链路。
 
 ---
 
@@ -2268,22 +2163,22 @@ Generation：generationId；manifestHash 只校验完整性
 2. `KkbotAgentRuntime`、自定义 `LLMProvider`、自定义 Tool Executor 被移除；
 3. Agent 的执行入口只有 Mastra Agent；
 4. Memory 只有 Mastra 一套事实源；
-5. Tool Approval 的运行状态只有 Mastra 一套事实源；
-6. KKBot Store 只保存 KK 业务数据和必要投影；
-7. user message 在 Agent 前以稳定原始消息 ID 显式提交，本轮 Agent 使用 `readOnly`；只有 `sent` 后才显式提交最终 assistant，tool 中间结果与非 `sent` 内容不进入长期对话 Memory，`sent-but-uncommitted` 可恢复补交；
-8. Driver 能识别真实人工操作员消息，并只在一对一私聊中触发接管；
-9. EventBridge、Polling 和补偿扫描具备数据库级幂等；
-10. 企业知识通过正式摄取、AST Chunk 和混合检索进入 Agent；扫描 PDF 和图片文档必须具备真实可运行的 Vision/OCR 摄取路径，并产出可索引文本与来源定位；
-11. Agent 对企业制度回答必须具备来源，没有来源时拒绝编造；
-12. 整个应用由一个 YAML、一个启动命令、一个 Bootstrapper 启动；
-13. 全系统只解析一个规范化 LibSQL 数据库文件路径，使用一个 KKBot Client、一个 Mastra Storage 及其自有 Client，并只创建一个使用该 Storage 的 Mastra 实例；
-14. Agent 内部必须使用 Mastra Observability，应用侧使用 UnifiedLogger，并在各自导出前完成敏感信息脱敏；
-15. 进入 Agent 链的一对一私聊能通过 `traceId + runId + sessionId` 以及后续的 `toolCallId + approvalTaskId + deliveryId` 重建完整链路；
-16. 所有高危写 Tool 都具备审批、权限、幂等和审计；
+5. KKBot Store 只保存 KK 业务数据和必要投影；
+6. user message 在 Agent 前以稳定原始消息 ID 显式提交，本轮 Agent 使用 `readOnly`；只有 `sent` 后才显式提交最终 assistant，tool 中间结果与非 `sent` 内容不进入长期对话 Memory，`sent-but-uncommitted` 可恢复补交；
+7. Driver 能识别真实人工操作员消息，并只在一对一私聊中触发接管；
+8. EventBridge、Polling 和补偿扫描具备数据库级幂等；
+9. 企业知识通过正式摄取、AST Chunk 和混合检索进入 Agent；扫描 PDF 和图片文档必须具备真实可运行的 Vision/OCR 摄取路径，并产出可索引文本与来源定位；
+10. Agent 对企业制度回答必须具备来源，没有来源时拒绝编造；
+11. 整个应用由一个 YAML、一个启动命令、一个 Bootstrapper 启动；
+12. 全系统只解析一个规范化 LibSQL 数据库文件路径，使用一个 KKBot Client、一个 Mastra Storage 及其自有 Client，并只创建一个使用该 Storage 的 Mastra 实例；
+13. Agent 内部必须使用 Mastra Observability，应用侧使用 UnifiedLogger，并在各自导出前完成敏感信息脱敏；
+14. 进入 Agent 链的一对一私聊能通过 `traceId + runId + sessionId` 以及后续的 `toolCallId + deliveryId` 重建完整链路；
+15. Agent 的 Tool 表面只包含只读或明确列入范围的低风险能力，不存在 `requireApproval` 或高风险副作用 Tool；
+16. 高风险意图只生成明确说明“外部操作未执行”的普通 assistant 内容，不形成 Draft、授权生命周期、挂起恢复或后续自动执行身份；
 17. 所有关键行为都有高层 Interface 和端到端测试；
 18. Issue #107 已关闭且全部需求完成迁移，后续只以本规格为实施依据；
-19. 群聊消息只幂等写入 KK Raw Store，所有 Agent、工具、知识、审批和交付下游均不会启动；
-20. Scorer 可以缺失、未注册或禁用而不影响启动、运行、迁移、Delivery 或重构完成；启用后的评分结果不成为业务事实源。
+19. 群聊消息只幂等写入 KK Raw Store，所有 Agent、工具、知识和交付下游均不会启动；
+20. Scorer 可以缺失、未注册或禁用而不影响启动、运行、迁移、Delivery 或重构完成；启用后的评分结果不成为业务事实源；
 21. 全进程只有一个由 Composition Root 持有的 Mastra `MCPClient`；required MCP 默认阻止启动，只有显式 optional MCP 可在启动时降级，运行期 Tool 集合保持静态；
 22. Agent Content Processors、Tool result 检查、Quota 原子准入/预留/结算和 Grounding/输出安全门按固定顺序 fail-closed；
 23. Trace `SensitiveDataFilter` 与 Agent 内容过滤职责和生命周期分离，Composition Root 作为唯一 closer 不重复关闭 Mastra 所有资源；
@@ -2306,10 +2201,10 @@ Generation：generationId；manifestHash 只校验完整性
 - KK 红点；
 - KK 会话切换和串行发送；
 - 人工操作员接管；
-- 组织架构和主管路由；
+- 组织架构与只读汇报关系查询；
 - 企业知识摄取规则；
 - PublicKnowledge 检索策略；
-- Delivery、Approval Projection；
+- Delivery；
 - 配额、资产和运行保障；
 - 统一启动与应用日志。
 
@@ -2322,7 +2217,6 @@ Generation：generationId；manifestHash 只校验完整性
 - MCP；
 - Memory；
 - 长会话观察和压缩；
-- Tool Approval；
 - Workflow suspend/resume；
 - Schedule（仅用于 4.20 节定义的内部维护触发）；
 - Agent Trace；
@@ -2333,9 +2227,9 @@ Generation：generationId；manifestHash 只校验完整性
 
 > **KKBot 可靠捕获 KK 的真实事件；群聊事件只沉淀为 KK Raw Store 事实，获准进入 Agent 链的一对一私聊事件、企业上下文和业务 Tool 才交给 Mastra；Mastra 完成 Agent 推理与执行后，KKBot 再把已完成结果可靠地交付给 KK 私聊用户。**
 
-边界按事实权威判断，而不是按包名或类名判断：KKBot 可以负责 KK I/O、业务数据、群聊 Raw Store-only 短路、Approval Projection、主管路由、deadline 检测、外部决议输入校验、通知和可靠交付；Mastra 必须负责获准进入 Agent 链后的 Agent、模型、工具、Memory、Approval、Workflow、Schedule 和 Failover 运行时状态机与执行语义。Approval 的状态转换、原 Run 恢复或终止、原 Tool Call 授权或阻止、Tool 执行、Agent Loop 继续和最终结果生成只能由 Mastra 完成。
+边界按事实权威判断，而不是按包名或类名判断：KKBot 负责 KK I/O、业务数据、群聊 Raw Store-only 短路、可靠交付和高风险意图的无副作用产品策略；Mastra 负责获准进入 Agent 链后的 Agent、模型、低风险工具、Memory、Workflow、Schedule 和 Failover 运行时状态机与执行语义。
 
-Projection 与 Mastra 冲突时以 Mastra 权威状态为准。任何让 KKBot 成为这些状态转换事实权威的辅助代码，或用 Projection CAS + Outbox、自动决议重放、本地恢复器补足 Mastra Approval 能力的实现，均属于禁止的自研 Runtime 回补；任何让群聊越过 Raw Store 短路进入这些状态机或交付链的实现，同样违反本规格。兼容版本不能通过 2.6 和 9.4 所列 Approval 契约实验时，唯一后续动作是返回 Wayfinder 重裁。
+高风险意图在普通 assistant 内容交付后结束，不进入授权、挂起或 Tool 恢复。任何恢复 `requireApproval`、Projection CAS、Approval Outbox、主管决议路由、自动决议重放或本地 Approval Runtime 的实现都违反本规格；任何让群聊越过 Raw Store 短路进入 Agent 或交付链的实现同样违反本规格。
 
 ---
 
@@ -2353,8 +2247,6 @@ Projection 与 Mastra 冲突时以 Mastra 权威状态为准。任何让 KKBot �
 - [Dynamic model fallback arrays](https://mastra.ai/blog/changelog-2026-03-16)
 - [Model fallback](https://mastra.ai/blog/model-fallback)
 - [Observational Memory](https://mastra.ai/blog/observational-memory)
-- [Tool approval](https://mastra.ai/blog/tool-approval)
-- [Approval versus suspension](https://mastra.ai/blog/human-in-the-loop-when-to-use-agent-approval)
 - [Workflow snapshots and resume](https://mastra.ai/en/reference/workflows/snapshots)
 - [Agent and workflow schedules](https://mastra.ai/blog/introducing-schedules-for-agents-and-workflows)
 - [Input processors](https://mastra.ai/blog/changelog-2025-07-30)
@@ -2367,7 +2259,7 @@ Projection 与 Mastra 冲突时以 Mastra 权威状态为准。任何让 KKBot �
 本文描述的是能力边界和目标架构，不把博客示例代码视为稳定 API 契约。开始实施前必须：
 
 1. 统一使用 Node.js `>=22.13`，并确保部署与 CI 选择的实际生产版本仍处于官方维护期的 LTS；
-2. #131 已确认当前稳定 Mastra 无可锁定精确兼容组；待 #161 正式裁定高危 Tool/HITL 范围后，由后续兼容研究按生效范围锁定全部精确版本；
+2. #131 的旧候选与研究证据不自动锁定；由 [#168](https://github.com/dnslin/kkbot/issues/168)按当前生效能力范围锁定全部精确版本；
 3. 根据该版本的公开 API、类型定义和迁移说明更新所有示例调用；
-4. 在最低 Node.js `22.13` 与实际生产 LTS 上分别验证冻结安装、类型检查、工作区构建和 9.10 节规定的 Mastra 契约，并对 Tool Approval 单独证明持久 suspended discovery、`runId + toolCallId` 权威状态读取、条件决议、终态冲突判定、重复决议安全及 deadline 竞态唯一终态；任一 Tool Approval 实验失败时按 #117 返回 Wayfinder 重裁，不得补写 Projection CAS + Outbox 或本地 Approval Runtime；
+4. 在最低 Node.js `22.13` 与实际生产 LTS 上分别验证冻结安装、类型检查、工作区构建和 9.10 节规定的 Mastra 契约，并证明固定 Tool 集合不包含高风险副作用 Tool；任何当前范围关键合同失败时按 #117 返回 Wayfinder 重裁，不得补写自研 Runtime 或兼容层；
 5. 禁止各 package 单独升级 Mastra 依赖。

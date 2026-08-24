@@ -8,7 +8,8 @@ Superseded
 - **Superseded by**: [ADR 0010：唯一 Composition Root 与 Knowledge 生命周期](./0010-single-composition-root-and-knowledge-lifecycle.md)
 - **Current specification**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §2.7、§3.2、§4.18–§4.20、§4.27–§4.28、§9.6、§9.10、§12
 - **Resolved by**: [#127《确定单数据库下的 Storage 连接边界》](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130《确定知识摄取故障与 OCR 回退语义》](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131《锁定 Mastra 兼容版本组》](https://github.com/dnslin/kkbot/issues/131)、[#133《确定 Node.js 运行时基线》](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135《确定 MCP 与 Processor 的生命周期和故障边界》](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136《确定 Knowledge 索引版本与原子替换协议》](https://github.com/dnslin/kkbot/issues/136)、[#137《确定资产保留的引用保护与清理恢复协议》](https://github.com/dnslin/kkbot/issues/137)、[#138《确定 Bootstrapper Preflight 与逆序回滚契约》](https://github.com/dnslin/kkbot/issues/138)
-- **Open boundaries**: [#161 高危 Tool Approval 范围](https://github.com/dnslin/kkbot/issues/161)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)
+- **Open boundaries**: [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)
+- **Scope decision**: [#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)已使 Tool Approval 退出当前 Preflight 与 Ready Barrier 能力集合。
 - **Historical note**: 以下 Context、Decision 与 Consequences 保留原文，仅用于说明当时的决策背景；旧四步关闭顺序、默认 Bigram 方案、固定超时和具体连接假设不再是当前依据。
 
 ## Context
