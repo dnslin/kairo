@@ -38,6 +38,26 @@ KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话�
 - resolution comment 是该票详细决定及理由的权威来源；本总规格只保存已经生效、供后续实施规划使用的整合规则；Wayfinder 地图只追加上下文指针（`gist + link`，即决策票链接和一行摘要），不复制 resolution 详情。
 - 如果一张票不需要修改本规格，resolution 必须明确说明原因；如果所需规格修改无法合并，该票必须保持开放，不得发布最终 resolution。
 
+### 1.2 文档权威与 ADR 生命周期
+
+各类文档承担不同职责，不以“最后修改时间”互相覆盖：
+
+1. `master` 上的本总规格保存已经生效的整合规则，是实施范围、架构边界和验收口径的当前依据。
+2. 已关闭决策票的 resolution comment 保存该票的详细决定、理由和被否决方案，是总规格对应规则的决策来源；开放票中的候选答案、推荐或 HITL 选择仍不生效。
+3. 状态不是 `Superseded` 的 ADR 保存长期架构理由，只能解释本总规格已经确定的边界，不得覆盖或提前回答本总规格明确留给开放票的事项。
+4. `CONTEXT.md` 只定义统一领域语言，不保存 Runtime API、表结构、固定时长、通道、启动顺序或其他实现规则；术语与当前规格冲突时必须清洁更新术语表。
+5. 状态为 `Superseded` 的 ADR 只保留历史审计价值，其 Decision 正文不再是实施依据；当前答案必须沿生命周期元数据中的替代链接继续读取。
+
+#### 当前替代索引
+
+| 历史 ADR | 当前替代 | 已生效决议 | 仍待裁定 |
+|---|---|---|---|
+| ADR 0002 | 本规格 §3.1、§4.7、§12 | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112) | [#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135) |
+| ADR 0003 | 本规格 §4.7、§4.21–§4.23、§12 | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847) | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137) |
+| ADR 0004 | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md) | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634) | [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135) |
+| ADR 0006 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md) | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634) | [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138) |
+| ADR 0008 | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md) | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634) | [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138) |
+
 ---
 
 ## 2. 不可变设计原则

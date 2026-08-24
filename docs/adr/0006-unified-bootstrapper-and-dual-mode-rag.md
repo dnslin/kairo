@@ -1,7 +1,14 @@
 # ADR 0006: 全局统一启动器 (Unified Bootstrapper) 与双模 RAG 架构
 
 ## Status
-Accepted
+Superseded
+
+- **Superseded on**: 2026-08-24
+- **Superseded by**: [ADR 0010：唯一 Composition Root 与 Knowledge 生命周期](./0010-single-composition-root-and-knowledge-lifecycle.md)
+- **Current specification**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §2.7、§3.2、§4.18–§4.20、§4.28、§9.10、§12
+- **Resolved by**: [#127《确定单数据库下的 Storage 连接边界》](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#133《确定 Node.js 运行时基线》](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)
+- **Pending decisions**: [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)
+- **Historical note**: 以下 Context、Decision 与 Consequences 保留原文，仅用于说明当时的决策背景；旧四步关闭顺序、默认 Bigram 方案、固定超时和具体连接假设不再是当前依据。
 
 ## Context
 KKBot v2 的底层驱动 (`@kkbot/driver`)、持久化仓储 (`@kkbot/store`)、认知微内核 (`@kkbot/agent`) 与会话协调器 (`@kkbot/gateway`) 已经分别完成并通过了单元与集成测试。

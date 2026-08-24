@@ -1,7 +1,13 @@
 # ADR 0003: 存储层分层架构、多部门组织关系、会话状态机与健壮性防护设计
 
 ## Status
-Accepted
+Superseded
+
+- **Superseded on**: 2026-08-24
+- **Current replacement**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §4.7、§4.21–§4.23、§12
+- **Resolved by**: [#111《确定 Draft 是否保留独立事实模型》](https://github.com/dnslin/kkbot/issues/111)、[#129《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)
+- **Pending decisions**: [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)
+- **Historical note**: 以下 Context、Decision 与 Consequences 保留原文，仅用于说明当时的决策背景；其中独立 `DraftRepository` 与草稿事实模型不再生效。
 
 ## Context
 在 KKBot v2 的演进过程中，系统从单体架构走向 Monorepo 模块化拆分。随着企业级协同功能的引入，面临以下核心架构与领域挑战：

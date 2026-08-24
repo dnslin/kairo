@@ -1,7 +1,14 @@
 # ADR 0008: 生产级全链路统一日志、Trace 追踪与启动自检规范
 
 ## Status
-Accepted
+Superseded
+
+- **Superseded on**: 2026-08-24
+- **Superseded by**: [ADR 0011：应用日志与 Mastra Observability 分工](./0011-application-logging-and-mastra-observability.md)
+- **Current specification**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §2.7、§4.24–§4.25、§4.28、§9.8–§9.10、§12
+- **Resolved by**: [#127《确定单数据库下的 Storage 连接边界》](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#133《确定 Node.js 运行时基线》](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)
+- **Pending decisions**: [#131 Mastra 兼容版本组](https://github.com/dnslin/kkbot/issues/131)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)
+- **Historical note**: 以下 Context、Decision 与 Consequences 保留原文，仅用于说明当时的决策背景；UnifiedLogger 不再承担 Mastra Agent 内部 Trace。
 
 ## Context
 目前 KKBot Monorepo 下的四个核心包（`@kkbot/driver`、`@kkbot/store`、`@kkbot/agent`、`@kkbot/gateway`）各自独立实例化了一个本地 Pino logger。
