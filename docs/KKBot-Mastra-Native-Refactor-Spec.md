@@ -135,7 +135,7 @@ KKBot Client 与 Mastra Storage 自有 Client 的事务和关闭责任相互独�
 
 模型生成成功不等于用户已经收到。
 
-Delivery 从生成结果创建时起记录完整发送生命周期，必须区分 `generated`、`sending`、`sent`、`failed`、`unknown` 和 `aborted`。只有 KK 发送成功的正向结果才能进入 `sent`，也只有 `sent` 表示已交付事实。只有能够证明消息没有进入 KK 发送路径的结果才能进入 `failed`；发送动作可能已经触发但系统无法无歧义确认时必须进入 `unknown`。`unknown` 不是失败，人工处理前不得自动补发。其他状态的内容是否以及如何写入 Mastra Memory，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)裁定；本节只规定它们不得被当作用户已经收到。
+Delivery 从生成结果创建时起记录完整发送生命周期，必须区分 `generated`、`sending`、`sent`、`failed`、`unknown` 和 `aborted`。只有 KK 发送成功的正向结果才能进入 `sent`，也只有 `sent` 表示已交付事实。只有能够证明消息没有进入 KK 发送路径的结果才能进入 `failed`；发送动作可能已经触发但系统无法无歧义确认时必须进入 `unknown`。`unknown` 不是失败，人工处理前不得自动补发。Mastra Memory 中的 assistant 对话历史必须服从同一边界：本轮 Agent 只读既有 Memory，非 `sent` 内容不得自动提交；Delivery 持久化为 `sent` 后才显式提交最终 assistant 消息。`unknown` 只有经人工正式裁定为已发送并进入 `sent` 后才能补交。
 
 ---
 
@@ -465,11 +465,16 @@ Mastra resourceId = KK senderId / employeeId
 
 ```text
 Driver 收到消息
-→ Store 幂等写入原始消息
+→ Store 按 (session_id, message_id) 幂等写入原始消息
 → Gateway 防抖
-→ 调用 Mastra Agent
-→ Mastra 写入 Thread Memory
+→ 以原始消息标识派生稳定 Mastra message ID
+→ Memory.saveMessages 显式保存 user message
+→ 使用 memory.options.readOnly 调用 Mastra Agent
 ```
+
+user message 表达“员工确实说过这句话”，与 Bot 后续是否发送成功无关，因此必须在 Agent 运行前独立提交。显式保存成功是调用 Agent 的前置条件；Raw Store 已成功而 Memory 尚未成功时，恢复或重放必须复用同一个稳定 message ID，不得创建第二条 user message。新一轮只提交本轮新 user message，旧输入由 Thread Memory 读取。
+
+本轮 Agent 必须使用 `memory.options.readOnly = true`：允许读取包含上述 user message 的既有 Thread 和 Observational Memory，但不得由 Agent 自动保存本轮 input、assistant 输出、tool call、tool result 或本轮观察结果。tool 中间结果只保留在 Mastra Run/Trace；有副作用的真实结果由目标业务系统及 Approval/审计记录保存，不进入长期对话 Memory。用户可见结论只由最终 assistant 消息承载。
 
 ### 群聊消息
 
@@ -488,15 +493,22 @@ Raw Store 写入失败时必须保留可诊断错误并结束本次群聊处理�
 ### 一对一私聊 Bot 回复
 
 ```text
-Mastra 生成回复
-→ 创建 delivery: generated
+Mastra Agent 以 readOnly 生成最终回复
+→ 创建 delivery: generated，并预先确定由 deliveryId 派生的稳定 Mastra message ID
 → Gateway 发送 KK：delivery = sending
-→ 正向发送成功：delivery = sent
-→ 可证明发送动作尚未触发：delivery = failed，可按重试策略自动重试
-→ 发送动作可能已触发或无法证明尚未触发：delivery = unknown，禁止自动补发并进入人工处理
+├─ 正向发送成功并持久化：delivery = sent
+│  → Memory.saveMessages 显式保存最终 assistant message
+│  → 保存成功后标记该 Delivery 的 Memory 提交完成
+├─ 可证明发送动作尚未触发：delivery = failed，可按重试策略自动重试，不提交 assistant
+├─ 发送动作可能已触发或无法证明尚未触发：delivery = unknown，禁止自动补发且不自动提交 assistant
+└─ 可证明发送动作尚未触发且主动中止：delivery = aborted，不提交 assistant
 ```
 
-生成结果从创建时起即由 Delivery 表达，不先创建其他未发送内容实体，也不存在转换步骤。只有 `sent` 表示用户已经收到；`generated`、`sending`、`failed`、`unknown` 和 `aborted` 的内容是否以及如何写入 Mastra Memory，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)裁定，本节不提前决定提交或补偿协议。
+生成结果从创建时起即由 Delivery 表达，不先创建其他未发送内容实体，也不存在转换步骤。`generated`、`sending`、`failed`、`unknown` 和 `aborted` 均不得进入正常 assistant 对话历史，也不得通过删除补偿或 Memory 内 `pending → committed` 状态机模拟交付。`failed` 后即使创建新的发送尝试，也只有同一 Delivery 最终进入 `sent` 后才提交一次最终 assistant 消息。
+
+`unknown` 必须保持人工处理门禁。只有人工取得足够证据、把该 Delivery 正式裁定为已发送并持久化为 `sent` 后，才允许走与正常 `sent` 相同的 Memory 补交流程；裁定为未发送或仍不可判定时不得提交。
+
+`sent` 已持久化但 Memory 尚未提交时形成可恢复的 `sent-but-uncommitted` 检查点。恢复任务只补交 Memory，不再次发送 KK；若 `saveMessages` 已成功但提交完成标记尚未持久化，必须使用稳定 message ID 重放。底层稳定 ID 的串行、并发和重启幂等语义通过 LibSQL 契约实验前，本规格不声称该窗口已实现 exactly-once。
 
 
 ### 一对一私聊中的人工操作员消息
@@ -1129,6 +1141,7 @@ message_deliveries (
   content,
   content_hash,
   status,
+  memory_committed_at,
   error_code,
   created_at,
   updated_at
@@ -1155,6 +1168,10 @@ generated / sending / sent / failed / unknown / aborted
 - 内容哈希、DOM 历史扫描、bot_echo、本地 ID 集合和幂等键都不能证明一次具体 outbound 调用是否发生，不得据此把 `unknown` 自动改写为 `sent` 或 `failed`，也不得据此授权补发。
 - 普通回复与主动消息必须使用同一状态定义和发送边界。
 
+Delivery 创建时必须确定由 `deliveryId` 派生的稳定 `mastra_message_id`；它只标识最终 assistant 对话消息，不标识 tool 中间消息。`memory_committed_at` 仅能在 `Memory.saveMessages` 成功后写入。`status = 'sent' AND memory_committed_at IS NULL` 是恢复扫描的 `sent-but-uncommitted` 条件；恢复只补交 Memory，不再次触发 OutboundDispatcher。
+
+若进程在 KK 已发送但 `sent` 尚未落库时中断，必须按发送不可逆边界进入 `unknown`，不得猜测、补交 Memory 或自动补发。若人工随后正式裁定该消息已发送，必须先把 Delivery 持久化为 `sent`，再按稳定 `mastra_message_id` 补交。若进程在 `saveMessages` 成功后、`memory_committed_at` 写入前中断，恢复允许按同一 ID 重放，但是否能够得到一条且仅一条逻辑消息取决于后续 LibSQL/Memory 契约实验；不得用“先查后写”推导 exactly-once。
+
 该模型用于解决：
 
 - 生成结果尚未触发发送；
@@ -1162,7 +1179,7 @@ generated / sending / sent / failed / unknown / aborted
 - 中断内容与已交付事实隔离；
 - 审计用户实际收到或可能收到的内容。
 
-本节只定义 Delivery 的生成、发送尝试和交付事实边界。`generated`、`sending`、`failed`、`unknown`、`aborted` 内容的 Mastra Memory 提交或补偿协议，由[《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129)裁定；重启后的主动任务恢复语义由[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)裁定。
+本节同时定义 Delivery 与 Mastra Memory 的提交边界：只有 `sent` 允许显式提交最终 assistant 消息；`generated`、`sending`、`failed`、`unknown`、`aborted` 不自动提交，tool 中间消息不进入长期对话 Memory。重启后的主动任务恢复语义仍由[《确定主动任务的恢复与重复发送语义》](https://github.com/dnslin/kkbot/issues/125)裁定。
 
 ---
 
@@ -1647,7 +1664,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | N-02 | 禁止自研 AgentRunner | Gateway 直接调用注册在 Mastra 中的 KK Agent；辅助函数只构造上下文。 |
 | N-03 | 单一 Agent Memory 事实源 | 自定义 L2/L3 表退出 Agent 记忆链，组织资料和公共知识保持独立领域数据。 |
 | N-04 | KK 交付一致性 | `generated`、`sending`、`sent`、`failed`、`unknown`、`aborted` 必须持久化；只有 `sent` 表示用户已经收到。 |
-| N-05 | 未交付生成结果隔离 | 生成结果从创建时起由 Delivery 表达；非 `sent` 状态不得被当作已交付事实，其 Memory 提交或补偿协议留给 #129。 |
+| N-05 | 未交付生成结果隔离 | user message 在 Agent 前以原始消息稳定 ID 显式提交；本轮 Agent 使用 `readOnly`；只有 `sent` 后才以 Delivery 稳定 ID 显式提交最终 assistant，tool 中间结果与所有非 `sent` 内容不进入长期对话 Memory。 |
 | N-06 | 消息来源四分类 | Driver 输出 external/operator/bot_echo/system，人工消息不得被 isMe 过滤。 |
 | N-07 | 事件入口优先级 | EventBridge 为主，Polling 为断线补偿，DOM 扫描为兜底。 |
 | N-08 | 数据库最终幂等 | 以 `(session_id, message_id)` 唯一约束防止多事件路径重复入库。 |
@@ -1711,15 +1728,18 @@ sequenceDiagram
         Note over G,M: Raw Store-only，写入后立即结束
     else sessionType = private
         G->>G: 防抖合并
-        G->>M: threadId/sessionId + resourceId/senderId
-        M->>M: Memory / Model / Tools / MCP
-        M-->>G: 最终回复
+        G->>M: saveMessages(user stable ID)
+        G->>M: threadId/sessionId + resourceId/senderId + readOnly
+        M->>M: 读取 Memory / 执行 Model / Tools / MCP
+        M-->>G: 最终回复，不自动写本轮 assistant/tool
         G->>S: delivery=generated
         G->>D: 串行发送
         D->>KK: sendText/sendRichText
         KK-->>D: messageId
         D-->>G: 发送成功
         G->>S: delivery=sent
+        G->>M: saveMessages(assistant stable ID)
+        G->>S: memory_committed_at
     end
 ```
 
@@ -1729,9 +1749,9 @@ sequenceDiagram
 Agent Run 正在执行
 → 同一会话收到新消息
 → Gateway Abort 当前 Run
-→ 保留已写入的用户消息
-→ 清理未交付 assistant/tool 中间状态
-→ 只提交新消息
+→ 保留已显式写入的真实 user message
+→ readOnly 保证本轮 assistant/tool 未进入长期 Memory
+→ 只以稳定原始消息 ID 显式提交新 user message
 → Mastra 从 Thread Memory 读取此前上下文
 ```
 
@@ -1883,14 +1903,18 @@ Tool：runId + toolCallId
 
 ## 9.3 Memory
 
-- `sessionId → threadId`；
-- `senderId → resourceId`；
-- 两个会话不串线；
-- 人工 operator 消息进入 Thread；
-- 未交付生成结果不会被当作用户已经收到；
-- `generated`、`sending`、`failed`、`unknown`、`aborted` 的 Memory 提交与补偿行为按 #129 最终协议验收；
-- 撤回消息从 Agent 上下文删除；
-- 新消息中断后不重复提交旧消息；
+- `sessionId → threadId`，`senderId → resourceId`，两个会话不串线；
+- user message 在 Agent 前通过 `Memory.saveMessages` 显式保存，并使用由 `(session_id, message_id)` 派生的稳定 ID；串行重放、并发重放和进程重启后仍只形成一条逻辑 user message；
+- 目标兼容版本中的 `memory.options.readOnly` 能读取既有 Thread 与 Observational Memory，同时阻止本轮 input、assistant、tool 和观察结果自动写入；
+- assistant 只在 Delivery 已持久化为 `sent` 后通过 `Memory.saveMessages` 显式保存，并使用由 `deliveryId` 派生的稳定 ID；`generated`、`sending`、`failed`、`unknown`、`aborted` 均不会自动提交；
+- `Memory.saveMessages` 接受调用方稳定 message ID；相同 ID 的串行与并发重放行为、约束错误处理和重启后结果必须通过 LibSQL 实验固定。在这些实验通过前，不得声称 assistant 提交具备 exactly-once；
+- user 前置保存、assistant 后置保存后的 role、content、时间顺序和下一轮 Agent 读取结果正确；tool call / tool result 不进入长期对话 Memory，下一轮仍能从最终 assistant 消息和外部事实源得到一致上下文；
+- 显式 `saveMessages` 与 Observational Memory 的联动必须通过契约实验固定：无论显式保存是否立即触发观察，OM 都只能覆盖已提交的 user 与 `sent` assistant，不得观察非 `sent` assistant 或 tool 中间结果；若声称观察只发生一次，必须验证稳定 ID 重放不会产生重复观察；
+- `persistPartialOnAbort = false` 且关闭 `savePerStep` 时，各阶段 Abort 和进程强杀不会遗留 partial assistant、tool 消息或基于它们形成的观察；
+- `sent-but-uncommitted` 恢复扫描只补交 Memory，不再次发送 KK；`saveMessages` 成功但 `memory_committed_at` 写入前崩溃时，以相同稳定 ID 重放并验证最终只有一条逻辑 assistant 消息；
+- `unknown` 不自动提交；只有人工正式裁定为已发送、先持久化为 `sent` 后才能补交，裁定未发送或仍不可判定时继续隔离；
+- 同一 LibSQL Client/Storage 下的 WAL、事务可见性、并发条件更新和重启恢复顺序满足 user 前置提交、`sent` 后置提交与 `sent-but-uncommitted` 扫描检查点；
+- 人工 operator 消息进入 Thread；撤回消息从 Agent 上下文删除；新消息中断后不重复提交旧消息；
 - 群聊消息不创建 Thread、不写入 Memory，也不触发任何 Memory 提交或补偿。
 
 ## 9.4 HITL
@@ -2032,7 +2056,7 @@ Tool：runId + toolCallId
 4. Memory 只有 Mastra 一套事实源；
 5. Tool Approval 的运行状态只有 Mastra 一套事实源；
 6. KKBot Store 只保存 KK 业务数据和必要投影；
-7. 未交付生成结果不会被当作用户已经收到，其 Memory 提交或补偿协议由 #129 决定；
+7. user message 在 Agent 前以稳定原始消息 ID 显式提交，本轮 Agent 使用 `readOnly`；只有 `sent` 后才显式提交最终 assistant，tool 中间结果与非 `sent` 内容不进入长期对话 Memory，`sent-but-uncommitted` 可恢复补交；
 8. Driver 能识别真实人工操作员消息，并只在一对一私聊中触发接管；
 9. EventBridge、Polling 和补偿扫描具备数据库级幂等；
 10. 企业知识通过正式摄取、AST Chunk 和混合检索进入 Agent；扫描 PDF 和图片文档必须具备真实可运行的 Vision/OCR 摄取路径，并产出可索引文本与来源定位；
