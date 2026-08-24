@@ -1324,33 +1324,65 @@ token_usage_daily (
 
 ## 4.27 资产保留使用 Schedule + Workflow
 
-新增：
+新增 `assetRetentionWorkflow`，由 Mastra Schedule 定期触发 Mark、Sweep 与恢复编排；物理资产及引用事实由 KKBot Store 持有，物理删除只能通过 KKBot Repository 执行。该 Workflow 处理接收图片与文件、OCR 页图和中间文件、规范化临时文件、Knowledge generation 生成物、主动发送附件、生成交付物及失败任务残留。
+
+### 4.27.1 领域模型与事实源
+
+- **ManagedAsset**：KKBot 管理根目录内具有不可复用 `assetId` 和唯一物理 locator 的字节对象。原文件、OCR 页图、规范化临时文件、Knowledge generation 生成物和主动发送附件分别建模为独立资产，不用路径隐式表达所有权。
+- **AssetReference**：明确 owner 对资产的持久保护关系，至少区分 `ownerType`、`ownerId`、用途以及 `active | released`。它回答“谁仍要求这些字节存在”，不得被汇总 `refCount`、内存 Set 或目录扫描结果替代。
+- **AssetLease**：处理器读写资产期间持有的短期、可续租保护。租约只证明当前 I/O 活跃；租约到期不代表业务 owner 已释放。
+- **retentionDeadline**：物理删除最早允许时间，不是保证删除时间。ManagedAsset 默认从业务定义的起算点保留 **30 天**；活跃引用、未过期租约以及人工或合规 hold 可以继续推迟删除。deadline 不得因重试、恢复或时钟回拨向前缩短。
+- **审计引用**：消息附件关系、Delivery 历史、Knowledge 来源定位等长期元数据关系。它允许页面在物理文件删除后显示“文件已过期”，但不单独阻止 30 天滚动淘汰。
+
+业务状态的事实源仍是 InboundMessage、Delivery、Approval、Schedule/Workflow run 和 Knowledge generation。ManagedAsset 的物理存在、checksum、大小、managed locator、retentionDeadline、生命周期状态及删除尝试由资产记录负责；阻断清理的 owner 关系由 AssetReference 负责；短期 I/O 保护由未过期 AssetLease 负责。清理器不得改写 owner 的业务状态，也不得把文件是否存在、删除结果、内容哈希、DOM 历史、搜索结果或 UI 链接解释为 Delivery、Approval、Workflow 或 Knowledge 的结果证据。
+
+跨 KKBot Client 与 Mastra Storage 无法原子提交时必须采用 **protect-before-publish**：先在 KKBot Client 内持久化 ManagedAsset 和首个 active AssetReference，再把 `assetId` 发布给 Mastra Workflow/Schedule、Driver、Delivery 或 Knowledge。崩溃窗口只允许留下可审计、可回收的额外引用或孤儿，不允许发布未受保护的资产。owner 的终态或替换事实持久化后才能 release；无法确认时保持 active。
+
+### 4.27.2 活跃引用集合
+
+以下任一条件存在即阻断 Mark 和 Sweep：
+
+1. 非终态 Workflow run 正在使用该 `assetId`；可重试失败若恢复仍需要同一资产，也保持 active。
+2. 活跃 Schedule 的未来执行会复用同一主动发送资产；只有 Schedule 取消、替换或确认不再复用后才能 release。
+3. Approval 仍为 pending，且审批详情或获批后的继续执行依赖这些字节。
+4. Delivery 为 `generated`、`sending` 或 `unknown`。`unknown` 必须保持保护，直至人工决议已经持久化；`sent`、`failed`、`aborted` 也只能在各自终态的后置写入完成后 release，之后仍受 retentionDeadline 保护。
+5. Knowledge generation 为 building、candidate、current，或被明确保留为 rollback generation。旧 current 只能在 #136 定义的原子切换事实持久化后 release；切换失败时同时保护新旧 generation。失败 generation 在终态和诊断信息落库后进入普通 retention。
+6. 消息附件仍被非终态处理、Approval 或 Knowledge 摄取使用。仅用于历史展示的消息关系降为审计引用，不永久阻断物理淘汰。
+7. 存在未过期 AssetLease，或人工、合规 hold。
+
+### 4.27.3 状态机与 Mark/Sweep
 
 ```text
-assetRetentionWorkflow
+staging -> ready -> delete_marked -> deleting -> deleted
+   |         ^          |
+   |         +--新引用--+（仅 deleting 前取消 Mark）
+   +--过期或失败-------> delete_marked
+ready --非预期外部缺失--> missing
+deleting --失败或执行租约过期--> delete_marked
 ```
 
-定期处理：
+- `staging`：唯一临时 locator 正在写入，创建租约仍有效；资产和首个引用已经持久化，但尚未对外发布。
+- `ready`：允许 owner 使用和建立新引用。
+- `delete_marked`：已满足候选删除条件并记录删除意图，但仍处于 grace，尚未删除物理字节。
+- `deleting`：Sweep 已通过 CAS 取得一次删除执行权；此时拒绝新引用，调用方必须等待、恢复来源或创建新资产。
+- `deleted`：物理删除完成的终态；保留 tombstone，重复 Sweep 无副作用。
+- `missing`：没有合法删除意图却发现物理文件缺失；必须告警和对账，不得伪造成成功清理。
 
-- 接收图片；
-- 接收文件；
-- OCR 中间文件；
-- 规范化临时文件；
-- 生成交付物；
-- 失败任务残留。
+创建时先写入 managed root 下的唯一 staging locator，在同一 KKBot 事务中建立 ManagedAsset 与首个 AssetReference，并以原子发布进入 `ready`。路径永不复用，避免旧重试删除后来写入的新文件。
 
-删除前检查：
+**Mark** 只能在 retentionDeadline 已到、无 active AssetReference、无未过期 AssetLease 或 hold，且所有 owner reconciler 检查水位新鲜时执行。清理器以 CAS 把 `ready` 改为 `delete_marked`，持久化 reason、markedAt 和 graceUntil；Mark 不删除文件。grace 期间新引用可在同一 KKBot 事务取消 Mark 并恢复 `ready`。
 
-- 是否被消息引用；
-- 是否被未完成 Workflow 引用；
-- 是否处于审批中；
-- 是否处于发送中；
-- 是否被知识索引引用。
+**Sweep** 在 grace 到期后再次检查 deadline、引用、租约、hold 和 reconciler 水位，再以 CAS 从 `delete_marked` 取得 `deleting`。只允许删除规范化后仍位于注册 managed root、与该 `assetId` 的唯一 locator 匹配、且不是目录或越界 symlink 的对象。任一 owner 事实源不可读或检查水位过旧时 Fail-Closed，本轮不得 Mark 或 Sweep。
 
-数据库保留必要元数据和删除状态。
+### 4.27.4 幂等、失败与崩溃恢复
+
+- 已有合法删除意图时，删除返回 `ENOENT` 视为物理删除已经完成并进入 `deleted`；没有删除意图时发现不存在则进入 `missing`。
+- 删除失败必须持久化 attempt、错误分类、lastError 和 nextAttemptAt，再回到 `delete_marked`，使用有上限退避重试。路径越界、权限策略错误或 checksum/locator 冲突进入人工处理，不得热循环。
+- 启动和周期恢复扫描处理过期 staging lease、过期 deleting lease 和待 Sweep 的 Mark。每一步只依赖持久状态与 CAS，允许崩溃后重复执行；过期 `deleting` 回到 `delete_marked` 后重新检查，不直接假定文件已删。
+- 文件有字节但无元数据时先登记为 quarantined orphan，并经过 grace 和来源核对，首次发现绝不立即删除。元数据存在但文件缺失时进入 `missing`。引用 owner 不存在或已终态时由对应 reconciler release；owner 仍活跃但引用缺失时先补引用，再允许其他清理动作。
+- 物理删除不删除 ManagedAsset tombstone、owner/reference 历史、checksum、大小、deadline、Mark/Delete 时间、尝试次数、最后错误、操作者和原因。审计元数据的最终淘汰属于单独合规策略，不由物理文件 Sweep 顺带执行。
 
 ---
-
 ## 4.28 重写 UnifiedBootstrapper
 
 Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例和单库双 Client 边界重写。
@@ -1993,6 +2025,18 @@ Tool：runId + toolCallId
 - 鉴权错误在 Preflight 暴露；
 - 无命中时 Agent 不编造；
 - 最终回答保留来源。
+
+### 9.6.1 资产保留与清理恢复
+
+- 每类资产在发布给 Driver、Delivery、Mastra Workflow/Schedule 或 Knowledge 前已建立 active AssetReference；崩溃注入只能产生额外引用或 quarantined orphan，不能产生已发布但未受保护的资产；
+- pending Approval、非终态 Workflow、会复用资产的活跃 Schedule、`generated | sending | unknown` Delivery 以及 building/candidate/current/rollback Knowledge generation 均阻断删除；
+- 默认 30 天 retentionDeadline 到期仍不绕过 active reference、未过期 lease、hold 或 grace；纯审计引用不造成永久物理保留；
+- 并发新引用能在 `deleting` 前以 CAS 取消 Mark；Sweep 取得 `deleting` 后拒绝新引用，重复 Mark、Sweep 和恢复扫描保持幂等；
+- 合法删除意图下的 `ENOENT` 进入 `deleted`，无删除意图的缺失进入 `missing` 并告警；删除失败按持久化、有上限退避恢复；
+- 进程在 Mark 后、delete 前、delete 后或状态提交前崩溃均可从持久状态恢复，不误删被重新引用的资产；
+- 路径穿越、越界 symlink、目录 locator、locator/checksum 冲突和路径复用不能触发删除；
+- 无元数据字节先进入 quarantined orphan 并经过 grace，owner 来源不可读或检查水位过旧时 Fail-Closed；
+- 物理删除后 tombstone 和引用审计仍能回答删除对象、时间、原因、deadline、检查水位、尝试与最后错误；清理结果不改变 Delivery、Approval、Workflow、Schedule 或 Knowledge 业务事实。
 
 ## 9.7 Bootstrapper
 
