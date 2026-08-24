@@ -620,7 +620,7 @@ Gateway 创建 RequestContext / AbortSignal
 → QuotaAdmissionProcessor（原子准入并预留预算）
 → Mastra Agent Loop（Model / Tools / MCP / Approval）
 → 每个 Tool 结果先经过 processToolResult 安全检查，再进入下一模型 Step
-→ QuotaUsageProcessor（按完整 Run usage 幂等结算）
+→ QuotaUsageProcessor（只按权威完整 Run Usage 幂等结算；未确认结算时中止且不形成 Delivery）
 → ThinkingTagProcessor
 → KnowledgeGroundingProcessor
 → OutputLengthProcessor（必须保留来源块）
@@ -1336,30 +1336,34 @@ interface KkTraceContext {
 
 ## 4.26 Token 配额接入 Mastra Usage
 
-Quota Repository 是 KKBot 业务事实源，只接收 KKBot Client；它不接管 Agent Loop，也不能使用 Mastra `TokenCostControl` 等异步、best-effort 阈值替代硬日配额。
+Quota Repository 是 KKBot 业务事实源，只接收 KKBot Client；它不接管 Agent Loop。硬日配额采用整 Run 双台账 escrow：一个 Run 的最大预算同时形成全局每日配额与单用户每日配额的 `RunQuotaReservation`，完整权威 Usage 到达后再结算实际消耗并释放差额。
 
-调用前由 `QuotaAdmissionProcessor` 使用稳定 `runId` 完成单次原子准入和预算预留，同时检查：
+准入前必须固定 `runId`、Employee、准入日期、Model Tier 与 `reserved_max` 等不可变事实。`reserved_max` 必须覆盖固定 Tier 下初始模型调用、全部 retry、fallback、Tool Loop 后续 Step，以及会调用模型的 Processor；存在无界模型调用路径或无法证明覆盖时，必须在首次模型调用前拒绝本轮。
 
-- 全局每日 Token 上限；
-- 单用户每日请求上限；
-- 单用户每日 Token 上限；
-- 配置时区的日界线；
-- 每个 Run 可证明的最大预算。
+`QuotaAdmissionProcessor` 必须在一个 KKBot Client 事务内同时：
 
-禁止“先查询余额、后单独累加”。并发请求的原子准入必须保证已结算 Usage 与有效预留之和不越过硬上限；相同 `runId` 重放不得重复占用请求次数或预算。
+- 检查全局每日 Token 上限、单用户每日请求上限、单用户每日 Token 上限和两个 Token 桶的完整性状态；
+- 对两个 Token 桶验证 `used + reserved + reserved_max <= limit`；
+- 首次成功准入时只增加一次用户请求次数，并把同一 `reserved_max` 同时计入两个桶的 `reserved`；
+- 创建按 `runId` 幂等的 Run 预留事实。
 
-Agent Loop 完成、失败、Abort 或 timeout 后，`QuotaUsageProcessor` 都必须使用相同 `runId`，按完整 Run 的累计 Mastra Usage 幂等结算：
+两个 Token 桶只能全部成功或全部失败；禁止“先查询余额、后单独累加”，也禁止先预留一个桶再补另一个桶。任意串行或并发顺序下，健康桶都必须保持 `used + reserved <= limit`。相同 `runId` 以相同不可变事实重放时只返回权威现状，不重复增加请求次数或预算；Employee、准入日期、Tier 或 `reserved_max` 等事实冲突时必须拒绝并保留诊断。
 
-- Input Tokens；
-- Output Tokens；
-- Reasoning Tokens；
-- Cached Tokens；
-- 多轮 Tool Loop 总消耗；
-- Fallback 模型实际消耗。
+准入提交被权威确认后、首次模型调用前，还必须按同一 `runId` 原子领取一次整 Run 模型执行权，并证明此前尚未开始任何模型 attempt。只有一个执行者可以领取成功；并发调用、重启重放或提交响应丢失的调用方只能回读权威状态，不能重复进入 Mastra。领取后崩溃而无法证明模型从未开始时，预留进入未知占用，不得盲目重跑。该整 Run 门禁不是每 attempt 账本；不得为 retry、fallback 或 Tool Loop 自建模型调用状态机。
 
-结算成功后只释放未消耗的预留。Run 失败、timeout、Usage 不明、Repository 错误、`SQLITE_BUSY` 或结算失败时不得按零消耗释放预算，必须保守保留预留并拒绝本轮，直到可诊断恢复流程完成。达到配额属于可解释的业务拒绝，返回限制原因与恢复时间；Quota Processor 或 Repository 自身异常一律 fail-closed。
+`QuotaUsageProcessor` 只有取得覆盖整个 Run 的完整权威累计 Usage 时才能结算。该 Usage 必须包含 Input、Output、Reasoning、Cached Tokens，以及所有 retry、fallback、Tool Loop 和 Processor 模型调用的实际消耗，并能区分“权威完整的零消耗”与“Usage 完整性未知”。当 `actual <= reserved_max` 时，结算事务必须同时对两个 Token 桶执行 `reserved -= reserved_max`、`used += actual`，记录终态并释放差额；相同事实的重复结算是无副作用成功，冲突的重复结算事实属于完整性错误。
 
-表至少需要按 `runId` 保存准入、预留和结算幂等事实，并保留按日期、用户汇总的实际 Usage；精确 Schema 与未知 Usage 的释放合同由最终兼容版本的 Usage 契约实验固定。
+Run 失败、Abort、timeout、部分 Usage、任一 attempt Usage 缺失，或只有 `totalTokens = 0` 而没有完整性证明时，整份 `reserved_max` 必须保持 `held_unknown`。已观察到的部分数字只能用于诊断，不能触发部分结算、按零释放或自动超时释放；恢复只能按相同 `runId` 取得完整权威 Usage 后结算。长期 `held_unknown` 继续占用原准入日期的历史桶，不迁移到新日期，也不消耗其他日期的额度。
+
+完整权威 `actual > reserved_max` 表示最大预算合同已经被破坏，不得执行会破坏计数不变量的普通结算。系统必须保留原预留和观测到的实际值，标记相关准入日期的全局桶与用户桶为完整性破坏，并停止这些桶的后续准入，直到有可审计的修复结果。
+
+Quota 结算成功并按相同 `runId` 回读确认前，最终输出不得创建或进入 Delivery。结算成功后，Delivery 创建、KK 发送或 Memory 提交失败都不得退还已经发生的 Token，也不得据此重跑模型。
+
+Run 始终结算到准入时已经持久化的配额日期。准入事实必须保留足以解释该日期的时区标识、当时有效 UTC 偏移和时区规则或运行时版本；跨午夜、DST 切换或后续时区配置修改都不得移动账期。
+
+`SQLITE_BUSY`、Repository timeout、进程崩溃或准入/结算 commit 响应丢失都必须 fail-closed。重试耗尽或结果不明时，只能按相同 `runId` 回读权威状态：准入未确认则不调用模型，结算未确认则不进入 Delivery，已经存在的预留、未知占用或结算终态不得被猜测、重复扣减或按零释放。
+
+Mastra `TokenCostControl` 基于异步 Observability 聚合，只能用于告警或诊断；Observability 延迟指标和 Gateway 手工累计同样不能作为硬配额事实源。最终兼容版本的契约实验必须证明：准入与整 Run 执行权领取发生在任何模型 attempt 之前；最终 Usage 对成功、失败、Abort、timeout、retry、fallback、Tool Loop 与 Processor 模型调用均完整；零消耗带有可判定的完整性语义。任一门槛未通过时不得启用硬配额模型路径，也不得以自建 attempt 账本回补。
 
 ---
 
@@ -1433,11 +1437,13 @@ Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例、唯�
 | MCP Tool 单次执行错误或 timeout | 留在当前 Mastra Run；Gateway 不重试；无法形成安全最终结果时拒绝本轮 |
 | 输入安全策略命中或 Quota 达限 | 不调用模型或继续执行；返回固定、可理解的本轮拒绝 |
 | 输入 Processor 自身异常或 timeout | 拒绝本轮；不得跳过后继续调用模型 |
-| Quota Repository 准入、预留、结算错误或 timeout | 拒绝本轮并保守保留预算；不得视为仍有额度或零消耗 |
+| Quota 准入或整 Run 执行权领取发生 Repository 错误、timeout、`SQLITE_BUSY` 重试耗尽或 commit 响应丢失 | 按相同 `runId` 回读权威状态；准入或唯一执行权未确认时不调用模型，不猜测余额或重复预留 |
+| 模型已执行但完整 Usage、结算 commit 或权威结算状态不可确认 | 保留整份预留并拒绝本轮；按相同 `runId` 恢复，确认结算前不得创建 Delivery |
+| 完整权威 `actual > reserved_max` | 保留原预留与实际值，标记相关全局桶和用户桶完整性破坏并停止其后续准入 |
 | Grounding 适用但没有可信来源 | 用固定“未找到企业依据”结果安全替换，不让模型常识补写企业事实 |
 | Grounding 自身异常、来源 Schema 损坏或 timeout | 拒绝本轮；不得伪装成普通未命中 |
-| SensitiveOutput 可确定性完整脱敏 | 发送变换后的结果，并按完整 Usage 结算 |
-| SensitiveOutput 无法安全脱敏、自身异常或 timeout | 拒绝本轮并禁止 Delivery 原始输出；仍按已消耗 Usage 结算 |
+| SensitiveOutput 可确定性完整脱敏 | 仅在 Quota 结算已经权威确认后发送变换后的结果 |
+| SensitiveOutput 无法安全脱敏、自身异常或 timeout | 拒绝本轮并禁止 Delivery 原始输出；已结算的实际 Token 不退款 |
 | Trace 单字段脱敏失败 | 只导出 Mastra 原生错误标记，不导出原字段；不改变用户 Run |
 | Trace 导出瞬时失败 | 允许明确遥测 `degraded` 并诊断；不得导出未脱敏原文 |
 | 关闭动作失败或 timeout | 不重新开放流量；继续关闭其余独立所有者资源并汇总诊断 |
@@ -2137,10 +2143,27 @@ Tool：runId + toolCallId
 - Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage 生命周期与迁移、Tool Approval 跨进程 suspended discovery、`runId + toolCallId` 权威终态、条件决议与重复/相反/deadline 竞态、Workflow 跨进程 snapshot/resume、内部维护 Schedule 的创建、重启读取和重复触发，以及 Observability Flush/Shutdown。Schedule 实验不得声称同一 fire 或并发 resume 唯一；验收必须证明重复 run 不创建 Delivery、高危 Tool 或第三方写副作用，未形成原生持久 run 的 missed fire 不由 KKBot 补建或逐次回放。
 - Mastra MCP 契约必须覆盖 `listToolsWithErrors()` 的逐 Server timeout、错误归属、成功 Tool 保留、固定 Tool 集合、父 `AbortSignal` 传播、原生 reconnect 和 `disconnect()` 释放；
 - Processor 契约必须覆盖固定顺序、普通异常传播、TripWire 非重试、Tool result 检查、最终 Output Processor 完成前不暴露文本，以及安全门失败时不进入 Memory/Delivery；
-- Quota 契约必须覆盖成功、模型错误、Tool 错误、Processor 拒绝、Abort、timeout、重启和并发硬上限，未知 Usage 按保守预留处理；
+- Quota 契约必须完整覆盖 §9.11；任何调用前门禁或 Usage 完整性实验未通过，都不能判定兼容组支持硬配额。
 - [#131 研究矩阵](./research/mastra-compatible-version-set.md) 已确认候选 A/B 的基础能力通过，但 Approval 权威终态、条件决议和竞态唯一性失败；因此当前验证门不通过且无版本组可锁。
 - 支持矩阵中的生产 LTS 退出官方维护期时，部署与 CI 必须移除该版本并在新的实际生产 LTS 上重新执行上述完整验证。
 - Node.js 20 不属于验收环境；缺少 Node.js 20 兼容测试或其执行失败不构成本规格回归。
+
+## 9.11 Token 配额
+
+- 多个 Run 并发争用全局桶和用户桶最后额度时，双桶在同一事务中全部预留或全部失败，所有健康桶始终满足 `used + reserved <= limit`；
+- 相同 `runId` 串行、并发和跨重启重放只形成一次预留、一次请求计数和一个整 Run 模型执行者；不可变准入事实冲突时 fail-closed；
+- 固定 Tier 的 `reserved_max` 覆盖 retry、fallback、Tool Loop 和 Processor 模型调用；无法静态证明覆盖时首次模型调用不会发生；
+- retry 或 fallback 中部分 attempt Usage 缺失时，整份预留保持 `held_unknown`，部分数字不用于结算或释放；
+- `totalTokens = 0` 只有同时存在完整性证明时才按零结算，否则保持 `held_unknown`；
+- 首次模型调用前能够权威证明双桶预留已提交、整 Run 执行权已唯一领取且此前没有模型 attempt；领取后的崩溃不会触发盲目重跑；
+- 结算成功后 Delivery、KK 发送或 Memory 提交失败不退还 Token，也不重新执行模型；
+- 模型完成但结算失败或结算状态不明时，最终输出不创建 Delivery，预留按相同 `runId` 恢复；
+- 准入或结算 commit 响应丢失时只回读相同 `runId` 的权威状态，不重复预留、结算、调用模型或发送；
+- Run 跨午夜、DST 或时区配置修改时仍结算原准入日期，持久化信息足以解释当时的日期计算；
+- 完整 `actual > reserved_max` 时不执行普通结算，相关全局桶和用户桶停止准入且计数不变量不被静默破坏；
+- 旧日期长期 `held_unknown` 不自动释放、不迁移到新日期，仍可按原 `runId` 诊断和恢复；
+- `SQLITE_BUSY` 重试耗尽时，准入阶段没有模型调用，结算阶段没有 Delivery，已有权威状态保持不变；
+- Mastra 契约实验覆盖成功、模型错误、Tool 错误、Processor 拒绝、Abort、timeout、retry、fallback、Tool Loop、Processor 模型调用与零 Usage 完整性；`TokenCostControl`、Observability 和 Gateway 累计均不参与硬配额事实判定。
 
 ---
 

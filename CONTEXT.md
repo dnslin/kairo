@@ -81,3 +81,21 @@ _Avoid_: 第二套审批任务模型、独立超时终态
 **Delivery**:
 一份准备发送给 Employee 的生成结果及其交付生命周期的唯一业务身份；只有 `sent` 表示 Employee 已收到。
 _Avoid_: 未发送内容的第二事实模型、发送尝试实体
+
+## 配额
+
+**DailyQuotaBucket**:
+一个准入日期内的硬 Token 可用范围，按全局或单个 Employee 分别计算。
+_Avoid_: 实时余额、跨日期总账
+
+**RunQuotaReservation**:
+一个 Agent Run 在模型调用前，以可证明最大 Token 预算同时占用全局与 Employee DailyQuotaBucket 的业务事实。
+_Avoid_: 已消费 Usage、预扣款
+
+**QuotaSettlement**:
+取得整个 Agent Run 的完整权威 Usage 后，将 RunQuotaReservation 转为实际消耗并释放差额的业务事实。
+_Avoid_: 估算结算、部分退款
+
+**UnknownUsageHold**:
+因整个 Agent Run 的权威 Usage 不完整而继续保留的 RunQuotaReservation；它既不表示零消耗，也不表示已经确认全部消费。
+_Avoid_: 自动退款、失败即释放
