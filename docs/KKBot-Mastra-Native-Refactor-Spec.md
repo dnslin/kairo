@@ -1125,14 +1125,15 @@ ON session_messages(session_id, message_id)
 WHERE message_id IS NOT NULL;
 ```
 
-持有单实例锁后，启动顺序固定为：
+持有单实例锁后，双 Client 的取得与迁移顺序固定为：
 
 ```text
-KKBot Client 执行全部待应用 KKBot migrations
+创建唯一 KKBot Client，并验证文件读写、WAL 与 busy timeout 配置
+→ KKBot Client 执行全部待应用 KKBot migrations
 → KKBot migration 成功提交
-→ 创建唯一 LibSQLStore
+→ 创建唯一 LibSQLStore 及其自有 Client
 → 显式执行 storage.init()
-→ 创建并启动唯一 Mastra 实例
+→ 按 4.28 节继续构造其余组件，并在唯一 Mastra 成功接管后转移 Storage 关闭所有权
 ```
 
 KKBot migration ledger 与 Mastra 内部迁移状态互不读取、互不写入。KKBot migration 只允许创建、修改或删除 KKBot 所有表和索引，禁止对 Mastra 内部表执行 `CREATE`、`ALTER`、`DROP`、`INSERT`、`UPDATE` 或 `DELETE`，也不得依赖 Mastra 内部列或迁移编号。`storage.init()` 只负责最终锁定兼容版本定义的 Mastra domain；具体 API 签名和内部表名不在本规格中冻结。
@@ -1353,61 +1354,104 @@ assetRetentionWorkflow
 
 ## 4.28 重写 UnifiedBootstrapper
 
-Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例和单库双 Client 边界重写。
+Issue #107 的 UnifiedBootstrapper 保留，但围绕唯一 Mastra 实例、单库双 Client 和单一工作准入门重写。`apps/kkbot` 是唯一 Composition Root，也是唯一可以取得资源、转移所有权、开放业务工作和执行进程级关闭的模块。
 
-### 启动顺序
+### 统一术语与不变量
+
+- **Static Validation**：不依赖已启动外部资源的静态检查。它验证实际 Node.js 版本、YAML、环境变量插值、Zod、URL、凭据非空、配置互斥性和路径规范化；不得通过连接外部依赖来补救静态错误。
+- **Acquisition Ledger**：Composition Root 每成功取得一个有生命周期的资源，就立即登记唯一所有者、依赖边和有界 finalizer。所有权转移必须原子替换原 finalizer，不能留下两个 closer。
+- **Preflight**：对已构造、但尚未接收业务工作的系统执行有界、无业务副作用的真实探测。“对象已创建”或“配置字段存在”不算通过。
+- **Work Admission Gate**：唯一业务可见开关。关闭时，Driver 回调、Gateway 私聊链、群聊 Raw Store 链、Coordinator、Worker 和 Schedule trigger 都不得创建、排队或恢复新的业务工作；连接、迁移和探测可以存在，但不能越过该门。
+- **Ready Barrier**：在同一启动代次中复核全部必需事实。任一事实为 `unknown`、`stale` 或 `failed` 时，gate 必须保持关闭。
+
+系统只存在一个 Work Admission Gate，不建设按能力拆分的多门状态机，也不建设 `QUARANTINED` 原地重建状态机。每个启动或受控恢复代次只有一次原子的 `CLOSED → OPEN` 转换；不得先开放 Raw Store、Driver、Schedule 或部分 Agent 能力，再补齐其他依赖。所有回调和主动触发必须绑定当前代次，旧代次回调永久不能越过新 barrier。
+
+### 严格启动顺序
 
 ```text
-1. 加载 YAML
-2. 环境变量插值
-3. Zod 校验
-4. 初始化 UnifiedLogger
-5. 解析唯一规范化数据库绝对路径和 file: URL
-6. 获取单实例锁
-7. 创建 KKBot Client
-8. 执行 KKBot migrations
-9. 创建唯一 LibSQLStore 及其自有 Client
-10. 显式执行 storage.init()
-11. 创建 Knowledge 组件
-12. 创建 Models
-13. 创建 Tools 和 MCP Client
-14. 创建 Memory
-15. 创建 Agents
-16. 创建 Workflows 和 Schedules
-17. 创建 Observability
-18. 创建使用唯一 Storage 的唯一 Mastra 实例
-19. 创建 KK Driver
-20. 创建 Gateway
-21. 执行 Preflight
-22. 连接 CDP
-23. 注入 EventBridge
-24. 启动 Coordinator
-25. 开放消息处理
+1. Static Validation：验证实际 Node.js >=22.13，且生产/CI 版本属于仍受维护的 LTS
+2. 加载 YAML，完成环境变量插值与 Zod 校验；拒绝未解析变量、空凭据、非法 URL 和互斥配置
+3. 只解析一次数据库、日志、Knowledge 与资产路径，得到规范化结果并证明不会产生第二数据库位置
+4. 初始化 UnifiedLogger，并创建 Acquisition Ledger
+5. 取得数据目录作用域的单进程锁；仅在已证明原持有者进程不存在时清理陈旧锁
+6. 创建唯一 KKBot Client，验证文件读写、WAL 与 busy timeout 可观测，执行并提交全部 KKBot migrations
+7. 创建唯一 LibSQLStore 及其自有 Client，显式执行 storage.init()
+8. 构造生产必需的 Observability、关联上下文和导出前脱敏；尚未交给 Mastra 时由 Root 持有 finalizer
+9. 构造唯一进程级 MCP Client，完成有界工具发现；required Server 失败阻止启动，明确 `required: false` 的 Server 才能缺席
+10. 构造固定的 Agent Content Processor 管线、Quota 与 Grounding 接线；安全 Processor 和 Trace 脱敏不得 fail-open
+11. 构造 Knowledge、Models、Memory，并确认 Knowledge 使用 KKBot Client 所属业务表域
+12. 恢复资产 staging/delete 状态、引用保护和租约水位；只注册 Knowledge 与资产后台生命周期，不激活业务工作
+13. 用固定 Tool 集、Processor、Memory、Agents、Workflows、Schedules、Storage 和 Observability 创建唯一 Mastra
+14. Mastra 成功接管后，在 Ledger 中把 Storage 与 Mastra 所属 Observability 的 Root finalizer 替换为一次 mastra.shutdown()
+15. 创建 KK Driver
+16. 创建 Gateway，并注入同一代 Store、Mastra、Driver、Knowledge、资产与门禁引用
+17. 执行 Preflight；失败时 gate 保持关闭
+18. Preflight 通过后连接 CDP，注入绑定当前代次的 EventBridge，并启动仍受 gate 阻挡的 Coordinator
+19. 执行 Ready Barrier，复核连接代次、EventBridge、Coordinator、Schedules 和全部必需事实
+20. Ready Barrier 全部通过后，一次性原子开放 Work Admission Gate
 ```
 
-Observability 初始化和必需的脱敏、导出、Flush、Shutdown 接线属于启动基线；Scorer 不在启动顺序中，其缺失、未注册或禁用不得导致配置校验、Preflight 或 Bootstrapper 失败。
+创建、注册和激活是三个不同事实。Schedule、Worker、Coordinator、Driver 回调、Knowledge 摄取和资产清理即使已经构造或注册，也必须在 gate 开放前保持不能派发业务工作的状态。
 
-### 关闭顺序
+KKBot migrations 与 `storage.init()` 必须按 4.22 节顺序完成，两个迁移域互不读写，不承诺跨 Client 事务。已经成功提交的 migration 不是可回滚的进程资源；后续启动失败只关闭连接，下次启动依赖各自事务、migration ledger 和幂等重试恢复，不能宣称“全系统事务回滚”。
+
+### Preflight 事实集
+
+Preflight 至少证明：
+
+- KKBot migration ledger 已达到目标版本，KKBot 业务表可在隔离事务内完成读写并回滚；
+- Mastra Storage 所需 domain 已初始化，运行期只有一个规范化数据库文件、一个 KKBot Client、一个 `LibSQLStore` 自有 Client 和一个 Mastra 实例；
+- 生产 Observability exporter、TraceContext 传播、导出前脱敏和一次有界 Flush 探测可用；
+- 每个已配置 Model/Tier 的构造、鉴权、端点与最小健康探测成立；
+- required MCP Server 的连接、鉴权、工具发现、白名单、命名冲突和权限覆盖均通过；明确 optional 的 Server 缺席时，其 Tool 本次进程完全不注册，也不热加入；
+- Agent Content Processor 顺序固定，输入安全、Quota、Tool 结果检查、Grounding、输出安全和 Trace 脱敏的注册与 fail-closed fixture 通过；
+- Knowledge 存在唯一 committed generation head，查询固定同一 generation，manifest、FTS、Vector、Embedding 指纹和来源覆盖满足 #136 选择的全局不可变 Generation + 单一 Head CAS readiness；
+- 资产引用、租约、hold、staging/delete 恢复和 owner reconciler 水位满足 #137 选择的持久化类型引用表 + 短租约 + 两阶段 Mark/Sweep 安全条件；`unknown` Delivery、待处理 Approval、current/rollback Knowledge generation 和非终态 Workflow 仍受保护；
+- Workflow/Schedule 已注册但未越过 gate 触发业务动作，Knowledge 摄取与资产清理也未提前运行；
+- Driver 的 CDP 端点可达，Gateway 所需 Store、Mastra、Driver、Knowledge、资产与 gate 引用完整且属于同一启动代次。
+
+Preflight 不得创建 Approval、Delivery、Memory、Schedule trigger、外部发送或其他业务事实。确需探测 KKBot 表时，只能使用隔离事务并回滚；未验证的 Mastra API 行为、陈旧健康结果或仅对象构造成功都不能提升为 `ready`。
+
+Ready Barrier 是开放 gate 前的最后一次一致性复核。它必须确认所有 Preflight 结果仍属于当前启动代次，CDP 已连接，当前代次 EventBridge 注入成功，Coordinator 与 Schedule 没有提前派发，且所有必需事实仍为 `ready`。检查单个布尔值不足以通过 barrier。
+
+### 可选能力边界
+
+只有本总规格或已生效决策明确允许的能力可以缺席。当前允许的启动可选项只有：
+
+- Scorer；
+- MCP 配置中明确声明 `required: false` 的单个 Server，其失败必须进入可诊断 degraded 状态，且本次进程不注册、不缓存旧 Tool、不热加入。
+
+MCP 的 `required` 默认值为 `true`。配置作者、组件实现或 Bootstrapper 不得自行把 Observability、Processor、Quota、Grounding、Knowledge、资产保护、Model、Storage、Driver 或 Gateway 标成 optional 来绕过 barrier。
+
+远程 Embedding/Rerank 的运行期 timeout、429 或 5xx 可以按既有规格降级到本地检索；鉴权失败、空凭据、非法配置、索引不一致或启动健康探测失败属于必需事实失败，不能伪装成瞬态降级。
+
+### 失败、回滚与正常 Shutdown
+
+Static Validation 失败时不得取得锁或连接外部依赖；如果 Logger 已经成功取得，则只执行其 Ledger finalizer 后退出。锁、连接、migration、`storage.init()`、Observability、required MCP、Processor、Knowledge、资产安全恢复、Model、CDP/EventBridge、Gateway 或 Ready Barrier 任一步失败时，gate 保持关闭，不在半初始化进程中原地重试，立即进入统一关闭路径并以非零状态退出。
+
+运行期任一关键事实失效时，Root 必须先原子关闭 gate。CDP 断线只能在 gate 关闭下执行有界重连、当前代次 EventBridge 重注入和断线窗口补偿扫描；全部恢复并进入新连接代次后，重新通过 Ready Barrier 才能做该代次唯一一次 `CLOSED → OPEN`。数据库、Mastra Storage、Observability、全部 Model 路径或所有权不变量失效时，不原地重建，直接进入统一 Shutdown。
+
+初始化失败、致命运行故障、SIGINT、SIGTERM 和正常 Shutdown 必须调用同一个关闭编排器。关闭动作按“谁仍可能调用谁、谁仍可能向谁写入”的依赖图执行 Acquisition Ledger 的逆拓扑，而不是机械倒读启动编号。正常完整路径为：
 
 ```text
-停止接收新消息
-→ Abort 并等待活跃 Mastra Runs 结束
-→ 停止 Schedules 和 Workers
-→ 停止 Coordinator
-→ 断开 Driver
-→ 关闭 MCP
-→ Flush Observability 并等待其存储写入完成
-→ 调用 mastra.shutdown()，由唯一 Mastra 生命周期关闭 Storage 及其自有 Client 一次
+原子关闭 Work Admission Gate
+→ 禁止 Coordinator、Schedules、Workers 和 Driver 回调产生新工作
+→ Abort 并有界等待活跃 Mastra Runs；此后不得再开始 MCP Tool Call
+→ 停止 Schedules、Workers、Coordinator、Knowledge 摄取和资产清理生命周期
+→ 断开当前代次 EventBridge 与 Driver
+→ 调用唯一 MCP Client.disconnect() 一次
+→ Flush Observability，并确认它不再向 Storage 写入
+→ 调用 mastra.shutdown() 一次，由 Mastra 关闭其 Observability、注册组件、Storage 及自有 Client
 → 关闭 KKBot Client 一次
-→ Flush 并关闭 Logger
-→ 释放单实例锁
+→ 释放单进程锁
+→ 最终 Flush 并关闭 UnifiedLogger
 ```
 
-Composition Root 是唯一关闭编排者。不得在 `mastra.shutdown()` 之外再次直接关闭同一 Storage 或其 Client，也不得让 KKBot Store 关闭 Mastra Client；每个 Client 只能由其所有者关闭一次。若最终兼容版本在 Storage 关闭后仍会产生 Observability 写入，或 `mastra.shutdown()` 不能满足该关闭契约，则该版本组不兼容，返回版本决策处理。
+启动中途失败只执行 Ledger 中已经登记且仍由 Root 拥有的节点。Mastra 尚未成功接管前，Root 关闭已创建的 Storage 自有 Client 和 Observability；接管成功后只能通过 `mastra.shutdown()` 关闭一次，Root 和 KKBot Store 都不得再次直关。MCP Client 始终由 Root 单独关闭一次。Knowledge、资产、Driver、Gateway 或其他组件若取得独立资源，也必须登记在同一依赖图中，并在其依赖关闭前完成 finalizer。
 
-任何启动失败都必须按已初始化资源的逆序回滚，并遵守同一所有权和“每个 Client 关闭一次”约束。
+每个 finalizer 都必须有界、幂等且只执行一次。某个 finalizer 失败或超时时，关闭编排器记录包含资源、所有者、阶段和原因的中文诊断，然后继续按逆拓扑尝试全部剩余 finalizer；最终聚合全部关闭错误并返回非零退出状态。任何关闭失败都不能重新开放 gate，也不能因第一处异常跳过后续资源释放。
 
----
+Composition Root 是唯一关闭编排者。若 #131 锁定的 Mastra 兼容版本不能证明 Processor、MCP、Worker、Observability、Storage 的构造/激活分离、父 `AbortSignal` 传播、Flush/Shutdown 次序和恰好一次关闭契约，则该版本组不兼容，必须返回版本决策处理，不能添加第二套 Runtime 或旁路门禁。
 
 ## 4.29 统一 YAML 配置
 
@@ -1996,16 +2040,19 @@ Tool：runId + toolCallId
 
 ## 9.7 Bootstrapper
 
-- 配置合法时完整启动；
-- 缺失环境变量返回中文字段错误；
-- 非法 URL 启动前失败；
-- 第二实例被拒绝；
-- 陈旧锁可安全恢复；
-- Preflight 未通过时不开放消息处理；
-- 任一步初始化失败都逆序回滚；
-- Ctrl+C 完整级联关闭；
-- 活跃 Run 被中断；
-- MCP、Driver、Logger、Mastra Storage 自有 Client 和 KKBot Client 都按所有权关闭，两个数据库 Client 各关闭一次。
+- Static Validation 在取得锁和连接外部依赖前验证 Node.js、配置、凭据、URL、互斥项与唯一规范化路径；
+- 配置合法时按唯一严格顺序完整启动，缺失环境变量和非法 URL 返回中文字段错误；
+- 第二实例被拒绝，且陈旧锁只在持有者进程确实不存在时恢复；
+- 构造、注册和激活可分离，Work Admission Gate 在同一启动代次 Ready Barrier 全部通过前始终关闭；
+- Preflight 使用真实且有界的探测，不创建 Approval、Delivery、Memory、Schedule trigger 或外部发送等业务事实；
+- required 依赖失败阻止启动；只有 Scorer 和明确 `required: false` 的 MCP Server 可以按规格缺席，其他组件不能被实现自行降为 optional；
+- gate 只做整体验证后的原子开放，不存在 Raw Store、Driver、Schedule 或 Agent 的部分开放；旧代次回调不能越过新 barrier；
+- Acquisition Ledger 记录每个资源的唯一所有者、依赖边和 finalizer；Storage/Observability 转交 Mastra 前后都恰好只有一个 closer；
+- 任一步初始化失败都先保持或关闭 gate，再按所有权依赖图逆拓扑回滚，不进入隔离态原地重建；已提交 migration 不伪装成进程资源回滚；
+- finalizer 故障注入证明前一个关闭失败或超时不会跳过后续独立资源，最终聚合诊断并返回非零状态；
+- Ctrl+C、SIGTERM、致命运行故障和初始化失败调用同一 Shutdown 路径，活跃 Run 被 Abort 并有界等待；
+- MCP、Driver、Logger、Mastra Storage 自有 Client 和 KKBot Client 都按所有权关闭，两个数据库 Client 各关闭一次；
+- 正常 Shutdown 在两个数据库 Client 和全部外部工作停止后释放单实例锁，最后 Flush 并关闭 Logger。
 
 ## 9.8 Observability 与可选 Scorer
 
