@@ -46,6 +46,10 @@ _Avoid_: 自动静默计时器、会话超时
 对既有消息的撤回事实；撤回不等同于删除其审计记录。
 _Avoid_: Message Delete, History Cleanup
 
+**ComplianceDeletion**:
+经正式授权，对指定范围内的正文、附件及派生内容执行不可逆擦除的业务动作；保留不含正文的最小删除记录，不否认已发生的交付或外部副作用。
+_Avoid_: MessageRecall, Transaction Rollback
+
 ## 认知与知识
 
 **Soul**:
