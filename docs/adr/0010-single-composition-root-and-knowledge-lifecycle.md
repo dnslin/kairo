@@ -27,7 +27,7 @@ PublicKnowledge 的查询一致性单元是全局不可变 KnowledgeGeneration�
 
 耗时转换、OCR、Chunk 和 Embedding 在不可见候选中完成。唯一可见性切点是 KKBot Client 的短写事务：以候选基线对唯一 Head 执行 CAS，并在同一事务中提交新 Generation、退休旧 Generation。查询通过本地只读快照一次固定 Head 与来源失效事实；远程 Rerank 只能在事务外重排已物化的同代候选。普通单层运行故障可以在同代降级；generation 绑定、覆盖率、fingerprint 或校验和无法证明一致时，查询必须不可用，不能任选 FTS 或 Vector。
 
-来源删除、过期或禁用先提交单调 deny，再由后续完整 Generation 物理移除。进程重启只确认 Head 已指向的提交结果；其余遗留 `building/ready` 候选废弃并以新 `generationId` 重建，不自动提交或跨崩溃续建。查询引用保护与清理的具体租约、宽限期和保留策略由 #137 裁定；任何清理都不得删除 Head 指向或仍被查询引用的 Generation。具体启动顺序、关闭顺序、表结构、事务 API 和故障诊断字段以当前总规格为准。
+来源删除、过期或禁用先提交单调 deny，再由后续完整 Generation 物理移除。进程重启只确认 Head 已指向的提交结果；其余遗留 `building/ready` 候选废弃并以新 `generationId` 重建，不自动提交或跨崩溃续建。查询物化期间使用短期 AssetLease 保护固定 Generation；当前 Head 与最近一个 retired Generation 通过持久 AssetReference 保留，下一代提交时在同一 KKBot Client 事务中释放更旧 retired Generation 的引用。任何清理都不得删除 Head、最近一个 retained Generation 或仍被查询租约保护的产物；具体资产状态、宽限期和恢复规则以总规格 §4.27 为准。具体启动顺序、关闭顺序、表结构、事务 API 和故障诊断字段以当前总规格为准。
 
 ## Current sources
 
@@ -35,10 +35,11 @@ PublicKnowledge 的查询一致性单元是全局不可变 KnowledgeGeneration�
 - [#127 Storage 连接边界 resolution](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)
 - [#130 Knowledge 摄取故障 resolution](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)
 - [#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)
+- [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)
 - [#133 Node.js 运行时基线 resolution](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)
 - [libSQL Client 事务契约](https://github.com/tursodatabase/libsql-client-ts/blob/main/packages/libsql-core/src/api.ts)
 - [Turso / libSQL Vector 索引契约](https://docs.turso.tech/features/ai-and-embeddings)
 
 ## Pending decisions
 
-[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)与[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)仍为开放票。本 ADR 不锁定资产租约、清理宽限期、rollback 保留数量、Knowledge 能力是否阻止应用开放消息处理、精确依赖版本或具体 API 签名。
+[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)仍为开放票。本 ADR 不锁定 Knowledge 能力是否阻止应用开放消息处理、精确依赖版本或具体 API 签名。

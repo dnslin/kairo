@@ -5,7 +5,7 @@
 Partially Superseded
 
 - §2 已由 [ADR 0010](./0010-single-composition-root-and-knowledge-lifecycle.md)、总规格 §4.18–§4.19 与 [#136](https://github.com/dnslin/kkbot/issues/136) 替代。
-- §1 与 §4 保持 `Accepted`；§3 不由 #136 修改，其后续生命周期仍由 #137 裁定。
+- §1 与 §4 保持 `Accepted`；§3 的 30 天物理淘汰规则继续有效，其引用保护、删除状态与崩溃恢复协议由总规格 §4.27 和 [#137](https://github.com/dnslin/kkbot/issues/137) 补全。
 
 ## Context
 

@@ -1,16 +1,18 @@
 # ADR 0003: 存储层分层架构、多部门组织关系、会话状态机与健壮性防护设计
 
 ## Status
+
 Superseded
 
 - **Superseded on**: 2026-08-24
-- **Current replacement**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §4.7、§4.21–§4.23、§12
-- **Resolved by**: [#111《确定 Draft 是否保留独立事实模型》](https://github.com/dnslin/kkbot/issues/111)、[#129《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)
-- **Pending decisions**: [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)
+- **Current replacement**: [KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §4.7、§4.21–§4.23、§4.27、§12
+- **Resolved by**: [#111《确定 Draft 是否保留独立事实模型》](https://github.com/dnslin/kkbot/issues/111)、[#129《确定回复交付与 Memory 提交协议》](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#137《确定资产保留的引用保护与清理恢复协议》](https://github.com/dnslin/kkbot/issues/137)
 - **Historical note**: 以下 Context、Decision 与 Consequences 保留原文，仅用于说明当时的决策背景；其中独立 `DraftRepository` 与草稿事实模型不再生效。
 
 ## Context
+
 在 KKBot v2 的演进过程中，系统从单体架构走向 Monorepo 模块化拆分。随着企业级协同功能的引入，面临以下核心架构与领域挑战：
+
 1. **组织架构的多维度与复杂层级**：企业员工不仅属于多级部门树，且普遍存在跨部门兼职、不同部门兼任主管/工程师等 N:N 关系，同时需要支持根据工号、姓名、拼音首字母和部门路径的毫秒级模糊检索与每日 CSV 导出。
 2. **驱动层与存储层的分层解耦**：`@kkbot/driver` 必须保持纯 I/O 驱动定位（零数据库依赖），而持久化与调度需求需要一个清晰独立的 `@kkbot/store` 模块。
 3. **消息全生命周期控制与精准撤回**：消息撤回时需要利用客户端原生 `message_id` 实现 100% 精确匹配并同步标记 `is_recalled = 1`，避免失效上下文污染 LLM 对话。
@@ -46,6 +48,7 @@ Superseded
    - **视觉红点守卫**：仅在 Bot 自动回复成功后显式调用 `markSessionRead` 消除红点；草稿模式、人工退避期或发生错误时坚决保留红点。
 
 ## Consequences
+
 - **Positive**:
   - 数据模型严格表达企业级复杂组织关系（树形部门、汇报链、一人多职），支持拼音毫秒级快搜与 Excel 友好导出；
   - 架构分层清晰，Store 易于单测与独立 Mock；
