@@ -1,6 +1,8 @@
-import { createClient, type Client } from '@libsql/client';
+import { createClient, type Client, type Transaction, type Config as LibsqlConfig } from '@libsql/client';
+export { createClient, type Client, type Transaction, type LibsqlConfig };
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { DatabaseOptions } from '../types/index.js';
@@ -56,8 +58,25 @@ export function resolveDatabaseUrl(path: string): {
     };
   }
 
+  if (path.startsWith('file:')) {
+    try {
+      const parsed = fileURLToPath(path);
+      const abs = normalize(resolve(parsed));
+      return {
+        url: `file:${abs}`,
+        isMemory: false,
+      };
+    } catch {
+      const raw = path.slice(5);
+      const abs = normalize(resolve(raw));
+      return {
+        url: `file:${abs}`,
+        isMemory: false,
+      };
+    }
+  }
+
   if (
-    path.startsWith('file:') ||
     path.startsWith('libsql:') ||
     path.startsWith('http:') ||
     path.startsWith('https:') ||
@@ -70,12 +89,12 @@ export function resolveDatabaseUrl(path: string): {
     };
   }
 
+  const abs = normalize(resolve(path));
   return {
-    url: `file:${path}`,
+    url: `file:${abs}`,
     isMemory: false,
   };
 }
-
 /**
  * 创建并初始化 LibSQL 数据库异步连接实例
  * 默认启用 WAL 模式、外键约束与预设 Pragma 性能调优

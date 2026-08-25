@@ -19,6 +19,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    fileParallelism: false,
     include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts', 'apps/*/tests/**/*.test.ts', 'src/**/*.test.ts', '**/fixtures/*/src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
