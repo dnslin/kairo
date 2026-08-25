@@ -11,8 +11,12 @@ export interface CliIO {
 }
 
 const defaultIO: CliIO = {
-  log: (msg: string) => console.log(msg),
-  error: (msg: string) => console.error(msg),
+  log: (msg: string) => {
+    process.stdout.write(`${msg}\n`);
+  },
+  error: (msg: string) => {
+    process.stderr.write(`${msg}\n`);
+  },
 };
 /**
  * 查找默认配置文件路径
