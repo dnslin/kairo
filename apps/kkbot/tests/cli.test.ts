@@ -38,8 +38,8 @@ mcp:
   perServerTimeoutMs: 5000
   servers:
     enterprise-search:
+      url: "http://127.0.0.1:8080/mcp"
       required: true
-
 agent:
   id: kk-assistant
   soulPath: ./config/soul.md

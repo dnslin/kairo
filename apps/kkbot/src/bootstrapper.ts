@@ -223,8 +223,6 @@ export class UnifiedBootstrapper {
                 cwd: serverConfig.cwd,
                 timeout: serverConfig.timeout,
               };
-            } else {
-              mcpServers[name] = { url: new URL('http://127.0.0.1:0/mcp') };
             }
           }
           this.mcpClient = new MCPClient({

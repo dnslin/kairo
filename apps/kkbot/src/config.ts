@@ -45,15 +45,63 @@ const mastraConfigSchema = z
 const mcpServerItemSchema = z
   .object({
     required: z.boolean().default(true),
-    url: z.string().url('MCP 服务 URL 格式不正确').optional(),
-    command: z.string().min(1, 'MCP 启动命令不能为空').optional(),
+    url: z.string().optional(),
+    command: z.string().optional(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string(), z.string()).optional(),
     cwd: z.string().optional(),
     timeout: z.number().int('必须为正整数').min(1, '超时时间必须大于 0').optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((val, ctx) => {
+    const hasUrl = typeof val.url === 'string' && val.url.trim().length > 0;
+    const hasCommand = typeof val.command === 'string' && val.command.trim().length > 0;
 
+    if (!hasUrl && !hasCommand) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'MCP 服务必须配置有效的 url (HTTP/SSE) 或 command (stdio) 传输方式之一',
+        path: ['transport'],
+      });
+      return;
+    }
+
+    if (hasUrl && hasCommand) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'MCP 服务不能同时配置 url 和 command 两种传输方式',
+        path: ['transport'],
+      });
+      return;
+    }
+
+    if (hasUrl) {
+      try {
+        const parsed = new URL(val.url!);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'MCP 服务 url 协议必须是 http: 或 https:',
+            path: ['url'],
+          });
+        }
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'MCP 服务 url 必须是合法的 URL 格式',
+          path: ['url'],
+        });
+      }
+
+      if (val.args !== undefined || val.env !== undefined || val.cwd !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'HTTP/SSE 类型的 MCP 服务不支持配置 stdio 专用的 args/env/cwd 字段',
+          path: ['transport'],
+        });
+      }
+    }
+  });
 const mcpConfigSchema = z
   .object({
     perServerTimeoutMs: z.number().int('必须为正整数').min(1, 'MCP 服务超时时间必须大于 0'),
@@ -359,6 +407,8 @@ function translateZodIssue(issue: z.ZodIssue): ConfigFieldError {
       let hint = '请按照配置规范提供合法的值';
       if (fieldPath.includes('apiKey')) {
         hint = '请提供有效的 API 凭据（可通过环境变量插值传入，如 ${EMBEDDING_API_KEY}）';
+      } else if (fieldPath.includes('transport') || fieldPath.includes('mcp')) {
+        hint = '请在 MCP 服务项中配置有效的 url (HTTP/SSE) 或 command (stdio) 传输字段，且不要混用';
       }
       return {
         path: fieldPath,

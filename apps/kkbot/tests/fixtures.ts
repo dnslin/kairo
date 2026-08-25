@@ -13,6 +13,7 @@ export interface CreateTestConfigOptions {
   mcpRequired?: boolean;
   useStdioMcpServer?: boolean;
   stdioScriptPath?: string;
+  mcpCustomServers?: string;
 }
 
 /**
@@ -26,26 +27,29 @@ export function createValidTestYaml(options: CreateTestConfigOptions): string {
     mcpRequired = false,
     useStdioMcpServer = false,
     stdioScriptPath = STDIO_MCP_SERVER_SCRIPT,
+    mcpCustomServers,
   } = options;
 
   const normalizedDb = dbFilePath.replace(/\\/g, '/');
   const nodeExec = process.execPath.replace(/\\/g, '/');
   const normalizedScript = stdioScriptPath.replace(/\\/g, '/');
 
-  const serverLines = useStdioMcpServer
-    ? `    local:
+  let serverLines = '{}';
+  if (mcpCustomServers) {
+    serverLines = `\n${mcpCustomServers}`;
+  } else if (useStdioMcpServer) {
+    serverLines = `
+    local:
       command: "${nodeExec}"
       args:
         - "${normalizedScript}"
-      required: ${mcpRequired}`
-    : `    local:
       required: ${mcpRequired}`;
+  }
 
   const mcpSection = `
 mcp:
   perServerTimeoutMs: 5000
-  servers:
-${serverLines}
+  servers: ${serverLines}
 `;
   return `
 kk:

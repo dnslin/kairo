@@ -179,7 +179,12 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     const mcpConfigPath = path.join(tempDir, 'config-mcp-req.yaml');
     await fs.writeFile(
       mcpConfigPath,
-      createValidTestYaml({ dbFilePath, includeMcp: true, mcpRequired: true }),
+      createValidTestYaml({
+        dbFilePath,
+        mcpCustomServers: `    unreachable-required:
+      url: "http://127.0.0.1:54321/mcp"
+      required: true`,
+      }),
       'utf-8'
     );
 
@@ -192,7 +197,12 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     const mcpOptConfigPath = path.join(tempDir, 'config-mcp-opt.yaml');
     await fs.writeFile(
       mcpOptConfigPath,
-      createValidTestYaml({ dbFilePath, includeMcp: true, mcpRequired: false }),
+      createValidTestYaml({
+        dbFilePath,
+        mcpCustomServers: `    unreachable-optional:
+      url: "http://127.0.0.1:54321/mcp"
+      required: false`,
+      }),
       'utf-8'
     );
 

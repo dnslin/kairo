@@ -38,8 +38,8 @@ mcp:
   perServerTimeoutMs: 5000
   servers:
     enterprise-search:
+      url: "http://127.0.0.1:8080/mcp"
       required: true
-
 agent:
   id: kk-assistant
   soulPath: ./config/soul.md
@@ -315,5 +315,99 @@ retention:
     const urlError = thrownError?.errors.find(e => e.path === 'knowledge.embedding.baseUrl');
     expect(urlError).toBeDefined();
     expect(urlError?.reason).toMatch(/协议必须是 http: 或 https:|合法的 URL 格式/);
+  });
+
+  it('Spec §4.11: 静态校验拒绝未配置 url 或 command 传输方式的 MCP 服务', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const noTransportYaml = validYamlContent.replace(
+      'url: "http://127.0.0.1:8080/mcp"',
+      '# no url or command'
+    );
+    const configPath = path.join(tempDir, 'kkbot-no-mcp-trans.yaml');
+    await fs.writeFile(configPath, noTransportYaml, 'utf-8');
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const transError = thrownError?.errors.find((e) => e.path.includes('mcp.servers'));
+    expect(transError).toBeDefined();
+    expect(transError?.reason).toMatch(/必须配置有效的 url .* 或 command .* 传输方式之一/);
+  });
+
+  it('Spec §4.11: 静态校验拒绝同时配置 url 和 command 的歧义 MCP 服务', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const bothTransportYaml = validYamlContent.replace(
+      'url: "http://127.0.0.1:8080/mcp"',
+      'url: "http://127.0.0.1:8080/mcp"\n      command: "node"'
+    );
+    const configPath = path.join(tempDir, 'kkbot-both-mcp-trans.yaml');
+    await fs.writeFile(configPath, bothTransportYaml, 'utf-8');
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const transError = thrownError?.errors.find((e) => e.path.includes('mcp.servers'));
+    expect(transError).toBeDefined();
+    expect(transError?.reason).toMatch(/不能同时配置 url 和 command/);
+  });
+
+  it('Spec §4.11: 静态校验拒绝在 HTTP/SSE MCP 服务中混用 stdio 专属字段 (args/env/cwd)', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const mixedTransportYaml = validYamlContent.replace(
+      'url: "http://127.0.0.1:8080/mcp"',
+      'url: "http://127.0.0.1:8080/mcp"\n      args:\n        - "--verbose"'
+    );
+    const configPath = path.join(tempDir, 'kkbot-mixed-mcp-trans.yaml');
+    await fs.writeFile(configPath, mixedTransportYaml, 'utf-8');
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const transError = thrownError?.errors.find((e) => e.path.includes('mcp.servers'));
+    expect(transError).toBeDefined();
+    expect(transError?.reason).toMatch(/不支持配置 stdio 专用的 args\/env\/cwd/);
+  });
+
+  it('Spec §4.11: 静态校验正确接受合法的 stdio 传输配置', async () => {
+    const stdioYaml = validYamlContent.replace(
+      'url: "http://127.0.0.1:8080/mcp"',
+      'command: "node"\n      args:\n        - "dist/server.js"\n      cwd: "./"'
+    );
+    const configPath = path.join(tempDir, 'kkbot-stdio.yaml');
+    await fs.writeFile(configPath, stdioYaml, 'utf-8');
+
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const cfg = await loadConfigFromYaml(configPath);
+    const srv = cfg.mcp.servers['enterprise-search'];
+    expect(srv?.command).toBe('node');
+    expect(srv?.args).toEqual(['dist/server.js']);
+    expect(srv?.cwd).toBe('./');
   });
 });
