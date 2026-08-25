@@ -26,8 +26,8 @@
 
 - 使用 Windows 运行需要连接真实 KK9 客户端的脚本。
 - 使用 pnpm 工作区管理依赖；工作区范围由根目录 `pnpm-workspace.yaml` 定义。
-- 项目目标运行时基线是 Node.js `>=22.13`。当前根 `package.json` 仍声明 `>=20.0.0`，属于待收敛的仓库元数据差异；开发和验证不得因此降回 Node.js 20。
-- 首次进入仓库后运行 `pnpm install`，后续安装必须复用锁文件，避免无意漂移依赖版本。
+- 项目统一运行时基线是 Node.js `>=22.13.0`（当前推荐并验证于生产 LTS `v24.14.0`）。根与所有工作区 `package.json` 均已严格锁定该基线。
+- 首次进入仓库后运行 `pnpm install`，后续安装必须复用锁文件（`pnpm install --frozen-lockfile`），避免无意漂移依赖版本。
 
 ## 3. 常用命令
 
@@ -35,7 +35,12 @@
 
 | 命令                    | 作用                               |
 | ----------------------- | ---------------------------------- |
-| `pnpm build`            | 递归构建所有工作区包               |
+| `pnpm dev`              | 以开发模式启动应用入口             |
+| `pnpm start`            | 启动正式应用入口并执行基线校验     |
+| `pnpm doctor`           | 执行配置静态校验与环境自检         |
+| `pnpm knowledge:ingest` | 执行知识库内容摄取                 |
+| `pnpm knowledge:rebuild`| 执行知识库整代重建                 |
+| `pnpm build`            | 递归构建所有工作区包与应用模块     |
 | `pnpm typecheck`        | 执行根 TypeScript 静态检查         |
 | `pnpm test`             | 运行 Vitest 测试                   |
 | `pnpm test:watch`       | 以监听模式运行 Vitest              |
@@ -46,8 +51,6 @@
 | `pnpm bench:resource`   | 运行资源基准                       |
 | `pnpm bench:throughput` | 运行吞吐基准                       |
 | `pnpm verify:bridge`    | 连接真实 KK9，交互验证 EventBridge |
-
-根脚本中没有 `pnpm dev`。新增或删除脚本时，应同时更新本节，不能在文档中保留不存在的命令。
 
 ### 单包验证
 
