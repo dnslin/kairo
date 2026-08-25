@@ -64,3 +64,36 @@ export * from './utils/errors.js';
 export { createChildLogger, logger } from './utils/logger.js';
 export * from './tools/index.js';
 export * from './hitl/index.js';
+
+// ============================================================================
+// Mastra-Native Agent 架构 (Issue #174)
+// ============================================================================
+export {
+  resolveModelTier,
+  type ModelTier,
+  type NormalizedModelTierInput,
+  type NormalizedAttachmentFact,
+} from './routing/tier-policy.js';
+export {
+  MastraModelFactory,
+  type ModelFactoryConfig,
+  type TierModelConfig,
+  type TierModelEntry,
+  type KKBotRequestContextValues,
+} from './models/factory.js';
+export {
+  KKBotAgent,
+  type KKBotAgentOptions,
+  type ExecuteAgentOptions,
+  type KKBotAgentRunResult,
+  type AgentTokenUsage,
+} from './agent.js';
+export {
+  createFakeModel,
+  type FakeLanguageModel,
+  type FakeModelGenerateResult,
+  type FakeModelStepResponse,
+  type FakeModelCallOptions,
+  type FakeModelOptions,
+  type FakeModelContentPart,
+} from './testing/fake-model.js';
