@@ -189,7 +189,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       await coordinator.stop();
     });
 
-    it('应正确透传群聊 @ 机器人与 @ 全体 标记', async () => {
+    it('群聊 @ 机器人消息只写 Raw Store，不进入防抖合并队列', async () => {
       let capturedBatch: ConsolidatedMessage | null = null;
       const coordinator = new SessionCoordinator({
         driver: mockDriver as unknown as KK9Driver,
@@ -215,9 +215,10 @@ describe('SessionCoordinator 业务编排器测试', () => {
 
       await vi.advanceTimersByTimeAsync(1500);
 
-      expect(capturedBatch).not.toBeNull();
-      expect(capturedBatch?.atMe).toBe(true);
-      expect(capturedBatch?.sessionType).toBe('group');
+      expect(capturedBatch).toBeNull();
+      const saved = await store.messages.getMessageBySessionAndMessageId('group_001', 'g1');
+      expect(saved).not.toBeNull();
+      expect(saved?.content).toBe('@KKBot 帮我查下报表');
 
       await coordinator.stop();
     });

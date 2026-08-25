@@ -1,4 +1,4 @@
-import type { Client } from '@libsql/client';
+import type { Client, InValue } from '@libsql/client';
 import type {
   GetSessionHistoryOptions,
   MessageRawPayload,
@@ -6,8 +6,9 @@ import type {
   QueryMessagesOptions,
   SaveMessageInput,
   SessionMessage,
+  SessionMessageOrigin,
 } from '../types/index.js';
-import { TransactionError } from '../utils/errors.js';
+import { DatabaseError, TransactionError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('message-repo');
@@ -23,6 +24,7 @@ interface MessageRow {
   sender_id: string | null;
   content: string;
   message_type: string;
+  origin: string | null;
   raw_payload: string | null;
   reply_target_id: string | null;
   is_from_self: number;
@@ -69,6 +71,8 @@ function deserializePayload(rawPayload: string | null): MessageRawPayload | null
  * 将数据库 MessageRow 映射为领域实体 SessionMessage
  */
 function mapRowToMessage(row: MessageRow): SessionMessage {
+  const origin = (row.origin ||
+    (Number(row.is_from_self) === 1 ? 'operator' : 'external')) as SessionMessageOrigin;
   return {
     id: Number(row.id),
     sessionId: String(row.session_id),
@@ -77,6 +81,7 @@ function mapRowToMessage(row: MessageRow): SessionMessage {
     senderId: row.sender_id ? String(row.sender_id) : null,
     content: String(row.content),
     messageType: (row.message_type || 'text') as MessageType,
+    origin,
     rawPayload: deserializePayload(row.raw_payload ? String(row.raw_payload) : null),
     replyTargetId: row.reply_target_id ? String(row.reply_target_id) : null,
     isFromSelf: Number(row.is_from_self) === 1,
@@ -104,49 +109,67 @@ export class MessageRepository {
     const rawPayloadStr = serializePayload(input.rawPayload);
     const createdAt = input.createdAt ?? Date.now();
     const messageType = input.messageType || 'text';
+    const origin = input.origin || (input.isFromSelf ? 'operator' : 'external');
     const isFromSelf = input.isFromSelf ? 1 : 0;
     const isRecalled = input.isRecalled ? 1 : 0;
     const messageId = input.messageId ?? null;
     const senderId = input.senderId ?? null;
     const replyTargetId = input.replyTargetId ?? null;
 
-    const info = await this.client.execute({
-      sql: `INSERT INTO session_messages (
-        session_id, message_id, sender, sender_id, content,
-        message_type, raw_payload, reply_target_id, is_from_self,
-        is_recalled, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        input.sessionId,
+    try {
+      const info = await this.client.execute({
+        sql: `INSERT INTO session_messages (
+          session_id, message_id, sender, sender_id, content,
+          message_type, origin, raw_payload, reply_target_id, is_from_self,
+          is_recalled, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (session_id, message_id) DO NOTHING`,
+        args: [
+          input.sessionId,
+          messageId,
+          input.sender,
+          senderId,
+          input.content,
+          messageType,
+          origin,
+          rawPayloadStr,
+          replyTargetId,
+          isFromSelf,
+          isRecalled,
+          createdAt,
+        ],
+      });
+
+      // 若受影响行数为 0，说明唯一约束冲突（相同 session_id 与 message_id 已存在），幂等查出并返回既有记录
+      if (info.rowsAffected === 0 && messageId) {
+        const existing = await this.getMessageBySessionAndMessageId(input.sessionId, messageId);
+        if (existing) {
+          return existing;
+        }
+      }
+
+      const insertedId = Number(info.lastInsertRowid);
+
+      return {
+        id: insertedId,
+        sessionId: input.sessionId,
         messageId,
-        input.sender,
+        sender: input.sender,
         senderId,
-        input.content,
+        content: input.content,
         messageType,
-        rawPayloadStr,
+        origin,
+        rawPayload: deserializePayload(rawPayloadStr),
         replyTargetId,
-        isFromSelf,
-        isRecalled,
+        isFromSelf: Boolean(input.isFromSelf),
+        isRecalled: Boolean(input.isRecalled),
         createdAt,
-      ],
-    });
-
-    const insertedId = Number(info.lastInsertRowid);
-
-    return {
-      id: insertedId,
-      sessionId: input.sessionId,
-      messageId,
-      sender: input.sender,
-      senderId,
-      content: input.content,
-      messageType,
-      rawPayload: deserializePayload(rawPayloadStr),
-      replyTargetId,
-      isFromSelf: Boolean(input.isFromSelf),
-      isRecalled: Boolean(input.isRecalled),
-      createdAt,
-    };
+      };
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      log.error({ err, sessionId: input.sessionId, messageId, origin }, '持久化会话消息失败');
+      throw new DatabaseError(`持久化会话消息失败: ${err.message}`, err);
+    }
   }
 
   /**
@@ -167,6 +190,7 @@ export class MessageRepository {
         const rawPayloadStr = serializePayload(input.rawPayload);
         const createdAt = input.createdAt ?? Date.now();
         const messageType = input.messageType || 'text';
+        const origin = input.origin || (input.isFromSelf ? 'operator' : 'external');
         const isFromSelf = input.isFromSelf ? 1 : 0;
         const isRecalled = input.isRecalled ? 1 : 0;
         const messageId = input.messageId ?? null;
@@ -176,9 +200,10 @@ export class MessageRepository {
         const info = await tx.execute({
           sql: `INSERT INTO session_messages (
             session_id, message_id, sender, sender_id, content,
-            message_type, raw_payload, reply_target_id, is_from_self,
+            message_type, origin, raw_payload, reply_target_id, is_from_self,
             is_recalled, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (session_id, message_id) DO NOTHING`,
           args: [
             input.sessionId,
             messageId,
@@ -186,6 +211,7 @@ export class MessageRepository {
             senderId,
             input.content,
             messageType,
+            origin,
             rawPayloadStr,
             replyTargetId,
             isFromSelf,
@@ -194,16 +220,24 @@ export class MessageRepository {
           ],
         });
 
-        const insertedId = Number(info.lastInsertRowid);
+        let finalId = Number(info.lastInsertRowid);
+        if (info.rowsAffected === 0 && messageId) {
+          const existing = await this.getMessageBySessionAndMessageId(input.sessionId, messageId);
+          if (existing) {
+            results.push(existing);
+            continue;
+          }
+        }
 
         results.push({
-          id: insertedId,
+          id: finalId,
           sessionId: input.sessionId,
           messageId,
           sender: input.sender,
           senderId,
           content: input.content,
           messageType,
+          origin,
           rawPayload: deserializePayload(rawPayloadStr),
           replyTargetId,
           isFromSelf: Boolean(input.isFromSelf),
@@ -500,5 +534,48 @@ export class MessageRepository {
       args: [sessionId],
     });
     return res.rowsAffected;
+  }
+
+  /**
+   * 按 (session_id, message_id) 精确查询单条消息
+   */
+  public async getMessageBySessionAndMessageId(
+    sessionId: string,
+    messageId: string
+  ): Promise<SessionMessage | null> {
+    const res = await this.client.execute({
+      sql: `SELECT * FROM session_messages WHERE session_id = ? AND message_id = ? LIMIT 1`,
+      args: [sessionId, messageId],
+    });
+    if (res.rows.length === 0) {
+      return null;
+    }
+    return mapRowToMessage(res.rows[0] as unknown as MessageRow);
+  }
+
+  /**
+   * 统计满足条件的消息数量
+   */
+  public async countMessages(options?: {
+    sessionId?: string;
+    includeRecalled?: boolean;
+  }): Promise<number> {
+    const conditions: string[] = [];
+    const params: InValue[] = [];
+
+    if (options?.sessionId) {
+      conditions.push('session_id = ?');
+      params.push(options.sessionId);
+    }
+    if (!options?.includeRecalled) {
+      conditions.push('is_recalled = 0');
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const sql = `SELECT COUNT(*) as total FROM session_messages ${whereClause}`;
+
+    const res = await this.client.execute({ sql, args: params });
+    const row = res.rows[0] as unknown as { total: number } | undefined;
+    return Number(row?.total ?? 0);
   }
 }

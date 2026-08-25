@@ -108,10 +108,11 @@ describe('KK9Driver 端到端事件驱动测试', () => {
         sessionId: 'ses_1',
         sessionName: '客户A',
         sessionType: 'private',
+        origin: 'operator',
         sender: '我',
         content: '您好，基础版免费',
         time: '12:03',
-        isMe: true, // 自身消息应被过滤
+        isMe: true,
         timestamp: Date.now(),
       },
     ];
@@ -124,7 +125,9 @@ describe('KK9Driver 端到端事件驱动测试', () => {
       10
     );
 
-    expect(receivedMessages).toHaveLength(2);
+    expect(receivedMessages).toHaveLength(3);
+    expect(receivedMessages[2]?.id).toBe('fp_3');
+    expect(receivedMessages[2]?.origin).toBe('operator');
     expect(receivedAtMessages).toHaveLength(1);
     expect(receivedAtMessages[0]?.content).toBe('@机器人 请查一下数据');
     expect(receivedAtMessages[0]?.atMe).toBe(true);
@@ -134,7 +137,7 @@ describe('KK9Driver 端到端事件驱动测试', () => {
       { id: 'group_1', name: '测试123', type: 'group', unread: true },
       10
     );
-    expect(receivedMessages).toHaveLength(2);
+    expect(receivedMessages).toHaveLength(3);
     expect(receivedAtMessages).toHaveLength(1);
   });
 

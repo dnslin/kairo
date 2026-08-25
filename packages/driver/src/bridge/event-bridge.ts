@@ -16,6 +16,7 @@ import {
   generateMessageFingerprint,
   normalizeNativeMessage,
   normalizeRecalledEvent,
+  toSafeString,
 } from './converter.js';
 
 const log = createChildLogger('event-bridge');
@@ -43,7 +44,7 @@ export class KK9EventBridge extends EventEmitter {
   private isConnecting = false;
   private readonly knownFingerprints = new Set<string>();
   private readonly knownRecalledIds = new Set<string>();
-
+  private readonly knownBotSentIds = new Set<string>();
   constructor(
     config: EventBridgeConfig | DriverConfig | { cdp: CdpConfig },
     cdpClient?: CdpClient
@@ -78,6 +79,25 @@ export class KK9EventBridge extends EventEmitter {
    */
   public getCdpClient(): CdpClient {
     return this.cdp;
+  }
+
+  /**
+   * 记录由 Bot 自身发出的消息 ID（用于回显识别为 bot_echo）
+   */
+  public recordBotSentMessageId(messageId: string): void {
+    if (!messageId) return;
+    this.knownBotSentIds.add(messageId);
+    if (this.knownBotSentIds.size > this.maxFingerprints) {
+      const firstKey = this.knownBotSentIds.values().next().value;
+      if (firstKey) this.knownBotSentIds.delete(firstKey);
+    }
+  }
+
+  /**
+   * 判断指定消息 ID 是否为 Bot 自身发出
+   */
+  public isBotSentMessageId(messageId: string): boolean {
+    return this.knownBotSentIds.has(messageId);
   }
 
   /**
@@ -139,6 +159,7 @@ export class KK9EventBridge extends EventEmitter {
     return normalizeNativeMessage(raw, {
       session: sessionContext,
       currentUserId: this.currentUserId,
+      knownBotSentIds: this.knownBotSentIds,
     });
   }
 
@@ -176,9 +197,37 @@ export class KK9EventBridge extends EventEmitter {
         break;
       }
       case 'session-msg': {
-        const rawData = data as { sesUUID?: string; messages?: unknown[] };
-        const sessionContext: Partial<KK9Session> | undefined = rawData?.sesUUID
-          ? { id: rawData.sesUUID, name: rawData.sesUUID }
+        const rawData = data as {
+          sesUUID?: string;
+          sessionId?: string;
+          sessionID?: string;
+          messages?: unknown[];
+          session?: Record<string, unknown>;
+          type?: unknown;
+          sessionType?: unknown;
+        };
+        const sessionObj = rawData?.session || (rawData as Record<string, unknown>);
+        const isGroup =
+          rawData?.sessionType === 'group' ||
+          rawData?.type === 1 ||
+          rawData?.type === 'group' ||
+          sessionObj?.type === 1 ||
+          sessionObj?.type === 'group' ||
+          sessionObj?.sessionType === 1 ||
+          sessionObj?.sessionType === 'group';
+        const sessionType = isGroup ? 'group' : 'private';
+        const sesId =
+          rawData?.sesUUID ||
+          rawData?.sessionId ||
+          rawData?.sessionID ||
+          sessionObj?.id ||
+          sessionObj?.sesUUID;
+        const sessionContext: Partial<KK9Session> | undefined = sesId
+          ? {
+              id: toSafeString(sesId),
+              name: toSafeString(sessionObj?.name ?? sesId),
+              type: sessionType,
+            }
           : undefined;
         this.handleIncomingMessages(data, sessionContext);
         break;
@@ -211,13 +260,9 @@ export class KK9EventBridge extends EventEmitter {
     const messages = normalizeNativeMessage(payload, {
       session: sessionContext,
       currentUserId: this.currentUserId,
+      knownBotSentIds: this.knownBotSentIds,
     });
-
     for (const msg of messages) {
-      if (msg.isMe) {
-        continue;
-      }
-
       const fingerprint =
         msg.id || generateMessageFingerprint(msg.sessionId, msg.sender, msg.time, msg.content);
       if (this.knownFingerprints.has(fingerprint)) {

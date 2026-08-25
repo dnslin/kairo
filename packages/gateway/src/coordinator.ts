@@ -6,7 +6,7 @@ import type {
   KK9RecalledEvent,
   SendResult,
 } from '@kkbot/driver';
-import type { KKBotStore, SessionMode } from '@kkbot/store';
+import type { KKBotStore, MessageRawPayload, SessionMode } from '@kkbot/store';
 import {
   createRegisterProactiveScheduleTool,
   type AgentMemoryManager,
@@ -37,6 +37,64 @@ const DEFAULT_DEBOUNCE_MS = 1500; // 1.5 秒
 const DEFAULT_MAX_WAIT_MS = 5000; // 5 秒
 const DEFAULT_TAKEOVER_DURATION_MS = 10 * 60 * 1000; // 10 分钟 (600,000ms)
 const MAX_BOT_SENT_IDS = 5000;
+
+/**
+ * 组装规范化消息的多模态载荷与扩展元数据
+ */
+function assembleRawPayload(msg: KK9Message): MessageRawPayload | null {
+  const payload: MessageRawPayload = {};
+  let hasData = false;
+
+  if (msg.raw && typeof msg.raw === 'object') {
+    Object.assign(payload, msg.raw);
+    hasData = true;
+  }
+  if (msg.mentions || msg.atMe || msg.atAll) {
+    payload.mentions = {
+      isAtMe: Boolean(msg.atMe || msg.mentions?.isAtMe),
+      isAtAll: Boolean(msg.atAll || msg.mentions?.isAtAll),
+      mentionedUsers: msg.mentions?.mentionedUsers || [],
+    };
+    hasData = true;
+  }
+  if (msg.replyTo) {
+    payload.replyTo = {
+      id: msg.replyTo.replyToId,
+      replyToId: msg.replyTo.replyToId,
+      sender: msg.replyTo.replyToSender,
+      replyToSender: msg.replyTo.replyToSender,
+      content: msg.replyTo.replyToContent,
+      replyToContent: msg.replyTo.replyToContent,
+    };
+    hasData = true;
+  }
+  if (msg.fileInfo) {
+    payload.fileInfo = {
+      name: msg.fileInfo.fileName,
+      fileName: msg.fileInfo.fileName,
+      size: msg.fileInfo.fileSize,
+      fileSize: msg.fileInfo.fileSize,
+      extension: msg.fileInfo.fileExt,
+      fileExt: msg.fileInfo.fileExt,
+      path: msg.fileInfo.filePath,
+      filePath: msg.fileInfo.filePath,
+    };
+    hasData = true;
+  }
+  if (msg.images && msg.images.length > 0) {
+    payload.images = msg.images.map(img => ({
+      url: img.url,
+      path: img.filePath,
+      width: img.width,
+      height: img.height,
+      mimeType: img.mimeType,
+      size: img.size,
+    }));
+    hasData = true;
+  }
+
+  return hasData ? payload : null;
+}
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export declare interface SessionCoordinator {
@@ -361,10 +419,71 @@ export class SessionCoordinator extends EventEmitter {
 
   /**
    * 核心入站消息处理流
-   * 严格保证在执行任何异步前，优先同步 0ms 切断同一会话在途大模型生成，杜绝 Token 浪费
+   * 严格规范化会话分流：
+   * 1. sessionType = 'group' 是进入 Agent 链前的强制短路条件：
+   *    调用 Store 按 (session_id, message_id) 幂等写入 KK Raw Store，写入完成后立即结束本次处理，绝不进入下游。
+   * 2. sessionType = 'private' 进入一对一私聊主链路流程。
    * @param msg 入站消息实体
    */
   public async handleInboundMessage(msg: KK9Message): Promise<void> {
+    const sessionId = msg.sessionId;
+    const sessionType = msg.sessionType || 'private';
+
+    // 0. 【GroupSession 强制短路分流】：进入 Agent 链 / 防抖 / 在途中断前的绝对边界
+    if (sessionType === 'group') {
+      const messageId = msg.messageId || msg.id;
+      const origin = msg.origin || (msg.isMe ? 'operator' : 'external');
+      log.debug(
+        { sessionId, messageId, origin, sender: msg.sender },
+        '捕获到 GroupSession 群聊消息，执行 Raw Store-only 幂等持久化并立即结束'
+      );
+      try {
+        const replyTargetId =
+          msg.replyTo?.replyToId ??
+          (typeof msg.raw?.replyToId === 'string' ? msg.raw.replyToId : null);
+        const savedMsg = await this.store.messages.saveMessage({
+          sessionId,
+          messageId,
+          sender: msg.sender,
+          senderId: msg.senderId,
+          content: msg.content,
+          messageType: msg.messageType || 'text',
+          origin,
+          rawPayload: assembleRawPayload(msg),
+          replyTargetId,
+          isFromSelf: msg.isMe,
+          isRecalled: this.recalledMessageIds.has(`${sessionId}:${messageId}`),
+          createdAt: msg.timestamp || Date.now(),
+        });
+        this.emit('group_message_saved', sessionId, savedMsg, msg);
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        log.error(
+          {
+            err: error,
+            cause: error.cause,
+            sessionId,
+            messageId,
+            origin,
+          },
+          'GroupSession 消息写入 KK Raw Store 失败，立即终止本次处理'
+        );
+        this.emit('group_message_save_failed', sessionId, msg, error);
+        // 关键安全原则：写入失败时停止处理，不进入下游，不升级为 PrivateSession
+        return;
+      }
+      // GroupSession 写入完成后立即结束本次处理！
+      return;
+    }
+
+    // 1. PrivateSession 会话处理主流程
+    await this.handlePrivateSessionMessage(msg);
+  }
+
+  /**
+   * 一对一私聊消息处理主流程
+   */
+  public async handlePrivateSessionMessage(msg: KK9Message): Promise<void> {
     const sessionId = msg.sessionId;
 
     // 0. 【首要原则：0ms 瞬时同步中断】若当前会话存在大模型在途生成，立即同步切断
@@ -383,7 +502,7 @@ export class SessionCoordinator extends EventEmitter {
     // 1. 处理人类或 Bot 自身发出的消息 (isMe: true)
     if (msg.isMe) {
       // 检查是否为 Bot 自身通过 coordinator 发出的消息回显
-      if (this.botSentMessageIds.has(msg.id)) {
+      if (this.botSentMessageIds.has(msg.id) || msg.origin === 'bot_echo') {
         this.botSentMessageIds.delete(msg.id);
         log.debug({ sessionId, messageId: msg.id }, '识别为 Bot 自身发出的消息回显，安全忽略');
         return;
@@ -460,7 +579,6 @@ export class SessionCoordinator extends EventEmitter {
 
         await this.persistInboundMessage(msg, now, false);
 
-        // 执行决议并自动触发关联 Mastra Workflow resume
         // 执行决议并自动触发关联 Mastra Workflow resume (内部自动执行高危工具并记录结果)
         const resolvedTask = await this.approvalManager.resolveTask({
           taskId: task.id,
@@ -541,15 +659,21 @@ export class SessionCoordinator extends EventEmitter {
       });
       await this.store.sessions.touchMessageTime(sessionId, now);
 
+      const replyTargetId =
+        msg.replyTo?.replyToId ??
+        (typeof msg.raw?.replyToId === 'string' ? msg.raw.replyToId : null);
       await this.store.messages.saveMessage({
         sessionId,
-        messageId: msg.id,
+        messageId: msg.messageId || msg.id,
+        origin: msg.origin || (isFromSelf ? 'operator' : 'external'),
         sender: msg.sender || (isFromSelf ? '自己' : ''),
         senderId: msg.senderId,
         content: msg.content,
         messageType: msg.messageType || 'text',
+        rawPayload: assembleRawPayload(msg),
+        replyTargetId,
         isFromSelf,
-        isRecalled: this.recalledMessageIds.has(`${sessionId}:${msg.id}`),
+        isRecalled: this.recalledMessageIds.has(`${sessionId}:${msg.messageId || msg.id}`),
         createdAt: msg.timestamp || now,
       });
     } catch (err) {

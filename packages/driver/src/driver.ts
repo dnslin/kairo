@@ -58,6 +58,7 @@ export class KK9Driver extends EventEmitter {
   private pollTimer: NodeJS.Timeout | null = null;
   private readonly knownFingerprints = new Set<string>();
   private readonly knownRecalledIds = new Set<string>();
+  private readonly knownBotSentIds = new Set<string>();
   constructor(private readonly config: DriverConfig) {
     super();
     this.selectors = resolveSelectors(config.selectors);
@@ -102,17 +103,44 @@ export class KK9Driver extends EventEmitter {
   public async markSessionRead(sessionId: string): Promise<boolean> {
     return this.sessionOps.markSessionRead(sessionId);
   }
+  /**
+   * 记录由 Bot 自身发出的消息 ID（用于回显识别为 bot_echo）
+   */
+  public recordBotSentMessageId(messageId: string): void {
+    if (!messageId) return;
+    this.knownBotSentIds.add(messageId);
+    if (this.knownBotSentIds.size > 10000) {
+      const firstKey = this.knownBotSentIds.values().next().value;
+      if (firstKey) this.knownBotSentIds.delete(firstKey);
+    }
+  }
+
+  /**
+   * 判断指定消息 ID 是否为 Bot 自身发出
+   */
+  public isBotSentMessageId(messageId: string): boolean {
+    return this.knownBotSentIds.has(messageId);
+  }
 
   public async getRecentMessages(limit = 20, session?: KK9Session): Promise<KK9Message[]> {
     const targetSession = session || (await this.getCurrentSession()) || undefined;
-    return this.messageOps.getRecentMessages(limit, targetSession);
+    return this.messageOps.getRecentMessages(
+      limit,
+      targetSession,
+      this.knownBotSentIds,
+      this.config.currentUserId
+    );
   }
 
   /**
    * 发送纯文本消息
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
-    return this.sendOps.sendText(text, options);
+    const res = await this.sendOps.sendText(text, options);
+    if (res.success && res.messageId) {
+      this.recordBotSentMessageId(res.messageId);
+    }
+    return res;
   }
 
   /**
@@ -122,7 +150,11 @@ export class KK9Driver extends EventEmitter {
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
-    return this.sendOps.sendRichText(content, options);
+    const res = await this.sendOps.sendRichText(content, options);
+    if (res.success && res.messageId) {
+      this.recordBotSentMessageId(res.messageId);
+    }
+    return res;
   }
 
   /**
@@ -133,21 +165,33 @@ export class KK9Driver extends EventEmitter {
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
-    return this.sendOps.sendReply(replyTo, content, options);
+    const res = await this.sendOps.sendReply(replyTo, content, options);
+    if (res.success && res.messageId) {
+      this.recordBotSentMessageId(res.messageId);
+    }
+    return res;
   }
 
   /**
    * 发送本地文件
    */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
-    return this.sendOps.sendFile(filePath, options);
+    const res = await this.sendOps.sendFile(filePath, options);
+    if (res.success && res.messageId) {
+      this.recordBotSentMessageId(res.messageId);
+    }
+    return res;
   }
 
   /**
    * 发送本地图片
    */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
-    return this.sendOps.sendImage(imagePath, options);
+    const res = await this.sendOps.sendImage(imagePath, options);
+    if (res.success && res.messageId) {
+      this.recordBotSentMessageId(res.messageId);
+    }
+    return res;
   }
 
   /**
@@ -161,7 +205,11 @@ export class KK9Driver extends EventEmitter {
    * 发送自定义视觉卡片
    */
   public async sendCard(cardData: CardData, options?: SendCardOptions): Promise<SendResult> {
-    return this.sendOps.sendCard(cardData, options);
+    const res = await this.sendOps.sendCard(cardData, options);
+    if (res.success && res.messageId) {
+      this.recordBotSentMessageId(res.messageId);
+    }
+    return res;
   }
 
   /**
@@ -480,9 +528,6 @@ export class KK9Driver extends EventEmitter {
     await this.collectRecalledEvents(session.id);
     const messages = await this.getRecentMessages(limit, session);
     for (const msg of messages) {
-      // 过滤自身发出的消息
-      if (msg.isMe) continue;
-
       if (!this.knownFingerprints.has(msg.id)) {
         this.knownFingerprints.add(msg.id);
         // 限制内存指纹集合大小，防止无限内存增长

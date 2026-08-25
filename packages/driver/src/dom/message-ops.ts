@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import type { CdpClient } from '../cdp/client.js';
+import { toSafeString } from '../bridge/converter.js';
 import type {
   KK9FileInfo,
   KK9ImageInfo,
   KK9Message,
+  KK9MessageOrigin,
   KK9MessageType,
   KK9MentionInfo,
   KK9ReplyInfo,
@@ -38,6 +40,7 @@ export function saveImageToFile(imageInfo: KK9ImageInfo, destPath: string): bool
   fs.copyFileSync(imageInfo.filePath, destPath);
   return true;
 }
+
 interface RawMessageData {
   sender: string;
   senderId?: string;
@@ -76,7 +79,12 @@ export class MessageOps {
   /**
    * 读取当前激活会话的最近消息列表
    */
-  public async getRecentMessages(limit = 20, session?: KK9Session): Promise<KK9Message[]> {
+  public async getRecentMessages(
+    limit = 20,
+    session?: KK9Session,
+    knownBotSentIds?: Set<string>,
+    currentUserId?: string | number
+  ): Promise<KK9Message[]> {
     const currentSessionId = session?.id || '';
     const currentSessionName = session?.name || '';
     const currentSessionType = session?.type || 'private';
@@ -131,12 +139,14 @@ export class MessageOps {
           const sender = senderEl?.textContent?.trim() || '';
           const time = timeEl?.textContent?.trim() || '';
           let content = extractContent(contentEl).trim();
-
+          const domMsgId = item.getAttribute('data-msg-id') ||
+            item.getAttribute('data-id') ||
+            item.getAttribute('id') ||
+            undefined;
           const senderId = item.getAttribute('data-sender-id') ||
             item.getAttribute('data-uid') ||
             item.getAttribute('data-sender') ||
             '';
-
           const isMe = item.matches('${this.selectors.messageIsMe}') ||
             item.querySelector('${this.selectors.messageIsMe}') !== null ||
             item.classList.contains('message-right') ||
@@ -274,7 +284,7 @@ export class MessageOps {
               replyTo,
               fileInfo,
               images: images.length > 0 ? images : undefined,
-              raw: vueMsg || undefined
+              raw: vueMsg ? Object.assign({ id: vueMsg.msgID || vueMsg.msgId || vueMsg.id || domMsgId }, vueMsg) : (domMsgId ? { id: domMsgId } : undefined)
             });
           }
         }
@@ -294,16 +304,39 @@ export class MessageOps {
           raw.time,
           raw.content
         );
+        const rawId = raw.raw?.msgID ?? raw.raw?.msgId ?? raw.raw?.messageId ?? raw.raw?.id ?? fp;
+        const msgIdStr = toSafeString(rawId, fp);
+        const isBotEcho = Boolean(
+          knownBotSentIds && (knownBotSentIds.has(fp) || knownBotSentIds.has(msgIdStr))
+        );
+        const isMe = Boolean(
+          raw.isMe ||
+          (currentUserId !== undefined &&
+            (raw.senderId === toSafeString(currentUserId) ||
+              raw.sender === toSafeString(currentUserId)))
+        );
+        const origin: KK9MessageOrigin =
+          raw.messageType === 'system'
+            ? 'system'
+            : isMe
+              ? isBotEcho
+                ? 'bot_echo'
+                : 'operator'
+              : 'external';
+        const finalMessageId = msgIdStr || fp;
+        const finalId = finalMessageId || fp;
         return {
-          id: fp,
+          id: finalId,
+          messageId: finalMessageId,
           sessionId: currentSessionId,
           sessionName: currentSessionName,
           sessionType: currentSessionType,
+          origin,
           sender: raw.sender,
           senderId: raw.senderId,
           content: raw.content,
           time: raw.time,
-          isMe: raw.isMe,
+          isMe,
           timestamp: now,
           messageType: raw.messageType,
           atMe: raw.atMe,

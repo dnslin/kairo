@@ -338,6 +338,7 @@ export type MessageType =
   | 'rich-text'
   | 'system'
   | (string & {});
+export type SessionMessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system';
 
 /**
  * 消息多模态与扩展载荷结构
@@ -347,6 +348,7 @@ export interface MessageRawPayload {
   images?: Array<{
     url?: string;
     path?: string;
+    filePath?: string;
     relativePath?: string;
     width?: number;
     height?: number;
@@ -357,10 +359,14 @@ export interface MessageRawPayload {
   /** 文件卡片元数据 */
   fileInfo?: {
     name: string;
+    fileName?: string;
     size?: number | string;
+    fileSize?: string;
     path?: string;
+    filePath?: string;
     relativePath?: string;
     extension?: string;
+    fileExt?: string;
     [key: string]: unknown;
   };
   /** @ 提及信息 */
@@ -373,8 +379,11 @@ export interface MessageRawPayload {
   /** 引用回复信息 */
   replyTo?: {
     id?: string;
+    replyToId?: string;
     sender?: string;
+    replyToSender?: string;
     content?: string;
+    replyToContent?: string;
     [key: string]: unknown;
   };
   /** 其它自定义或原始属性 */
@@ -399,6 +408,8 @@ export interface SessionMessage {
   content: string;
   /** 消息类型 ('text' | 'image' | 'file' | 'quote' | 'rich-text' | 'system' 等) */
   messageType: MessageType;
+  /** 消息来源身份 ('external' | 'operator' | 'bot_echo' | 'system') */
+  origin?: SessionMessageOrigin;
   /** 原始多模态或扩展 JSON 载荷反序列化对象 */
   rawPayload: MessageRawPayload | null;
   /** 被引用/回复的目标消息 ID */
@@ -427,6 +438,8 @@ export interface SaveMessageInput {
   content: string;
   /** 消息类型，默认 'text' */
   messageType?: MessageType;
+  /** 消息来源身份 ('external' | 'operator' | 'bot_echo' | 'system') */
+  origin?: SessionMessageOrigin;
   /** 原始多模态载荷（支持对象或 JSON 字符串） */
   rawPayload?: MessageRawPayload | string | null;
   /** 被引用/回复的目标消息 ID */

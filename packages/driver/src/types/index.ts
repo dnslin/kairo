@@ -10,6 +10,12 @@ export type KK9SessionType = 'private' | 'group';
 export type KK9MessageType = 'text' | 'image' | 'file' | 'quote' | 'rich-text' | 'system';
 
 /**
+ * 消息来源身份：外部成员 (external)、操作员 (operator)、机器人回显 (bot_echo)、系统消息 (system)
+ */
+export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system';
+export type InboundMessageOrigin = KK9MessageOrigin;
+
+/**
  * 文本样式属性
  */
 export interface TextStyle {
@@ -125,11 +131,15 @@ export interface KK9Session {
 }
 
 export interface KK9Message {
-  /** 基于 SHA-256 计算的唯一消息指纹 */
+  /** 基于 SHA-256 计算的唯一消息指纹或原生 ID */
   id: string;
+  /** 原生 native message ID（若不可用则为稳定指纹，保证非空） */
+  messageId?: string;
   sessionId: string;
   sessionName: string;
   sessionType: KK9SessionType;
+  /** 消息来源身份 */
+  origin?: KK9MessageOrigin;
   sender: string;
   senderId?: string;
   content: string;
@@ -154,6 +164,9 @@ export interface KK9Message {
   images?: KK9ImageInfo[];
   raw?: Record<string, unknown>;
 }
+
+/** 领域规范化入站消息别名 */
+export type InboundMessage = KK9Message;
 
 /**
  * 员工档案与组织架构信息
@@ -221,6 +234,7 @@ export interface PollingConfig {
 
 export interface DriverConfig {
   cdp: CdpConfig;
+  currentUserId?: string | number;
   selectors?: Partial<SelectorsConfig>;
   polling?: Partial<PollingConfig>;
 }
@@ -232,8 +246,9 @@ export interface EventBridgeConfig {
   maxFingerprints?: number;
   /** 当前用户 UID / 账号 (用于识别自身发出消息 isMe) */
   currentUserId?: string | number;
-  /** 是否启用消息撤回原生事件捕获 (默认 true) */
   enableRecallHook?: boolean;
+  /** 共享的已发送 Bot 消息 ID 集合 */
+  knownBotSentIds?: Set<string>;
 }
 
 /**

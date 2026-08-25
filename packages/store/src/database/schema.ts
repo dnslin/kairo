@@ -1,6 +1,6 @@
 import type { Client } from '@libsql/client';
-import { SchemaInitError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
+import { runKKBotMigrations } from './migrations.js';
 
 const log = createChildLogger('schema');
 
@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_employee ON sessions(employee_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_msg ON sessions(last_message_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_mode ON sessions(mode);
 
--- 会话消息历史持久化表（支持原生 ID 精准撤回与多模态载荷）
+-- 会话消息历史持久化表（支持原生 ID 精准撤回与多模态载荷，(session_id, message_id) 数据库唯一约束保护幂等）
 CREATE TABLE IF NOT EXISTS session_messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id TEXT NOT NULL,
@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS session_messages (
   sender_id TEXT,
   content TEXT NOT NULL,
   message_type TEXT NOT NULL DEFAULT 'text',
+  origin TEXT NOT NULL DEFAULT 'external',
   raw_payload TEXT,
   reply_target_id TEXT,
   is_from_self INTEGER NOT NULL DEFAULT 0,
@@ -100,7 +101,7 @@ CREATE TABLE IF NOT EXISTS session_messages (
 
 CREATE INDEX IF NOT EXISTS idx_session_messages_session_id ON session_messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_messages_message_id ON session_messages(message_id);
-CREATE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
 CREATE INDEX IF NOT EXISTS idx_session_messages_session_created ON session_messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_session_messages_session_recalled ON session_messages(session_id, is_recalled, created_at);
 `;
@@ -110,13 +111,6 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_session_recalled ON session_mess
  * @param client LibSQL 客户端实例
  */
 export async function initSchema(client: Client): Promise<void> {
-  try {
-    log.debug('开始执行数据库表结构与索引 DDL 初始化...');
-    await client.executeMultiple(SCHEMA_SQL);
-    log.debug('数据库表结构与索引 DDL 初始化完成');
-  } catch (error) {
-    const err = error instanceof Error ? error : new Error(String(error));
-    log.error({ err }, '初始化数据库表结构失败');
-    throw new SchemaInitError('初始化数据库表结构失败', err);
-  }
+  log.debug('执行数据库表结构与版本化迁移初始化...');
+  await runKKBotMigrations(client);
 }
