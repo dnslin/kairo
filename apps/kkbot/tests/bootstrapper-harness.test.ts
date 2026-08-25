@@ -201,4 +201,26 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     expect(boot.getGate().isOpen()).toBe(true);
     await boot.shutdown();
   });
+
+  it('should successfully discover tools from required stdio MCP server, pass Preflight, and open Work Admission Gate', async () => {
+    const stdioMcpConfigPath = path.join(tempDir, 'config-stdio-mcp.yaml');
+    await fs.writeFile(
+      stdioMcpConfigPath,
+      createValidTestYaml({ dbFilePath, useStdioMcpServer: true, mcpRequired: true }),
+      'utf-8'
+    );
+
+    const boot = new UnifiedBootstrapper({ configPath: stdioMcpConfigPath });
+    await boot.start();
+
+    expect(boot.getGate().isOpen()).toBe(true);
+
+    const mcp = boot.getMCPClient();
+    expect(mcp).toBeDefined();
+    const tools = await mcp?.listTools();
+    expect(tools).toBeDefined();
+    expect(Object.keys(tools ?? {})).toContain('local_echo');
+
+    await boot.shutdown();
+  });
 });

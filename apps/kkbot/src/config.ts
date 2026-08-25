@@ -45,6 +45,12 @@ const mastraConfigSchema = z
 const mcpServerItemSchema = z
   .object({
     required: z.boolean().default(true),
+    url: z.string().url('MCP 服务 URL 格式不正确').optional(),
+    command: z.string().min(1, 'MCP 启动命令不能为空').optional(),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+    cwd: z.string().optional(),
+    timeout: z.number().int('必须为正整数').min(1, '超时时间必须大于 0').optional(),
   })
   .strict();
 

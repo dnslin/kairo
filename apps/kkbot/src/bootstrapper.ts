@@ -210,21 +210,21 @@ export class UnifiedBootstrapper {
         await this.acquireStage('MCPClient', () => {
           const mcpServers: Record<string, MastraMCPServerDefinition> = {};
           for (const [name, serverConfig] of Object.entries(cfg.mcp.servers)) {
-            if (
-              'url' in serverConfig &&
-              (typeof serverConfig.url === 'string' || serverConfig.url instanceof URL)
-            ) {
+            if (serverConfig.url) {
               mcpServers[name] = {
-                url: typeof serverConfig.url === 'string' ? new URL(serverConfig.url) : serverConfig.url,
+                url: new URL(serverConfig.url),
+                timeout: serverConfig.timeout,
               };
-            } else if ('command' in serverConfig && typeof serverConfig.command === 'string') {
-              const args =
-                'args' in serverConfig && Array.isArray(serverConfig.args)
-                  ? (serverConfig.args as string[])
-                  : [];
-              mcpServers[name] = { command: serverConfig.command, args };
+            } else if (serverConfig.command) {
+              mcpServers[name] = {
+                command: serverConfig.command,
+                args: serverConfig.args ?? [],
+                env: serverConfig.env,
+                cwd: serverConfig.cwd,
+                timeout: serverConfig.timeout,
+              };
             } else {
-              mcpServers[name] = { url: new URL('http://127.0.0.1:9999/mcp') };
+              mcpServers[name] = { url: new URL('http://127.0.0.1:0/mcp') };
             }
           }
           this.mcpClient = new MCPClient({

@@ -159,4 +159,25 @@ describe('BOOT-01 Contract: Composition Root, Gate, Ledger & Shutdown', () => {
     // 确认 InstanceLock 的 afterFinalizer 是整个序列的最后一项
     expect(sequence[sequence.length - 1]).toBe('after_InstanceLock');
   });
+
+  it('BOOT-01.8: required stdio MCP 服务成功完成 discovery 探针并开放 Work Admission Gate', async () => {
+    const stdioConfigFile = path.join(tempDir, 'config-stdio.yaml');
+    await fs.writeFile(
+      stdioConfigFile,
+      createValidTestYaml({ dbFilePath, useStdioMcpServer: true, mcpRequired: true }),
+      'utf-8'
+    );
+
+    const boot = new UnifiedBootstrapper({ configPath: stdioConfigFile });
+    await boot.start();
+
+    expect(boot.getGate().isOpen()).toBe(true);
+    const mcp = boot.getMCPClient();
+    expect(mcp).toBeDefined();
+    const tools = await mcp?.listTools();
+    expect(tools).toBeDefined();
+    expect(Object.keys(tools ?? {})).toContain('local_echo');
+
+    await boot.shutdown();
+  });
 });

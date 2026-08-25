@@ -4,13 +4,15 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-export const TEST_MCP_SERVER_SCRIPT = path.resolve(__dirname, 'fixtures/test-mcp-server.ts');
+export const STDIO_MCP_SERVER_SCRIPT = path.resolve(__dirname, 'fixtures/stdio-mcp-server.js');
 
 export interface CreateTestConfigOptions {
   dbFilePath: string;
   cdpUrl?: string;
   embeddingEnabled?: boolean;
   mcpRequired?: boolean;
+  useStdioMcpServer?: boolean;
+  stdioScriptPath?: string;
 }
 
 /**
@@ -22,18 +24,29 @@ export function createValidTestYaml(options: CreateTestConfigOptions): string {
     cdpUrl = 'http://127.0.0.1:9222',
     embeddingEnabled = false,
     mcpRequired = false,
+    useStdioMcpServer = false,
+    stdioScriptPath = STDIO_MCP_SERVER_SCRIPT,
   } = options;
 
   const normalizedDb = dbFilePath.replace(/\\/g, '/');
+  const nodeExec = process.execPath.replace(/\\/g, '/');
+  const normalizedScript = stdioScriptPath.replace(/\\/g, '/');
+
+  const serverLines = useStdioMcpServer
+    ? `    local:
+      command: "${nodeExec}"
+      args:
+        - "${normalizedScript}"
+      required: ${mcpRequired}`
+    : `    local:
+      required: ${mcpRequired}`;
 
   const mcpSection = `
 mcp:
   perServerTimeoutMs: 5000
   servers:
-    local:
-      required: ${mcpRequired}
+${serverLines}
 `;
-
   return `
 kk:
   cdp:
