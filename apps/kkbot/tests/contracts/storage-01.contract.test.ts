@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UnifiedBootstrapper } from '../../src/bootstrapper.js';
 import { resolveDatabaseLocation } from '../../src/path-resolver.js';
+import { createValidTestYaml } from '../fixtures.js';
 import { createClient, runKKBotMigrations } from '@kkbot/store';
 import { LibSQLStore } from '@mastra/libsql';
 import fs from 'node:fs/promises';
@@ -16,58 +17,7 @@ describe('STORAGE-01 Contract: Single DB Dual Client & Migration Boundaries', ()
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kkbot-storage01-'));
     dbFilePath = path.join(tempDir, 'kkbot.db');
     configFile = path.join(tempDir, 'config.yaml');
-
-    const validYaml = `
-kk:
-  cdp:
-    url: "http://127.0.0.1:9222"
-  debounceMs: 1500
-  maxWaitMs: 5000
-  takeoverMinutes: 10
-
-storage:
-  url: "file:${dbFilePath.replace(/\\/g, '/')}"
-
-mastra:
-  observability:
-    enabled: true
-    redactSensitiveData: true
-
-mcp:
-  perServerTimeoutMs: 5000
-  servers:
-    local:
-      required: true
-agent:
-  id: kk-assistant
-  soulPath: ./config/soul.md
-  maxSteps: 5
-  memory:
-    lastMessages: 10
-    observationalMemory: false
-
-knowledge:
-  sources: ./data/knowledge/sources
-  normalized: ./data/knowledge/normalized
-  lexical:
-    enabled: true
-  embedding:
-    enabled: false
-  rerank:
-    enabled: false
-
-limits:
-  timezone: Asia/Shanghai
-  globalDailyTokens: 1000000
-  userDailyTokens: 50000
-  userDailyRequests: 100
-
-retention:
-  mediaDays: 30
-  deliverableDays: 30
-  logDays: 7
-`;
-    await fs.writeFile(configFile, validYaml, 'utf-8');
+    await fs.writeFile(configFile, createValidTestYaml({ dbFilePath }), 'utf-8');
   });
 
   afterEach(async () => {

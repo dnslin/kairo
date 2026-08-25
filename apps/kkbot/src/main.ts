@@ -113,17 +113,22 @@ export async function runCli(
     }
     if (command === 'start') {
       io.log('[KKBot] 正在启动 KKBot 运行时与 Composition Root...');
-      await bootstrapper.start();
-      io.log('[KKBot] ✅ Ready Barrier 全部通过，Work Admission Gate 已开放，KKBot 运行中。');
 
       const handleSignal = async (sig: string): Promise<void> => {
         io.log(`[KKBot] 收到 ${sig} 信号，正在执行优雅停机...`);
-        await bootstrapper.shutdown(sig);
-        io.log('[KKBot] 优雅停机完成。');
+        const res = await bootstrapper.shutdown(sig);
+        if (res.errors.length > 0) {
+          io.error(`[KKBot] 优雅停机完成，但存在 ${res.errors.length} 处错误。`);
+        } else {
+          io.log('[KKBot] 优雅停机完成。');
+        }
       };
 
       process.once('SIGINT', () => void handleSignal('SIGINT'));
       process.once('SIGTERM', () => void handleSignal('SIGTERM'));
+
+      await bootstrapper.start();
+      io.log('[KKBot] ✅ Ready Barrier 全部通过，Work Admission Gate 已开放，KKBot 运行中。');
       return 0;
     }
 

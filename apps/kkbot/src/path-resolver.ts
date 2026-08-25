@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface DatabaseLocation {
   /** 是否为纯内存数据库 */
@@ -43,26 +44,24 @@ export function resolveDatabaseLocation(
       fileUrl: trimmed.startsWith('file:') ? trimmed : `file:${trimmed}`,
     };
   }
+  const effectiveBase = baseDir ? path.resolve(baseDir) : process.cwd();
+  let absolutePath: string;
 
-  // 剥除协议前缀提取文件路径
-  let filePath = trimmed;
-  if (filePath.startsWith('file:')) {
-    filePath = filePath.slice(5);
-    // 处理 file://C:/... 或 file:///C:/...
-    if (filePath.startsWith('///')) {
-      filePath = filePath.slice(3);
-    } else if (filePath.startsWith('//')) {
-      filePath = filePath.slice(2);
+  if (trimmed.startsWith('file:')) {
+    try {
+      // 处理标准绝对 file:// URL
+      const parsed = fileURLToPath(trimmed);
+      absolutePath = path.normalize(path.resolve(effectiveBase, parsed));
+    } catch {
+      // 处理非标准/相对 file:./... 路径
+      const rawSub = trimmed.slice(5);
+      absolutePath = path.normalize(path.resolve(effectiveBase, rawSub));
     }
+  } else {
+    absolutePath = path.normalize(path.resolve(effectiveBase, trimmed));
   }
 
-  // 解析并规范化为绝对路径
-  const effectiveBase = baseDir ? path.resolve(baseDir) : process.cwd();
-  const absolutePath = path.normalize(path.resolve(effectiveBase, filePath));
-
-  // 构造标准 file: URL
   const fileUrl = `file:${absolutePath}`;
-
   return {
     isMemory: false,
     absolutePath,

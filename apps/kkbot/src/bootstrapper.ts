@@ -130,14 +130,9 @@ export class UnifiedBootstrapper {
         });
       });
 
-      // 4. 创建 KKBot Client 并配置 WAL / busy_timeout
+      // 4. 创建 KKBot Client 并立即登记账本，再配置 WAL / busy_timeout
       await this.acquireStage('KKBotClient', async () => {
         this.kkbotClient = createClient({ url: this.dbLocation!.fileUrl });
-
-        if (!this.dbLocation!.isMemory) {
-          await this.kkbotClient.execute('PRAGMA journal_mode = WAL;');
-          await this.kkbotClient.execute('PRAGMA busy_timeout = 5000;');
-        }
 
         this.ledger.record({
           id: 'KKBotClient',
@@ -147,8 +142,12 @@ export class UnifiedBootstrapper {
             await this.callFinalizerHook('KKBotClient', () => this.kkbotClient?.close());
           },
         });
-      });
 
+        if (!this.dbLocation!.isMemory) {
+          await this.kkbotClient.execute('PRAGMA journal_mode = WAL;');
+          await this.kkbotClient.execute('PRAGMA busy_timeout = 5000;');
+        }
+      });
       // 5. 执行并提交 KKBot 数据库迁移（必须先于 Mastra storage.init 完成）
       await this.acquireStage('KKBotMigrations', async () => {
         await runKKBotMigrations(this.kkbotClient!);
@@ -229,6 +228,7 @@ export class UnifiedBootstrapper {
             }
           }
           this.mcpClient = new MCPClient({
+            id: this.startupGenerationId,
             servers: mcpServers,
             timeout: cfg.mcp?.perServerTimeoutMs,
           });
@@ -256,9 +256,15 @@ export class UnifiedBootstrapper {
       // 10. Ready Barrier 判定成功，唯一一次打开 Work Admission Gate
       this.gate.open();
     } catch (error) {
-      // 发生任何初始化或准备故障，先确保 Gate 关闭，再执行统一逆拓扑回滚清理
       this.gate.close();
-      await this.shutdown(error);
+      const shutdownRes = await this.shutdown(error);
+      if (shutdownRes?.errors && shutdownRes.errors.length > 0) {
+        const initialErr = error instanceof Error ? error : new Error(String(error));
+        throw new AggregateError(
+          [initialErr, ...shutdownRes.errors.map((e) => e.error)],
+          `启动失败且逆拓扑回滚清理中产生 ${shutdownRes.errors.length} 处错误: ${initialErr.message}`
+        );
+      }
       throw error;
     }
   }
@@ -281,13 +287,48 @@ export class UnifiedBootstrapper {
     // 探针 2：验证 migration 事实已提交
     const migCheck = await this.kkbotClient.execute('SELECT COUNT(*) as count FROM _kkbot_migrations');
     const rawCount = migCheck.rows[0]?.count;
-    const migrationsApplied = typeof rawCount === 'number' || typeof rawCount === 'bigint' ? Number(rawCount) > 0 : false;
+    const migrationsApplied =
+      typeof rawCount === 'number' || typeof rawCount === 'bigint' ? Number(rawCount) > 0 : false;
 
     // 探针 3：验证 Storage 可用（不产生业务事实）
     const storageReady = Boolean(this.libSqlStore);
+    // 探针 4：验证 MCPClient 可用性与 discovery 探测（若配置）
+    let mcpClientReady = true;
+    if (this.config?.mcp?.servers && this.mcpClient) {
+      try {
+        const { errors } = await this.mcpClient.listToolsWithErrors({
+          perServerTimeoutMs: this.config.mcp.perServerTimeoutMs,
+        });
 
-    // 探针 4：验证 MCPClient 可用性（若配置）
-    const mcpClientReady = Boolean(!this.config?.mcp?.servers || this.mcpClient);
+        const errorEntries = Object.entries(errors);
+        if (errorEntries.length > 0) {
+          for (const [serverName, errorMsg] of errorEntries) {
+            const serverConfig = this.config.mcp.servers[serverName];
+            const isRequired = serverConfig?.required !== false;
+            if (isRequired) {
+              throw new Error(
+                `必需的 MCP Server '${serverName}' Tool discovery 失败，阻止开门: ${errorMsg}`
+              );
+            }
+          }
+          mcpClientReady = false;
+        }
+      } catch (mcpErr) {
+        if (mcpErr instanceof Error && mcpErr.message.includes('必需的 MCP Server')) {
+          throw mcpErr;
+        }
+        const requiredServers = Object.entries(this.config.mcp.servers).filter(
+          ([, s]) => s.required !== false
+        );
+        if (requiredServers.length > 0) {
+          const err = mcpErr instanceof Error ? mcpErr : new Error(String(mcpErr));
+          throw new Error(`必需的 MCP Server Tool discovery 失败，阻止开门: ${err.message}`, {
+            cause: err,
+          });
+        }
+        mcpClientReady = false;
+      }
+    }
 
     return {
       startupGenerationId: this.startupGenerationId,

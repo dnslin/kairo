@@ -80,42 +80,73 @@ export class InstanceLock {
   async acquire(): Promise<void> {
     await fs.mkdir(this.lockDir, { recursive: true });
 
-    // 检查既有锁文件
-    try {
-      const rawContent = await fs.readFile(this.lockFilePath, 'utf-8');
-      const metadata = JSON.parse(rawContent) as Partial<InstanceLockMetadata>;
-
-      if (typeof metadata.pid === 'number' && metadata.pid > 0) {
-        if (metadata.pid === process.pid && metadata.startupGenerationId === this.startupGenerationId) {
-          // 当前进程同一代次已持有
-          this.held = true;
-          return;
-        }
-
-        if (isProcessAlive(metadata.pid)) {
-          throw new InstanceLockConflictError(
-            this.lockFilePath,
-            metadata.pid,
-            metadata.startupGenerationId ?? 'unknown'
-          );
-        }
-        // 拥有者进程已死亡，陈旧锁可安全接管自愈
-      }
-    } catch (error) {
-      if (error instanceof InstanceLockConflictError) {
-        throw error;
-      }
-      // 文件不存在或内容损坏，可安全创建新锁
-    }
-
     const payload: InstanceLockMetadata = {
       pid: process.pid,
       startupGenerationId: this.startupGenerationId,
       acquiredAt: new Date().toISOString(),
     };
+    const payloadStr = JSON.stringify(payload, null, 2);
 
-    await fs.writeFile(this.lockFilePath, JSON.stringify(payload, null, 2), 'utf-8');
-    this.held = true;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await fs.writeFile(this.lockFilePath, payloadStr, { flag: 'wx', encoding: 'utf-8' });
+        this.held = true;
+        return;
+      } catch (error: unknown) {
+        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+        if (code !== 'EEXIST') {
+          throw error;
+        }
+
+        // 文件已存在，检查拥有者存活状态
+        try {
+          const rawContent = await fs.readFile(this.lockFilePath, 'utf-8');
+          const metadata = JSON.parse(rawContent) as Partial<InstanceLockMetadata>;
+
+          if (typeof metadata.pid === 'number' && metadata.pid > 0) {
+            if (
+              metadata.pid === process.pid &&
+              metadata.startupGenerationId === this.startupGenerationId
+            ) {
+              this.held = true;
+              return;
+            }
+
+            if (isProcessAlive(metadata.pid)) {
+              throw new InstanceLockConflictError(
+                this.lockFilePath,
+                metadata.pid,
+                metadata.startupGenerationId ?? 'unknown'
+              );
+            }
+          }
+
+          // 拥有者进程已消亡或锁文件损坏，清理后重试
+          await fs.unlink(this.lockFilePath).catch((unlinkErr: unknown) => {
+            const unlinkCode =
+              unlinkErr && typeof unlinkErr === 'object' && 'code' in unlinkErr
+                ? unlinkErr.code
+                : undefined;
+            if (unlinkCode !== 'ENOENT') {
+              throw unlinkErr;
+            }
+          });
+        } catch (inspectError) {
+          if (inspectError instanceof InstanceLockConflictError) {
+            throw inspectError;
+          }
+          const inspectCode =
+            inspectError && typeof inspectError === 'object' && 'code' in inspectError
+              ? inspectError.code
+              : undefined;
+          if (inspectCode !== 'ENOENT') {
+            throw inspectError;
+          }
+        }
+      }
+    }
+
+    throw new Error(`取得单实例锁失败，重试已耗尽: ${this.lockFilePath}`);
   }
 
   /**
@@ -128,14 +159,37 @@ export class InstanceLock {
     }
 
     try {
-      // 仅当锁文件仍属于当前进程与代次时删除
-      const rawContent = await fs.readFile(this.lockFilePath, 'utf-8');
-      const metadata = JSON.parse(rawContent) as Partial<InstanceLockMetadata>;
-      if (metadata.pid === process.pid && metadata.startupGenerationId === this.startupGenerationId) {
-        await fs.unlink(this.lockFilePath);
+      let rawContent: string | null = null;
+      try {
+        rawContent = await fs.readFile(this.lockFilePath, 'utf-8');
+      } catch (readErr: unknown) {
+        const readCode =
+          readErr && typeof readErr === 'object' && 'code' in readErr ? readErr.code : undefined;
+        if (readCode === 'ENOENT') {
+          return;
+        }
+        throw readErr;
       }
-    } catch {
-      // 忽略文件已不存在或删除失败
+
+      if (rawContent) {
+        const metadata = JSON.parse(rawContent) as Partial<InstanceLockMetadata>;
+        if (
+          metadata.pid === process.pid &&
+          metadata.startupGenerationId === this.startupGenerationId
+        ) {
+          try {
+            await fs.unlink(this.lockFilePath);
+          } catch (unlinkErr: unknown) {
+            const unlinkCode =
+              unlinkErr && typeof unlinkErr === 'object' && 'code' in unlinkErr
+                ? unlinkErr.code
+                : undefined;
+            if (unlinkCode !== 'ENOENT') {
+              throw unlinkErr;
+            }
+          }
+        }
+      }
     } finally {
       this.held = false;
     }

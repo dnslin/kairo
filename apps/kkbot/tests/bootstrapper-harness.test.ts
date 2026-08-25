@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UnifiedBootstrapper } from '../src/bootstrapper.js';
+import { createValidTestYaml } from './fixtures.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -13,58 +14,7 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kkbot-boot-test-'));
     dbFilePath = path.join(tempDir, 'kkbot.db');
     configFile = path.join(tempDir, 'config.yaml');
-    const validYaml = `
-kk:
-  cdp:
-    url: "http://127.0.0.1:9222"
-  debounceMs: 1500
-  maxWaitMs: 5000
-  takeoverMinutes: 10
-
-storage:
-  url: "file:${dbFilePath.replace(/\\/g, '/')}"
-
-mastra:
-  observability:
-    enabled: true
-    redactSensitiveData: true
-
-mcp:
-  perServerTimeoutMs: 5000
-  servers:
-    local:
-      required: true
-
-agent:
-  id: kk-assistant
-  soulPath: ./config/soul.md
-  maxSteps: 5
-  memory:
-    lastMessages: 10
-    observationalMemory: false
-
-knowledge:
-  sources: ./data/knowledge/sources
-  normalized: ./data/knowledge/normalized
-  lexical:
-    enabled: true
-  embedding:
-    enabled: false
-  rerank:
-    enabled: false
-
-limits:
-  timezone: Asia/Shanghai
-  globalDailyTokens: 1000000
-  userDailyTokens: 50000
-  userDailyRequests: 100
-
-retention:
-  mediaDays: 30
-  deliverableDays: 30
-  logDays: 7
-`;
-    await fs.writeFile(configFile, validYaml, 'utf-8');
+    await fs.writeFile(configFile, createValidTestYaml({ dbFilePath }), 'utf-8');
   });
 
   afterEach(async () => {
@@ -202,5 +152,53 @@ retention:
 
     expect(res1).toBe(res2);
     expect(boot.getGate().isOpen()).toBe(false);
+  });
+
+  it('should throw AggregateError when both startup and rollback finalizers encounter failures', async () => {
+    const boot = new UnifiedBootstrapper({
+      configPath: configFile,
+      hooks: {
+        beforeAcquire: (stage) => {
+          if (stage === 'Preflight') {
+            throw new Error('Initial Preflight failure');
+          }
+        },
+        beforeFinalizer: (resId) => {
+          if (resId === 'KKBotClient') {
+            throw new Error('Rollback finalizer failure');
+          }
+        },
+      },
+    });
+
+    await expect(boot.start()).rejects.toThrow(AggregateError);
+    expect(boot.getGate().isOpen()).toBe(false);
+  });
+
+  it('should block Work Admission Gate when required MCP discovery fails', async () => {
+    const mcpConfigPath = path.join(tempDir, 'config-mcp-req.yaml');
+    await fs.writeFile(
+      mcpConfigPath,
+      createValidTestYaml({ dbFilePath, includeMcp: true, mcpRequired: true }),
+      'utf-8'
+    );
+
+    const boot = new UnifiedBootstrapper({ configPath: mcpConfigPath });
+    await expect(boot.start()).rejects.toThrow(/必需的 MCP Server .* discovery 失败/);
+    expect(boot.getGate().isOpen()).toBe(false);
+  });
+
+  it('should allow Work Admission Gate to open when optional MCP discovery fails with degradation', async () => {
+    const mcpOptConfigPath = path.join(tempDir, 'config-mcp-opt.yaml');
+    await fs.writeFile(
+      mcpOptConfigPath,
+      createValidTestYaml({ dbFilePath, includeMcp: true, mcpRequired: false }),
+      'utf-8'
+    );
+
+    const boot = new UnifiedBootstrapper({ configPath: mcpOptConfigPath });
+    await boot.start();
+    expect(boot.getGate().isOpen()).toBe(true);
+    await boot.shutdown();
   });
 });

@@ -54,4 +54,14 @@ describe('Database Location Resolver (Path Normalization)', () => {
       expect(res.isMemory).toBe(true);
     }
   });
+
+  it('should parse standard absolute file URLs correctly using fileURLToPath', () => {
+    const cwd = process.cwd();
+    const sampleAbs = path.resolve(cwd, 'data', 'kkbot.db');
+    const sampleUrl = `file:///${sampleAbs.replace(/\\/g, '/')}`;
+
+    const res = resolveDatabaseLocation(sampleUrl);
+    expect(res.isMemory).toBe(false);
+    expect(res.absolutePath).toBe(sampleAbs);
+  });
 });

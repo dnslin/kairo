@@ -93,4 +93,48 @@ describe('InstanceLock (Single Instance Data Directory Lock)', () => {
 
     await lock.release();
   });
+
+  it('should guarantee atomic mutual exclusion under heavy concurrent acquire race', async () => {
+    const count = 10;
+    const locks = Array.from({ length: count }, (_, idx) => {
+      return new InstanceLock({
+        lockDir: tempDir,
+        startupGenerationId: `gen-concurrent-${idx}`,
+      });
+    });
+
+    const results = await Promise.allSettled(locks.map((l) => l.acquire()));
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+
+    expect(fulfilled.length).toBe(1);
+    expect(rejected.length).toBe(count - 1);
+
+    const winner = locks.find((l) => l.isHeld());
+    expect(winner).toBeDefined();
+    await winner?.release();
+  });
+
+  it('should propagate real I/O or permission errors during release instead of swallowing', async () => {
+    const lock = new InstanceLock({
+      lockDir: tempDir,
+      startupGenerationId: 'gen-error-test',
+    });
+    await lock.acquire();
+
+    // Mock fs.readFile or fs.unlink to throw a permission error
+    const originalUnlink = fs.unlink;
+    fs.unlink = () => {
+      const err = new Error('EPERM: operation not permitted');
+      (err as { code?: string }).code = 'EPERM';
+      return Promise.reject(err);
+    };
+
+    try {
+      await expect(lock.release()).rejects.toThrow('EPERM: operation not permitted');
+    } finally {
+      fs.unlink = originalUnlink;
+      await lock.release();
+    }
+  });
 });
