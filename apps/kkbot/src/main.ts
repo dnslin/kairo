@@ -130,11 +130,7 @@ if (process.argv[1]) {
   try {
     const currentFilePath = fileURLToPath(import.meta.url);
     const invokedPath = path.resolve(process.argv[1]);
-    if (
-      invokedPath === currentFilePath ||
-      invokedPath.endsWith('main.ts') ||
-      invokedPath.endsWith('main.js')
-    ) {
+    if (invokedPath === currentFilePath) {
       void runCli().then(code => {
         if (code !== 0) {
           process.exit(code);

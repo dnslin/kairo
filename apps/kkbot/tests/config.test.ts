@@ -221,7 +221,7 @@ retention:
     expect(config.knowledge.embedding.apiKey).toBe('sk-test#with:special\nchars"and\'quotes');
   });
 
-  it('Spec §4.29: 静态校验拦截 YAML 中硬编码的明文凭据（必须通过环境变量插值传入）', async () => {
+  it('Spec §4.29: 静态校验拦截 YAML 中硬编码的明文凭据（必须通过严格环境变量引用传入）', async () => {
     process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
     process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
 
@@ -242,8 +242,33 @@ retention:
     expect(thrownError).toBeInstanceOf(ConfigValidationError);
     const apiError = thrownError?.errors.find(e => e.path === 'knowledge.embedding.apiKey');
     expect(apiError).toBeDefined();
-    expect(apiError?.reason).toMatch(/凭据禁止在配置文件中明文硬编码/);
-    expect(apiError?.hint).toMatch(/修改为环境变量插值形式/);
+    expect(apiError?.reason).toMatch(/凭据必须严格为单个无默认值的环境变量引用/);
+    expect(apiError?.hint).toMatch(/修改为纯环境变量引用/);
+  });
+
+  it('Spec §4.29: 静态校验拦截混合字面量前缀或后缀的凭据字段', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+
+    const prefixKeyYaml = validYamlContent.replace(
+      'apiKey: ${EMBEDDING_API_KEY}',
+      'apiKey: hardcoded-prefix-${EMBEDDING_API_KEY}'
+    );
+    const configPath = path.join(tempDir, 'kkbot.yaml');
+    await fs.writeFile(configPath, prefixKeyYaml, 'utf-8');
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const apiError = thrownError?.errors.find(e => e.path === 'knowledge.embedding.apiKey');
+    expect(apiError).toBeDefined();
+    expect(apiError?.reason).toMatch(/凭据必须严格为单个无默认值的环境变量引用/);
   });
 
   it('Spec §4.29: 敏感凭据字段禁止在 YAML 中声明默认值回退（防止隐式明文凭据）', async () => {
@@ -268,7 +293,7 @@ retention:
     expect(thrownError).toBeInstanceOf(ConfigValidationError);
     const apiError = thrownError?.errors.find(e => e.path === 'knowledge.embedding.apiKey');
     expect(apiError).toBeDefined();
-    expect(apiError?.reason).toMatch(/凭据禁止在配置文件中声明默认值回退/);
+    expect(apiError?.reason).toMatch(/凭据必须严格为单个无默认值的环境变量引用/);
   });
 
   it('AC6/AC7: 静态校验拦截非法 URL 协议或格式的 baseUrl', async () => {

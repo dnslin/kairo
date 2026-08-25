@@ -181,7 +181,7 @@ export type AppConfig = z.infer<typeof appConfigSchema>;
 // ==========================================
 
 const ENV_VAR_REGEX = /\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}/g;
-
+const STRICT_ENV_VAR_EXACT_REGEX = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 /**
  * 对原始字符串进行单行或纯文本环境变量插值（辅助工具函数）。
  */
@@ -231,30 +231,34 @@ function interpolateNodeEnv(
   if (typeof node === 'string') {
     const fieldPath = currentPath.join('.') || 'root';
     if (CREDENTIAL_FIELD_PATHS[fieldPath]) {
-      const hasEnvSyntax = ENV_VAR_REGEX.test(node);
-      ENV_VAR_REGEX.lastIndex = 0;
-      if (!hasEnvSyntax && node.trim().length > 0) {
+      const trimmed = node.trim();
+      const exactMatch = trimmed.match(STRICT_ENV_VAR_EXACT_REGEX);
+      if (!exactMatch) {
         errors.push({
           path: fieldPath,
           reason:
-            '凭据禁止在配置文件中明文硬编码：根据安全规范（Spec §4.29），所有凭据只能通过环境变量插值传入',
-          hint: `请将 '${fieldPath}' 修改为环境变量插值形式，例如: apiKey: \${EMBEDDING_API_KEY}`,
-          message: `字段 '${fieldPath}' 禁止硬编码明文凭据`,
+            '凭据必须严格为单个无默认值的环境变量引用（如 ${EMBEDDING_API_KEY}），禁止包含任何明文字符、前缀、后缀或默认值回退（Spec §4.29）',
+          hint: `请将 '${fieldPath}' 修改为纯环境变量引用，例如: apiKey: \${EMBEDDING_API_KEY}`,
+          message: `字段 '${fieldPath}' 必须为严格环境变量引用`,
         });
         return '';
       }
+
+      const varName = exactMatch[1]!;
+      const envVal = process.env[varName];
+      if (envVal === undefined) {
+        errors.push({
+          path: fieldPath,
+          reason: `未解析的环境变量 \${${varName}}：系统环境变量中未设置该变量且配置未提供默认值`,
+          hint: `请在系统环境变量中设置 ${varName}`,
+          message: `字段 '${fieldPath}' 缺少环境变量 ${varName}`,
+        });
+        return '';
+      }
+      return envVal;
     }
 
     return node.replace(ENV_VAR_REGEX, (_match, varName: string, defaultValue?: string) => {
-      if (CREDENTIAL_FIELD_PATHS[fieldPath] && defaultValue !== undefined) {
-        errors.push({
-          path: fieldPath,
-          reason: '凭据禁止在配置文件中声明默认值回退：根据安全规范，凭据不能包含明文 fallback',
-          hint: `请将 '${fieldPath}' 声明为纯环境变量引用，例如: apiKey: \${${varName}}`,
-          message: `字段 '${fieldPath}' 禁止声明默认值回退`,
-        });
-        return '';
-      }
       const envVal = process.env[varName];
       if (envVal !== undefined) {
         return envVal;
