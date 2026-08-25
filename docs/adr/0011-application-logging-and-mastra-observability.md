@@ -35,7 +35,5 @@ Shutdown 先完成 Observability Flush，再调用 `mastra.shutdown()`；数据�
 - [#131 Mastra 兼容版本历史研究](https://github.com/dnslin/kkbot/issues/131)
 - [#138 Bootstrapper Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)
 - [#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)
-
-## Open boundaries
-
-[#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)按当前能力范围锁定精确版本；[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)决定最终验收覆盖。本 ADR 不锁定 Observability 精确版本、具体构造 API、全局关闭 deadline 或进程退出码。
+- [#168 当前范围兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)
+- [#124 最终合同验收矩阵](https://github.com/dnslin/kkbot/issues/124)

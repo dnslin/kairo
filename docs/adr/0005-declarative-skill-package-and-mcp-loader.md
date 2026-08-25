@@ -6,8 +6,7 @@ Superseded
 
 - **Superseded on**: 2026-08-24
 - **Current replacement**: [ADR 0009：Mastra 运行时与 KKBot 业务事实边界](./0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)、[KKBot Mastra-native 重构总规格](../KKBot-Mastra-Native-Refactor-Spec.md) §4.10–§4.12
-- **Resolved by**: [#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)
-- **Open boundaries**: [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)
+- **Resolved by**: [#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)、[#168 兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)
 - **Historical note**: 以下 `McpClientManager`、动态 Tool 热更新、`requireApproval` 和审批继承正文只保留当时背景，不再是当前产品或实施依据。
 
 ## Context
