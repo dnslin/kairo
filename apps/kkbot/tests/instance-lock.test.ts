@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { InstanceLock, InstanceLockConflictError } from '../src/instance-lock.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 describe('InstanceLock (Single Instance Data Directory Lock)', () => {
   let tempDir: string;
@@ -136,5 +141,109 @@ describe('InstanceLock (Single Instance Data Directory Lock)', () => {
       fs.unlink = originalUnlink;
       await lock.release();
     }
+  });
+
+  it('should guarantee atomic mutual exclusion among multiple distinct child processes on stale takeover', async () => {
+    const lockFilePath = path.join(tempDir, 'kkbot.lock');
+    // 1. 预置死进程陈旧锁
+    await fs.writeFile(
+      lockFilePath,
+      JSON.stringify({
+        pid: 99999999,
+        startupGenerationId: 'stale-dead-gen',
+        acquiredAt: new Date(Date.now() - 60000).toISOString(),
+      }),
+      'utf-8'
+    );
+
+    const instanceLockModuleUrl = pathToFileURL(
+      path.resolve(__dirname, '../src/instance-lock.ts')
+    ).href;
+
+    const childScript = `
+      import { InstanceLock, InstanceLockConflictError } from ${JSON.stringify(instanceLockModuleUrl)};
+      const lock = new InstanceLock({
+        lockDir: ${JSON.stringify(tempDir)},
+        startupGenerationId: 'child-' + process.pid,
+      });
+      try {
+        await lock.acquire();
+        process.stdout.write('SUCCESS:' + process.pid + '\\n');
+        process.stdin.resume();
+        process.stdin.on('data', async () => {
+          await lock.release();
+          process.exit(0);
+        });
+      } catch (err) {
+        if (
+          err instanceof InstanceLockConflictError ||
+          (err && typeof err === 'object' && 'name' in err && err.name === 'InstanceLockConflictError')
+        ) {
+          process.stdout.write('CONFLICT:' + process.pid + '\\n');
+          process.exit(2);
+        }
+        process.stderr.write('ERROR:' + (err && typeof err === 'object' && 'message' in err ? err.message : String(err)) + '\\n');
+        process.exit(1);
+      }
+    `;
+
+    const childScriptFile = path.join(tempDir, 'child-worker.mjs');
+    await fs.writeFile(childScriptFile, childScript, 'utf-8');
+    const processCount = 5;
+    const children: Array<{
+      id: number;
+      cp: ChildProcess;
+      done: Promise<{ code: number; stdout: string }>;
+      stdout: () => string;
+    }> = [];
+
+    const { promise: winnerPromise, resolve: resolveWinner, reject: rejectWinner } =
+      Promise.withResolvers<{ id: number; cp: ChildProcess; pid: number }>();
+
+    for (let i = 0; i < processCount; i++) {
+      const { promise, resolve } = Promise.withResolvers<{ code: number; stdout: string }>();
+      const cp = spawn(process.execPath, ['--import', 'tsx', childScriptFile], {
+        cwd: process.cwd(),
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let outBuf = '';
+      cp.stdout?.on('data', (d: Buffer) => {
+        const str = d.toString();
+        outBuf += str;
+        const match = str.match(/SUCCESS:(\d+)/);
+        if (match && match[1]) {
+          resolveWinner({ id: i, cp, pid: parseInt(match[1], 10) });
+        }
+      });
+      cp.stderr?.on('data', (d: Buffer) => {
+        outBuf += d.toString();
+      });
+      cp.on('close', (code) => {
+        if (code === 1) {
+          rejectWinner(new Error(`Child process failed with error: ${outBuf}`));
+        }
+        resolve({ code: code ?? -1, stdout: outBuf });
+      });
+      children.push({ id: i, cp, done: promise, stdout: () => outBuf });
+    }
+
+    // 1. 等待 Winner 抢占成功并持有锁（此时保持锁定状态，不释放）
+    const winner = await winnerPromise;
+    expect(winner.pid).toBeGreaterThan(0);
+
+    // 2. 其余 4 个子进程必须全部被排他锁拦截并以 Conflict (exit code 2) 退出
+    const losers = children.filter((c) => c.id !== winner.id);
+    const loserResults = await Promise.all(losers.map((l) => l.done));
+
+    for (const res of loserResults) {
+      expect(res.code).toBe(2);
+      expect(res.stdout).toContain('CONFLICT:');
+    }
+
+    // 3. 所有竞争者已被拦截后，向 Winner 发送指令释放锁并等待其正常退出
+    winner.cp.stdin?.end('RELEASE\n');
+    const winnerResult = await children[winner.id]!.done;
+    expect(winnerResult.code).toBe(0);
+    expect(winnerResult.stdout).toContain('SUCCESS:');
   });
 });

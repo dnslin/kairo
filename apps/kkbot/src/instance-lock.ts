@@ -87,7 +87,9 @@ export class InstanceLock {
     };
     const payloadStr = JSON.stringify(payload, null, 2);
 
-    for (let attempt = 0; attempt < 3; attempt++) {
+    const claimMutexDir = path.join(this.lockDir, '.kkbot_lock_claim');
+
+    for (let attempt = 0; attempt < 20; attempt++) {
       try {
         await fs.writeFile(this.lockFilePath, payloadStr, { flag: 'wx', encoding: 'utf-8' });
         this.held = true;
@@ -97,13 +99,50 @@ export class InstanceLock {
         if (code !== 'EEXIST') {
           throw error;
         }
+      }
 
-        // 文件已存在，检查拥有者存活状态
+      let claimAcquired = false;
+      try {
+        await fs.mkdir(claimMutexDir);
+        claimAcquired = true;
+      } catch (claimErr: unknown) {
+        const claimCode =
+          claimErr && typeof claimErr === 'object' && 'code' in claimErr
+            ? claimErr.code
+            : undefined;
+        if (claimCode === 'EEXIST') {
+          await new Promise((resolve) => setTimeout(resolve, 20 + Math.random() * 30));
+          continue;
+        }
+        throw claimErr;
+      }
+
+      try {
+        let rawContent: string | null = null;
         try {
-          const rawContent = await fs.readFile(this.lockFilePath, 'utf-8');
-          const metadata = JSON.parse(rawContent) as Partial<InstanceLockMetadata>;
+          rawContent = await fs.readFile(this.lockFilePath, 'utf-8');
+        } catch (readErr: unknown) {
+          const readCode =
+            readErr && typeof readErr === 'object' && 'code' in readErr
+              ? readErr.code
+              : undefined;
+          if (readCode === 'ENOENT') {
+            await fs.writeFile(this.lockFilePath, payloadStr, { flag: 'wx', encoding: 'utf-8' });
+            this.held = true;
+            return;
+          }
+          throw readErr;
+        }
 
-          if (typeof metadata.pid === 'number' && metadata.pid > 0) {
+        if (rawContent) {
+          let metadata: Partial<InstanceLockMetadata> | null = null;
+          try {
+            metadata = JSON.parse(rawContent) as Partial<InstanceLockMetadata>;
+          } catch {
+            // 损坏文件允许覆盖
+          }
+
+          if (metadata && typeof metadata.pid === 'number' && metadata.pid > 0) {
             if (
               metadata.pid === process.pid &&
               metadata.startupGenerationId === this.startupGenerationId
@@ -121,32 +160,18 @@ export class InstanceLock {
             }
           }
 
-          // 拥有者进程已消亡或锁文件损坏，清理后重试
-          await fs.unlink(this.lockFilePath).catch((unlinkErr: unknown) => {
-            const unlinkCode =
-              unlinkErr && typeof unlinkErr === 'object' && 'code' in unlinkErr
-                ? unlinkErr.code
-                : undefined;
-            if (unlinkCode !== 'ENOENT') {
-              throw unlinkErr;
-            }
-          });
-        } catch (inspectError) {
-          if (inspectError instanceof InstanceLockConflictError) {
-            throw inspectError;
-          }
-          const inspectCode =
-            inspectError && typeof inspectError === 'object' && 'code' in inspectError
-              ? inspectError.code
-              : undefined;
-          if (inspectCode !== 'ENOENT') {
-            throw inspectError;
-          }
+          await fs.writeFile(this.lockFilePath, payloadStr, { encoding: 'utf-8' });
+          this.held = true;
+          return;
+        }
+      } finally {
+        if (claimAcquired) {
+          await fs.rmdir(claimMutexDir).catch(() => {});
         }
       }
     }
 
-    throw new Error(`取得单实例锁失败，重试已耗尽: ${this.lockFilePath}`);
+    throw new Error(`取得单实例锁超时或重试已耗尽: ${this.lockFilePath}`);
   }
 
   /**
