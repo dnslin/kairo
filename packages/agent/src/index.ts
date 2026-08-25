@@ -81,8 +81,14 @@ export {
   type TierModelEntry,
   type KKBotRequestContextValues,
 } from './models/factory.js';
+export { Memory } from '@mastra/memory';
 export {
   KKBotAgent,
+  deriveUserMessageId,
+  deriveAssistantMessageId,
+  ensureMastraThread,
+  createMastraTextMessage,
+  type MastraTextMessageV2,
   type KKBotAgentOptions,
   type ExecuteAgentOptions,
   type KKBotAgentRunResult,

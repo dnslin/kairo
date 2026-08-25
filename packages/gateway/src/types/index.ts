@@ -12,8 +12,11 @@ import type {
   ApprovalManager,
   ApprovalTask,
   KkbotAgentRuntime,
+  KKBotAgent,
+  KKBotAgentRunResult,
   LeaderApprovalRouter,
   StatefulApprovalMatcher,
+  Memory,
 } from '@kkbot/agent';
 import type { ProactiveSchedule, ProactiveScheduleManager } from '../schedule/index.js';
 
@@ -118,9 +121,12 @@ export interface SessionCoordinatorOptions {
   driver: KK9Driver;
   /** 统一持久化存储中枢 (注入单库 LibSQL 实例) */
   store: KKBotStore;
-  /** 认知微内核 Runtime (可选) */
+  /** Mastra-native Agent 核心执行入口 (Issue #174/#176) */
+  agent?: KKBotAgent;
+  /** Mastra Memory 记忆中枢 (Issue #176) */
+  mastraMemory?: Memory;
+  /** 认知微内核 Runtime (可选向后兼容) */
   agentRuntime?: KkbotAgentRuntime;
-  /** 3-Tier 记忆管理器 (可选) */
   memoryManager?: AgentMemoryManager;
   /** HITL 审批状态机管理器 (可选) */
   approvalManager?: ApprovalManager;
@@ -172,10 +178,15 @@ export interface CoordinatorEvents {
   /** Agent 认知微内核开始执行生成事件 */
   agent_started: (sessionId: string, message: ConsolidatedMessage) => void;
   /** Agent 认知微内核执行完毕事件 */
-  agent_completed: (sessionId: string, result: AgentReplyResult) => void;
+  agent_completed: (sessionId: string, result: AgentReplyResult | KKBotAgentRunResult) => void;
   /** Agent 认知微内核生成被打断事件 */
   agent_aborted: (sessionId: string) => void;
-  /** 高危工具触发 HITL 审批挂起事件 */
+  /** Assistant Memory 显式提交失败事件 */
+  assistant_memory_save_failed: (
+    sessionId: string,
+    deliveryId: string,
+    error: unknown
+  ) => void;
   approval_suspended: (sessionId: string, task: ApprovalTask) => void;
   /** 主管审批决议已流转并恢复事件 */
   approval_resolved: (leaderId: string, task: ApprovalTask, approved: boolean) => void;
@@ -194,6 +205,14 @@ export interface CoordinatorEvents {
 }
 
 /**
+ * 防抖待处理桶单条消息项（附带持久化 Promise 追踪）
+ */
+export interface PendingBucketItem {
+  message: KK9Message;
+  persistPromise: Promise<boolean>;
+}
+
+/**
  * 内部待处理防抖聚合桶
  */
 export interface PendingBucket {
@@ -203,11 +222,11 @@ export interface PendingBucket {
   sender: string;
   senderId?: string;
   messages: KK9Message[];
+  items?: PendingBucketItem[];
   debounceTimer: NodeJS.Timeout | null;
   maxWaitTimer: NodeJS.Timeout | null;
   firstReceivedAt: number;
 }
-
 /**
  * 发送回复选项
  */

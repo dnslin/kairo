@@ -41,7 +41,7 @@ describe('KKBot Database Migrations', () => {
 
     // Verify KKBot tables exist
     const tablesRes = await client.execute(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'org_%' OR name IN ('sessions', 'session_messages')"
+      "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'org_%' OR name IN ('sessions', 'session_messages', 'message_deliveries'))"
     );
     const tableNames = tablesRes.rows.map(r => r.name);
     expect(tableNames).toContain('org_departments');
@@ -49,6 +49,7 @@ describe('KKBot Database Migrations', () => {
     expect(tableNames).toContain('org_employee_departments');
     expect(tableNames).toContain('sessions');
     expect(tableNames).toContain('session_messages');
+    expect(tableNames).toContain('message_deliveries');
   });
 
   it('should be idempotent and skip already-applied migrations on subsequent runs', async () => {
@@ -61,10 +62,10 @@ describe('KKBot Database Migrations', () => {
   });
 
   it('should do zero DDL/DML on Mastra internal tables', () => {
-    // Check all migration SQLs
+    // 验证所有迁移 SQL 均只操作 KKBot 自身业务表，严禁对 Mastra 内部表（如 mastra_threads, mastra_messages 等）执行任何 DDL/DML
+    const mastraTablePattern = /\b(table|into|from|update|delete|drop)\s+(_?mastra_\w+)/i;
     for (const m of KKBOT_MIGRATIONS) {
-      expect(m.up).not.toMatch(/mastra_/i);
-      expect(m.up).not.toMatch(/_mastra_/i);
+      expect(m.up).not.toMatch(mastraTablePattern);
     }
   });
 
@@ -99,9 +100,9 @@ describe('KKBot Database Migrations', () => {
     const migrationResult = await runKKBotMigrations(client);
     expect(migrationResult.applied).toEqual([
       '0002_inbound_identity_and_groupsession_shortcircuit',
+      '0003_message_deliveries',
     ]);
     expect(migrationResult.total).toBe(KKBOT_MIGRATIONS.length);
-
     // 3. 验证 session_messages 已拥有 origin 列且旧数据默认为 'external'
     const oldMsgRes = await client.execute(
       "SELECT * FROM session_messages WHERE session_id = 'old_ses_1'"
@@ -116,5 +117,11 @@ describe('KKBot Database Migrations', () => {
       args: [Date.now()],
     });
     await expect(insertDuplicate).rejects.toThrow();
+
+    // 5. 验证 message_deliveries 表与索引已建立
+    const deliveryTableRes = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name = 'message_deliveries'"
+    );
+    expect(deliveryTableRes.rows).toHaveLength(1);
   });
 });

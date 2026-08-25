@@ -1,4 +1,6 @@
 import EventEmitter from 'node:events';
+import { createHash, randomUUID } from 'node:crypto';
+import { RequestContext } from '@mastra/core/request-context';
 import type {
   FormattedText,
   KK9Driver,
@@ -6,15 +8,30 @@ import type {
   KK9RecalledEvent,
   SendResult,
 } from '@kkbot/driver';
-import type { KKBotStore, MessageRawPayload, SessionMode } from '@kkbot/store';
+import type {
+  DeliveryStatus,
+  KKBotStore,
+  MessageDelivery,
+  MessageRawPayload,
+  SessionMessage,
+  SessionMode,
+} from '@kkbot/store';
 import {
+  type KKBotAgent,
+  deriveUserMessageId,
+  deriveAssistantMessageId,
+  ensureMastraThread,
+  createMastraTextMessage,
   createRegisterProactiveScheduleTool,
   type AgentMemoryManager,
   type ApprovalManager,
   type EmployeeOrgContext,
+  type KKBotAgentRunResult,
+  type KKBotRequestContextValues,
   type KkbotAgentRuntime,
   type LeaderApprovalRouter,
   type LLMMessage,
+  type Memory,
   type StatefulApprovalMatcher,
   type UserProfilePreference,
 } from '@kkbot/agent';
@@ -114,13 +131,14 @@ export declare interface SessionCoordinator {
 export class SessionCoordinator extends EventEmitter {
   public readonly driver: KK9Driver;
   public readonly store: KKBotStore;
+  public readonly agent?: KKBotAgent;
+  public readonly mastraMemory?: Memory;
   public readonly agentRuntime?: KkbotAgentRuntime;
   public readonly memoryManager?: AgentMemoryManager;
   public readonly approvalManager?: ApprovalManager;
   public readonly leaderRouter?: LeaderApprovalRouter;
   public readonly statefulMatcher?: StatefulApprovalMatcher;
   public readonly scheduleManager?: ProactiveScheduleManager;
-
   public readonly config: Required<
     Omit<CoordinatorConfig, 'onConsolidatedMessage' | 'knowledgeRetriever'>
   > & {
@@ -164,13 +182,14 @@ export class SessionCoordinator extends EventEmitter {
     super();
     this.driver = options.driver;
     this.store = options.store;
+    this.agent = options.agent;
+    this.mastraMemory = options.mastraMemory;
     this.agentRuntime = options.agentRuntime;
     this.memoryManager = options.memoryManager;
     this.approvalManager = options.approvalManager;
     this.leaderRouter = options.leaderRouter;
     this.statefulMatcher = options.statefulMatcher;
     this.scheduleManager = options.scheduleManager;
-
     this.config = {
       debounceMs: options.config?.debounceMs ?? DEFAULT_DEBOUNCE_MS,
       maxWaitMs: options.config?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
@@ -624,22 +643,35 @@ export class SessionCoordinator extends EventEmitter {
       }
     }
 
-    // 4. 若此前存在被打断的在途会话，将旧消息与新消息归并重聚 (In-Flight Regroup)
+    // 4. 构建并触发异步 Raw Store 写入 Promise（前置条件追踪）
+    const persistPromise: Promise<boolean> = (async (): Promise<boolean> => {
+      try {
+        await this.persistInboundMessage(msg, now, false);
+        return true;
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        log.error(
+          { err: error, sessionId, messageId: msg.id },
+          'PrivateSession 原始消息写入 KK Raw Store 失败，终止本次处理'
+        );
+        this.emitError(error);
+        return false;
+      }
+    })();
+
+    // 5. 同步先放入防抖队列并绑定持久化 Promise（保证快照与即时撤回熔断有效）
     if (inFlight) {
       log.info(
         { sessionId, messageCount: inFlight.message.messages.length },
         '将此前在途打断消息与新到达消息归并重聚'
       );
-      this.regroupInFlightMessage(sessionId, inFlight.message, msg);
-      await this.persistInboundMessage(msg, now, false);
-      return;
+      this.regroupInFlightMessage(sessionId, inFlight.message, msg, persistPromise);
+    } else {
+      this.enqueueMessage(msg, persistPromise);
     }
 
-    // 5. 正常进入短消息防抖合并队列 (Debounce Queue) - 同步执行！
-    this.enqueueMessage(msg);
-
-    // 异步持久化
-    await this.persistInboundMessage(msg, now, false);
+    // 等待本次消息 Raw Store 写入完成
+    await persistPromise;
   }
 
   /**
@@ -649,9 +681,9 @@ export class SessionCoordinator extends EventEmitter {
     msg: KK9Message,
     now: number,
     isFromSelf: boolean
-  ): Promise<void> {
+  ): Promise<SessionMessage> {
+    const sessionId = msg.sessionId;
     try {
-      const sessionId = msg.sessionId;
       await this.store.sessions.upsertSession({
         id: sessionId,
         name: msg.sessionName,
@@ -662,7 +694,7 @@ export class SessionCoordinator extends EventEmitter {
       const replyTargetId =
         msg.replyTo?.replyToId ??
         (typeof msg.raw?.replyToId === 'string' ? msg.raw.replyToId : null);
-      await this.store.messages.saveMessage({
+      return await this.store.messages.saveMessage({
         sessionId,
         messageId: msg.messageId || msg.id,
         origin: msg.origin || (isFromSelf ? 'operator' : 'external'),
@@ -677,8 +709,8 @@ export class SessionCoordinator extends EventEmitter {
         createdAt: msg.timestamp || now,
       });
     } catch (err) {
-      if (!this.isRunning) return;
-      log.warn({ err, sessionId: msg.sessionId, messageId: msg.id }, '持久化入站消息异常');
+      log.error({ err, sessionId: msg.sessionId, messageId: msg.id }, '持久化入站消息异常');
+      throw err;
     }
   }
 
@@ -716,6 +748,16 @@ export class SessionCoordinator extends EventEmitter {
           (m.raw?.['id'] as string | undefined);
         return m.id !== messageId && rawMsgId !== messageId;
       });
+
+      if (bucket.items) {
+        bucket.items = bucket.items.filter(item => {
+          const rawMsgId =
+            (item.message.raw?.['messageId'] as string | undefined) ||
+            (item.message.raw?.['msgID'] as string | undefined) ||
+            (item.message.raw?.['id'] as string | undefined);
+          return item.message.id !== messageId && rawMsgId !== messageId;
+        });
+      }
 
       const remainingCount = bucket.messages.length;
 
@@ -1032,16 +1074,18 @@ export class SessionCoordinator extends EventEmitter {
   /**
    * 将新消息压入会话防抖队列
    */
-  private enqueueMessage(msg: KK9Message): void {
+  private enqueueMessage(
+    msg: KK9Message,
+    persistPromise: Promise<boolean> = Promise.resolve(true)
+  ): void {
     const sessionId = msg.sessionId;
     const bucket = this.getOrCreatePendingBucket(sessionId, msg);
     bucket.messages.push(msg);
+    if (!bucket.items) {
+      bucket.items = [];
+    }
+    bucket.items.push({ message: msg, persistPromise });
     this.resetDebounceTimer(bucket, '执行滑动窗口防抖合并异常');
-
-    log.debug(
-      { sessionId, queueLength: bucket.messages.length, debounceMs: this.config.debounceMs },
-      '新消息压入防抖队列'
-    );
     this.emit('message_queued', sessionId, msg, bucket.messages.length);
   }
 
@@ -1051,7 +1095,8 @@ export class SessionCoordinator extends EventEmitter {
   private regroupInFlightMessage(
     sessionId: string,
     inFlightMessage: ConsolidatedMessage,
-    newMsg: KK9Message
+    newMsg: KK9Message,
+    newPersistPromise: Promise<boolean> = Promise.resolve(true)
   ): void {
     const bucket = this.getOrCreatePendingBucket(
       sessionId,
@@ -1059,11 +1104,19 @@ export class SessionCoordinator extends EventEmitter {
       inFlightMessage.firstReceivedAt || Date.now()
     );
 
+    if (!bucket.items) {
+      bucket.items = [];
+    }
+
     // 归并在途任务消息 (指纹去重)
     const existingIds = new Set(bucket.messages.map(m => m.id));
     for (const m of inFlightMessage.messages) {
       if (!existingIds.has(m.id)) {
         bucket.messages.push(m);
+        bucket.items.push({
+          message: m,
+          persistPromise: Promise.resolve(true),
+        });
         existingIds.add(m.id);
       }
     }
@@ -1071,6 +1124,7 @@ export class SessionCoordinator extends EventEmitter {
     // 追加新消息
     if (!existingIds.has(newMsg.id)) {
       bucket.messages.push(newMsg);
+      bucket.items.push({ message: newMsg, persistPromise: newPersistPromise });
     }
 
     // 重置防抖计时器
@@ -1090,6 +1144,33 @@ export class SessionCoordinator extends EventEmitter {
 
     // 从活跃桶移除并清理定时器
     this.clearPendingBucket(sessionId);
+
+    // 1. 【核心门禁】：等待桶内所有消息的 Raw Store 持久化 Promise 完成
+    if (bucket.items && bucket.items.length > 0) {
+      const persistResults = await Promise.all(bucket.items.map(item => item.persistPromise));
+      const validMessages: KK9Message[] = [];
+      for (let i = 0; i < bucket.items.length; i++) {
+        const item = bucket.items[i];
+        const persisted = persistResults[i];
+        if (item && persisted) {
+          const nativeId = item.message.messageId || item.message.id;
+          const isRecalled = this.recalledMessageIds.has(`${sessionId}:${nativeId}`);
+          if (!isRecalled) {
+            validMessages.push(item.message);
+          }
+        }
+      }
+      bucket.messages = validMessages;
+    }
+
+    // 若经 Raw Store 持久化判定与撤回过滤后无有效消息，静默结束本次 flush
+    if (bucket.messages.length === 0) {
+      log.info(
+        { sessionId },
+        '防抖桶内无成功持久化或全部被撤回的有效消息，静默结束本次 flush'
+      );
+      return;
+    }
 
     // 再次确认退避状态
     if (await this.isTakeoverActive(sessionId)) {
@@ -1139,11 +1220,42 @@ export class SessionCoordinator extends EventEmitter {
         await this.config.onConsolidatedMessage(consolidated);
       } catch (err) {
         log.error({ sessionId, err: String(err) }, '执行 onConsolidatedMessage 回调异常');
-        this.emit('error', err instanceof Error ? err : new Error(String(err)));
+        this.emitError(err instanceof Error ? err : new Error(String(err)));
       }
     }
 
-    // 若配置了 Agent 认知微内核 Runtime，执行全链路智能生成
+    // 优先使用 Mastra-native KKBotAgent (Issue #174/#176)
+    if (this.agent) {
+      const abortController = new AbortController();
+      const inFlight: InFlightSession = {
+        sessionId,
+        abortController,
+        startedAt: Date.now(),
+        message: consolidated,
+      };
+      this.inFlightSessions.set(sessionId, inFlight);
+      this.emit('agent_started', sessionId, consolidated);
+
+      const execPromise = this.executeMastraAgentPipeline(
+        sessionId,
+        consolidated,
+        abortController.signal
+      );
+      inFlight.promise = execPromise;
+      try {
+        await execPromise;
+      } catch (err) {
+        log.error({ sessionId, err }, 'Mastra Agent 流水线执行发生异常');
+        this.emitError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        if (this.inFlightSessions.get(sessionId) === inFlight) {
+          this.inFlightSessions.delete(sessionId);
+        }
+      }
+      return;
+    }
+
+    // 若配置了旧版 Agent 认知微内核 Runtime，执行全链路智能生成
     if (this.agentRuntime) {
       const abortController = new AbortController();
       const inFlight: InFlightSession = {
@@ -1165,7 +1277,7 @@ export class SessionCoordinator extends EventEmitter {
         await execPromise;
       } catch (err) {
         log.error({ sessionId, err }, 'Agent 流水线执行发生异常');
-        this.emit('error', err instanceof Error ? err : new Error(String(err)));
+        this.emitError(err instanceof Error ? err : new Error(String(err)));
       } finally {
         if (this.inFlightSessions.get(sessionId) === inFlight) {
           this.inFlightSessions.delete(sessionId);
@@ -1173,6 +1285,396 @@ export class SessionCoordinator extends EventEmitter {
       }
     }
   }
+  /**
+   * 执行 Mastra-native Agent 闭环流水线 (Issue #176)
+   * 严格顺序：
+   * 1. 显式保存 user message 到 Mastra Memory (保存失败则立即终止，严禁调用 Agent)
+   * 2. 调用 KKBotAgent 以 readOnly=true 生成最终回复 (不自动保存本轮任何 message 或 tool)
+   * 3. 立即创建 Delivery 状态为 generated (唯一未发送业务身份)
+   * 4. 在调用 KK 发送前将 Delivery 更新为 sending
+   * 5. 执行 KK 专属可靠发送 (单次调用)
+   * 6. 发送明确成功后将 Delivery 更新为 sent
+   * 7. Delivery=sent 持久化成功后，显式保存最终实际发送内容的 assistant Memory
+   * 8. assistant Memory 保存成功后标记 Delivery 的 memory_committed_at
+   */
+  private async executeMastraAgentPipeline(
+    sessionId: string,
+    consolidated: ConsolidatedMessage,
+    signal: AbortSignal
+  ): Promise<void> {
+    if (signal.aborted) {
+      this.emit('agent_aborted', sessionId);
+      return;
+    }
+
+    // 1. 解析真实 resourceId 身份 (优先 senderId -> session.employeeId -> sender 名称)
+    const resourceId = await this.resolveSessionResourceId(sessionId, consolidated);
+    if (!resourceId) {
+      const error = new Error(`会话 [${sessionId}] 缺失有效人员身份，严禁调用 Agent`);
+      this.emitError(error);
+      return;
+    }
+
+    // 2. 【User Memory 前置提交】：在 Agent 运行前，通过 Mastra Memory 显式提交本轮各条原始 user message
+    const precommitSuccess = await this.precommitUserMessages(sessionId, resourceId, consolidated.messages);
+    if (!precommitSuccess || signal.aborted) {
+      if (signal.aborted) {
+        this.emit('agent_aborted', sessionId);
+      }
+      return;
+    }
+
+    // 3. 【调用 Mastra-native Agent】：注入确定性 RequestContext，以 readOnly=true 执行
+    const runId = randomUUID();
+    const traceId = randomUUID();
+    const agentRes = await this.executeMastraModel(sessionId, resourceId, consolidated.content, signal, traceId, runId);
+    if (!agentRes || signal.aborted) {
+      if (signal.aborted) {
+        this.emit('agent_aborted', sessionId);
+      }
+      return;
+    }
+
+    const replyText = agentRes.text;
+    if (!replyText || replyText.trim() === '') {
+      this.emit('agent_completed', sessionId, agentRes);
+      return;
+    }
+
+    // 4. 【创建 Delivery (generated) 并更新为 sending】
+    const deliveryId = `deliv_${runId}`;
+    const mastraMessageId = deriveAssistantMessageId(deliveryId);
+    const delivery = await this.createSendingDelivery(deliveryId, runId, sessionId, mastraMessageId, replyText);
+    if (!delivery || signal.aborted) {
+      if (signal.aborted && delivery) {
+        await this.store.deliveries.updateStatus(delivery.id, 'aborted');
+        this.emit('agent_aborted', sessionId);
+      }
+      return;
+    }
+
+    // 检查人工接管或中断状态（不可逆发送边界前的最后一道安全门）
+    if (await this.isTakeoverActive(sessionId)) {
+      await this.store.deliveries.updateStatus(delivery.id, 'aborted');
+      this.emit('agent_aborted', sessionId);
+      return;
+    }
+
+    // 5. 【执行底层 KK 发送】
+    const sendResult = await this.executeDriverOutbound(sessionId, replyText);
+
+    // 6. 【处理明确发送成功分支】
+    if (sendResult.success) {
+      await this.handleSendSuccess(sessionId, resourceId, delivery.id, mastraMessageId, replyText, sendResult.messageId, agentRes);
+      return;
+    }
+
+    // 7. 【处理发送失败分支 (区分 pre-trigger failed 与 post-trigger unknown)】
+    await this.handleSendFailure(sessionId, delivery.id, sendResult, agentRes);
+  }
+
+  /**
+   * 解析会话人员身份标识 (resourceId)
+   */
+  private async resolveSessionResourceId(sessionId: string, consolidated: ConsolidatedMessage): Promise<string | undefined> {
+    if (consolidated.senderId && consolidated.senderId.trim() !== '') {
+      return consolidated.senderId;
+    }
+    try {
+      const sessionRecord = await this.store.sessions.getSession(sessionId);
+      if (sessionRecord?.employeeId && sessionRecord.employeeId.trim() !== '') {
+        return sessionRecord.employeeId;
+      }
+    } catch (err) {
+      log.debug({ err, sessionId }, '查询会话档案异常');
+    }
+    return consolidated.sender || undefined;
+  }
+
+  /**
+   * 前置显式提交 user messages 至 Mastra Memory
+   */
+  private async precommitUserMessages(sessionId: string, resourceId: string, messages: KK9Message[]): Promise<boolean> {
+    if (!this.mastraMemory) {
+      return true;
+    }
+    try {
+      await ensureMastraThread(this.mastraMemory, sessionId, resourceId);
+      const userMessages = messages.map(m => {
+        const nativeMsgId = m.messageId || m.id;
+        const stableId = deriveUserMessageId(sessionId, nativeMsgId);
+        return createMastraTextMessage({
+          id: stableId,
+          role: 'user',
+          content: m.content,
+          threadId: sessionId,
+          resourceId,
+          createdAt: new Date(m.timestamp || Date.now()),
+        });
+      });
+
+      await this.mastraMemory.saveMessages({ messages: userMessages });
+      log.debug({ sessionId, count: userMessages.length }, 'Mastra user messages 显式提交成功');
+      return true;
+    } catch (memErr) {
+      const error = memErr instanceof Error ? memErr : new Error(String(memErr));
+      log.error({ err: error, sessionId, resourceId }, '保存 user Memory 失败，前置条件不满足，严禁调用 Agent');
+      this.emitError(error);
+      return false;
+    }
+  }
+
+  /**
+   * 执行 Mastra-native Agent 推理
+   */
+  private async executeMastraModel(
+    sessionId: string,
+    resourceId: string,
+    text: string,
+    signal: AbortSignal,
+    traceId: string,
+    runId: string
+  ): Promise<KKBotAgentRunResult | null> {
+    const reqCtx = new RequestContext<KKBotRequestContextValues>();
+    reqCtx.set('traceId', traceId);
+    reqCtx.set('runId', runId);
+    reqCtx.set('sessionId', sessionId);
+    reqCtx.set('senderId', resourceId);
+    reqCtx.set('threadId', sessionId);
+    reqCtx.set('resourceId', resourceId);
+
+    try {
+      return await this.agent!.execute({
+        input: text,
+        sessionId,
+        senderId: resourceId,
+        abortSignal: signal,
+        requestContext: reqCtx,
+      });
+    } catch (agentErr) {
+      if (signal.aborted) {
+        return null;
+      }
+      const error = agentErr instanceof Error ? agentErr : new Error(String(agentErr));
+      log.error({ err: error, sessionId, runId }, 'Agent 执行发生异常');
+      this.emitError(error);
+      return null;
+    }
+  }
+
+  /**
+   * 创建 Delivery 并持久化为 sending 状态
+   */
+  private async createSendingDelivery(
+    deliveryId: string,
+    runId: string,
+    sessionId: string,
+    mastraMessageId: string,
+    replyText: string
+  ): Promise<MessageDelivery | null> {
+    const contentHash = createHash('sha256').update(replyText).digest('hex');
+    try {
+      await this.store.deliveries.createDelivery({
+        id: deliveryId,
+        runId,
+        sessionId,
+        mastraMessageId,
+        content: replyText,
+        contentHash,
+        status: 'generated',
+      });
+      return await this.store.deliveries.updateStatus(deliveryId, 'sending');
+    } catch (delivErr) {
+      const error = delivErr instanceof Error ? delivErr : new Error(String(delivErr));
+      log.error({ err: error, sessionId, deliveryId }, '创建或更新 Delivery 为 sending 失败，严禁调用 KK 发送');
+      this.emitError(error);
+      return null;
+    }
+  }
+
+  /**
+   * 执行底层 Driver 消息发送
+   */
+  private async executeDriverOutbound(
+    sessionId: string,
+    text: string
+  ): Promise<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }> {
+    return this.executeWithSendLock(async () => {
+      if (typeof this.driver.selectSession === 'function') {
+        try {
+          const current = await this.driver.getCurrentSession?.();
+          if (!current || current.id !== sessionId) {
+            const switched = await this.driver.selectSession(sessionId);
+            if (!switched) {
+              return {
+                success: false,
+                isPreTrigger: true,
+                error: `切换目标会话失败: selectSession [${sessionId}] 返回 false`,
+              };
+            }
+          }
+        } catch (selErr) {
+          const errMsg = selErr instanceof Error ? selErr.message : String(selErr);
+          return {
+            success: false,
+            isPreTrigger: true,
+            error: `切换目标会话异常: ${errMsg}`,
+          };
+        }
+      }
+
+      try {
+        const res = await this.driver.sendText(text, { targetSessionId: sessionId });
+        return {
+          success: res.success,
+          messageId: res.messageId,
+          error: res.error,
+          isPreTrigger: false,
+        };
+      } catch (err) {
+        return {
+          success: false,
+          isPreTrigger: false,
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+    });
+  }
+
+  /**
+   * 处理发送明确成功分支
+   */
+  private async handleSendSuccess(
+    sessionId: string,
+    resourceId: string,
+    deliveryId: string,
+    mastraMessageId: string,
+    replyText: string,
+    sendMsgId: string | undefined,
+    agentRes: KKBotAgentRunResult
+  ): Promise<void> {
+    const now = Date.now();
+    if (sendMsgId) {
+      this.botSentMessageIds.add(sendMsgId);
+    }
+
+    try {
+      await this.store.deliveries.updateStatus(deliveryId, 'sent', {
+        kkMessageId: sendMsgId,
+        updatedAt: now,
+      });
+      log.info({ sessionId, deliveryId, kkMessageId: sendMsgId }, 'KK 发送明确成功，Delivery 已进入 sent');
+    } catch (sentStatusErr) {
+      const error = sentStatusErr instanceof Error ? sentStatusErr : new Error(String(sentStatusErr));
+      log.error({ err: error, deliveryId }, '更新 Delivery 为 sent 失败，阻断后续 Memory 提交');
+      this.emitError(error);
+      return;
+    }
+
+    // 同步到 KK Raw Store 记录
+    await this.store.sessions.upsertSession({ id: sessionId });
+    await this.store.sessions.touchReplyTime(sessionId, now);
+    await this.store.messages.saveMessage({
+      sessionId,
+      messageId: sendMsgId,
+      origin: 'bot_echo',
+      sender: '自己',
+      content: replyText,
+      messageType: 'text',
+      isFromSelf: true,
+      isRecalled: false,
+      createdAt: now,
+    });
+
+    // 后置显式保存 assistant Memory
+    if (this.mastraMemory) {
+      try {
+        await this.mastraMemory.saveMessages({
+          messages: [
+            createMastraTextMessage({
+              id: mastraMessageId,
+              role: 'assistant',
+              content: replyText,
+              threadId: sessionId,
+              resourceId,
+              createdAt: new Date(now),
+            }),
+          ],
+        });
+        await this.store.deliveries.markMemoryCommitted(deliveryId, Date.now());
+        log.debug({ sessionId, deliveryId, mastraMessageId }, 'assistant Memory 显式提交成功并标记 memory_committed_at');
+      } catch (asstMemErr) {
+        log.error(
+          { asstMemErr, sessionId, deliveryId },
+          'assistant Memory 保存失败，保持 Delivery=sent 状态，严禁再次发送 KK'
+        );
+        this.emit('assistant_memory_save_failed', sessionId, deliveryId, asstMemErr);
+      }
+    }
+
+    let redDotCleared = false;
+    if (this.config.autoMarkRead) {
+      try {
+        redDotCleared = await this.driver.markSessionRead(sessionId);
+      } catch (rdErr) {
+        log.warn({ sessionId, rdErr }, '消除会话红点调用失败');
+      }
+    }
+
+    const dispatchResult: CoordinatorDispatchResult = {
+      action: 'message_sent',
+      success: true,
+      sessionId,
+      messageId: sendMsgId,
+      redDotCleared,
+    };
+
+    this.emit('reply_dispatched', sessionId, dispatchResult);
+    this.emit('agent_completed', sessionId, agentRes);
+  }
+
+  /**
+   * 处理发送失败分支 (区分 pre-trigger failed 与 post-trigger unknown)
+   */
+  private async handleSendFailure(
+    sessionId: string,
+    deliveryId: string,
+    sendResult: { success: boolean; error?: string; isPreTrigger?: boolean },
+    agentRes: KKBotAgentRunResult
+  ): Promise<void> {
+    const finalStatus: DeliveryStatus = 'failed';
+    log.error(
+      { sessionId, deliveryId, status: finalStatus, error: sendResult.error },
+      'KK 发送未获明确成功，更新 Delivery 终态为 failed 并坚决保留红点'
+    );
+    try {
+      await this.store.deliveries.updateStatus(deliveryId, finalStatus, {
+        errorCode: sendResult.error,
+      });
+    } catch (failStatusErr) {
+      log.error({ failStatusErr, deliveryId }, '更新 Delivery 状态失败');
+    }
+
+    const failResult: CoordinatorDispatchResult = {
+      action: 'send_failed',
+      success: false,
+      sessionId,
+      error: sendResult.error,
+      redDotCleared: false,
+    };
+    this.emit('reply_dispatched', sessionId, failResult);
+    this.emit('agent_completed', sessionId, agentRes);
+  }
+
+  /**
+   * 安全派发 error 事件（若未绑定监听器则仅记日志，避免 Node EventEmitter 抛出未捕获异常）
+   */
+  private emitError(error: Error): void {
+    if (this.listenerCount('error') > 0) {
+      this.emit('error', error);
+    }
+  }
+
 
   /**
    * 执行 Agent 认知微内核全链路流水线

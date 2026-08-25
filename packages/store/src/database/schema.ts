@@ -104,6 +104,27 @@ CREATE INDEX IF NOT EXISTS idx_session_messages_message_id ON session_messages(m
 CREATE UNIQUE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
 CREATE INDEX IF NOT EXISTS idx_session_messages_session_created ON session_messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_session_messages_session_recalled ON session_messages(session_id, is_recalled, created_at);
+
+-- Delivery 交付生命周期事实表（generated / sending / sent / failed / unknown / aborted）
+CREATE TABLE IF NOT EXISTS message_deliveries (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  mastra_message_id TEXT NOT NULL,
+  kk_message_id TEXT,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  memory_committed_at INTEGER,
+  error_code TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_deliveries_session_id ON message_deliveries(session_id);
+CREATE INDEX IF NOT EXISTS idx_message_deliveries_run_id ON message_deliveries(run_id);
+CREATE INDEX IF NOT EXISTS idx_message_deliveries_status ON message_deliveries(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_deliveries_run_content ON message_deliveries(run_id, content_hash);
 `;
 
 /**
