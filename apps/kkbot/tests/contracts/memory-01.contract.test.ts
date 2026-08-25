@@ -367,12 +367,11 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     expect(extractMessageText(asstMsg?.content)).toBe('最终回复');
   });
 
-  it('MEMORY-01.6: 非 sent 状态 (failed / unknown / aborted) 绝不提交 assistant Memory', async () => {
+  it('MEMORY-01.6: 发送未获成功时 Delivery 进入 failed，且绝不提交 assistant Memory', async () => {
     mockDriver.sendText.mockResolvedValueOnce({
       success: false,
       error: 'CDP timeout',
     });
-
     const fakeModel = createFakeModel({
       responses: [{ text: '未送达的回复', finishReason: 'stop' }],
     });
@@ -412,6 +411,11 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     });
 
     await coordinator.flushSession(sessionId);
+
+    const deliveries = await store.deliveries.getDeliveriesBySession(sessionId);
+    expect(deliveries.length).toBe(1);
+    expect(deliveries[0].status).toBe('failed');
+    expect(deliveries[0].memoryCommittedAt).toBeNull();
 
     const { messages } = await mastraMemory.recall({
       threadId: sessionId,
