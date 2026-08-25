@@ -166,8 +166,7 @@ export type AppConfig = z.infer<typeof appConfigSchema>;
 const ENV_VAR_REGEX = /\$\{([A-Za-z0-9_]+)(?::-([^}]*))?\}/g;
 
 /**
- * 针对 YAML 原始字符串进行环境变量插值。
- * 若发现未定义且无默认值的环境变量，抛出结构化 ConfigValidationError。
+ * 对原始字符串进行单行或纯文本环境变量插值（辅助工具函数）。
  */
 export function interpolateEnv(rawText: string): string {
   const missingVars: Array<{ varName: string }> = [];
@@ -198,6 +197,54 @@ export function interpolateEnv(rawText: string): string {
   }
 
   return replaced;
+}
+
+/**
+ * 递归对已解析的 YAML 对象结构进行环境变量插值，精确绑定字段路径。
+ */
+function interpolateNodeEnv(
+  node: unknown,
+  currentPath: string[],
+  errors: ConfigFieldError[]
+): unknown {
+  if (typeof node === 'string') {
+    return node.replace(
+      ENV_VAR_REGEX,
+      (_match, varName: string, defaultValue?: string) => {
+        const envVal = process.env[varName];
+        if (envVal !== undefined) {
+          return envVal;
+        }
+        if (defaultValue !== undefined) {
+          return defaultValue;
+        }
+        const fieldPath = currentPath.join('.') || 'root';
+        errors.push({
+          path: fieldPath,
+          reason: `未解析的环境变量 \${${varName}}：系统环境变量中未设置该变量且配置未提供默认值`,
+          hint: `请在系统环境变量中设置 ${varName}，或在配置中指定默认值 \${${varName}:-默认值}`,
+          message: `字段 '${fieldPath}' 缺少环境变量 ${varName}`,
+        });
+        return '';
+      }
+    );
+  }
+
+  if (Array.isArray(node)) {
+    return node.map((item, idx) =>
+      interpolateNodeEnv(item, [...currentPath, String(idx)], errors)
+    );
+  }
+
+  if (typeof node === 'object' && node !== null) {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(node)) {
+      result[key] = interpolateNodeEnv(value, [...currentPath, key], errors);
+    }
+    return result;
+  }
+
+  return node;
 }
 
 // ==========================================
@@ -285,13 +332,10 @@ function translateZodIssue(issue: z.ZodIssue): ConfigFieldError {
  * 解析并校验 YAML 字符串为强类型 AppConfig。
  */
 export function parseAndValidateConfig(rawYaml: string): AppConfig {
-  // 1. 环境变量插值
-  const interpolatedYaml = interpolateEnv(rawYaml);
-
-  // 2. YAML 解析
+  // 1. YAML 语法解析
   let parsedObject: unknown;
   try {
-    parsedObject = yaml.parse(interpolatedYaml);
+    parsedObject = yaml.parse(rawYaml);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     throw new ConfigValidationError([
@@ -315,8 +359,16 @@ export function parseAndValidateConfig(rawYaml: string): AppConfig {
     ]);
   }
 
+  // 2. 基于精确字段路径的环境变量插值
+  const envErrors: ConfigFieldError[] = [];
+  const interpolatedObject = interpolateNodeEnv(parsedObject, [], envErrors);
+
+  if (envErrors.length > 0) {
+    throw new ConfigValidationError(envErrors);
+  }
+
   // 3. Zod 严格校验
-  const result = appConfigSchema.safeParse(parsedObject);
+  const result = appConfigSchema.safeParse(interpolatedObject);
   if (!result.success) {
     const errors = result.error.issues.map(translateZodIssue);
     throw new ConfigValidationError(errors);

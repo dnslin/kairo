@@ -109,14 +109,7 @@ retention:
     });
 
     expect(exitCode).toBe(1);
-    expect(
-      errors.some(
-        e =>
-          e.includes('字段路径') ||
-          e.includes('knowledge.embedding.apiKey') ||
-          e.includes('EMBEDDING_API_KEY')
-      )
-    ).toBe(true);
-    expect(errors.some(e => e.includes('修复建议') || e.includes('hint'))).toBe(true);
+    expect(errors.some((e) => e.includes('字段路径: knowledge.embedding.apiKey'))).toBe(true);
+    expect(errors.some((e) => e.includes('修复建议: 请在系统环境变量中设置 EMBEDDING_API_KEY'))).toBe(true);
   });
 });

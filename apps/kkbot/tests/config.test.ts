@@ -110,9 +110,7 @@ retention:
 
     expect(thrownError).toBeInstanceOf(ConfigValidationError);
     expect(thrownError?.errors.length).toBeGreaterThan(0);
-    const apiError = thrownError?.errors.find(
-      e => e.path.includes('apiKey') || e.message.includes('EMBEDDING_API_KEY')
-    );
+    const apiError = thrownError?.errors.find((e) => e.path === 'knowledge.embedding.apiKey');
     expect(apiError).toBeDefined();
     expect(apiError?.reason).toMatch(/未解析的环境变量|缺少环境变量/);
     expect(apiError?.hint).toMatch(/设置环境变量|EMBEDDING_API_KEY/);
@@ -209,5 +207,17 @@ retention:
     const raw = 'url: ${TEST_EXISTING_VAR} | default: ${TEST_OPTIONAL_VAR:-fallback-value}';
     const interpolated = interpolateEnv(raw);
     expect(interpolated).toBe('url: custom-value | default: fallback-value');
+  });
+
+  it('环境变量包含冒号、井号与换行符等特殊字符时，插值安全且不破坏配置解析', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-test#with:special\nchars"and\'quotes';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const configPath = path.join(tempDir, 'kkbot.yaml');
+    await fs.writeFile(configPath, validYamlContent, 'utf-8');
+
+    const config = await loadConfigFromYaml(configPath);
+    expect(config.knowledge.embedding.apiKey).toBe('sk-test#with:special\nchars"and\'quotes');
   });
 });
