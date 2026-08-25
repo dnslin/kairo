@@ -184,6 +184,11 @@ export class SessionCoordinator extends EventEmitter {
     this.store = options.store;
     this.agent = options.agent;
     this.mastraMemory = options.mastraMemory;
+
+    if (this.agent && !this.mastraMemory) {
+      throw new Error('装配 Mastra-native Agent 时必须同时传入协同的 mastraMemory 实例');
+    }
+
     this.agentRuntime = options.agentRuntime;
     this.memoryManager = options.memoryManager;
     this.approvalManager = options.approvalManager;
@@ -910,13 +915,7 @@ export class SessionCoordinator extends EventEmitter {
     });
     // 记录 Bot 发送的消息 ID，防止自身回显触发退避
     if (sendResult.messageId) {
-      this.botSentMessageIds.add(sendResult.messageId);
-      if (this.botSentMessageIds.size > MAX_BOT_SENT_IDS) {
-        const firstKey = this.botSentMessageIds.values().next().value;
-        if (firstKey) {
-          this.botSentMessageIds.delete(firstKey);
-        }
-      }
+      this.recordBotSentMessageId(sendResult.messageId);
     }
 
     // 发送成功分支：更新回复时间戳、写入消息历史并执行视觉红点消除
@@ -1374,21 +1373,24 @@ export class SessionCoordinator extends EventEmitter {
   }
 
   /**
-   * 解析会话人员身份标识 (resourceId)
+   * 解析会话人员身份标识 (resourceId，严格遵循 senderId -> session.employeeId，杜绝非唯一昵称兜底)
    */
-  private async resolveSessionResourceId(sessionId: string, consolidated: ConsolidatedMessage): Promise<string | undefined> {
+  private async resolveSessionResourceId(
+    sessionId: string,
+    consolidated: ConsolidatedMessage
+  ): Promise<string | undefined> {
     if (consolidated.senderId && consolidated.senderId.trim() !== '') {
-      return consolidated.senderId;
+      return consolidated.senderId.trim();
     }
     try {
       const sessionRecord = await this.store.sessions.getSession(sessionId);
       if (sessionRecord?.employeeId && sessionRecord.employeeId.trim() !== '') {
-        return sessionRecord.employeeId;
+        return sessionRecord.employeeId.trim();
       }
     } catch (err) {
       log.debug({ err, sessionId }, '查询会话档案异常');
     }
-    return consolidated.sender || undefined;
+    return undefined;
   }
 
   /**
@@ -1555,7 +1557,7 @@ export class SessionCoordinator extends EventEmitter {
   ): Promise<void> {
     const now = Date.now();
     if (sendMsgId) {
-      this.botSentMessageIds.add(sendMsgId);
+      this.recordBotSentMessageId(sendMsgId);
     }
 
     try {
@@ -1642,10 +1644,10 @@ export class SessionCoordinator extends EventEmitter {
     sendResult: { success: boolean; error?: string; isPreTrigger?: boolean },
     agentRes: KKBotAgentRunResult
   ): Promise<void> {
-    const finalStatus: DeliveryStatus = 'failed';
+    const finalStatus: DeliveryStatus = sendResult.isPreTrigger ? 'failed' : 'unknown';
     log.error(
       { sessionId, deliveryId, status: finalStatus, error: sendResult.error },
-      'KK 发送未获明确成功，更新 Delivery 终态为 failed 并坚决保留红点'
+      'KK 发送未获明确成功，更新 Delivery 终态并坚决保留红点'
     );
     try {
       await this.store.deliveries.updateStatus(deliveryId, finalStatus, {
@@ -1664,6 +1666,22 @@ export class SessionCoordinator extends EventEmitter {
     };
     this.emit('reply_dispatched', sessionId, failResult);
     this.emit('agent_completed', sessionId, agentRes);
+  }
+
+  /**
+   * 记录 Bot 发送的消息 ID 并执行有限集合驱逐
+   */
+  private recordBotSentMessageId(messageId?: string | null): void {
+    if (!messageId) {
+      return;
+    }
+    this.botSentMessageIds.add(messageId);
+    if (this.botSentMessageIds.size > MAX_BOT_SENT_IDS) {
+      const firstKey = this.botSentMessageIds.values().next().value;
+      if (firstKey) {
+        this.botSentMessageIds.delete(firstKey);
+      }
+    }
   }
 
   /**

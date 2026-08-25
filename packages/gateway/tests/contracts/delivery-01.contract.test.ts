@@ -16,6 +16,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { SessionCoordinator } from '../../src/coordinator.js';
 class MockDriver extends EventEmitter {
+  public selectSession = vi.fn().mockResolvedValue(true);
+  public getCurrentSession = vi.fn().mockResolvedValue({ id: 'session_init' });
   public markSessionRead = vi.fn().mockResolvedValue(true);
   public sendText = vi.fn().mockResolvedValue({
     success: true,
@@ -25,7 +27,6 @@ class MockDriver extends EventEmitter {
     success: true,
     messageId: 'mock_bot_send_id',
   } as SendResult);
-
   public emitMessage(msg: KK9Message): void {
     this.emit('message', msg);
   }
@@ -364,7 +365,7 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
       try {
         fs.rmSync(tempDir, { recursive: true, force: true });
       } catch {
-        // ignore
+        // 忽略清理异常
       }
     });
 
@@ -428,14 +429,15 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
       expect(mockDriver.sendText).toHaveBeenCalledTimes(1);
     });
 
-    it('Driver 发送失败时 Delivery 进入 failed，不提交 assistant Memory', async () => {
-      mockDriver.sendText.mockResolvedValueOnce({
-        success: false,
-        error: 'Pre-send check failed',
-      });
+    it('Driver 发送失败时区分 pre-trigger failed 与 post-trigger unknown，且均不提交 assistant Memory', async () => {
+      // 1. 测试 pre-trigger failure (如 selectSession 切换会话失败) -> Delivery 必须为 failed
+      mockDriver.selectSession.mockResolvedValueOnce(false);
 
       const fakeModel = createFakeModel({
-        responses: [{ text: '将失败的生成内容', finishReason: 'stop' }],
+        responses: [
+          { text: '前置失败内容', finishReason: 'stop' },
+          { text: '后置超时内容', finishReason: 'stop' },
+        ],
       });
       const factory = new MastraModelFactory({
         tiers: {
@@ -455,30 +457,58 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
       });
       await privCoordinator.start();
 
-      const sessionId = 'session_deliv_fail_contract';
+      const sessionPreFail = 'session_deliv_pre_fail';
       await privCoordinator.handleInboundMessage({
-        id: 'msg_fail_deliv',
-        messageId: 'msg_fail_deliv',
-        sessionId,
+        id: 'msg_pre_fail',
+        messageId: 'msg_pre_fail',
+        sessionId: sessionPreFail,
         sessionName: '李四',
         sessionType: 'private',
         sender: '李四',
         senderId: 'emp_lisi',
-        content: '发送失败用例',
+        content: '前置失败测试',
         messageType: 'text',
         isMe: false,
         timestamp: Date.now(),
       });
 
-      await privCoordinator.flushSession(sessionId);
+      await privCoordinator.flushSession(sessionPreFail);
 
-      const deliveries = await privStore.deliveries.getDeliveriesBySession(sessionId);
-      expect(deliveries.length).toBe(1);
-      expect(deliveries[0].status).toBe('failed');
-      expect(deliveries[0].errorCode).toBe('Pre-send check failed');
-      expect(deliveries[0].memoryCommittedAt).toBeNull();
+      const preDeliveries = await privStore.deliveries.getDeliveriesBySession(sessionPreFail);
+      expect(preDeliveries.length).toBe(1);
+      expect(preDeliveries[0].status).toBe('failed');
+      expect(preDeliveries[0].memoryCommittedAt).toBeNull();
+
+      // 2. 测试 post-trigger failure (如 sendText 已调用但超时未收到回执) -> Delivery 必须为 unknown
+      mockDriver.selectSession.mockResolvedValueOnce(true);
+      mockDriver.sendText.mockResolvedValueOnce({
+        success: false,
+        error: 'CDP network response timeout',
+      });
+
+      const sessionPostFail = 'session_deliv_post_fail';
+      await privCoordinator.handleInboundMessage({
+        id: 'msg_post_fail',
+        messageId: 'msg_post_fail',
+        sessionId: sessionPostFail,
+        sessionName: '王五',
+        sessionType: 'private',
+        sender: '王五',
+        senderId: 'emp_wangwu',
+        content: '后置超时测试',
+        messageType: 'text',
+        isMe: false,
+        timestamp: Date.now(),
+      });
+
+      await privCoordinator.flushSession(sessionPostFail);
+
+      const postDeliveries = await privStore.deliveries.getDeliveriesBySession(sessionPostFail);
+      expect(postDeliveries.length).toBe(1);
+      expect(postDeliveries[0].status).toBe('unknown');
+      expect(postDeliveries[0].errorCode).toBe('CDP network response timeout');
+      expect(postDeliveries[0].memoryCommittedAt).toBeNull();
     });
-
     it('两个并发 PrivateSession 的 Delivery 和发送完全隔离不串线', async () => {
       const fakeModel = createFakeModel({
         responses: [

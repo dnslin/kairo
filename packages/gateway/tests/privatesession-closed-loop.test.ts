@@ -87,7 +87,7 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {
-      // ignore
+      // 忽略清理异常
     }
   });
 
@@ -357,7 +357,9 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     expect(extractMessageText(userMessages[1].content)).toBe('第二句话');
   });
 
-  it('当 Driver 发送明确失败时，Delivery 进入 failed 且严禁保存 assistant Memory', async () => {
+  it('当 Driver 发送未获明确成功时，区分 pre-trigger failed 与 post-trigger unknown 且绝不保存 assistant Memory', async () => {
+    // 1. 测试 post-trigger failure (如 sendText 已调用但超时) -> Delivery 进入 unknown
+    mockDriver.selectSession.mockResolvedValueOnce(true);
     mockDriver.sendText.mockResolvedValueOnce({
       success: false,
       error: '网络超时未收到 KK 回执',
@@ -417,10 +419,10 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
 
     await coordinator.flushSession(sessionId);
 
-    // 验证 Delivery 为 failed 状态
+    // 验证 Delivery 为 unknown 状态
     const deliveries = await store.deliveries.getDeliveriesBySession(sessionId);
     expect(deliveries.length).toBe(1);
-    expect(deliveries[0].status).toBe('failed');
+    expect(deliveries[0].status).toBe('unknown');
     expect(deliveries[0].errorCode).toBe('网络超时未收到 KK 回执');
     expect(deliveries[0].memoryCommittedAt).toBeNull();
 
@@ -432,6 +434,73 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
 
     const assistantMessages = memoryMessages.filter((m) => m.role === 'assistant');
     expect(assistantMessages.length).toBe(0);
+  });
+
+  it('当传入 agent 但未传入协同的 mastraMemory 时，构造期必须直接抛出异常阻止运行', () => {
+    const fakeModel = createFakeModel({ responses: [] });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory });
+
+    expect(
+      () =>
+        new SessionCoordinator({
+          driver: mockDriver as unknown as KK9Driver,
+          store,
+          agent,
+        })
+    ).toThrow('装配 Mastra-native Agent 时必须同时传入协同的 mastraMemory 实例');
+  });
+
+  it('当会话缺失有效人员身份 (senderId 与 employeeId 均为空) 时，必须 Fail-Closed 终止处理并拒绝调用 Agent', async () => {
+    const fakeModel = createFakeModel({
+      responses: [{ text: '不应被调用', finishReason: 'stop' }],
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+    const agentSpy = vi.spyOn(agent, 'execute');
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 50, maxWaitMs: 150 },
+    });
+    await coordinator.start();
+
+    const sessionNoIdentity = 'session_no_identity_001';
+    await coordinator.handleInboundMessage({
+      id: 'msg_no_id_1',
+      messageId: 'msg_no_id_1',
+      sessionId: sessionNoIdentity,
+      sessionName: '未知会话',
+      sessionType: 'private',
+      sender: '',
+      senderId: '', // 空 senderId
+      content: '无身份测试',
+      messageType: 'text',
+      isMe: false,
+      timestamp: Date.now(),
+    });
+
+    await coordinator.flushSession(sessionNoIdentity);
+
+    // Agent 严禁被调用
+    expect(agentSpy).toHaveBeenCalledTimes(0);
+    // KK 发送严禁被调用
+    expect(mockDriver.sendText).toHaveBeenCalledTimes(0);
   });
 
   it('两个 PrivateSession 并发处理时，Thread、Memory、Delivery 与发送目标完全隔离', async () => {

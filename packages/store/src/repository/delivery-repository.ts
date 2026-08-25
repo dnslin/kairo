@@ -1,8 +1,8 @@
 import type { Client, InValue } from '@libsql/client';
 import type {
   CreateDeliveryInput,
+  Delivery,
   DeliveryStatus,
-  MessageDelivery,
   UpdateDeliveryStatusOptions,
 } from '../types/index.js';
 import { DatabaseError } from '../utils/errors.js';
@@ -24,8 +24,7 @@ interface DeliveryRow {
   created_at: number;
   updated_at: number;
 }
-
-function mapRowToDelivery(row: DeliveryRow): MessageDelivery {
+function mapRowToDelivery(row: DeliveryRow): Delivery {
   return {
     id: String(row.id),
     runId: String(row.run_id),
@@ -66,7 +65,7 @@ export class DeliveryRepository {
    * 创建新的 Delivery 记录（默认初始状态为 generated）
    * 采用 ON CONFLICT (run_id, content_hash) DO NOTHING 保证幂等
    */
-  async createDelivery(input: CreateDeliveryInput): Promise<MessageDelivery> {
+  async createDelivery(input: CreateDeliveryInput): Promise<Delivery> {
     const now = input.createdAt ?? Date.now();
     const status: DeliveryStatus = input.status ?? 'generated';
     const kkMessageId = input.kkMessageId ?? null;
@@ -113,10 +112,8 @@ export class DeliveryRepository {
         throw err;
       }
       log.error({ err, id: input.id, runId: input.runId }, '创建 Delivery 异常');
-      throw new DatabaseError(
-        `创建 Delivery 异常: ${err instanceof Error ? err.message : String(err)}`,
-        err instanceof Error ? err : undefined
-      );
+      const cause = err instanceof Error ? err : new Error(String(err));
+      throw new DatabaseError(`创建 Delivery 异常: ${cause.message}`, cause);
     }
   }
 
@@ -127,7 +124,7 @@ export class DeliveryRepository {
     id: string,
     status: DeliveryStatus,
     options?: UpdateDeliveryStatusOptions
-  ): Promise<MessageDelivery> {
+  ): Promise<Delivery> {
     const now = options?.updatedAt ?? Date.now();
 
     try {
@@ -165,19 +162,16 @@ export class DeliveryRepository {
         throw err;
       }
       log.error({ err, id, status }, '更新 Delivery 状态异常');
-      throw new DatabaseError(
-        `更新 Delivery 状态异常: ${err instanceof Error ? err.message : String(err)}`,
-        err instanceof Error ? err : undefined
-      );
+      const cause = err instanceof Error ? err : new Error(String(err));
+      throw new DatabaseError(`更新 Delivery 状态异常: ${cause.message}`, cause);
     }
   }
 
   /**
    * 标记 Delivery 的 Memory 提交完成 (写入 memory_committed_at)
    */
-  async markMemoryCommitted(id: string, timestamp?: number): Promise<MessageDelivery> {
+  async markMemoryCommitted(id: string, timestamp?: number): Promise<Delivery> {
     const now = timestamp ?? Date.now();
-
     try {
       const res = await this.client.execute({
         sql: `UPDATE message_deliveries SET memory_committed_at = ?, updated_at = ? WHERE id = ? AND status = 'sent'`,
@@ -200,17 +194,15 @@ export class DeliveryRepository {
         throw err;
       }
       log.error({ err, id }, '标记 Delivery Memory 提交异常');
-      throw new DatabaseError(
-        `标记 Delivery Memory 提交异常: ${err instanceof Error ? err.message : String(err)}`,
-        err instanceof Error ? err : undefined
-      );
+      const cause = err instanceof Error ? err : new Error(String(err));
+      throw new DatabaseError(`标记 Delivery Memory 提交异常: ${cause.message}`, cause);
     }
   }
 
   /**
    * 按主键 ID 查询 Delivery
    */
-  async getDeliveryById(id: string): Promise<MessageDelivery | null> {
+  async getDeliveryById(id: string): Promise<Delivery | null> {
     const res = await this.client.execute({
       sql: `SELECT * FROM message_deliveries WHERE id = ? LIMIT 1`,
       args: [id],
@@ -226,7 +218,7 @@ export class DeliveryRepository {
   /**
    * 按 runId 和 contentHash 查询 Delivery
    */
-  async getDeliveryByRunAndHash(runId: string, contentHash: string): Promise<MessageDelivery | null> {
+  async getDeliveryByRunAndHash(runId: string, contentHash: string): Promise<Delivery | null> {
     const res = await this.client.execute({
       sql: `SELECT * FROM message_deliveries WHERE run_id = ? AND content_hash = ? LIMIT 1`,
       args: [runId, contentHash],
@@ -242,7 +234,7 @@ export class DeliveryRepository {
   /**
    * 查询指定会话的所有 Delivery 列表（按创建时间升序）
    */
-  async getDeliveriesBySession(sessionId: string): Promise<MessageDelivery[]> {
+  async getDeliveriesBySession(sessionId: string): Promise<Delivery[]> {
     const res = await this.client.execute({
       sql: `SELECT * FROM message_deliveries WHERE session_id = ? ORDER BY created_at ASC`,
       args: [sessionId],
@@ -254,7 +246,7 @@ export class DeliveryRepository {
   /**
    * 查询指定 runId 的所有 Delivery 列表
    */
-  async getDeliveriesByRunId(runId: string): Promise<MessageDelivery[]> {
+  async getDeliveriesByRunId(runId: string): Promise<Delivery[]> {
     const res = await this.client.execute({
       sql: `SELECT * FROM message_deliveries WHERE run_id = ? ORDER BY created_at ASC`,
       args: [runId],
@@ -266,7 +258,7 @@ export class DeliveryRepository {
   /**
    * 查询所有已发送但尚未提交 Memory 的 Delivery (sent-but-uncommitted 检查点)
    */
-  async getSentUncommittedDeliveries(): Promise<MessageDelivery[]> {
+  async getSentUncommittedDeliveries(): Promise<Delivery[]> {
     const res = await this.client.execute({
       sql: `SELECT * FROM message_deliveries WHERE status = 'sent' AND memory_committed_at IS NULL ORDER BY created_at ASC`,
       args: [],

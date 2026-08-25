@@ -561,9 +561,9 @@ export type DeliveryStatus =
   | 'aborted';
 
 /**
- * MessageDelivery 实体（数据库持久化与查询返回结构）
+ * Delivery 实体（数据库持久化与查询返回结构）
  */
-export interface MessageDelivery {
+export interface Delivery {
   /** 交付唯一身份 ID (如 deliv_xxx) */
   id: string;
   /** 关联的 Agent Run ID */
@@ -589,6 +589,9 @@ export interface MessageDelivery {
   /** 更新时间戳 (毫秒) */
   updatedAt: number;
 }
+
+/** 向后兼容别名 */
+export type MessageDelivery = Delivery;
 
 /**
  * 创建 Delivery 输入参数

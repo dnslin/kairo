@@ -89,7 +89,7 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     try {
       fs.rmSync(tempDir, { recursive: true, force: true });
     } catch {
-      // ignore
+      // 忽略清理异常
     }
   });
 
@@ -367,13 +367,15 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     expect(extractMessageText(asstMsg?.content)).toBe('最终回复');
   });
 
-  it('MEMORY-01.6: 发送未获成功时 Delivery 进入 failed，且绝不提交 assistant Memory', async () => {
-    mockDriver.sendText.mockResolvedValueOnce({
-      success: false,
-      error: 'CDP timeout',
-    });
+  it('MEMORY-01.6: 发送未获明确成功时 (pre-trigger failed 或 post-trigger unknown)，绝不提交 assistant Memory', async () => {
+    // 1. 测试 pre-trigger failure (如 selectSession 失败) -> status = 'failed'
+    mockDriver.selectSession.mockResolvedValueOnce(false);
+
     const fakeModel = createFakeModel({
-      responses: [{ text: '未送达的回复', finishReason: 'stop' }],
+      responses: [
+        { text: '未送达的回复 1', finishReason: 'stop' },
+        { text: '未送达的回复 2', finishReason: 'stop' },
+      ],
     });
     const modelFactory = new MastraModelFactory({
       tiers: {
@@ -393,36 +395,68 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     });
     await coordinator.start();
 
-    const sessionId = 'session_nonsent_001';
-    const senderId = 'emp_grace';
-
+    const sessionPreFail = 'session_pre_fail_001';
+    const senderPreFail = 'emp_pre_fail';
     await coordinator.handleInboundMessage({
-      id: 'msg_grace_1',
-      messageId: 'msg_grace_1',
-      sessionId,
-      sessionName: 'Grace',
+      id: 'msg_pre_fail_1',
+      messageId: 'msg_pre_fail_1',
+      sessionId: sessionPreFail,
+      sessionName: 'PreFail',
       sessionType: 'private',
-      sender: 'Grace',
-      senderId,
-      content: '测试非 sent 隔离',
+      sender: 'PreFail',
+      senderId: senderPreFail,
+      content: '前置失败',
       messageType: 'text',
       isMe: false,
       timestamp: Date.now(),
     });
+    await coordinator.flushSession(sessionPreFail);
 
-    await coordinator.flushSession(sessionId);
+    const preDeliveries = await store.deliveries.getDeliveriesBySession(sessionPreFail);
+    expect(preDeliveries.length).toBe(1);
+    expect(preDeliveries[0].status).toBe('failed');
+    expect(preDeliveries[0].memoryCommittedAt).toBeNull();
 
-    const deliveries = await store.deliveries.getDeliveriesBySession(sessionId);
-    expect(deliveries.length).toBe(1);
-    expect(deliveries[0].status).toBe('failed');
-    expect(deliveries[0].memoryCommittedAt).toBeNull();
+    const { messages: preMessages } = await mastraMemory.recall({
+      threadId: sessionPreFail,
+      resourceId: senderPreFail,
+    });
+    expect(preMessages.filter((m) => m.role === 'assistant').length).toBe(0);
 
-    const { messages } = await mastraMemory.recall({
-      threadId: sessionId,
-      resourceId: senderId,
+    // 2. 测试 post-trigger failure (如 sendText 超时) -> status = 'unknown'
+    mockDriver.selectSession.mockResolvedValueOnce(true);
+    mockDriver.sendText.mockResolvedValueOnce({
+      success: false,
+      error: 'CDP timeout',
     });
 
-    expect(messages.filter((m) => m.role === 'assistant').length).toBe(0);
+    const sessionPostFail = 'session_post_fail_001';
+    const senderPostFail = 'emp_post_fail';
+    await coordinator.handleInboundMessage({
+      id: 'msg_post_fail_1',
+      messageId: 'msg_post_fail_1',
+      sessionId: sessionPostFail,
+      sessionName: 'PostFail',
+      sessionType: 'private',
+      sender: 'PostFail',
+      senderId: senderPostFail,
+      content: '后置超时',
+      messageType: 'text',
+      isMe: false,
+      timestamp: Date.now(),
+    });
+    await coordinator.flushSession(sessionPostFail);
+
+    const postDeliveries = await store.deliveries.getDeliveriesBySession(sessionPostFail);
+    expect(postDeliveries.length).toBe(1);
+    expect(postDeliveries[0].status).toBe('unknown');
+    expect(postDeliveries[0].memoryCommittedAt).toBeNull();
+
+    const { messages: postMessages } = await mastraMemory.recall({
+      threadId: sessionPostFail,
+      resourceId: senderPostFail,
+    });
+    expect(postMessages.filter((m) => m.role === 'assistant').length).toBe(0);
   });
 
   it('MEMORY-01.7: sent-but-uncommitted 检查点可被准确检索，且保持 sent 状态', async () => {
