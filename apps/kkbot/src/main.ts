@@ -102,8 +102,10 @@ export async function runCli(
     }
 
     if (command === 'knowledge:ingest' || command === 'knowledge:rebuild') {
-      io.log(`[KKBot] 知识库命令 '${command}' 准备就绪（由后续 Knowledge 专用任务实施执行）。`);
-      return 0;
+      io.error(
+        `[KKBot] 知识库命令 '${command}' 尚未实现（本命令为预留入口，完整能力由后续 Knowledge 专用任务实施）。`
+      );
+      return 1;
     }
 
     io.log('[KKBot] 运行基线与静态配置验证完成。');

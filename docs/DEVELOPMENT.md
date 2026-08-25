@@ -38,8 +38,8 @@
 | `pnpm dev`              | 以开发模式启动应用入口             |
 | `pnpm start`            | 启动正式应用入口并执行基线校验     |
 | `pnpm doctor`           | 执行配置静态校验与环境自检         |
-| `pnpm knowledge:ingest` | 执行知识库内容摄取                 |
-| `pnpm knowledge:rebuild`| 执行知识库整代重建                 |
+| `pnpm knowledge:ingest` | 预留入口：执行配置静态校验（完整业务能力由后续知识库任务实施） |
+| `pnpm knowledge:rebuild`| 预留入口：执行配置静态校验（完整业务能力由后续知识库任务实施） |
 | `pnpm build`            | 递归构建所有工作区包与应用模块     |
 | `pnpm typecheck`        | 执行根 TypeScript 静态检查         |
 | `pnpm test`             | 运行 Vitest 测试                   |

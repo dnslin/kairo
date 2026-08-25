@@ -114,4 +114,42 @@ retention:
       true
     );
   });
+
+  it('knowledge:ingest 命令在配置合法时完成静态校验，但因业务未实现明确返回非 0 退出码并输出提示', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-test-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const configPath = path.join(tempDir, 'kkbot.yaml');
+    await fs.writeFile(configPath, validYaml, 'utf-8');
+
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const exitCode = await runCli(['knowledge:ingest', '--config', configPath], {
+      log: (msg: string) => logs.push(msg),
+      error: (msg: string) => errors.push(msg),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(errors.some(e => e.includes('尚未实现') && e.includes('knowledge:ingest'))).toBe(true);
+  });
+
+  it('knowledge:rebuild 命令在配置合法时完成静态校验，但因业务未实现明确返回非 0 退出码并输出提示', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-test-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const configPath = path.join(tempDir, 'kkbot.yaml');
+    await fs.writeFile(configPath, validYaml, 'utf-8');
+
+    const logs: string[] = [];
+    const errors: string[] = [];
+    const exitCode = await runCli(['knowledge:rebuild', '--config', configPath], {
+      log: (msg: string) => logs.push(msg),
+      error: (msg: string) => errors.push(msg),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(errors.some(e => e.includes('尚未实现') && e.includes('knowledge:rebuild'))).toBe(true);
+  });
 });
