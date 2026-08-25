@@ -34,14 +34,14 @@
     "@kkbot/gateway": "workspace:*",
     "@kkbot/knowledge": "workspace:*",
     "@kkbot/store": "workspace:*",
-    "@mastra/core": "1.61.0",
-    "@mastra/libsql": "1.21.1",
-    "@mastra/mcp": "1.17.1",
-    "@mastra/memory": "1.27.0",
-    "@mastra/observability": "1.17.1",
+    "@mastra/core": "catalog:",
+    "@mastra/libsql": "catalog:",
+    "@mastra/mcp": "catalog:",
+    "@mastra/memory": "catalog:",
+    "@mastra/observability": "catalog:",
     "pino": "^9.6.0",
     "yaml": "^2.7.0",
-    "zod": "4.4.3"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",

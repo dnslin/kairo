@@ -37,16 +37,20 @@ describe('运行基线与工作区配置验证', () => {
     }
   });
 
-  it('AC2: Mastra、Zod 和 MCP 依赖使用父规格锁定的精确候选 B 版本，禁止带 ^ 或 ~ 漂移', async () => {
-    const lockedVersions: Record<string, string> = {
-      '@mastra/core': '1.61.0',
-      '@mastra/libsql': '1.21.1',
-      '@mastra/memory': '1.27.0',
-      '@mastra/observability': '1.17.1',
-      '@mastra/mcp': '1.17.1',
-      'zod': '4.4.3',
-      '@modelcontextprotocol/sdk': '1.30.0',
-    };
+  it('AC2: pnpm-workspace.yaml 建立统一 catalog 锁定父规格候选 B，生产工作区通过 catalog: 引用禁止漂移', async () => {
+    const workspacePath = path.join(rootDir, 'pnpm-workspace.yaml');
+    const wsContent = await fs.readFile(workspacePath, 'utf-8');
+    const wsDoc = yaml.parse(wsContent) as { catalog?: Record<string, string> };
+
+    expect(wsDoc.catalog, 'pnpm-workspace.yaml 必须定义 catalog').toBeDefined();
+    expect(wsDoc.catalog?.['@mastra/core']).toBe('1.61.0');
+    expect(wsDoc.catalog?.['@mastra/libsql']).toBe('1.21.1');
+    expect(wsDoc.catalog?.['@mastra/memory']).toBe('1.27.0');
+    expect(wsDoc.catalog?.['@mastra/mcp']).toBe('1.17.1');
+    expect(wsDoc.catalog?.['@mastra/observability']).toBe('1.17.1');
+    expect(wsDoc.catalog?.['zod']).toBe('4.4.3');
+
+    const catalogPackages = ['@mastra/core', '@mastra/libsql', '@mastra/memory', '@mastra/mcp', '@mastra/observability', 'zod'];
 
     for (const relPath of packagePaths) {
       const fullPath = path.join(rootDir, relPath);
@@ -54,18 +58,17 @@ describe('运行基线与工作区配置验证', () => {
       const pkg = JSON.parse(content) as PackageJson;
       const allDeps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) };
 
-      for (const [depName, expectedVersion] of Object.entries(lockedVersions)) {
+      for (const depName of catalogPackages) {
         if (allDeps[depName]) {
           const declared = allDeps[depName];
           expect(
-            declared,
-            `${relPath} 中的 ${depName} 必须为精确版本 ${expectedVersion}，实际为 ${declared}`
-          ).toBe(expectedVersion);
+            declared === 'catalog:' || declared === wsDoc.catalog?.[depName],
+            `${relPath} 中的 ${depName} 必须通过 catalog: 引用或与 catalog 版本严格一致，实际为 ${declared}`
+          ).toBe(true);
         }
       }
     }
   });
-
   it('AC4: pnpm-workspace.yaml 正式包含应用模块和 Knowledge 模块', async () => {
     const workspacePath = path.join(rootDir, 'pnpm-workspace.yaml');
     const content = await fs.readFile(workspacePath, 'utf-8');

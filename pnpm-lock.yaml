@@ -4,6 +4,27 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@mastra/core':
+      specifier: 1.61.0
+      version: 1.61.0
+    '@mastra/libsql':
+      specifier: 1.21.1
+      version: 1.21.1
+    '@mastra/mcp':
+      specifier: 1.17.1
+      version: 1.17.1
+    '@mastra/memory':
+      specifier: 1.27.0
+      version: 1.27.0
+    '@mastra/observability':
+      specifier: 1.17.1
+      version: 1.17.1
+    zod:
+      specifier: 4.4.3
+      version: 4.4.3
+
 importers:
 
   .:
@@ -12,10 +33,10 @@ importers:
         specifier: ^9.39.2
         version: 9.39.2
       '@mastra/core':
-        specifier: 1.61.0
+        specifier: 'catalog:'
         version: 1.61.0(express@5.2.1)(zod@4.4.3)
       '@mastra/libsql':
-        specifier: 1.21.1
+        specifier: 'catalog:'
         version: 1.21.1(@mastra/core@1.61.0(express@5.2.1)(zod@4.4.3))
       '@types/node':
         specifier: ^22.12.0
@@ -51,7 +72,7 @@ importers:
         specifier: ^2.7.0
         version: 2.9.0
       zod:
-        specifier: 4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
 
   apps/kkbot:
@@ -72,19 +93,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/store
       '@mastra/core':
-        specifier: 1.61.0
+        specifier: 'catalog:'
         version: 1.61.0(express@5.2.1)(zod@4.4.3)
       '@mastra/libsql':
-        specifier: 1.21.1
+        specifier: 'catalog:'
         version: 1.21.1(@mastra/core@1.61.0(express@5.2.1)(zod@4.4.3))
       '@mastra/mcp':
-        specifier: 1.17.1
+        specifier: 'catalog:'
         version: 1.17.1(@mastra/core@1.61.0(express@5.2.1)(zod@4.4.3))(express@5.2.1)(hono@4.13.3)(zod@4.4.3)
       '@mastra/memory':
-        specifier: 1.27.0
+        specifier: 'catalog:'
         version: 1.27.0(@mastra/core@1.61.0(express@5.2.1)(zod@4.4.3))
       '@mastra/observability':
-        specifier: 1.17.1
+        specifier: 'catalog:'
         version: 1.17.1(@mastra/core@1.61.0(express@5.2.1)(zod@4.4.3))(zod@4.4.3)
       pino:
         specifier: ^9.6.0
@@ -93,7 +114,7 @@ importers:
         specifier: ^2.7.0
         version: 2.9.0
       zod:
-        specifier: 4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/node':
@@ -118,13 +139,13 @@ importers:
         specifier: ^0.17.4
         version: 0.17.4
       '@mastra/core':
-        specifier: 1.61.0
+        specifier: 'catalog:'
         version: 1.61.0(express@5.2.1)(zod@4.4.3)
       '@mastra/libsql':
-        specifier: 1.21.1
+        specifier: 'catalog:'
         version: 1.21.1(@mastra/core@1.61.0(express@5.2.1)(zod@4.4.3))
       '@mastra/memory':
-        specifier: 1.27.0
+        specifier: 'catalog:'
         version: 1.27.0(@mastra/core@1.61.0(express@5.2.1)(zod@4.4.3))
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
@@ -136,7 +157,7 @@ importers:
         specifier: ^9.6.0
         version: 9.14.0
       zod:
-        specifier: 4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
       '@types/node':
@@ -195,10 +216,10 @@ importers:
         specifier: ^0.17.4
         version: 0.17.4
       '@mastra/core':
-        specifier: 1.61.0
+        specifier: 'catalog:'
         version: 1.61.0(express@5.2.1)(zod@4.4.3)
       '@mastra/libsql':
-        specifier: 1.21.1
+        specifier: 'catalog:'
         version: 1.21.1(@mastra/core@1.61.0(express@5.2.1)(zod@4.4.3))
       pino:
         specifier: ^9.6.0
@@ -214,7 +235,7 @@ importers:
         specifier: ^5.7.3
         version: 5.9.3
       zod:
-        specifier: 4.4.3
+        specifier: 'catalog:'
         version: 4.4.3
 
   packages/knowledge:
@@ -3076,7 +3097,7 @@ snapshots:
       cors: 2.8.6
       express-rate-limit: 8.6.2(express@5.2.1)
       pkce-challenge: 5.0.0
-      raw-body: 3.0.0
+      raw-body: 3.0.2
       zod: 4.4.3
     optionalDependencies:
       express: 5.2.1
