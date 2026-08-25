@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { UnifiedBootstrapper } from './bootstrapper.js';
 import { ConfigValidationError } from './errors.js';
 
@@ -124,14 +125,23 @@ export async function runCli(
   }
 }
 
-// 直接运行主入口
-if (
-  process.argv[1] &&
-  (process.argv[1].endsWith('main.ts') || process.argv[1].endsWith('main.js'))
-) {
-  void runCli().then(code => {
-    if (code !== 0) {
-      process.exit(code);
+// 直接运行主入口：仅当当前文件确为命令行直接执行的目标脚本时运行
+if (process.argv[1]) {
+  try {
+    const currentFilePath = fileURLToPath(import.meta.url);
+    const invokedPath = path.resolve(process.argv[1]);
+    if (
+      invokedPath === currentFilePath ||
+      invokedPath.endsWith('main.ts') ||
+      invokedPath.endsWith('main.js')
+    ) {
+      void runCli().then(code => {
+        if (code !== 0) {
+          process.exit(code);
+        }
+      });
     }
-  });
+  } catch {
+    // 忽略解析异常
+  }
 }

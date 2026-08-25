@@ -100,6 +100,23 @@ const knowledgeEmbeddingSchema = z
           message: 'Embedding 启用时 baseUrl 不能为空',
           path: ['baseUrl'],
         });
+      } else {
+        try {
+          const parsedUrl = new URL(val.baseUrl);
+          if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Embedding baseUrl 协议必须是 http: 或 https:',
+              path: ['baseUrl'],
+            });
+          }
+        } catch {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Embedding baseUrl 必须是合法的 URL 格式 (如 https://api.openai.com/v1)',
+            path: ['baseUrl'],
+          });
+        }
       }
       if (!val.model || typeof val.model !== 'string' || val.model.trim().length === 0) {
         ctx.addIssue({
@@ -199,8 +216,12 @@ export function interpolateEnv(rawText: string): string {
   return replaced;
 }
 
+const CREDENTIAL_FIELD_PATHS: Record<string, true> = {
+  'knowledge.embedding.apiKey': true,
+};
+
 /**
- * 递归对已解析的 YAML 对象结构进行环境变量插值，精确绑定字段路径。
+ * 递归对已解析的 YAML 对象结构进行环境变量插值，精确绑定字段路径并拦截明文硬编码凭据。
  */
 function interpolateNodeEnv(
   node: unknown,
@@ -208,32 +229,51 @@ function interpolateNodeEnv(
   errors: ConfigFieldError[]
 ): unknown {
   if (typeof node === 'string') {
-    return node.replace(
-      ENV_VAR_REGEX,
-      (_match, varName: string, defaultValue?: string) => {
-        const envVal = process.env[varName];
-        if (envVal !== undefined) {
-          return envVal;
-        }
-        if (defaultValue !== undefined) {
-          return defaultValue;
-        }
-        const fieldPath = currentPath.join('.') || 'root';
+    const fieldPath = currentPath.join('.') || 'root';
+    if (CREDENTIAL_FIELD_PATHS[fieldPath]) {
+      const hasEnvSyntax = ENV_VAR_REGEX.test(node);
+      ENV_VAR_REGEX.lastIndex = 0;
+      if (!hasEnvSyntax && node.trim().length > 0) {
         errors.push({
           path: fieldPath,
-          reason: `未解析的环境变量 \${${varName}}：系统环境变量中未设置该变量且配置未提供默认值`,
-          hint: `请在系统环境变量中设置 ${varName}，或在配置中指定默认值 \${${varName}:-默认值}`,
-          message: `字段 '${fieldPath}' 缺少环境变量 ${varName}`,
+          reason:
+            '凭据禁止在配置文件中明文硬编码：根据安全规范（Spec §4.29），所有凭据只能通过环境变量插值传入',
+          hint: `请将 '${fieldPath}' 修改为环境变量插值形式，例如: apiKey: \${EMBEDDING_API_KEY}`,
+          message: `字段 '${fieldPath}' 禁止硬编码明文凭据`,
         });
         return '';
       }
-    );
+    }
+
+    return node.replace(ENV_VAR_REGEX, (_match, varName: string, defaultValue?: string) => {
+      if (CREDENTIAL_FIELD_PATHS[fieldPath] && defaultValue !== undefined) {
+        errors.push({
+          path: fieldPath,
+          reason: '凭据禁止在配置文件中声明默认值回退：根据安全规范，凭据不能包含明文 fallback',
+          hint: `请将 '${fieldPath}' 声明为纯环境变量引用，例如: apiKey: \${${varName}}`,
+          message: `字段 '${fieldPath}' 禁止声明默认值回退`,
+        });
+        return '';
+      }
+      const envVal = process.env[varName];
+      if (envVal !== undefined) {
+        return envVal;
+      }
+      if (defaultValue !== undefined) {
+        return defaultValue;
+      }
+      errors.push({
+        path: fieldPath,
+        reason: `未解析的环境变量 \${${varName}}：系统环境变量中未设置该变量且配置未提供默认值`,
+        hint: `请在系统环境变量中设置 ${varName}，或在配置中指定默认值 \${${varName}:-默认值}`,
+        message: `字段 '${fieldPath}' 缺少环境变量 ${varName}`,
+      });
+      return '';
+    });
   }
 
   if (Array.isArray(node)) {
-    return node.map((item, idx) =>
-      interpolateNodeEnv(item, [...currentPath, String(idx)], errors)
-    );
+    return node.map((item, idx) => interpolateNodeEnv(item, [...currentPath, String(idx)], errors));
   }
 
   if (typeof node === 'object' && node !== null) {
@@ -338,14 +378,17 @@ export function parseAndValidateConfig(rawYaml: string): AppConfig {
     parsedObject = yaml.parse(rawYaml);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    throw new ConfigValidationError([
-      {
-        path: 'yaml.syntax',
-        reason: `YAML 语法解析错误: ${errorMsg}`,
-        hint: '请检查 YAML 格式缩进与语法是否规范',
-        message: errorMsg,
-      },
-    ]);
+    throw new ConfigValidationError(
+      [
+        {
+          path: 'yaml.syntax',
+          reason: `YAML 语法解析错误: ${errorMsg}`,
+          hint: '请检查 YAML 格式缩进与语法是否规范',
+          message: errorMsg,
+        },
+      ],
+      { cause: err }
+    );
   }
 
   if (typeof parsedObject !== 'object' || parsedObject === null) {
@@ -387,14 +430,17 @@ export async function loadConfigFromYaml(filePath: string): Promise<AppConfig> {
     rawContent = await fs.readFile(resolvedPath, 'utf-8');
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    throw new ConfigValidationError([
-      {
-        path: 'file.read',
-        reason: `无法读取配置文件 '${resolvedPath}': ${errorMsg}`,
-        hint: '请确保配置文件路径正确且进程具备读取权限',
-        message: errorMsg,
-      },
-    ]);
+    throw new ConfigValidationError(
+      [
+        {
+          path: 'file.read',
+          reason: `无法读取配置文件 '${resolvedPath}': ${errorMsg}`,
+          hint: '请确保配置文件路径正确且进程具备读取权限',
+          message: errorMsg,
+        },
+      ],
+      { cause: err }
+    );
   }
 
   return parseAndValidateConfig(rawContent);

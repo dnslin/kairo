@@ -14,14 +14,14 @@ export interface ConfigFieldError {
 export class ConfigValidationError extends Error {
   readonly errors: ConfigFieldError[];
 
-  constructor(errors: ConfigFieldError[]) {
+  constructor(errors: ConfigFieldError[], options?: ErrorOptions) {
     const formatted = errors
       .map(
         (err, idx) =>
           `[${idx + 1}] 字段路径: ${err.path}\n    失败原因: ${err.reason}\n    修复建议: ${err.hint}`
       )
       .join('\n');
-    super(`配置静态校验失败，共发现 ${errors.length} 处错误：\n${formatted}`);
+    super(`配置静态校验失败，共发现 ${errors.length} 处错误：\n${formatted}`, options);
     this.name = 'ConfigValidationError';
     this.errors = errors;
   }

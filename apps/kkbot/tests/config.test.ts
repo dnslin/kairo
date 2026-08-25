@@ -110,7 +110,7 @@ retention:
 
     expect(thrownError).toBeInstanceOf(ConfigValidationError);
     expect(thrownError?.errors.length).toBeGreaterThan(0);
-    const apiError = thrownError?.errors.find((e) => e.path === 'knowledge.embedding.apiKey');
+    const apiError = thrownError?.errors.find(e => e.path === 'knowledge.embedding.apiKey');
     expect(apiError).toBeDefined();
     expect(apiError?.reason).toMatch(/未解析的环境变量|缺少环境变量/);
     expect(apiError?.hint).toMatch(/设置环境变量|EMBEDDING_API_KEY/);
@@ -219,5 +219,76 @@ retention:
 
     const config = await loadConfigFromYaml(configPath);
     expect(config.knowledge.embedding.apiKey).toBe('sk-test#with:special\nchars"and\'quotes');
+  });
+
+  it('Spec §4.29: 静态校验拦截 YAML 中硬编码的明文凭据（必须通过环境变量插值传入）', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const plainApiKeyYaml = validYamlContent.replace(
+      'apiKey: ${EMBEDDING_API_KEY}',
+      'apiKey: sk-literal-hardcoded-key'
+    );
+    const configPath = path.join(tempDir, 'kkbot.yaml');
+    await fs.writeFile(configPath, plainApiKeyYaml, 'utf-8');
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const apiError = thrownError?.errors.find(e => e.path === 'knowledge.embedding.apiKey');
+    expect(apiError).toBeDefined();
+    expect(apiError?.reason).toMatch(/凭据禁止在配置文件中明文硬编码/);
+    expect(apiError?.hint).toMatch(/修改为环境变量插值形式/);
+  });
+
+  it('Spec §4.29: 敏感凭据字段禁止在 YAML 中声明默认值回退（防止隐式明文凭据）', async () => {
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+    delete process.env.EMBEDDING_API_KEY;
+
+    const fallbackKeyYaml = validYamlContent.replace(
+      'apiKey: ${EMBEDDING_API_KEY}',
+      'apiKey: ${EMBEDDING_API_KEY:-sk-fallback-default}'
+    );
+    const configPath = path.join(tempDir, 'kkbot.yaml');
+    await fs.writeFile(configPath, fallbackKeyYaml, 'utf-8');
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const apiError = thrownError?.errors.find(e => e.path === 'knowledge.embedding.apiKey');
+    expect(apiError).toBeDefined();
+    expect(apiError?.reason).toMatch(/凭据禁止在配置文件中声明默认值回退/);
+  });
+
+  it('AC6/AC7: 静态校验拦截非法 URL 协议或格式的 baseUrl', async () => {
+    process.env.EMBEDDING_BASE_URL = 'ftp://invalid-embedding-protocol.com';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const configPath = path.join(tempDir, 'kkbot.yaml');
+    await fs.writeFile(configPath, validYamlContent, 'utf-8');
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const urlError = thrownError?.errors.find(e => e.path === 'knowledge.embedding.baseUrl');
+    expect(urlError).toBeDefined();
+    expect(urlError?.reason).toMatch(/协议必须是 http: 或 https:|合法的 URL 格式/);
   });
 });
