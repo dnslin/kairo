@@ -193,7 +193,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(receivedMessages[1]!.content).toBe('第二条消息');
   });
 
-  it('自身发出消息 (isMe: true 或 senderId === currentUserId) 自动过滤', async () => {
+  it('自身发出消息 (isMe: true 或 senderId === currentUserId) 正确识别 origin 并真实派发', async () => {
     const mockCdp = new MockCdpClient();
     const bridge = new KK9EventBridge(
       { ...defaultConfig, currentUserId: '10086' },
@@ -204,7 +204,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     const receivedMessages: KK9Message[] = [];
     bridge.on('message', msg => receivedMessages.push(msg));
 
-    // 1. isMe: true
+    // 1. isMe: true (operator 操作员)
     mockCdp.triggerBinding('__kkbot_native_bridge', {
       type: 'receive-message',
       data: {
@@ -215,7 +215,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       },
     });
 
-    // 2. senderId 匹配 currentUserId
+    // 2. senderId 匹配 currentUserId (operator 操作员)
     mockCdp.triggerBinding('__kkbot_native_bridge', {
       type: 'receive-message',
       data: {
@@ -226,7 +226,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       },
     });
 
-    // 3. 正常他人消息
+    // 3. 正常他人消息 (external 外部成员)
     mockCdp.triggerBinding('__kkbot_native_bridge', {
       type: 'receive-message',
       data: {
@@ -237,8 +237,13 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       },
     });
 
-    expect(receivedMessages).toHaveLength(1);
-    expect(receivedMessages[0]!.id).toBe('msg-other-1');
+    expect(receivedMessages).toHaveLength(3);
+    expect(receivedMessages[0]!.id).toBe('msg-self-1');
+    expect(receivedMessages[0]!.origin).toBe('operator');
+    expect(receivedMessages[1]!.id).toBe('msg-self-2');
+    expect(receivedMessages[1]!.origin).toBe('operator');
+    expect(receivedMessages[2]!.id).toBe('msg-other-1');
+    expect(receivedMessages[2]!.origin).toBe('external');
   });
 
   it('去重指纹守卫：相同消息指纹不重复派发', async () => {

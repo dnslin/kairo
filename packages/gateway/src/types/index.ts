@@ -5,7 +5,7 @@ import type {
   KK9SessionType,
   SendOptions,
 } from '@kkbot/driver';
-import type { KKBotStore, SessionMode } from '@kkbot/store';
+import type { KKBotStore, SessionMessage, SessionMode } from '@kkbot/store';
 import type {
   AgentMemoryManager,
   AgentReplyResult,
@@ -138,6 +138,14 @@ export interface SessionCoordinatorOptions {
  * 会话编排器事件清单
  */
 export interface CoordinatorEvents {
+  /** GroupSession 群聊消息 Raw Store 幂等持久化完成事件 */
+  group_message_saved: (
+    sessionId: string,
+    savedMessage: SessionMessage,
+    originalMessage: KK9Message
+  ) => void;
+  /** GroupSession 群聊消息 Raw Store 持久化异常事件 */
+  group_message_save_failed: (sessionId: string, originalMessage: KK9Message, error: Error) => void;
   /** 消息压入防抖队列事件 */
   message_queued: (sessionId: string, message: KK9Message, queueLength: number) => void;
   /** 消息防抖合并触发事件 */

@@ -4,6 +4,7 @@ import type {
   KK9ImageInfo,
   KK9MentionInfo,
   KK9Message,
+  KK9MessageOrigin,
   KK9MessageType,
   KK9RecalledEvent,
   KK9ReplyInfo,
@@ -13,7 +14,7 @@ import type {
 /**
  * 安全转为字符串，防止 [object Object] 隐式序列化
  */
-function toSafeString(val: unknown, defaultVal = ''): string {
+export function toSafeString(val: unknown, defaultVal = ''): string {
   if (typeof val === 'string') return val;
   if (typeof val === 'number' || typeof val === 'boolean' || typeof val === 'bigint') {
     return val.toString();
@@ -110,6 +111,54 @@ function determineMessageType(
   }
   return 'text';
 }
+/**
+ * 确定性判定消息来源身份 (origin)
+ * 严格基于可观测 KK Payload、本地登录身份与已发送状态，不使用模型或概率推理
+ */
+export function determineOrigin(
+  raw: Record<string, unknown>,
+  isMe: boolean,
+  messageType: KK9MessageType,
+  context?: {
+    currentUserId?: string | number;
+    knownBotSentIds?: Set<string>;
+    isBotEcho?: boolean;
+  },
+  id?: string
+): KK9MessageOrigin {
+  // 1. 系统消息判定
+  if (
+    messageType === 'system' ||
+    raw['isSystem'] === true ||
+    raw['system'] === true ||
+    raw['systemMsg'] === true ||
+    raw['sysType'] !== undefined ||
+    raw['type'] === 'system' ||
+    raw['msgType'] === 99 ||
+    raw['contentType'] === 99
+  ) {
+    return 'system';
+  }
+
+  // 2. 当前账号发出的消息
+  if (isMe) {
+    const rawNativeId = raw['msgID'] ?? raw['msgId'] ?? raw['messageId'] ?? raw['id'];
+    const nativeIdStr = rawNativeId !== undefined ? toSafeString(rawNativeId) : undefined;
+    const isBot = Boolean(
+      context?.isBotEcho ||
+      (id && context?.knownBotSentIds?.has(id)) ||
+      (nativeIdStr && context?.knownBotSentIds?.has(nativeIdStr))
+    );
+    if (isBot) {
+      return 'bot_echo';
+    }
+    // 非 Bot 回显 -> 人类操作员在客户端打字/介入
+    return 'operator';
+  }
+
+  // 3. 外部普通成员
+  return 'external';
+}
 
 /**
  * 检查单条消息是否属于撤回事件载荷
@@ -141,6 +190,8 @@ export function normalizeNativeMessage(
   context?: {
     session?: Partial<KK9Session>;
     currentUserId?: string | number;
+    knownBotSentIds?: Set<string>;
+    isBotEcho?: boolean;
   }
 ): KK9Message[] {
   if (!payload || typeof payload !== 'object') {
@@ -331,16 +382,21 @@ export function normalizeNativeMessage(
 
       const messageType = determineMessageType(item, images, fileInfo, replyTo);
 
-      // 指纹与 ID 生成
+      // 指纹与原生 ID 解析（EventBridge 与 Polling 保证稳定一致）
       const fingerprint = generateMessageFingerprint(sessionId, sender, time, content);
-      const rawId = item['id'] ?? item['msgID'] ?? item['msgId'] ?? fingerprint;
-      const id = toSafeString(rawId, fingerprint);
+      const rawNativeId = item['msgID'] ?? item['msgId'] ?? item['messageId'] ?? item['id'];
+      const messageId = rawNativeId !== undefined ? toSafeString(rawNativeId) : fingerprint;
+      const id = messageId || fingerprint;
+
+      const origin = determineOrigin(item, isMe, messageType, context, id);
 
       return {
         id,
+        messageId,
         sessionId,
         sessionName,
         sessionType,
+        origin,
         sender,
         senderId,
         content,
@@ -358,7 +414,6 @@ export function normalizeNativeMessage(
       };
     });
 }
-
 /**
  * 从任何事件载荷（receive-message, session-msg, direct payload）中提取所有撤回事件
  */

@@ -23,6 +23,12 @@ export class DatabaseConnectionError extends StoreError {
     this.name = 'DatabaseConnectionError';
   }
 }
+export class DatabaseError extends StoreError {
+  constructor(message: string, originalCause?: Error) {
+    super(message, 'DATABASE_ERROR', originalCause);
+    this.name = 'DatabaseError';
+  }
+}
 
 export class SchemaInitError extends StoreError {
   constructor(message: string, originalCause?: Error) {
