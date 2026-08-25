@@ -44,9 +44,7 @@ PublicKnowledge 的查询一致性单元是全局不可变 KnowledgeGeneration�
 - [#131 Mastra 兼容版本历史研究](https://github.com/dnslin/kkbot/issues/131)
 - [#138 Bootstrapper Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)
 - [#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)
+- [#168 当前范围兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)
+- [#124 最终合同验收矩阵](https://github.com/dnslin/kkbot/issues/124)
 - [libSQL Client 事务契约](https://github.com/tursodatabase/libsql-client-ts/blob/main/packages/libsql-core/src/api.ts)
 - [Turso / libSQL Vector 索引契约](https://docs.turso.tech/features/ai-and-embeddings)
-
-## Open boundaries
-
-[#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)按当前能力范围锁定精确版本；[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)决定最终验收覆盖。本 ADR 不锁定具体 Mastra API、版本或进程退出码。

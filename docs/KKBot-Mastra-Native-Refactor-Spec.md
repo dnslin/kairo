@@ -50,18 +50,18 @@ KKBot 当前已经具备 KK9 CDP 驱动、消息收发、组织架构、会话�
 
 #### 当前替代索引
 
-| 历史 ADR    | 当前替代                                                                                                                                                                        | 已生效决议                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 仍待裁定                                                                                                                         |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| ADR 0001    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)、[ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.7、§4.10、§12 | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#125 移除用户可见主动 Schedule](https://github.com/dnslin/kkbot/issues/125)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                        | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
-| ADR 0002    | 本规格 §3.1、§4.7、§12                                                                                                                                                          | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | —                                                                                                                                |
-| ADR 0003    | 本规格 §4.7、§4.21–§4.23、§4.27、§12                                                                                                                                            | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | —                                                                                                                                |
-| ADR 0004    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)                                                                                                     | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161) | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
-| ADR 0005    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)、本规格 §4.10–§4.11                                                                                 | [#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
-| ADR 0006    | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)                                                                                                       | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)      | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
-| ADR 0007 §1 | 本规格 §4.10、§6.2、§12                                                                                                                                                         | [#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | —                                                                                                                                |
-| ADR 0007 §2 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.18–§4.19、§9.6                                                                             | [#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | —                                                                                                                                |
-| ADR 0007 §3 | 本规格 §4.27（30 天物理淘汰规则继续有效）                                                                                                                                       | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | —                                                                                                                                |
-| ADR 0008    | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md)                                                                                                          | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                       | [#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) |
+| 历史 ADR    | 当前替代                                                                                                                                                                        | 已生效决议                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | 仍待裁定 |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| ADR 0001    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)、[ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.7、§4.10、§12 | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#125 移除用户可见主动 Schedule](https://github.com/dnslin/kkbot/issues/125)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)、[#168 兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)                                                                                                                                                                                                                                                        | —        |
+| ADR 0002    | 本规格 §3.1、§4.7、§12                                                                                                                                                          | [#112 群聊 Raw Store-only](https://github.com/dnslin/kkbot/issues/112)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | —        |
+| ADR 0003    | 本规格 §4.7、§4.21–§4.23、§4.27、§12                                                                                                                                            | [#111 删除独立 Draft](https://github.com/dnslin/kkbot/issues/111)、[#129 Delivery 与 Memory 提交](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | —        |
+| ADR 0004    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)                                                                                                     | [#117 Mastra 原生能力缺口](https://github.com/dnslin/kkbot/issues/117)、[#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)、[#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#129 Delivery/Memory](https://github.com/dnslin/kkbot/issues/129#issuecomment-5389438847)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)、[#168 兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124) | —        |
+| ADR 0005    | [ADR 0009](./adr/0009-mastra-runtime-and-kkbot-business-fact-boundaries.md)、本规格 §4.10–§4.11                                                                                 | [#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)、[#168 兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | —        |
+| ADR 0006    | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)                                                                                                       | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)、[#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)、[#168 兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)      | —        |
+| ADR 0007 §1 | 本规格 §4.10、§6.2、§12                                                                                                                                                         | [#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | —        |
+| ADR 0007 §2 | [ADR 0010](./adr/0010-single-composition-root-and-knowledge-lifecycle.md)、本规格 §4.18–§4.19、§9.6                                                                             | [#130 Knowledge 摄取故障](https://github.com/dnslin/kkbot/issues/130#issuecomment-5391309063)、[#136 Knowledge 索引原子替换](https://github.com/dnslin/kkbot/issues/136)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | —        |
+| ADR 0007 §3 | 本规格 §4.27（30 天物理淘汰规则继续有效）                                                                                                                                       | [#137 资产保留与清理恢复](https://github.com/dnslin/kkbot/issues/137)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | —        |
+| ADR 0008    | [ADR 0011](./adr/0011-application-logging-and-mastra-observability.md)                                                                                                          | [#127 Storage 边界](https://github.com/dnslin/kkbot/issues/127#issuecomment-5389294656)、[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)、[#133 Node.js 基线](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)、[#135 MCP 与 Processor 生命周期](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)、[#138 Preflight 与逆序回滚](https://github.com/dnslin/kkbot/issues/138)、[#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)、[#168 兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)、[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)                                                                                                                                                                                                                                                       | —        |
 
 ---
 
@@ -184,16 +184,18 @@ Scorer 只用于可选离线评测或质量评价，不属于启动、运行、�
 
 “兼容版本”是经后续版本决策验证的一组稳定 Mastra 依赖版本。兼容性必须同时满足：所需原生能力存在并受支持；依赖引擎约束覆盖本规格的 Node.js 运行时基线；类型定义和迁移说明支持目标用法；最低 Node.js 版本与实际生产 LTS 上的相关离线契约实验均通过。只看到 API 存在不足以判定兼容。
 
-[#131 兼容版本研究](./research/mastra-compatible-version-set.md)已在 Node.js `22.13.1` 与 `24.14.0` 的冻结环境中验证两组精确候选，并证明当时唯一最小失败合同来自已退出当前产品范围的 Tool Approval 权威终态与条件仲裁。该研究继续保留事实与审计价值，但候选 A/B 不因产品范围变化自动成为已锁定版本。
+[#131 兼容版本研究](./research/mastra-compatible-version-set.md)已在 Node.js `22.13.1` 与 `24.14.0` 的冻结环境中验证两组精确候选，并证明当时唯一最小失败合同来自已退出当前产品范围的 Tool Approval 权威终态与条件仲裁。根据 [#168 Research Resolution](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)，当前生效范围锁定候选 B：`@mastra/core@1.61.0`、`@mastra/memory@1.27.0`、`@mastra/libsql@1.21.1`、`@mastra/observability@1.17.1`、`@mastra/mcp@1.17.1` 与 `zod@4.4.3`；研究夹具直接锁定 `@modelcontextprotocol/sdk@1.30.0`。
 
-本期不注册或调用高风险写 Tool，不创建 Approval，不进入 suspend/resume，也不把人工操作结果转换为 Runtime 终态。高风险意图只形成明确说明“外部操作未执行”的普通 assistant 建议、拟写内容或操作清单；它们遵守既有 Delivery 与 Memory 合同，不形成独立 Draft 或未来自动执行身份。[#168](https://github.com/dnslin/kkbot/issues/168)必须按该生效能力范围重新验证并锁定精确稳定版本组。
+Core 的冻结 lockfile 实际解析 `@ai-sdk/provider@2.0.3 / 3.0.14 / 4.0.4` 与 `@ai-sdk/provider-utils@3.0.30 / 4.0.40 / 5.0.13`。当前组不添加独立 `ai` 或 `@mastra/rag` 包；PublicKnowledge 由 `@kkbot/knowledge` 持有。依赖、锁文件、支持中的生产 LTS 或本规格所需 Mastra 原生能力变化时，必须按 §9.0 与 §9.10 重新验证，不得单包漂移。
+
+本期不注册或调用高风险写 Tool，不创建 Approval，不进入 suspend/resume，也不把人工操作结果转换为 Runtime 终态。高风险意图只形成明确说明“外部操作未执行”的普通 assistant 建议、拟写内容或操作清单；它们遵守既有 Delivery 与 Memory 合同，不形成独立 Draft 或未来自动执行身份。
 
 ### 2.7 Node.js 运行时基线
 
 - 所有工作区依赖、开发工具和应用入口的最低运行时统一为 Node.js `>=22.13`。
 - 生产部署与 CI 只支持验证或部署时仍处于 Node.js 官方维护期的 LTS，且该版本必须同时满足 `>=22.13`；达到依赖下限不等于获得已停止维护版本或非 LTS 版本的生产支持承诺。
 - Node.js 20 已于 2026-04-30 EOL，不属于支持矩阵，不保留安装、类型、构建、运行或回归兼容承诺。
-- 本基线只确定 Node.js 支持政策与验证矩阵。#131 的旧候选不自动锁定；后续版本选择由 [#168](https://github.com/dnslin/kkbot/issues/168)按当前生效能力范围重新研究。
+- 当前锁定版本组为 §2.6 的候选 B。最低 Node.js 与实际生产 LTS 都必须保持在该精确组已经验证且仍受支持的范围内；生产 LTS、依赖或 lockfile 变化触发 §9.10 的完整重验。
 
 ---
 
@@ -1553,27 +1555,25 @@ Mastra 嵌入 KKBot 进程，不要求单独部署 HTTP 服务。
 
 ## 4.31 固定 Mastra 依赖版本
 
-当前各包不应分别使用可漂移的 Mastra 版本。
-
-统一使用 pnpm catalog 或 workspace overrides：
+所有工作区统一使用 §2.6 锁定的候选 B，不允许各包分别声明可漂移版本。pnpm catalog 或 workspace overrides 至少固定：
 
 ```yaml
 catalog:
-  '@mastra/core': '<locked-version>'
-  '@mastra/memory': '<locked-version>'
-  '@mastra/libsql': '<locked-version>'
-  '@mastra/mcp': '<locked-version>'
-  '@mastra/rag': '<locked-version>'
-  '@mastra/observability': '<locked-version>'
+  '@mastra/core': '1.61.0'
+  '@mastra/memory': '1.27.0'
+  '@mastra/libsql': '1.21.1'
+  '@mastra/mcp': '1.17.1'
+  '@mastra/observability': '1.17.1'
+  zod: '4.4.3'
 ```
 
 要求：
 
-- #131 的旧候选 A/B 与失败证据继续保留，但不自动写入 catalog；只有 [#168](https://github.com/dnslin/kkbot/issues/168)按当前生效能力范围完成 9.10 节完整双环境验证后，才能锁定一组精确版本；
-- 不允许不同包分别使用 `^` 漂移；
-- 统一 Zod 和 AI SDK 版本；
-- 候选兼容组的依赖引擎必须覆盖 Node.js `>=22.13`，并通过 9.10 节规定的双环境验证；
-- 升级时重新执行 9.10 节规定的完整验证。
+- 不允许使用 `^`、`~`、`latest` 或逐包单独升级；
+- 不添加独立 `ai` 或 `@mastra/rag`；Core 的 AI SDK aliases 由冻结 lockfile 保持 §2.6 已验证的精确解析；
+- 研究夹具自己的 `@modelcontextprotocol/sdk@1.30.0` 不替代 `@mastra/mcp` 的完整 runtime 依赖；生产实现只有直接使用该 SDK 时才显式声明；
+- 依赖引擎必须覆盖 Node.js `>=22.13`；根 package、catalog/overrides 与 lockfile 的实际解析必须由 `COMPAT-01` 校验；
+- 任一精确版本、lockfile、所需原生能力或支持中的生产 LTS 改变时，重新执行 §9.0 与 §9.10 的完整验证。
 
 ---
 
@@ -1735,7 +1735,7 @@ Issue #107 关闭后，其正文不再作为实施依据。迁移状态统一为
 | N-10 | 人工操作不恢复 Runtime          | 建议或操作清单不形成 Draft、授权状态或执行身份；人类在 Runtime 外操作后，KKBot 不猜测结果、不恢复旧 Run 或补执行。                                                                                   |
 | N-11 | 中断后不重放旧用户消息          | Abort 当前 Run 后只提交新消息，旧内容由 thread memory 提供。                                                                                                                                         |
 | N-12 | 正式数据库迁移                  | KKBot 业务表使用独立 `kkbot_schema_migrations` ledger 和版本化 migration；完成后再执行 Mastra `storage.init()`，不得操作 Mastra 内部表。                                                             |
-| N-13 | Mastra 依赖版本锁定             | Core、Memory、LibSQL、MCP、RAG、Observability 使用经契约测试验证的兼容版本组。                                                                                                                       |
+| N-13 | Mastra 依赖版本锁定             | Core、Memory、LibSQL、MCP、Observability、Zod 与实际 AI SDK aliases 使用经契约测试验证的精确兼容版本组；不添加独立 `ai` 或 `@mastra/rag`。                                                           |
 | N-14 | 知识查询由 Agent 主动 Tool Call | Gateway 不再提前执行知识检索并拼入 Prompt。                                                                                                                                                          |
 | N-15 | 完整 Run 关联                   | traceId、runId、sessionId、toolCallId、deliveryId 可重建完整链路。                                                                                                                                   |
 | N-16 | 单库双 Client 单 Storage        | Composition Root 只解析一个规范化数据库路径；KKBot Client 与唯一 Mastra Storage 自有 Client 分离，不承诺跨 Client、跨 domain 原子事务。                                                              |
@@ -1939,6 +1939,48 @@ Generation：generationId；manifestHash 只校验完整性
 
 ## 9. 测试与验收清单
 
+### 9.0 完整合同证据门
+
+根据[《确定最终规格的契约验收矩阵》](https://github.com/dnslin/kkbot/issues/124)的正式决定，最终规格采用 **B：完整合同证据门**。进入实施规划前，架构边界、产品范围和第三方能力必须已经由正式决议或可复现研究证实；依赖目标实现才能运行的行为合同可以是 `待实施验证`，但必须在规划中绑定到最早能够产生该证据的纵向阶段，并成为该阶段不可跳过的退出门。
+
+每个 Contract 必须同时记录：
+
+1. 稳定 Contract ID、所属领域和对应规格章节；
+2. 初始数据库、文件、KK 会话、时钟、依赖版本、稳定 ID、随机种子和其他夹具；
+3. 正常动作以及提交前后强杀、并发竞争、断线、timeout、429/5xx、`SQLITE_BUSY`、权限失败等精确故障点；
+4. 唯一允许终态、数据库事实、外部副作用次数、关联日志/Trace，以及明确禁止出现的状态；
+5. 最低 Node.js、实际生产 LTS、临时真实 LibSQL、独立进程/重启、临时文件系统或真实 KK 等执行环境；
+6. commit、精确依赖和 lockfile 校验值、命令、fixture 版本、结构化结果、数据库/文件校验和、脱敏日志/Trace 与真实 KK 观察；
+7. 证据状态、失效触发器和失败去向。
+
+证据状态只允许：
+
+- `已证实`：当前仓库中的可复现证据直接覆盖该合同；
+- `待实施验证`：oracle 已完全确定，但需要目标实现和阶段夹具才能运行；
+- `待正式决议`：oracle 仍受开放决策影响，阻止进入实施规划；
+- `必须重裁`：实验已经证明当前产品范围或第三方能力不可实现，阻止实施旁路并返回 Wayfinder。
+
+本规格进入实施规划时不得存在 `待正式决议` 或 `必须重裁`。`待实施验证` 不表示允许带病通过：对应阶段未产生完整证据前不得关闭，后续阶段也不得依赖该合同已经成立。一个宽泛端到端测试、测试数量、覆盖率或一次真机冒烟不能替代多个不同 Contract。
+
+| Contract ID      | 领域与详细 oracle                                                                       | 环境和持久证据                                                         | 当前状态与失败去向                                                             |
+| ---------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `COMPAT-01`      | §9.10 的精确版本、双 Node 冻结安装、类型、构建与 Mastra 基础合同                        | #131 报告、候选 B 夹具/lockfile、Node `22.13.1` 与 `24.14.0`           | `已证实`；依赖、lockfile、生产 LTS 或所需原生能力变化时重验，失败按 #117 重裁  |
+| `AGENT-01`       | §9.1–§9.2 的 Agent Loop、Model Tier、retry/fallback 与 Processor 顺序                   | Fake/故障 Model、固定 Tool、顺序记录、Abort 与 maxSteps 夹具           | `待实施验证`；Agent 纵向阶段退出门                                             |
+| `MEMORY-01`      | §9.3 的 user 前置提交、`readOnly`、`sent` 后置提交、OM、删除、tombstone 与恢复          | 临时真实 LibSQL、并发屏障、独立进程强杀、下一轮读取与 OM 查询          | `待实施验证`；Memory/Delivery 纵向阶段退出门，公共 API 缺失则按 #117 重裁      |
+| `RISK-01`        | §9.4 的高风险意图无副作用、无 Approval、无旧 Run 恢复                                   | 固定 Tool 表面、恶意/高风险输入、Tool 调用与 Delivery/Memory 观察      | `待实施验证`；Agent Tool 表面阶段退出门                                        |
+| `DELIVERY-01`    | §9.5 的入站幂等、群聊短路、发送事实、`unknown`、撤回、接管与会话隔离                    | Fake Driver 精确故障点、真实数据库、并发会话与真实 KK 补充证据         | `待实施验证`；Gateway/Delivery 纵向阶段退出门                                  |
+| `KNOWLEDGE-01`   | §9.6 的真实 OCR、Generation、Head CAS、deny、同代降级、来源与 Grounding                 | 真实 DB/FTS/Vector、真实 OCR/Vision fixture、并发构建、强杀与校验和    | `待实施验证`；Knowledge 纵向阶段退出门                                         |
+| `BOOT-01`        | §9.7 的 Static Validation、startup generation、Gate、Ready Barrier、Ledger 与逆拓扑关闭 | 最高层 Bootstrapper harness、每个 acquire/finalizer 故障、调用账本     | `待实施验证`；Composition Root 纵向阶段退出门                                  |
+| `OBS-01`         | §9.8 的关联 ID、日志/Trace 分工、脱敏、Flush/Shutdown 与可选 Scorer                     | 捕获 exporter、敏感 canary、并发会话和 exporter 故障                   | `待实施验证`；Observability 纵向阶段退出门                                     |
+| `STORAGE-01`     | §9.9 的单文件双 Client、迁移、WAL、`SQLITE_BUSY`、事务边界与唯一关闭                    | 临时真实数据库、旧 schema 夹具、路径别名、并发写和启动强杀             | `待实施验证`；Storage/Bootstrapper 阶段退出门                                  |
+| `MCPPROC-01`     | §9.1、§9.7、§9.10 的 MCP discovery/reconnect/Abort/disconnect 与 Processor fail-closed  | fixture MCP Server、故障 Tool、timeout/Abort 与资源关闭账本            | `待实施验证`；MCP/Processor 阶段退出门，公共能力缺失则按 #117 重裁             |
+| `QUOTA-01`       | §9.11 的双桶原子准入、唯一执行者、Usage 完整性、未知占用与结算                          | 真实 KKBot Client、并发屏障、故障 Model/Tool/Processor、重启与时钟边界 | `待实施验证`；Quota 阶段退出门，Usage 合同不足则不得启用硬配额并返回 Wayfinder |
+| `ASSET-01`       | §9.12 的 protect-before-publish、引用/租约、Mark/Sweep、恢复和孤儿处理                  | 临时真实文件系统与 DB、租约时钟、symlink/权限故障和每个窗口强杀        | `待实施验证`；Asset 纵向阶段退出门                                             |
+| `CONCURRENCY-01` | §9.13 的跨域稳定 ID、CAS、不可逆副作用和跨进程恢复                                      | 多进程 barrier、可控强杀、权威终态与副作用计数                         | `待实施验证`；每个所属阶段分别产证，不能由单进程 mutex 代替                    |
+| `KK-LIVE-01`     | §9.14 的真实 KK 私聊、群聊短路、发送、断线、附件与来源定位                              | 指定测试账号/会话、原生 message ID、脱敏截图/日志和数据库事实          | `待实施验证`；最终集成阶段退出门，不能替代离线并发或崩溃合同                   |
+
+证据在下列事实变化后失效：精确依赖或 lockfile 改变；生产 Node.js LTS 退出维护或被替换；migration、OCR/Embedding fingerprint、KK 客户端版本、私有接口证据或对应业务合同改变。重验必须使用新 commit 和新证据清单，不能把旧成功结果直接沿用。原始日志、Trace、数据库快照和真机截图入库前必须脱敏；含凭据、Cookie 或个人正文的原件不得提交。
+
 ## 9.1 Mastra Agent Loop
 
 - 模型连续调用两个及以上 Tool；
@@ -1979,7 +2021,7 @@ Generation：generationId；manifestHash 只校验完整性
 - 显式消息按稳定 ID 移出活动上下文后，契约实验必须证明下一轮不可再读取该 user 正文；OM scope reset 后不得读取旧观察，只能从仍可见且已提交的 user、operator 与 `sent` assistant 重新形成；
 - ComplianceDeletion 覆盖 Raw Store 正文、附件及派生文件、显式 Memory、Delivery 内容、Tool 参数/结果和 Trace prompt/span 时，所有范围内正文均被删除或不可逆脱敏，Delivery/Tool 已发生状态保留为最小事实，相关完整 OM scope 必须清空；
 - 普通撤回与合规删除的稳定 ID tombstone 在串行、并发和跨进程重启重放中都阻止正文复活、Run/Delivery 重建和 Memory 重写；已经真实跨过发送边界的结果仍按 `sent` 或 `unknown` 记录，`unknown` 不自动裁定或补发；
-- 目标 Mastra/LibSQL 兼容版本必须通过显式 message ID 删除、OM 完整 scope clear、readOnly 隔离、稳定 ID/tombstone 并发与重启恢复的契约验证。任一关键合同缺失时按 #117 返回 Wayfinder，并保持最终验收 #124 阻塞；不得用来源过滤层、删除补偿、Outbox 或第二套 Memory Runtime 回补；
+- 锁定候选 B 必须在 Memory/LibSQL 纵向阶段通过显式 message ID 删除、OM 完整 scope clear、readOnly 隔离、稳定 ID/tombstone 并发与重启恢复的契约验证。任一关键公共能力缺失时按 #117 返回 Wayfinder；不得用来源过滤层、删除补偿、Outbox 或第二套 Memory Runtime 回补；其余实现失败不得带病越过 `MEMORY-01` 阶段退出门；
 - 群聊消息不创建 Thread、不写入 Memory，也不触发任何 Memory 提交或补偿。
 
 ## 9.4 高风险意图范围
@@ -2055,7 +2097,7 @@ Generation：generationId；manifestHash 只校验完整性
 - 进程重启先确认 Head；未被 Head 引用的遗留 `building/ready` 一律失败并以新 generationId 重建，不自动提交、不跨崩溃续建；
 - 构建与查询诊断绑定 generationId、source/SourceVersion、stage、adapter/provider/model/version、attempt、base/head revision 和实际服务 Head；长期降级、鉴权/协议错误与重试耗尽进入健康状态、指标和告警；
 - 查询物化期间必须持有固定 Generation 的 AssetLease；Head、最近一个自动保留的 retired Generation、仍被查询租约保护的 Generation 及其引用产物不得清理。新代提交时验证原 Head 成为唯一 retained Generation、更旧 retired Generation 的 AssetReference 在同一 KKBot Client 事务释放，且 retained Generation 不参与自动查询回退；
-- 最终验收 #124 必须以代表性真实 OCR 文档和故障注入覆盖上述完整构建、Head CAS、查询快照、来源失效、Embedding 重建、结构损坏、进程恢复、诊断与引用保护合同；#138 未正式 resolution 的候选方向不得作为通过前提。
+- `KNOWLEDGE-01` 必须以代表性真实 OCR 文档和故障注入覆盖完整构建、Head CAS、查询快照、来源失效、Embedding 重建、结构损坏、进程恢复、诊断与引用保护合同；该证据未通过时 Knowledge 阶段不得关闭。
 
 ## 9.7 Bootstrapper
 
@@ -2101,13 +2143,13 @@ Generation：generationId；manifestHash 只校验完整性
 
 ## 9.10 Node.js 与 Mastra 兼容矩阵
 
-- [#168](https://github.com/dnslin/kkbot/issues/168)的每组版本候选必须分别在最低 Node.js `22.13.x` 和验证时仍处官方维护期的实际生产 LTS 干净环境中验证；
-- 两个环境都必须使用锁文件完成冻结安装，并分别通过 TypeScript 类型检查、工作区构建和 Mastra 契约测试；任何一个环境失败或关键合同未证实，都不能判定该兼容组可用。
-- Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage 生命周期与迁移、Workflow 跨进程 snapshot/resume、内部维护 Schedule 的创建、重启读取和重复触发，以及 Observability Flush/Shutdown。Schedule 实验不得声称同一 fire 或并发 resume 唯一；验收必须证明重复 run 不创建 Delivery、高风险 Tool 或第三方写副作用，未形成原生持久 run 的 missed fire 不由 KKBot 补建或逐次回放。
+- 当前锁定候选 B：`@mastra/core@1.61.0`、`@mastra/memory@1.27.0`、`@mastra/libsql@1.21.1`、`@mastra/observability@1.17.1`、`@mastra/mcp@1.17.1`、`zod@4.4.3`；夹具直接锁定 `@modelcontextprotocol/sdk@1.30.0`，不添加独立 `ai` 或 `@mastra/rag`；
+- #131 已在 Node.js `22.13.1` 与 `24.14.0` 用同一冻结 lockfile 完成安装、TypeScript 类型检查、最小构建和 Mastra 基础合同；#168 在 #161 移除唯一失败的 Approval 门槛后复用该证据锁定候选 B；
+- 实施使用的根 lockfile 必须保持上述精确组，并在最低 Node.js `22.13.x` 与验证时仍处官方维护期的实际生产 LTS 分别完成冻结安装、完整工作区类型检查、构建及本节契约；任一环境失败都不能关闭 `COMPAT-01`；
+- Mastra 契约至少覆盖动态模型 fallback/retries、Memory `readOnly` 与稳定消息 ID、Storage 生命周期与迁移、Workflow 跨进程 snapshot/resume、内部维护 Schedule 的创建、重启读取和重复触发，以及 Observability Flush/Shutdown。Schedule 实验不得声称同一 fire 或并发 resume 唯一；必须证明重复 run 不创建 Delivery、高风险 Tool 或第三方写副作用，未形成原生持久 run 的 missed fire 不由 KKBot 补建或逐次回放；
 - Mastra MCP 契约必须覆盖 `listToolsWithErrors()` 的逐 Server timeout、错误归属、成功 Tool 保留、固定 Tool 集合、父 `AbortSignal` 传播、原生 reconnect 和 `disconnect()` 释放；
 - Processor 契约必须覆盖固定顺序、普通异常传播、TripWire 非重试、Tool result 检查、最终 Output Processor 完成前不暴露文本，以及安全门失败时不进入 Memory/Delivery；
-- Quota 契约必须完整覆盖 §9.11；任何调用前门禁或 Usage 完整性实验未通过，都不能判定兼容组支持硬配额。
-- #131 研究矩阵及其候选 A/B 只保留历史事实，不自动成为锁定版本；#168 必须按当前无 Tool Approval 的能力范围重新验证并给出唯一精确版本组。
+- Quota 契约必须完整覆盖 §9.11；任何调用前门禁或 Usage 完整性实验未通过，都不能启用硬配额；
 - 支持矩阵中的生产 LTS 退出官方维护期时，部署与 CI 必须移除该版本并在新的实际生产 LTS 上重新执行上述完整验证。
 - Node.js 20 不属于验收环境；缺少 Node.js 20 兼容测试或其执行失败不构成本规格回归。
 
@@ -2127,6 +2169,34 @@ Generation：generationId；manifestHash 只校验完整性
 - 旧日期长期 `held_unknown` 不自动释放、不迁移到新日期，仍可按原 `runId` 诊断和恢复；
 - `SQLITE_BUSY` 重试耗尽时，准入阶段没有模型调用，结算阶段没有 Delivery，已有权威状态保持不变；
 - Mastra 契约实验覆盖成功、模型错误、Tool 错误、Processor 拒绝、Abort、timeout、retry、fallback、Tool Loop、Processor 模型调用与零 Usage 完整性；`TokenCostControl`、Observability 和 Gateway 累计均不参与硬配额事实判定。
+
+## 9.12 资产保留与清理
+
+- ManagedAsset 与首个 AssetReference 在 assetId 发布前持久化；每个跨 Client 强杀窗口最多留下可诊断孤儿，不会形成已发布但无保护引用的资产；
+- active AssetReference、未过期 AssetLease、人工保留、非终态 Workflow、pending 处理、Delivery=`generated/sending/unknown`、当前 Head 和最近一个 retained Generation 均阻止删除；
+- 接收媒体从 `ready`、生成交付物从 Delivery=`sent/failed/aborted` 起分别验证 30 天最早删除时间；普通读取、重试、重启和 mtime 不重新滚动 deadline；
+- Mark 前后的新引用、grace 二次检查、`deleting` 后拒绝新引用和 CAS 删除执行租约在并发下保持唯一合法状态；
+- 重复 Sweep、已有删除意图时的 `ENOENT`、无删除意图的 `missing`、权限失败、路径越界、symlink、locator/checksum 冲突和删除前后强杀均保持可诊断且不误删；
+- 启动恢复过期 staging/deleting 租约与待 Sweep mark；无元数据字节先隔离为 orphan，owner 不可读或检查水位过旧时 Fail-Closed；
+- 物理删除后保留最小 tombstone、引用历史、checksum、deadline、原因和最后错误，不顺带删除业务事实或审计元数据。
+
+## 9.13 跨域并发与重启
+
+- Message、Delivery、Memory、Quota、Knowledge 和 Asset 各自使用稳定 ID、唯一约束或 CAS 证明串行、并发和跨进程重放的唯一合法事实；单进程内 mutex 不构成数据库级证据；
+- 每个数据库 commit、Head/状态 CAS、KK 发送、外部低风险 Tool 副作用和物理文件删除的前后都必须存在可控强杀点；恢复只走所属合同允许的路径，不猜测不确定结果；
+- 两个 PrivateSession 并发时 RequestContext、Thread、Trace、Delivery、发送目标和配额不串线；同一 Session 的中断、撤回和接管按稳定身份串行化；
+- 跨 KKBot Client 与 Mastra Storage Client 不声明原子事务；故障注入必须证明 protect-before-publish、先事实后 release、权威回读和 Fail-Closed 使崩溃窗口只增加可恢复工作，不制造重复不可逆副作用；
+- 任一所属 Contract 的并发或重启 oracle 失败时，该领域阶段不得关闭；不得用一个全链路 happy-path 测试代替各事实边界的独立证据。
+
+## 9.14 真实 KK 冒烟与证据
+
+- 指定测试账号和一对一私聊会话完成入站捕获、Agent、Knowledge/低风险 Tool、最终 Processor、单次 KK 发送、Delivery=`sent` 与 assistant Memory 提交；
+- 群聊普通消息、`@我`、`@全体`、引用、附件和当前账号发言都只形成 Raw Store 事实，不启动 Agent、Memory、Tool、Knowledge、Delivery 或发送；
+- CDP 断线、EventBridge 重注入与 Polling 补偿不产生重复入站或重复发送；发送触发后断线或响应丢失形成 `unknown`，不得用 DOM/UI 回读自动裁定或补发；
+- 文本、富文本、图片和文件交付可在目标会话读取；Knowledge 回答包含真实来源，扫描文档能够返回原文件页或图像区域定位；
+- 高风险意图只返回明确“未执行外部操作”的建议或清单，真实 KK 路径中没有副作用 Tool、Approval、挂起恢复或后续自动执行；
+- 证据至少记录 commit、KK 客户端版本、账号/会话的脱敏标识、时间范围、原生 message ID、结构化日志、相关数据库事实和必要脱敏截图；失败后执行人工清理清单；
+- 真机冒烟只证明真实接线和产品可见行为，不能替代 `MEMORY-01`、`STORAGE-01`、`QUOTA-01`、`ASSET-01` 或 `CONCURRENCY-01` 的确定性离线合同。
 
 ---
 
@@ -2183,6 +2253,9 @@ Generation：generationId；manifestHash 只校验完整性
 22. Agent Content Processors、Tool result 检查、Quota 原子准入/预留/结算和 Grounding/输出安全门按固定顺序 fail-closed；
 23. Trace `SensitiveDataFilter` 与 Agent 内容过滤职责和生命周期分离，Composition Root 作为唯一 closer 不重复关闭 Mastra 所有资源；
 24. 用户可见主动 Schedule 的配置、Tool、Workflow、注册入口和 Delivery 路径均不存在；仅保留重复执行安全的内部维护，且不把 Schedule fire 或本地恢复器当作唯一业务事件；
+25. §9.0 的合同矩阵不存在 `待正式决议` 或 `必须重裁`，候选 B 的 `COMPAT-01` 证据仍有效；
+26. 每个 `待实施验证` Contract 已绑定到实施规划中的首个可产证纵向阶段，并作为该阶段退出门，不允许由后续总体验收补写；
+27. 最终集成同时保留确定性离线合同与 `KK-LIVE-01` 真机证据，任何宽泛端到端结果都不替代独立的并发、崩溃、迁移、配额或资产 oracle。
 
 ---
 
@@ -2259,7 +2332,7 @@ Generation：generationId；manifestHash 只校验完整性
 本文描述的是能力边界和目标架构，不把博客示例代码视为稳定 API 契约。开始实施前必须：
 
 1. 统一使用 Node.js `>=22.13`，并确保部署与 CI 选择的实际生产版本仍处于官方维护期的 LTS；
-2. #131 的旧候选与研究证据不自动锁定；由 [#168](https://github.com/dnslin/kkbot/issues/168)按当前生效能力范围锁定全部精确版本；
+2. 使用 §2.6 锁定的候选 B 精确版本组，并复用 #131/#168 的冻结研究证据作为 `COMPAT-01` 基线；
 3. 根据该版本的公开 API、类型定义和迁移说明更新所有示例调用；
 4. 在最低 Node.js `22.13` 与实际生产 LTS 上分别验证冻结安装、类型检查、工作区构建和 9.10 节规定的 Mastra 契约，并证明固定 Tool 集合不包含高风险副作用 Tool；任何当前范围关键合同失败时按 #117 返回 Wayfinder 重裁，不得补写自研 Runtime 或兼容层；
 5. 禁止各 package 单独升级 Mastra 依赖。

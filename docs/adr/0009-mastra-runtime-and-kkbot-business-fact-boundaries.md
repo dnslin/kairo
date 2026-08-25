@@ -35,11 +35,9 @@ Agent Content Processors 以静态数组顺序执行，MCP 与本地 Tool 结果
 - [#133 Node.js 运行时基线 resolution](https://github.com/dnslin/kkbot/issues/133#issuecomment-5389347634)
 - [#135 MCP 与 Processor 生命周期 resolution](https://github.com/dnslin/kkbot/issues/135#issuecomment-5389833290)
 - [#161 高危动作范围](https://github.com/dnslin/kkbot/issues/161)
+- [#168 当前范围兼容版本锁定](https://github.com/dnslin/kkbot/issues/168#issuecomment-5403080615)
+- [#124 最终合同验收矩阵](https://github.com/dnslin/kkbot/issues/124)
 
 ## Historical Approval sources
 
 [#123 审批超时语义](https://github.com/dnslin/kkbot/issues/123)、[#126 Approval 投影与 Run 恢复](https://github.com/dnslin/kkbot/issues/126#issuecomment-5389399723)与[#131 兼容版本研究](https://github.com/dnslin/kkbot/issues/131)保留审计价值，但不再定义当前产品实现要求或版本门槛。
-
-## Open boundaries
-
-[#168 兼容版本研究](https://github.com/dnslin/kkbot/issues/168)按当前能力范围锁定精确版本；[#124 最终验收矩阵](https://github.com/dnslin/kkbot/issues/124)决定最终验收覆盖。本 ADR 不锁定具体 Mastra API、版本或进程退出码。
