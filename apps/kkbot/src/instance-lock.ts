@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createClient, type Client, type Transaction } from '@kkbot/store';
 
 export interface InstanceLockOptions {
   /** 锁定目录（如数据目录） */
@@ -40,7 +41,6 @@ export function isProcessAlive(pid: number): boolean {
     return false;
   }
   try {
-    // 信号 0 仅用于测试进程是否存在与是否有权发送信号，不产生中断
     process.kill(pid, 0);
     return true;
   } catch (error: unknown) {
@@ -57,179 +57,189 @@ export function isProcessAlive(pid: number): boolean {
 }
 
 /**
- * 数据目录单实例锁（InstanceLock）
- * 保证同一数据目录下仅允许单个 KKBot 进程实例运行，防御双写冲突。
+ * 基于 SQLite / LibSQL 内核级排他事务的单实例锁（InstanceLock）
+ *
+ * 核心原理：
+ * 1. 在数据目录下维护专用的排他守护库（.kkbot_instance_lock.guard.db）。
+ * 2. 进程启动时持有 BEGIN IMMEDIATE 长事务排他锁。
+ * 3. 操作系统内核保证：若进程崩溃（SIGKILL / 异常中断），OS 会立即自动关闭文件句柄并释放排他锁，杜绝任何 TOCTOU 竞态与陈旧孤儿锁遗留。
  */
 export class InstanceLock {
   private readonly lockDir: string;
   private readonly startupGenerationId: string;
   private readonly lockFilePath: string;
+  private readonly guardDbPath: string;
+
+  private guardClient: Client | null = null;
+  private guardTx: Transaction | null = null;
   private held: boolean = false;
 
   constructor(options: InstanceLockOptions) {
     this.lockDir = path.resolve(options.lockDir);
     this.startupGenerationId = options.startupGenerationId;
-    this.lockFilePath = path.join(this.lockDir, options.lockFileName ?? 'kkbot.lock');
+    const baseName = options.lockFileName ?? 'kkbot.lock';
+    this.lockFilePath = path.join(this.lockDir, baseName);
+    this.guardDbPath = path.join(this.lockDir, `.${baseName}_guard.sqlite`);
   }
 
   /**
-   * 取得单实例锁
-   * 若存在陈旧锁（拥有者进程已消亡），将自动覆盖自愈；
-   * 若活跃实例已持有锁，则抛出 InstanceLockConflictError 拒绝启动。
+   * 取得单实例排他锁
    */
   async acquire(): Promise<void> {
     await fs.mkdir(this.lockDir, { recursive: true });
 
-    const payload: InstanceLockMetadata = {
-      pid: process.pid,
-      startupGenerationId: this.startupGenerationId,
-      acquiredAt: new Date().toISOString(),
-    };
-    const payloadStr = JSON.stringify(payload, null, 2);
+    // 建立排他守护连接并设置极短繁忙等待（快速拦截冲突）
+    const client = createClient({ url: `file:${this.guardDbPath}` });
 
-    const claimMutexDir = path.join(this.lockDir, '.kkbot_lock_claim');
+    try {
+      await client.execute('PRAGMA busy_timeout = 100;');
+      await client.execute(`
+        CREATE TABLE IF NOT EXISTS _kkbot_instance_lock (
+          id INTEGER PRIMARY KEY,
+          pid INTEGER NOT NULL,
+          startup_generation_id TEXT NOT NULL,
+          acquired_at TEXT NOT NULL
+        );
+      `);
 
-    for (let attempt = 0; attempt < 20; attempt++) {
+      // 开启长生命周期写入排他事务（BEGIN IMMEDIATE）
+      let tx: Transaction;
       try {
-        await fs.writeFile(this.lockFilePath, payloadStr, { flag: 'wx', encoding: 'utf-8' });
-        this.held = true;
-        return;
-      } catch (error: unknown) {
-        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-        if (code !== 'EEXIST') {
-          throw error;
-        }
-      }
+        tx = await client.transaction('write');
+      } catch (txErr: unknown) {
+        client.close();
 
-      let claimAcquired = false;
-      try {
-        await fs.mkdir(claimMutexDir);
-        claimAcquired = true;
-      } catch (claimErr: unknown) {
-        const claimCode =
-          claimErr && typeof claimErr === 'object' && 'code' in claimErr
-            ? claimErr.code
-            : undefined;
-        if (claimCode === 'EEXIST') {
-          await new Promise((resolve) => setTimeout(resolve, 20 + Math.random() * 30));
-          continue;
-        }
-        throw claimErr;
-      }
+        const isBusy =
+          txErr &&
+          typeof txErr === 'object' &&
+          (('code' in txErr &&
+            (txErr.code === 'SQLITE_BUSY' ||
+              txErr.code === 'SQLITE_LOCKED' ||
+              txErr.code === 'SQLITE_BUSY_RECOVERY' ||
+              txErr.code === 'SQLITE_BUSY_SNAPSHOT' ||
+              String(txErr.code).includes('BUSY') ||
+              String(txErr.code).includes('LOCKED'))) ||
+            ('message' in txErr &&
+              (String(txErr.message).includes('SQLITE_BUSY') ||
+                String(txErr.message).includes('database is locked') ||
+                String(txErr.message).includes('Resource temporarily unavailable') ||
+                String(txErr.message).includes('cannot start a transaction'))));
 
-      try {
-        let rawContent: string | null = null;
-        try {
-          rawContent = await fs.readFile(this.lockFilePath, 'utf-8');
-        } catch (readErr: unknown) {
-          const readCode =
-            readErr && typeof readErr === 'object' && 'code' in readErr
-              ? readErr.code
-              : undefined;
-          if (readCode === 'ENOENT') {
-            await fs.writeFile(this.lockFilePath, payloadStr, { flag: 'wx', encoding: 'utf-8' });
-            this.held = true;
-            return;
-          }
-          throw readErr;
-        }
-
-        if (rawContent) {
-          let metadata: Partial<InstanceLockMetadata> | null = null;
+        if (isBusy) {
+          // 仅在明确检测到锁繁忙冲突时抛出 InstanceLockConflictError
+          let existingPid = 0;
+          let existingGen = 'unknown';
           try {
-            metadata = JSON.parse(rawContent) as Partial<InstanceLockMetadata>;
+            const raw = await fs.readFile(this.lockFilePath, 'utf-8');
+            const meta = JSON.parse(raw) as Partial<InstanceLockMetadata>;
+            existingPid = meta.pid ?? 0;
+            existingGen = meta.startupGenerationId ?? 'unknown';
           } catch {
-            // 损坏文件允许覆盖
+            // 忽略
           }
-
-          if (metadata && typeof metadata.pid === 'number' && metadata.pid > 0) {
-            if (
-              metadata.pid === process.pid &&
-              metadata.startupGenerationId === this.startupGenerationId
-            ) {
-              this.held = true;
-              return;
-            }
-
-            if (isProcessAlive(metadata.pid)) {
-              throw new InstanceLockConflictError(
-                this.lockFilePath,
-                metadata.pid,
-                metadata.startupGenerationId ?? 'unknown'
-              );
-            }
-          }
-
-          await fs.writeFile(this.lockFilePath, payloadStr, { encoding: 'utf-8' });
-          this.held = true;
-          return;
+          throw new InstanceLockConflictError(this.lockFilePath, existingPid, existingGen);
         }
-      } finally {
-        if (claimAcquired) {
-          await fs.rmdir(claimMutexDir).catch(() => {});
-        }
+
+        // 非锁冲突类的结构性数据库异常直接向外抛出
+        throw txErr;
       }
-    }
 
-    throw new Error(`取得单实例锁超时或重试已耗尽: ${this.lockFilePath}`);
+      try {
+        // 在排他事务内部更新当前进程元数据
+        const nowIso = new Date().toISOString();
+        await tx.execute({
+          sql: 'INSERT OR REPLACE INTO _kkbot_instance_lock (id, pid, startup_generation_id, acquired_at) VALUES (1, ?, ?, ?)',
+          args: [process.pid, this.startupGenerationId, nowIso],
+        });
+
+        // 镜像写入文本锁文件供外部诊断与工具检查
+        const payload: InstanceLockMetadata = {
+          pid: process.pid,
+          startupGenerationId: this.startupGenerationId,
+          acquiredAt: nowIso,
+        };
+        await fs.writeFile(this.lockFilePath, JSON.stringify(payload, null, 2), 'utf-8');
+
+        // 仅在全部动作成功后将 tx 与 client 登记至实例字段
+        this.guardClient = client;
+        this.guardTx = tx;
+        this.held = true;
+      } catch (innerErr) {
+        await tx.rollback().catch(() => {});
+        client.close();
+        throw innerErr;
+      }
+    } catch (err) {
+      if (this.guardClient !== client) {
+        client.close();
+      }
+      throw err;
+    }
   }
 
   /**
    * 释放单实例锁
-   * 必须在数据库、文件和外部资源关闭尝试完成后才调用。
    */
   async release(): Promise<void> {
     if (!this.held) {
       return;
     }
 
+    const cleanupErrors: Error[] = [];
+
     try {
-      let rawContent: string | null = null;
-      try {
-        rawContent = await fs.readFile(this.lockFilePath, 'utf-8');
-      } catch (readErr: unknown) {
-        const readCode =
-          readErr && typeof readErr === 'object' && 'code' in readErr ? readErr.code : undefined;
-        if (readCode === 'ENOENT') {
-          return;
+      if (this.guardTx) {
+        try {
+          await this.guardTx.rollback();
+        } catch (txErr: unknown) {
+          cleanupErrors.push(txErr instanceof Error ? txErr : new Error(String(txErr)));
         }
-        throw readErr;
+        this.guardTx = null;
       }
 
-      if (rawContent) {
-        const metadata = JSON.parse(rawContent) as Partial<InstanceLockMetadata>;
-        if (
-          metadata.pid === process.pid &&
-          metadata.startupGenerationId === this.startupGenerationId
-        ) {
-          try {
-            await fs.unlink(this.lockFilePath);
-          } catch (unlinkErr: unknown) {
-            const unlinkCode =
-              unlinkErr && typeof unlinkErr === 'object' && 'code' in unlinkErr
-                ? unlinkErr.code
-                : undefined;
-            if (unlinkCode !== 'ENOENT') {
-              throw unlinkErr;
-            }
-          }
+      if (this.guardClient) {
+        try {
+          this.guardClient.close();
+        } catch (clientErr: unknown) {
+          cleanupErrors.push(
+            clientErr instanceof Error ? clientErr : new Error(String(clientErr))
+          );
+        }
+        this.guardClient = null;
+      }
+
+      try {
+        await fs.unlink(this.lockFilePath);
+      } catch (unlinkErr: unknown) {
+        const code =
+          unlinkErr && typeof unlinkErr === 'object' && 'code' in unlinkErr
+            ? unlinkErr.code
+            : undefined;
+        if (code !== 'ENOENT') {
+          cleanupErrors.push(
+            unlinkErr instanceof Error ? unlinkErr : new Error(String(unlinkErr))
+          );
         }
       }
     } finally {
       this.held = false;
     }
+
+    if (cleanupErrors.length > 0) {
+      if (cleanupErrors.length === 1 && cleanupErrors[0]) {
+        throw cleanupErrors[0];
+      }
+      throw new AggregateError(
+        cleanupErrors,
+        `释放单实例锁时产生 ${cleanupErrors.length} 处清理错误`
+      );
+    }
   }
 
-  /**
-   * 当前实例是否持有锁
-   */
   isHeld(): boolean {
     return this.held;
   }
 
-  /**
-   * 获取锁文件路径
-   */
   getLockFilePath(): string {
     return this.lockFilePath;
   }

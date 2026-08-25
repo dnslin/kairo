@@ -127,7 +127,7 @@ describe('InstanceLock (Single Instance Data Directory Lock)', () => {
     });
     await lock.acquire();
 
-    // Mock fs.readFile or fs.unlink to throw a permission error
+    // Mock fs.unlink to throw a permission error during release
     const originalUnlink = fs.unlink;
     fs.unlink = () => {
       const err = new Error('EPERM: operation not permitted');
@@ -245,5 +245,93 @@ describe('InstanceLock (Single Instance Data Directory Lock)', () => {
     const winnerResult = await children[winner.id]!.done;
     expect(winnerResult.code).toBe(0);
     expect(winnerResult.stdout).toContain('SUCCESS:');
+  });
+
+  it('should automatically recover when previous lock holder process crashes via SIGKILL', async () => {
+    const instanceLockModuleUrl = pathToFileURL(
+      path.resolve(__dirname, '../src/instance-lock.ts')
+    ).href;
+
+    const childScript = `
+      import { InstanceLock, InstanceLockConflictError } from ${JSON.stringify(instanceLockModuleUrl)};
+      const lock = new InstanceLock({
+        lockDir: ${JSON.stringify(tempDir)},
+        startupGenerationId: 'child-crasher-' + process.pid,
+      });
+      await lock.acquire();
+      process.stdout.write('HELD:' + process.pid + '\\n');
+      process.stdin.resume();
+    `;
+
+    const childScriptFile = path.join(tempDir, 'crasher-worker.mjs');
+    await fs.writeFile(childScriptFile, childScript, 'utf-8');
+
+    const { promise: heldPromise, resolve: resolveHeld } = Promise.withResolvers<number>();
+    const cp = spawn(process.execPath, ['--import', 'tsx', childScriptFile], {
+      cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    cp.stdout?.on('data', (d: Buffer) => {
+      const str = d.toString();
+      const match = str.match(/HELD:(\d+)/);
+      if (match && match[1]) {
+        resolveHeld(parseInt(match[1], 10));
+       }
+     });
+
+    const childPid = await heldPromise;
+    expect(childPid).toBeGreaterThan(0);
+
+    // 此时第二实例尝试取得锁，必然被拒绝
+    const parentLock = new InstanceLock({
+      lockDir: tempDir,
+      startupGenerationId: 'parent-attempt',
+    });
+    await expect(parentLock.acquire()).rejects.toThrow(InstanceLockConflictError);
+
+    // 强杀持锁子进程 (SIGKILL) 模拟非正常崩溃
+    const { promise: exitPromise, resolve: resolveExit } = Promise.withResolvers<void>();
+    cp.on('close', () => {
+      resolveExit();
+    });
+    cp.kill('SIGKILL');
+    await exitPromise;
+
+    // 操作系统内核自动释放 SQLite 文件锁，父进程立即成功取得锁
+    await parentLock.acquire();
+    expect(parentLock.isHeld()).toBe(true);
+    await parentLock.release();
+  });
+
+  it('should safely rollback transaction and release guard client when mirror file write fails during acquire', async () => {
+    const lock = new InstanceLock({
+      lockDir: tempDir,
+      startupGenerationId: 'gen-mirror-fail',
+    });
+
+    const originalWriteFile = fs.writeFile;
+    fs.writeFile = ((filePath: Parameters<typeof fs.writeFile>[0], data: Parameters<typeof fs.writeFile>[1], options?: Parameters<typeof fs.writeFile>[2]) => {
+      if (typeof filePath === 'string' && filePath.endsWith('kkbot.lock')) {
+        return Promise.reject(new Error('ENOSPC: disk full on mirror write'));
+      }
+      return originalWriteFile(filePath, data, options);
+    }) as typeof fs.writeFile;
+
+    try {
+      await expect(lock.acquire()).rejects.toThrow('ENOSPC: disk full on mirror write');
+      expect(lock.isHeld()).toBe(false);
+    } finally {
+      fs.writeFile = originalWriteFile;
+    }
+
+    // 验证失败后未留下任何未回滚或占用的长事务，下一实例能立即成功取得
+    const nextLock = new InstanceLock({
+      lockDir: tempDir,
+      startupGenerationId: 'gen-next-success',
+    });
+    await nextLock.acquire();
+    expect(nextLock.isHeld()).toBe(true);
+    await nextLock.release();
   });
 });
