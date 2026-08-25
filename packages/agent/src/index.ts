@@ -88,3 +88,12 @@ export {
   type KKBotAgentRunResult,
   type AgentTokenUsage,
 } from './agent.js';
+export {
+  createFakeModel,
+  type FakeLanguageModel,
+  type FakeModelGenerateResult,
+  type FakeModelStepResponse,
+  type FakeModelCallOptions,
+  type FakeModelOptions,
+  type FakeModelContentPart,
+} from './testing/fake-model.js';

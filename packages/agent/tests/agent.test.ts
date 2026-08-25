@@ -3,10 +3,50 @@ import { z } from 'zod';
 import { createTool } from '@mastra/core/tools';
 import { RequestContext } from '@mastra/core/request-context';
 import type { InputProcessor, OutputProcessor } from '@mastra/core/processors';
-import { KKBotAgent } from '../src/agent.js';
+import { KKBotAgent, type KKBotAgentOptions } from '../src/agent.js';
 import { MastraModelFactory } from '../src/models/factory.js';
 import { createFakeModel } from './fixtures/fake-model.js';
+
 describe('KKBotAgent (Mastra-native Agent)', () => {
+  function createTestAgent(options: {
+    model?: ReturnType<typeof createFakeModel>;
+    models?: {
+      FAST?: ReturnType<typeof createFakeModel>;
+      DEEP?: ReturnType<typeof createFakeModel>;
+      VISION?: ReturnType<typeof createFakeModel>;
+    };
+    factory?: MastraModelFactory;
+    tools?: KKBotAgentOptions['tools'];
+    inputProcessors?: KKBotAgentOptions['inputProcessors'];
+    outputProcessors?: KKBotAgentOptions['outputProcessors'];
+    errorProcessors?: KKBotAgentOptions['errorProcessors'];
+    maxSteps?: number;
+    id?: string;
+    name?: string;
+  }) {
+    const defaultModel = options.model ?? createFakeModel();
+    const factory =
+      options.factory ??
+      new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model: options.models?.FAST ?? defaultModel }] },
+          DEEP: { models: [{ model: options.models?.DEEP ?? defaultModel }] },
+          VISION: { models: [{ model: options.models?.VISION ?? defaultModel }] },
+        },
+      });
+
+    return new KKBotAgent({
+      id: options.id ?? 'test-agent',
+      name: options.name ?? 'Test KKBot',
+      modelFactory: factory,
+      tools: options.tools,
+      inputProcessors: options.inputProcessors,
+      outputProcessors: options.outputProcessors,
+      errorProcessors: options.errorProcessors,
+      maxSteps: options.maxSteps,
+    });
+  }
+
   it('生产执行入口为 Mastra Agent，支持纯文本生成与权威 Usage 返回', async () => {
     const fastModel = createFakeModel({
       modelId: 'fast-model',
@@ -19,19 +59,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       ],
     });
 
-    const factory = new MastraModelFactory({
-      tiers: {
-        FAST: { models: [{ model: fastModel }] },
-        DEEP: { models: [{ model: fastModel }] },
-        VISION: { models: [{ model: fastModel }] },
-      },
-    });
-
-    const agent = new KKBotAgent({
-      id: 'test-agent',
-      name: 'Test KKBot',
-      modelFactory: factory,
-    });
+    const agent = createTestAgent({ model: fastModel });
 
     const result = await agent.execute({
       input: '你好',
@@ -77,7 +105,6 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
     const toolModel = createFakeModel({
       modelId: 'multi-tool-model',
       responses: [
-        // 步骤 1: 调用 weatherTool
         {
           toolCalls: [
             {
@@ -89,7 +116,6 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
           finishReason: 'tool-calls',
           usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
         },
-        // 步骤 2: 调用 orgTool
         {
           toolCalls: [
             {
@@ -101,7 +127,6 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
           finishReason: 'tool-calls',
           usage: { inputTokens: 25, outputTokens: 15, totalTokens: 40 },
         },
-        // 步骤 3: 汇聚结果生成最终回复
         {
           text: '北京天气晴朗 25°C，研发部主管为张主管，成员 15 人。',
           finishReason: 'stop',
@@ -110,17 +135,9 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       ],
     });
 
-    const factory = new MastraModelFactory({
-      tiers: {
-        FAST: { models: [{ model: toolModel }] },
-        DEEP: { models: [{ model: toolModel }] },
-        VISION: { models: [{ model: toolModel }] },
-      },
-    });
-
-    const agent = new KKBotAgent({
+    const agent = createTestAgent({
       id: 'multi-tool-agent',
-      modelFactory: factory,
+      model: toolModel,
       tools: {
         'get-weather': weatherTool,
         'search-org': orgTool,
@@ -136,8 +153,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
     expect(tool1Calls).toEqual([{ location: '北京' }]);
     expect(tool2Calls).toEqual([{ department: '研发部' }]);
     expect(result.rawOutput.steps.length).toBe(3);
-    // 权威 Usage 汇聚
-    expect(result.usage.totalTokens).toBe(120); // 30 + 40 + 50
+    expect(result.usage.totalTokens).toBe(120);
   });
 
   it('无 Tool Call 时直接生成回复并正常结束 (finishReason: stop)', async () => {
@@ -152,18 +168,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       ],
     });
 
-    const factory = new MastraModelFactory({
-      tiers: {
-        FAST: { models: [{ model: plainModel }] },
-        DEEP: { models: [{ model: plainModel }] },
-        VISION: { models: [{ model: plainModel }] },
-      },
-    });
-
-    const agent = new KKBotAgent({
-      id: 'plain-agent',
-      modelFactory: factory,
-    });
+    const agent = createTestAgent({ id: 'plain-agent', model: plainModel });
 
     const result = await agent.execute({
       input: '简单的问答测试',
@@ -193,13 +198,10 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       },
     });
 
-    const agent = new KKBotAgent({
-      id: 'fatal-agent',
-      modelFactory: factory,
-    });
+    const agent = createTestAgent({ id: 'fatal-agent', factory });
 
     await expect(agent.execute({ input: '你好' })).rejects.toThrow(/Fatal unrecoverable error/);
-    expect(callCount).toBe(1); // 零重试，仅执行 1 次即失败
+    expect(callCount).toBe(1);
   });
 
   it('AbortSignal 可以停止 Agent Run 并传播到 Tool 执行中', async () => {
@@ -220,7 +222,6 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
             toolAborted = true;
             reject(new Error('Tool aborted during execution'));
           });
-          // 进入工具执行后立即触发外部中断信号
           controller.abort();
         }
         return promise as Promise<{ success: boolean }>;
@@ -243,17 +244,9 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       ],
     });
 
-    const factory = new MastraModelFactory({
-      tiers: {
-        FAST: { models: [{ model: model }] },
-        DEEP: { models: [{ model: model }] },
-        VISION: { models: [{ model: model }] },
-      },
-    });
-
-    const agent = new KKBotAgent({
+    const agent = createTestAgent({
       id: 'abort-agent',
-      modelFactory: factory,
+      model,
       tools: {
         'long-running-tool': longRunningTool,
       },
@@ -294,17 +287,9 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       execute: input => Promise.resolve({ ack: input.count }),
     });
 
-    const factory = new MastraModelFactory({
-      tiers: {
-        FAST: { models: [{ model: infiniteLoopModel }] },
-        DEEP: { models: [{ model: infiniteLoopModel }] },
-        VISION: { models: [{ model: infiniteLoopModel }] },
-      },
-    });
-
-    const agent = new KKBotAgent({
+    const agent = createTestAgent({
       id: 'max-steps-agent',
-      modelFactory: factory,
+      model: infiniteLoopModel,
       tools: {
         'dummy-ping': pingTool,
       },
@@ -362,19 +347,16 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       },
     });
 
-    const agent = new KKBotAgent({
-      id: 'fallback-test-agent',
-      modelFactory: factory,
-    });
+    const agent = createTestAgent({ id: 'fallback-test-agent', factory });
 
     const result = await agent.execute({
-      input: '你好', // 命中 FAST Tier
+      input: '你好',
     });
 
     expect(result.text).toBe('Fallback 模型回复成功');
-    expect(result.tier).toBe('FAST'); // Tier 未改变或升级
-    expect(primaryCalls).toBe(2); // 初次 + 1 次 retry
-    expect(fallbackCalls).toBe(1); // fallback 成功
+    expect(result.tier).toBe('FAST');
+    expect(primaryCalls).toBe(2);
+    expect(fallbackCalls).toBe(1);
   });
 
   it('当 Usage 部分或全部字段缺失时，严格保留 undefined 而不伪造 0 或合成 totalTokens', async () => {
@@ -393,18 +375,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       ],
     });
 
-    const factory = new MastraModelFactory({
-      tiers: {
-        FAST: { models: [{ model: partialUsageModel }] },
-        DEEP: { models: [{ model: partialUsageModel }] },
-        VISION: { models: [{ model: partialUsageModel }] },
-      },
-    });
-
-    const agent = new KKBotAgent({
-      id: 'partial-usage-agent',
-      modelFactory: factory,
-    });
+    const agent = createTestAgent({ id: 'partial-usage-agent', model: partialUsageModel });
 
     const result = await agent.execute({
       input: '你好',
@@ -456,17 +427,9 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       ],
     });
 
-    const factory = new MastraModelFactory({
-      tiers: {
-        FAST: { models: [{ model: processorModel }] },
-        DEEP: { models: [{ model: processorModel }] },
-        VISION: { models: [{ model: processorModel }] },
-      },
-    });
-
-    const agent = new KKBotAgent({
+    const agent = createTestAgent({
       id: 'proc-agent',
-      modelFactory: factory,
+      model: processorModel,
       tools: {
         'sample-tool': testTool,
       },
@@ -499,27 +462,21 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       responses: [{ text: 'Deep 回复', finishReason: 'stop' }],
     });
 
-    const factory = new MastraModelFactory({
-      tiers: {
-        FAST: { models: [{ model: fastModel }] },
-        DEEP: { models: [{ model: deepModel }] },
-        VISION: { models: [{ model: visionModel }] },
+    const agent = createTestAgent({
+      id: 'shared-ctx-agent',
+      models: {
+        FAST: fastModel,
+        DEEP: deepModel,
+        VISION: visionModel,
       },
     });
 
-    const agent = new KKBotAgent({
-      id: 'shared-ctx-agent',
-      modelFactory: factory,
-    });
-
-    // 单个共享的 RequestContext 实例，模拟上游中间件/Gateway 传入的共享上下文
     const sharedContext = new RequestContext();
     sharedContext.setRaw('custom_tenant_id', 'tenant_001');
 
-    // 同时发起 FAST 与 VISION 两个并发调用，共用 sharedContext
     const [resFast, resVision] = await Promise.all([
       agent.execute({
-        input: '你好', // 命中 FAST
+        input: '你好',
         requestContext: sharedContext,
       }),
       agent.execute({
@@ -531,7 +488,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
               hasCompleteTrustedText: false,
             },
           ],
-        }, // 命中 VISION
+        },
         requestContext: sharedContext,
       }),
     ]);

@@ -60,6 +60,11 @@ describe('ModelTierPolicy (resolveModelTier)', () => {
       expect(resolveModelTier({ text: 'guide me to build a service' }, RULES_VERSION)).toBe('DEEP');
     });
 
+    it('纯文本请求提及图片算法或UI架构但未要求分析视觉属性时不误判为 VISION', () => {
+      expect(resolveModelTier({ text: '解释图片压缩算法原理与实现' }, RULES_VERSION)).toBe('DEEP');
+      expect(resolveModelTier({ text: '设计前端 UI 架构与状态管理方案' }, RULES_VERSION)).toBe('DEEP');
+    });
+
     it('普通纯文本附件不会因附件存在而错误选择 VISION', () => {
       const input: NormalizedModelTierInput = {
         text: '你好',

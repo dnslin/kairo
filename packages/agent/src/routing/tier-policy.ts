@@ -14,48 +14,31 @@
 export type ModelTier = 'FAST' | 'DEEP' | 'VISION';
 
 export interface NormalizedAttachmentFact {
-  /** 附件媒体模态类型 (MIME type，例如 'image/png', 'text/plain') */
   mediaType?: string;
-  /** 附件文件名 (例如 'screenshot.png', 'notes.txt') */
   filename?: string;
-  /** 是否为视觉模态 (图片/截图/图表等) */
   isVisual?: boolean;
-  /** 是否具备完整可信文本表示 (例如已通过 OCR 提取或原生纯文本) */
   hasCompleteTrustedText?: boolean;
-  /** 可信文本内容 (若有) */
   trustedText?: string;
 }
 
 export interface NormalizedModelTierInput {
-  /** 规范化文本内容 */
   text: string;
-  /** 附件事实列表 (若有) */
   attachments?: NormalizedAttachmentFact[];
 }
 
-/** 视觉特征关键词正则 */
 const VISUAL_INTENT_REGEX =
-  /(?:图片|图像|照片|截图|图表|趋势图|架构图|\bUI\b|界面|画布|颜色|色彩|排版|布局|版面|位置|坐标)/i;
+  /(?:(?:看图|识图|看截图|看照片)|(?:图[中里上]|截图[中里上]|照片[中里上])|(?:识别|查看|分析|提取|对比|描述)(?:[一这那该幅张个份条]*[张份幅个条]?|\s*)*(?:图片|图像|照片|截图|图表|趋势图|架构图|曲线图|饼图|柱状图)(?!.*(?:压缩|编码|解码|格式转换|存储|协议|算法原理|压缩算法))|(?:UI截图|界面截图|图表关系|按钮颜色|颜色搭配|色彩分布|界面布局|排版布局|版面位置|版面结构|视觉风格))/i;
 
-/** 视觉模态 MIME 正则 (以 image/ 开头) */
 const VISUAL_MIME_REGEX = /^image\//i;
-
-/** 视觉模态扩展名正则 */
 const VISUAL_EXT_REGEX = /\.(?:png|jpe?g|gif|webp|bmp|svg|tiff)$/i;
-/** 显式复杂推理 / 代码重构 / 多步骤综合正则 */
 const DEEP_INTENT_REGEX =
   /(?:代码|重构|架构|设计方案|复杂推理|多步骤|综合方案|算法|分析原因|死锁|性能瓶颈|并发模型)/i;
 
-/** 显式简单问候正则 (匹配单条或组合问候词及标点空格，不吞后续英文/中文非问候句) */
 const FAST_GREETING_REGEX =
   /^(?:(?:你好|您好|hi|hello|hey|早|早上好|下午好|晚上好|哈喽|在吗)[\s!！?？~～.,，]*)+$/i;
-/** 显式直接组织/员工查询正则 */
 const FAST_ORG_QUERY_REGEX =
   /(?:查询|查|找|谁是).*(?:员工|部门|主管|领导|汇报线|组织架构|电话|工号)|(?:直属主管|所属部门|汇报线|组织架构|通讯录)/i;
-
-/** 显式简单操作性指令正则 */
 const FAST_SIMPLE_OP_REGEX = /^(?:ping|pong|help|帮助|菜单)$/i;
-
 /**
  * 确定性纯函数：根据规范化输入与规则版本解析 ModelTier
  *
@@ -71,7 +54,7 @@ export function resolveModelTier(input: NormalizedModelTierInput, rulesVersion: 
   const normalizedText = input.text ? input.text.trim() : '';
   const attachments = input.attachments ?? [];
 
-  // 1. 优先级 1: 视觉能力优先 (VISION)
+  // 1. 视觉能力优先 (VISION)
   // (a) 附件属于视觉模态且缺少完整可信文本表示
   const hasIncompleteVisualAttachment = attachments.some(att => {
     const isVisual =
@@ -89,12 +72,12 @@ export function resolveModelTier(input: NormalizedModelTierInput, rulesVersion: 
     return 'VISION';
   }
 
-  // 2. 优先级 2: 显式复杂文本规则 (DEEP)
+  // 2. 显式复杂文本规则 (DEEP)
   if (normalizedText && DEEP_INTENT_REGEX.test(normalizedText)) {
     return 'DEEP';
   }
 
-  // 3. 优先级 3: 显式简单文本规则 (FAST)
+  // 3. 显式简单文本规则 (FAST)
   if (
     normalizedText &&
     (FAST_GREETING_REGEX.test(normalizedText) ||
@@ -104,6 +87,6 @@ export function resolveModelTier(input: NormalizedModelTierInput, rulesVersion: 
     return 'FAST';
   }
 
-  // 4. 优先级 4: 唯一默认路径 (DEEP)
+  // 4. 唯一默认路径 (DEEP)
   return 'DEEP';
 }

@@ -20,67 +20,46 @@ import type { MastraModelFactory, KKBotRequestContextValues } from './models/fac
 export type AgentGenerateRawOutput = FullOutput<unknown>;
 
 export interface KKBotAgentOptions {
-  /** Agent 唯一标识 */
   id?: string;
-  /** Agent 名称 */
   name?: string;
-  /** Agent 指令 Prompt */
   instructions?: string;
-  /** 模型工厂实例 (持有 FAST/DEEP/VISION 动态模型配置与 fallback 链) */
   modelFactory: MastraModelFactory;
-  /** 注册到 Agent 的 Tool 集合 */
   tools?: ToolsInput;
-  /** 默认单轮推理最大 Step 数 (默认 5) */
+  /** 默认单轮推理最大 Step 数，默认 5 */
   maxSteps?: number;
-  /** 静态输入处理器列表 (按固定数组顺序执行) */
+  /** 构造期静态绑定的输入处理器管道（按固定数组顺序执行） */
   inputProcessors?: InputProcessorOrWorkflow[];
-  /** 静态输出处理器列表 (按固定数组顺序执行) */
+  /** 构造期静态绑定的输出处理器管道（按固定数组顺序执行） */
   outputProcessors?: OutputProcessorOrWorkflow[];
-  /** 静态错误处理器列表 (按固定数组顺序执行) */
+  /** 构造期静态绑定的错误处理器管道（按固定数组顺序执行） */
   errorProcessors?: ErrorProcessorOrWorkflow[];
-  /** 处理器触发重试的最大次数上限 */
-  maxProcessorRetries?: number;
 }
 
 export interface ExecuteAgentOptions {
-  /** 用户输入，支持纯文本或附带事实的规范化输入 */
   input: string | NormalizedModelTierInput;
-  /** 模型等级规则版本 (默认 'v1.0') */
+  /** 规则版本，默认 'v1.0' */
   rulesVersion?: string;
-  /** 会话标识 (KK sessionId -> Mastra threadId) */
   sessionId?: string;
-  /** 发送者标识 (KK senderId/employeeId -> Mastra resourceId) */
   senderId?: string;
-  /** 外部中止信号 (控制模型与工具调用) */
   abortSignal?: AbortSignal;
-  /** 本次执行的最大步数限制 (覆盖默认 maxSteps) */
   maxSteps?: number;
-  /** 外部传入或共享的 RequestContext */
   requestContext?: RequestContext<KKBotRequestContextValues>;
-  /** 本次执行启用的工具名白名单 */
   activeTools?: string[];
 }
 
 export interface AgentTokenUsage {
-  /** 输入 Prompt Token 消耗 (权威值，未返回时为 undefined) */
   inputTokens?: number;
-  /** 输出 Completion Token 消耗 (权威值，未返回时为 undefined) */
   outputTokens?: number;
-  /** 总 Token 消耗 (权威值，未返回时为 undefined，禁止猜测填补) */
+  /** 总 Token 数（权威返回值，禁止本地猜测填补） */
   totalTokens?: number;
-  /** 原始 Provider Usage 事实 (若有) */
   raw?: Record<string, unknown>;
 }
 
 export interface KKBotAgentRunResult {
-  /** 模型最终生成的文本回复 */
   text: string;
-  /** 终态原因 ('stop' | 'tool-calls' | 'length' | 'error' | 等，未返回时为 undefined) */
   finishReason?: string;
   tier: ModelTier;
-  /** Mastra 权威产出的 Token 使用量 (非估算) */
   usage: AgentTokenUsage;
-  /** Mastra 原生返回的完整输出对象 */
   rawOutput: AgentGenerateRawOutput;
 }
 
@@ -110,16 +89,12 @@ export class KKBotAgent {
       inputProcessors: options.inputProcessors,
       outputProcessors: options.outputProcessors,
       errorProcessors: options.errorProcessors,
-      maxProcessorRetries: options.maxProcessorRetries,
       defaultOptions: {
         maxSteps: options.maxSteps ?? 5,
       },
     });
   }
 
-  /**
-   * 执行单轮 Agent 推理生成
-   */
   async execute(options: ExecuteAgentOptions): Promise<KKBotAgentRunResult> {
     const normalizedInput: NormalizedModelTierInput =
       typeof options.input === 'string' ? { text: options.input } : options.input;

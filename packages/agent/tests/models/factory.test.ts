@@ -7,66 +7,27 @@ import {
 } from '../../src/models/factory.js';
 
 describe('MastraModelFactory', () => {
-  const dummyFastModel = {
-    specificationVersion: 'v2' as const,
-    provider: 'test-provider',
-    modelId: 'fast-model-1',
-    supportedUrls: {},
-    doGenerate: () =>
-      Promise.resolve({
-        content: [{ type: 'text' as const, text: 'fast' }],
-        finishReason: 'stop' as const,
-        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
-        warnings: [],
-      }),
-    doStream: () => Promise.reject(new Error('not implemented')),
-  };
+  function createDummyModel(modelId: string, text: string, tokenCount: number) {
+    return {
+      specificationVersion: 'v2' as const,
+      provider: 'test-provider',
+      modelId,
+      supportedUrls: {},
+      doGenerate: () =>
+        Promise.resolve({
+          content: [{ type: 'text' as const, text }],
+          finishReason: 'stop' as const,
+          usage: { inputTokens: tokenCount, outputTokens: tokenCount, totalTokens: tokenCount * 2 },
+          warnings: [],
+        }),
+      doStream: () => Promise.reject(new Error('未在此测试用例中实现流式')),
+    };
+  }
 
-  const dummyDeepPrimary = {
-    specificationVersion: 'v2' as const,
-    provider: 'test-provider',
-    modelId: 'deep-primary',
-    supportedUrls: {},
-    doGenerate: () =>
-      Promise.resolve({
-        content: [{ type: 'text' as const, text: 'deep primary' }],
-        finishReason: 'stop' as const,
-        usage: { inputTokens: 5, outputTokens: 5, totalTokens: 10 },
-        warnings: [],
-      }),
-    doStream: () => Promise.reject(new Error('not implemented')),
-  };
-
-  const dummyDeepFallback = {
-    specificationVersion: 'v2' as const,
-    provider: 'test-provider',
-    modelId: 'deep-fallback',
-    supportedUrls: {},
-    doGenerate: () =>
-      Promise.resolve({
-        content: [{ type: 'text' as const, text: 'deep fallback' }],
-        finishReason: 'stop' as const,
-        usage: { inputTokens: 5, outputTokens: 5, totalTokens: 10 },
-        warnings: [],
-      }),
-    doStream: () => Promise.reject(new Error('not implemented')),
-  };
-
-  const dummyVisionModel = {
-    specificationVersion: 'v2' as const,
-    provider: 'test-provider',
-    modelId: 'vision-model-1',
-    supportedUrls: {},
-    doGenerate: () =>
-      Promise.resolve({
-        content: [{ type: 'text' as const, text: 'vision' }],
-        finishReason: 'stop' as const,
-        usage: { inputTokens: 10, outputTokens: 10, totalTokens: 20 },
-        warnings: [],
-      }),
-    doStream: () => Promise.reject(new Error('not implemented')),
-  };
-
+  const dummyFastModel = createDummyModel('fast-model-1', 'fast', 1);
+  const dummyDeepPrimary = createDummyModel('deep-primary', 'deep primary', 5);
+  const dummyDeepFallback = createDummyModel('deep-fallback', 'deep fallback', 5);
+  const dummyVisionModel = createDummyModel('vision-model-1', 'vision', 10);
   const config: ModelFactoryConfig = {
     tiers: {
       FAST: {

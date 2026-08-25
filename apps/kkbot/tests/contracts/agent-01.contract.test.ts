@@ -7,10 +7,10 @@ import {
   KKBotAgent,
   MastraModelFactory,
   resolveModelTier,
+  createFakeModel,
   type NormalizedModelTierInput,
   type KKBotRequestContextValues,
 } from '@kkbot/agent';
-import { createFakeModel } from '../../../../packages/agent/tests/fixtures/fake-model.js';
 
 describe('AGENT-01 Contract: Mastra-native Agent & Model Tier Policy', () => {
   const RULES_VERSION = 'v1.0';
@@ -29,6 +29,8 @@ describe('AGENT-01 Contract: Mastra-native Agent & Model Tier Policy', () => {
       expect(
         resolveModelTier({ text: '请帮我做 TypeScript 架构重构并分析系统死锁原因' }, RULES_VERSION)
       ).toBe('DEEP');
+      expect(resolveModelTier({ text: '解释图片压缩算法原理' }, RULES_VERSION)).toBe('DEEP');
+      expect(resolveModelTier({ text: '设计前端 UI 架构' }, RULES_VERSION)).toBe('DEEP');
     });
 
     it('AGENT-01.3: 未知文本稳定默认选择 DEEP', () => {
