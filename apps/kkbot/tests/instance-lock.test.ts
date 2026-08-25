@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { InstanceLock, InstanceLockConflictError } from '../src/instance-lock.js';
+import * as storeModule from '@kkbot/store';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -333,5 +334,25 @@ describe('InstanceLock (Single Instance Data Directory Lock)', () => {
     await nextLock.acquire();
     expect(nextLock.isHeld()).toBe(true);
     await nextLock.release();
+  });
+
+  it('should propagate structural non-busy transaction errors unchanged without mapping to InstanceLockConflictError', async () => {
+    const lock = new InstanceLock({
+      lockDir: tempDir,
+      startupGenerationId: 'gen-structural-error',
+    });
+
+    const spy = vi.spyOn(storeModule, 'createClient').mockReturnValue({
+      execute: () => Promise.resolve({ columns: [], rows: [], rowsAffected: 0, lastInsertRowid: undefined }),
+      transaction: () => Promise.reject(new Error('SQLITE_CORRUPT: database disk image is malformed')),
+      close: () => {},
+    } as unknown as ReturnType<typeof storeModule.createClient>);
+
+    try {
+      await expect(lock.acquire()).rejects.toThrow('SQLITE_CORRUPT: database disk image is malformed');
+      expect(lock.isHeld()).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

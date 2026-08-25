@@ -121,10 +121,10 @@ export class InstanceLock {
               String(txErr.code).includes('LOCKED'))) ||
             ('message' in txErr &&
               (String(txErr.message).includes('SQLITE_BUSY') ||
+                String(txErr.message).includes('SQLITE_LOCKED') ||
                 String(txErr.message).includes('database is locked') ||
-                String(txErr.message).includes('Resource temporarily unavailable') ||
-                String(txErr.message).includes('cannot start a transaction'))));
-
+                String(txErr.message).includes('database table is locked') ||
+                String(txErr.message).includes('Resource temporarily unavailable'))));
         if (isBusy) {
           // 仅在明确检测到锁繁忙冲突时抛出 InstanceLockConflictError
           let existingPid = 0;
