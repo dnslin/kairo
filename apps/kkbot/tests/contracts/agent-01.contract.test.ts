@@ -224,6 +224,60 @@ describe('AGENT-01 Contract: Mastra-native Agent & Model Tier Policy', () => {
       expect(res1[0].model).toBe(fastM);
       expect(res2[0].model).toBe(visionM);
     });
+
+    it('AGENT-01.20b: 传入同一个共享 RequestContext 实例并发执行时，自动克隆隔离且 Model Tier 绝不串线', async () => {
+      const fastM = createFakeModel({
+        modelId: 'fast-concurrent-model',
+        responses: [{ text: 'Fast 回复', finishReason: 'stop' }],
+      });
+
+      const visionM = createFakeModel({
+        modelId: 'vision-concurrent-model',
+        responses: [{ text: 'Vision 回复', finishReason: 'stop' }],
+      });
+
+      const factory = new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model: fastM }] },
+          DEEP: { models: [{ model: fastM }] },
+          VISION: { models: [{ model: visionM }] },
+        },
+      });
+
+      const agent = new KKBotAgent({
+        id: 'shared-ctx-contract-agent',
+        modelFactory: factory,
+      });
+
+      // 同一个共享的上下文实例
+      const sharedContext = new RequestContext();
+      sharedContext.setRaw('upstream_trace', 'trace-shared-123');
+
+      // 同时并发执行 FAST 与 VISION 输入
+      const [resFast, resVision] = await Promise.all([
+        agent.execute({
+          input: '你好', // 判定为 FAST
+          requestContext: sharedContext,
+        }),
+        agent.execute({
+          input: {
+            text: '查看附件图',
+            attachments: [
+              {
+                mediaType: 'image/png',
+                hasCompleteTrustedText: false,
+              },
+            ],
+          }, // 判定为 VISION
+          requestContext: sharedContext,
+        }),
+      ]);
+
+      expect(resFast.tier).toBe('FAST');
+      expect(resFast.text).toBe('Fast 回复');
+      expect(resVision.tier).toBe('VISION');
+      expect(resVision.text).toBe('Vision 回复');
+    });
   });
 
   // ==========================================================================

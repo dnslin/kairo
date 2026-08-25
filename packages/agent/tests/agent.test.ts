@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { createTool } from '@mastra/core/tools';
+import { RequestContext } from '@mastra/core/request-context';
 import type { InputProcessor, OutputProcessor } from '@mastra/core/processors';
 import { KKBotAgent } from '../src/agent.js';
 import { MastraModelFactory } from '../src/models/factory.js';
 import { createFakeModel } from './fixtures/fake-model.js';
-
 describe('KKBotAgent (Mastra-native Agent)', () => {
   it('生产执行入口为 Mastra Agent，支持纯文本生成与权威 Usage 返回', async () => {
     const fastModel = createFakeModel({
@@ -481,5 +481,64 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
     expect(result.text).toBe('处理器测试完毕');
     expect(executedPhases).toContain('input:processInput');
     expect(executedPhases).toContain('output:processToolResult:sample-tool');
+  });
+
+  it('当多个并发调用传入同一个共享 RequestContext 实例时，自动克隆隔离且 Model Tier 绝不串线', async () => {
+    const fastModel = createFakeModel({
+      modelId: 'fast-model-concurrent',
+      responses: [{ text: 'Fast 回复', finishReason: 'stop' }],
+    });
+
+    const visionModel = createFakeModel({
+      modelId: 'vision-model-concurrent',
+      responses: [{ text: 'Vision 回复', finishReason: 'stop' }],
+    });
+
+    const deepModel = createFakeModel({
+      modelId: 'deep-model-concurrent',
+      responses: [{ text: 'Deep 回复', finishReason: 'stop' }],
+    });
+
+    const factory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fastModel }] },
+        DEEP: { models: [{ model: deepModel }] },
+        VISION: { models: [{ model: visionModel }] },
+      },
+    });
+
+    const agent = new KKBotAgent({
+      id: 'shared-ctx-agent',
+      modelFactory: factory,
+    });
+
+    // 单个共享的 RequestContext 实例，模拟上游中间件/Gateway 传入的共享上下文
+    const sharedContext = new RequestContext();
+    sharedContext.setRaw('custom_tenant_id', 'tenant_001');
+
+    // 同时发起 FAST 与 VISION 两个并发调用，共用 sharedContext
+    const [resFast, resVision] = await Promise.all([
+      agent.execute({
+        input: '你好', // 命中 FAST
+        requestContext: sharedContext,
+      }),
+      agent.execute({
+        input: {
+          text: '查看附件图片',
+          attachments: [
+            {
+              mediaType: 'image/png',
+              hasCompleteTrustedText: false,
+            },
+          ],
+        }, // 命中 VISION
+        requestContext: sharedContext,
+      }),
+    ]);
+
+    expect(resFast.tier).toBe('FAST');
+    expect(resFast.text).toBe('Fast 回复');
+    expect(resVision.tier).toBe('VISION');
+    expect(resVision.text).toBe('Vision 回复');
   });
 });

@@ -126,7 +126,12 @@ export class KKBotAgent {
 
     const tier = resolveModelTier(normalizedInput, options.rulesVersion ?? 'v1.0');
 
-    const reqCtx = options.requestContext ?? new RequestContext<KKBotRequestContextValues>();
+    const reqCtx = new RequestContext<KKBotRequestContextValues>();
+    if (options.requestContext) {
+      for (const [key, value] of options.requestContext.entries()) {
+        reqCtx.setRaw(key, value);
+      }
+    }
     reqCtx.set('tier', tier);
 
     if (options.sessionId) {
@@ -135,7 +140,6 @@ export class KKBotAgent {
     if (options.senderId) {
       reqCtx.setRaw(MASTRA_RESOURCE_ID_KEY, options.senderId);
     }
-
     const rawOutput = await this.mastraAgent.generate(normalizedInput.text, {
       requestContext: reqCtx,
       abortSignal: options.abortSignal,
