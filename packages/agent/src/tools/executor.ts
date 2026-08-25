@@ -218,7 +218,10 @@ export class ReadWriteSplitExecutor {
           }
         } catch (authErr) {
           const errMsg = authErr instanceof Error ? authErr.message : String(authErr);
-          log.warn({ callId, toolName, taskId: context.approvedTaskId, err: errMsg }, '高危工具消费拦截');
+          log.warn(
+            { callId, toolName, taskId: context.approvedTaskId, err: errMsg },
+            '高危工具消费拦截'
+          );
           return {
             callId,
             toolName,

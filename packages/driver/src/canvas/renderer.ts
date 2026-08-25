@@ -216,17 +216,17 @@ function validateCardData(card: CardData): void {
     throw new DriverError('Canvas 卡片数据非法: card 不能为空', 'INVALID_CARD_DATA');
   }
   if (!card.header || typeof card.header !== 'object' || !card.header.title) {
-    throw new DriverError('Canvas 卡片数据非法: card.header 及其 title 不能为空', 'INVALID_CARD_HEADER');
+    throw new DriverError(
+      'Canvas 卡片数据非法: card.header 及其 title 不能为空',
+      'INVALID_CARD_HEADER'
+    );
   }
 }
 
 /**
  * 生成自包含的 2D Canvas 绘制执行脚本 (供 CDP 渲染进程 evaluate 直接执行)
  */
-export function buildCanvasCardScript(
-  card: CardData,
-  options?: RenderCanvasOptions
-): string {
+export function buildCanvasCardScript(card: CardData, options?: RenderCanvasOptions): string {
   validateCardData(card);
 
   const mergedOpts = { ...DEFAULT_RENDER_OPTIONS, ...options };
@@ -718,7 +718,10 @@ export async function renderCardToBase64(
   try {
     const dataUrl = await cdp.evaluate<string>(script);
     if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
-      throw new DriverError('CDP 执行 Canvas 绘制脚本未返回有效的图片 DataURL', 'CANVAS_EVAL_FAILED');
+      throw new DriverError(
+        'CDP 执行 Canvas 绘制脚本未返回有效的图片 DataURL',
+        'CANVAS_EVAL_FAILED'
+      );
     }
     return dataUrl;
   } catch (err) {

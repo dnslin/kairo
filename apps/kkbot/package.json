@@ -1,0 +1,51 @@
+{
+  "name": "@kkbot/app",
+  "version": "2.0.0",
+  "description": "Unified Application Entry & Composition Root for KKBot",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "kkbot": "./dist/main.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/main.ts start --dev",
+    "start": "node dist/main.js start",
+    "doctor": "tsx src/main.ts doctor",
+    "knowledge:ingest": "tsx src/main.ts knowledge:ingest",
+    "knowledge:rebuild": "tsx src/main.ts knowledge:rebuild",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@kkbot/agent": "workspace:*",
+    "@kkbot/driver": "workspace:*",
+    "@kkbot/gateway": "workspace:*",
+    "@kkbot/knowledge": "workspace:*",
+    "@kkbot/store": "workspace:*",
+    "@mastra/core": "catalog:",
+    "@mastra/libsql": "catalog:",
+    "@mastra/mcp": "catalog:",
+    "@mastra/memory": "catalog:",
+    "@mastra/observability": "catalog:",
+    "pino": "^9.6.0",
+    "yaml": "^2.7.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "^22.12.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  }
+}

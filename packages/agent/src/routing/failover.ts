@@ -1,14 +1,5 @@
-import type {
-  LLMMessage,
-  LLMStreamChunk,
-  LLMToolDefinition,
-  TokenUsage,
-} from '../types/index.js';
-import type {
-  FailoverEvent,
-  FailoverOptions,
-  ModelEndpointConfig,
-} from './types.js';
+import type { LLMMessage, LLMStreamChunk, LLMToolDefinition, TokenUsage } from '../types/index.js';
+import type { FailoverEvent, FailoverOptions, ModelEndpointConfig } from './types.js';
 import { AgentError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 
@@ -22,11 +13,7 @@ export class ModelTimeoutError extends AgentError {
   public readonly timeoutMs: number;
 
   constructor(modelName: string, timeoutMs: number, originalCause?: Error) {
-    super(
-      `模型 [${modelName}] 调用超时 (${timeoutMs}ms)`,
-      'MODEL_TIMEOUT_ERROR',
-      originalCause
-    );
+    super(`模型 [${modelName}] 调用超时 (${timeoutMs}ms)`, 'MODEL_TIMEOUT_ERROR', originalCause);
     this.name = 'ModelTimeoutError';
     this.modelName = modelName;
     this.timeoutMs = timeoutMs;
@@ -68,9 +55,7 @@ export class ModelFailoverManager {
 
   constructor(options?: FailoverOptions) {
     this.defaultTimeoutMs = options?.timeoutMs ?? 15000;
-    this.defaultRetryStatusCodes = options?.retryStatusCodes ?? [
-      503, 429, 500, 502, 504,
-    ];
+    this.defaultRetryStatusCodes = options?.retryStatusCodes ?? [503, 429, 500, 502, 504];
     if (options?.maxRetries !== undefined) {
       if (
         typeof options.maxRetries !== 'number' ||
@@ -309,9 +294,7 @@ export class ModelFailoverManager {
    */
   public async executeChat(
     candidateChain: ModelEndpointConfig[],
-    messages:
-      | LLMMessage[]
-      | ((model: ModelEndpointConfig) => Promise<LLMMessage[]> | LLMMessage[]),
+    messages: LLMMessage[] | ((model: ModelEndpointConfig) => Promise<LLMMessage[]> | LLMMessage[]),
     options?: {
       signal?: AbortSignal;
       temperature?: number;
@@ -352,17 +335,10 @@ export class ModelFailoverManager {
       }
 
       try {
-        log.debug(
-          { model: currentModel.name, attempt: i + 1 },
-          '正在尝试通过模型生成回复'
-        );
+        log.debug({ model: currentModel.name, attempt: i + 1 }, '正在尝试通过模型生成回复');
         const currentMessages =
           typeof messages === 'function' ? await messages(currentModel) : messages;
-        const result = await this.executeChatWithTimeout(
-          currentModel,
-          currentMessages,
-          options
-        );
+        const result = await this.executeChatWithTimeout(currentModel, currentMessages, options);
         return {
           ...result,
           executedModel: currentModel,
@@ -396,9 +372,7 @@ export class ModelFailoverManager {
    */
   public async *executeChatStream(
     candidateChain: ModelEndpointConfig[],
-    messages:
-      | LLMMessage[]
-      | ((model: ModelEndpointConfig) => Promise<LLMMessage[]> | LLMMessage[]),
+    messages: LLMMessage[] | ((model: ModelEndpointConfig) => Promise<LLMMessage[]> | LLMMessage[]),
     options?: {
       signal?: AbortSignal;
       temperature?: number;

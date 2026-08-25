@@ -1,9 +1,6 @@
 import vm from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  buildCanvasCardScript,
-  calculateCardLayout,
-} from '../src/canvas/renderer.js';
+import { buildCanvasCardScript, calculateCardLayout } from '../src/canvas/renderer.js';
 import {
   createAlertCard,
   createApprovalCard,
@@ -40,17 +37,17 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
 
       // 字段断言
       expect(card.fields).toBeDefined();
-      const applicantField = card.fields?.find((f) => f.label === '申请人');
+      const applicantField = card.fields?.find(f => f.label === '申请人');
       expect(applicantField).toBeDefined();
       expect(applicantField?.value).toBe('张三');
 
-      const itemField = card.fields?.find((f) => f.label === '申请事项');
+      const itemField = card.fields?.find(f => f.label === '申请事项');
       expect(itemField).toBeDefined();
       expect(itemField?.value).toBe('申请开通生产数据库只读账号');
       expect(itemField?.highlight).toBe(true);
       expect(itemField?.span).toBe(2);
 
-      const riskField = card.fields?.find((f) => f.label === '风险等级');
+      const riskField = card.fields?.find(f => f.label === '风险等级');
       expect(riskField).toBeDefined();
       expect(riskField?.value).toContain('P3');
 
@@ -91,16 +88,16 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
         variant: 'danger',
       });
 
-      const riskField = card.fields?.find((f) => f.label === '风险等级');
+      const riskField = card.fields?.find(f => f.label === '风险等级');
       expect(riskField?.danger).toBe(true);
 
-      const orderField = card.fields?.find((f) => f.label === '工单编号');
+      const orderField = card.fields?.find(f => f.label === '工单编号');
       expect(orderField?.value).toBe('TASK-20260820-001');
 
-      const deptField = card.fields?.find((f) => f.label === '所属部门');
+      const deptField = card.fields?.find(f => f.label === '所属部门');
       expect(deptField?.value).toBe('基础架构部');
 
-      const reasonField = card.fields?.find((f) => f.label === '申请理由');
+      const reasonField = card.fields?.find(f => f.label === '申请理由');
       expect(reasonField?.value).toBe('修复历史安全漏洞与提升高并发连接池性能');
       expect(reasonField?.span).toBe(2);
     });
@@ -150,8 +147,8 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
         replyCommand: '2',
       });
 
-      expect(card.fields?.some((f) => f.label === '影响地域')).toBe(true);
-      expect(card.fields?.some((f) => f.label === '预估耗时')).toBe(true);
+      expect(card.fields?.some(f => f.label === '影响地域')).toBe(true);
+      expect(card.fields?.some(f => f.label === '预估耗时')).toBe(true);
       expect(card.footer).toEqual({ text: '请在今日 18:00 前完成审批', icon: '⏰' });
     });
 
@@ -243,25 +240,25 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
       const card = createAlertCard(params);
 
       // 服务字段高亮
-      const serviceField = card.fields?.find((f) => f.label === '告警服务');
+      const serviceField = card.fields?.find(f => f.label === '告警服务');
       expect(serviceField?.value).toBe('order-service-prod');
       expect(serviceField?.highlight).toBe(true);
 
       // 指标项断言
-      const cpuMetric = card.fields?.find((f) => f.label === 'CPU 使用率');
+      const cpuMetric = card.fields?.find(f => f.label === 'CPU 使用率');
       expect(cpuMetric?.value).toBe('98.5% (阈值: 80%)');
       expect(cpuMetric?.danger).toBe(true);
 
-      const latencyMetric = card.fields?.find((f) => f.label === '接口延迟');
+      const latencyMetric = card.fields?.find(f => f.label === '接口延迟');
       expect(latencyMetric?.value).toBe('1,500ms (阈值: 200ms)');
       expect(latencyMetric?.danger).toBe(true);
 
-      const memMetric = card.fields?.find((f) => f.label === '内存占用');
+      const memMetric = card.fields?.find(f => f.label === '内存占用');
       expect(memMetric?.value).toBe('4.2GB (阈值: 8GB)');
       expect(memMetric?.danger).toBe(false);
 
       // 故障详情
-      const descField = card.fields?.find((f) => f.label === '故障详情');
+      const descField = card.fields?.find(f => f.label === '故障详情');
       expect(descField?.value).toBe('上游消息堆积超过 10,000 条，处理延迟陡增');
       expect(descField?.span).toBe(2);
 
@@ -275,14 +272,20 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
         timestamp: '2026-08-20 14:00:00',
       });
       expect(cardWithString.footer).toBeDefined();
-      const footerStr = typeof cardWithString.footer === 'string' ? cardWithString.footer : cardWithString.footer?.text;
+      const footerStr =
+        typeof cardWithString.footer === 'string'
+          ? cardWithString.footer
+          : cardWithString.footer?.text;
       expect(footerStr).toContain('2026-08-20 14:00:00');
 
       const cardWithNumber = createAlertCard({
         title: '测试告警',
         timestamp: 1771468800000,
       });
-      const footerNum = typeof cardWithNumber.footer === 'string' ? cardWithNumber.footer : cardWithNumber.footer?.text;
+      const footerNum =
+        typeof cardWithNumber.footer === 'string'
+          ? cardWithNumber.footer
+          : cardWithNumber.footer?.text;
       expect(footerNum).toBeDefined();
     });
 
@@ -346,25 +349,25 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
       const card = createReportCard(params);
 
       // 编号与耗时
-      const idField = card.fields?.find((f) => f.label === '报告编号');
+      const idField = card.fields?.find(f => f.label === '报告编号');
       expect(idField?.value).toBe('RUN-20260820-99');
       expect(idField?.span).toBe(1);
 
-      const durationField = card.fields?.find((f) => f.label === '执行耗时');
+      const durationField = card.fields?.find(f => f.label === '执行耗时');
       expect(durationField?.value).toBe('2m 15s');
       expect(durationField?.span).toBe(1);
 
       // 网格指标项均应为 span 1
-      const totalField = card.fields?.find((f) => f.label === '用例总数');
+      const totalField = card.fields?.find(f => f.label === '用例总数');
       expect(totalField?.value).toBe('1420');
       expect(totalField?.span).toBe(1);
 
-      const passField = card.fields?.find((f) => f.label === '通过率');
+      const passField = card.fields?.find(f => f.label === '通过率');
       expect(passField?.value).toBe('100%');
       expect(passField?.highlight).toBe(true);
 
       // 摘要说明
-      const summaryField = card.fields?.find((f) => f.label === '摘要说明');
+      const summaryField = card.fields?.find(f => f.label === '摘要说明');
       expect(summaryField?.value).toBe('所有回归用例均通过，系统稳定性指标正常，具备发布条件。');
       expect(summaryField?.span).toBe(2);
 
@@ -413,25 +416,25 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
       expect(card.header.tag?.text).toBe('待决策');
 
       // 发起人与截止时间
-      const sponsorField = card.fields?.find((f) => f.label === '发起人');
+      const sponsorField = card.fields?.find(f => f.label === '发起人');
       expect(sponsorField?.value).toBe('技术委员会架构组');
 
-      const deadlineField = card.fields?.find((f) => f.label === '截止时间');
+      const deadlineField = card.fields?.find(f => f.label === '截止时间');
       expect(deadlineField?.value).toBe('今天 18:00 前');
       expect(deadlineField?.variant).toBe('warning');
 
       // 背景
-      const descField = card.fields?.find((f) => f.label === '决策背景');
+      const descField = card.fields?.find(f => f.label === '决策背景');
       expect(descField?.value).toContain('5x 的流量峰值');
 
       // 选项格式化断言
-      const recOptionField = card.fields?.find((f) => f.label.includes('1'));
+      const recOptionField = card.fields?.find(f => f.label.includes('1'));
       expect(recOptionField?.label).toContain('⭐');
       expect(recOptionField?.value).toContain('[推荐]');
       expect(recOptionField?.highlight).toBe(true);
       expect(recOptionField?.span).toBe(2);
 
-      const normalOptionField = card.fields?.find((f) => f.label.includes('2'));
+      const normalOptionField = card.fields?.find(f => f.label.includes('2'));
       expect(normalOptionField?.value).toContain('方案 B');
       expect(normalOptionField?.highlight).toBeFalsy();
 
@@ -460,14 +463,11 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
     it('当 options 未指定 key 时应按自然序号 1, 2, 3 自动分配', () => {
       const card = createDecisionCard({
         title: '午餐外卖品类投票',
-        options: [
-          { title: '轻食沙拉' },
-          { title: '日式定食', recommended: true },
-        ],
+        options: [{ title: '轻食沙拉' }, { title: '日式定食', recommended: true }],
       });
 
-      expect(card.fields?.some((f) => f.label.includes('1'))).toBe(true);
-      expect(card.fields?.some((f) => f.label.includes('2'))).toBe(true);
+      expect(card.fields?.some(f => f.label.includes('1'))).toBe(true);
+      expect(card.fields?.some(f => f.label.includes('2'))).toBe(true);
       expect(card.actions?.[0]?.replyCommand).toBe('1');
       expect(card.actions?.[1]?.replyCommand).toBe('2');
     });
@@ -531,7 +531,7 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
       for (const card of cards) {
         const script = buildCanvasCardScript(card);
         expect(typeof script).toBe('string');
-        expect(script).toContain('document.createElement(\'canvas\')');
+        expect(script).toContain("document.createElement('canvas')");
 
         const fillTextCalls: string[] = [];
         const mockCtx = {

@@ -229,7 +229,6 @@ describe('ApprovalManager HITL 审批状态机核心管理器', () => {
     await adminManager.close();
   });
 
-
   it('对非 pending 状态的任务重复决议时应抛出明确异常', async () => {
     const task = await manager.createTask({
       toolCallId: 'call_dup',

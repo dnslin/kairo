@@ -46,7 +46,7 @@ describe('MultiModalRouter 多模态附件感知与 OCR 降级测试', () => {
     const images = router.detectImages(msg);
     expect(images.length).toBe(4);
 
-    const types = images.map((i) => i.type);
+    const types = images.map(i => i.type);
     expect(types).toContain('file_path');
     expect(types).toContain('url');
     expect(types).toContain('base64');
@@ -264,7 +264,6 @@ describe('MultiModalRouter 多模态附件感知与 OCR 降级测试', () => {
     expect(result.enhancedContent).toContain('missing_image.png');
     expect(result.enhancedContent).toContain('本地图片文件不存在或无法读取，已跳过视觉输入');
   });
-
 
   it('当主模型为纯文本模型时，应调用 OCR 引擎降级提取文字并注入提示词', async () => {
     const msg: ConsolidatedMessage = {

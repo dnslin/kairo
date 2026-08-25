@@ -3,7 +3,9 @@
   "version": "2.0.0",
   "description": "Session coordinator and state machine gateway for KKBot",
   "type": "module",
-  "main": "./dist/index.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -23,14 +25,14 @@
     "@kkbot/driver": "workspace:*",
     "@kkbot/store": "workspace:*",
     "@libsql/client": "^0.17.4",
-    "@mastra/core": "^1.60.0",
-    "@mastra/libsql": "^1.21.0",
+    "@mastra/core": "catalog:",
+    "@mastra/libsql": "catalog:",
     "pino": "^9.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",
     "pino-pretty": "^13.0.0",
     "typescript": "^5.7.3",
-    "zod": "^4.4.3"
+    "zod": "catalog:"
   }
 }

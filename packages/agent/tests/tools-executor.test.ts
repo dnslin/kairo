@@ -87,7 +87,8 @@ describe('ReadWriteSplitExecutor 读写分流并发调度器 (TDD Red -> Green)'
       // 验证 3 个任务几乎同时启动 (启动时间差很小)
       const starts = executionTimeline.filter(t => t.event === 'start');
       expect(starts.length).toBe(3);
-      const maxStartDiff = Math.max(...starts.map(s => s.time)) - Math.min(...starts.map(s => s.time));
+      const maxStartDiff =
+        Math.max(...starts.map(s => s.time)) - Math.min(...starts.map(s => s.time));
       expect(maxStartDiff).toBeLessThan(30);
     });
 
@@ -282,7 +283,9 @@ describe('ReadWriteSplitExecutor 读写分流并发调度器 (TDD Red -> Green)'
 
       expect(result.results[0].success).toBe(false);
       const errOutput = result.results[0].output;
-      expect((errOutput as Record<string, unknown>).error).toContain('未找到名称为 "unknown_ghost_tool" 的工具');
+      expect((errOutput as Record<string, unknown>).error).toContain(
+        '未找到名称为 "unknown_ghost_tool" 的工具'
+      );
     });
   });
 

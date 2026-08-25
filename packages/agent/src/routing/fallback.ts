@@ -4,8 +4,7 @@ import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('global-fallback-handler');
 
-export const DEFAULT_FALLBACK_APOLOGY =
-  '当前网络繁忙，消息已记录，稍后为您处理';
+export const DEFAULT_FALLBACK_APOLOGY = '当前网络繁忙，消息已记录，稍后为您处理';
 
 /**
  * 全局宕机兜底处理器 (Global Outage Fallback Handler)
@@ -21,8 +20,7 @@ export class FallbackHandler {
   ) => Promise<string> | string;
 
   constructor(config?: FallbackConfig) {
-    this.defaultApologyMessage =
-      config?.defaultApologyMessage || DEFAULT_FALLBACK_APOLOGY;
+    this.defaultApologyMessage = config?.defaultApologyMessage || DEFAULT_FALLBACK_APOLOGY;
     this.customHandler = config?.customHandler;
   }
 
@@ -49,10 +47,7 @@ export class FallbackHandler {
       try {
         apology = await this.customHandler(threadId, message, error);
       } catch (handlerErr) {
-        log.error(
-          { handlerErr },
-          '自定义兜底处理器执行异常，回退到默认安抚话术'
-        );
+        log.error({ handlerErr }, '自定义兜底处理器执行异常，回退到默认安抚话术');
       }
     }
 

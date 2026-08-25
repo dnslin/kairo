@@ -130,7 +130,7 @@ describe('IntentModelRouter 动态意图分流测试 (FAST vs DEEP)', () => {
     customRouter.registerRule({
       name: 'vip-urgent-command',
       intentLevel: 'DEEP',
-      match: (msg) => typeof msg === 'string' && msg.includes('紧急VIP'),
+      match: msg => typeof msg === 'string' && msg.includes('紧急VIP'),
       priority: 100,
     });
 

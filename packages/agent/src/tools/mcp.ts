@@ -71,7 +71,10 @@ function parseMcpContent(result: McpCallToolResult): unknown {
   if (result.content.length === 1 && firstBlock && firstBlock.type === 'text') {
     const text = firstBlock.text ?? '';
     const trimmed = text.trim();
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
       try {
         return JSON.parse(trimmed);
       } catch {
@@ -97,7 +100,10 @@ function parseMcpContent(result: McpCallToolResult): unknown {
 /**
  * 从 MCP 错误 content 块中提取错误文案
  */
-function extractMcpErrorMessage(result: McpCallToolResult, defaultMsg = 'MCP 工具执行失败'): string {
+function extractMcpErrorMessage(
+  result: McpCallToolResult,
+  defaultMsg = 'MCP 工具执行失败'
+): string {
   if (result.content && result.content.length > 0) {
     const textBlocks = result.content
       .filter(c => c.type === 'text' && c.text)
@@ -218,7 +224,7 @@ export class McpClientManager {
           description: mcpTool.description ?? `MCP 外部工具: ${mcpTool.name}`,
           readOnly: isReadOnly,
           inputSchema: z.record(z.string(), z.unknown()),
-          execute: async (input) => {
+          execute: async input => {
             log.debug(
               { serverId, mcpTool: mcpTool.name, registeredId: registeredToolId },
               '调用远程 MCP 工具'
@@ -290,7 +296,11 @@ export class McpClientManager {
       if (error instanceof McpClientError) {
         throw error;
       }
-      throw new McpClientError(`连接外部 MCP Server "${serverId}" 失败: ${err.message}`, serverId, err);
+      throw new McpClientError(
+        `连接外部 MCP Server "${serverId}" 失败: ${err.message}`,
+        serverId,
+        err
+      );
     }
   }
 
@@ -305,7 +315,10 @@ export class McpClientManager {
       return false;
     }
 
-    log.info({ serverId: cleanId, toolsCount: entry.tools.length }, '正在断开 MCP Server 并卸载工具...');
+    log.info(
+      { serverId: cleanId, toolsCount: entry.tools.length },
+      '正在断开 MCP Server 并卸载工具...'
+    );
 
     // 1. 从 ToolRegistry 中卸载全部挂载的工具
     for (const toolId of entry.tools) {

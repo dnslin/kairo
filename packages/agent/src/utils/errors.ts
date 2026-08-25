@@ -68,8 +68,18 @@ export class ToolNotFoundError extends ToolError {
 export class ToolValidationError extends ToolError {
   public readonly validationErrors?: unknown;
 
-  constructor(toolName: string, message: string, validationErrors?: unknown, originalCause?: Error) {
-    super(`工具 "${toolName}" 参数校验失败: ${message}`, toolName, 'TOOL_VALIDATION_ERROR', originalCause);
+  constructor(
+    toolName: string,
+    message: string,
+    validationErrors?: unknown,
+    originalCause?: Error
+  ) {
+    super(
+      `工具 "${toolName}" 参数校验失败: ${message}`,
+      toolName,
+      'TOOL_VALIDATION_ERROR',
+      originalCause
+    );
     this.name = 'ToolValidationError';
     this.validationErrors = validationErrors;
   }
@@ -77,7 +87,12 @@ export class ToolValidationError extends ToolError {
 
 export class ToolExecutionError extends ToolError {
   constructor(toolName: string, message: string, originalCause?: Error) {
-    super(`工具 "${toolName}" 执行失败: ${message}`, toolName, 'TOOL_EXECUTION_ERROR', originalCause);
+    super(
+      `工具 "${toolName}" 执行失败: ${message}`,
+      toolName,
+      'TOOL_EXECUTION_ERROR',
+      originalCause
+    );
     this.name = 'ToolExecutionError';
   }
 }
@@ -97,7 +112,10 @@ export class StepLimitExceededError extends AgentError {
   public readonly currentStep: number;
 
   constructor(currentStep: number, maxSteps = 5) {
-    super(`单轮 ReAct 步数 (${currentStep}) 超过硬性熔断阈值 (${maxSteps} 步)，已强制终止`, 'STEP_LIMIT_EXCEEDED');
+    super(
+      `单轮 ReAct 步数 (${currentStep}) 超过硬性熔断阈值 (${maxSteps} 步)，已强制终止`,
+      'STEP_LIMIT_EXCEEDED'
+    );
     this.name = 'StepLimitExceededError';
     this.maxSteps = maxSteps;
     this.currentStep = currentStep;

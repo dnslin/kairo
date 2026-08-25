@@ -20,10 +20,7 @@ import { SensitiveFilter } from './guardrails/sensitive-filter.js';
 import { ThinkingTagCleaner } from './guardrails/thinking-tag-cleaner.js';
 import { MultiModalRouter } from './multimodal/router.js';
 import { IntentModelRouter } from './routing/intent-router.js';
-import {
-  AllModelsFailedError,
-  ModelFailoverManager,
-} from './routing/failover.js';
+import { AllModelsFailedError, ModelFailoverManager } from './routing/failover.js';
 import { FallbackHandler } from './routing/fallback.js';
 import { createChildLogger } from './utils/logger.js';
 import { LLMExecutionError } from './utils/errors.js';
@@ -96,13 +93,10 @@ export class KkbotAgentRuntime {
     if (config?.toolExecutor) {
       this.toolExecutor = config.toolExecutor;
     } else if (config?.toolRegistry || config?.approvalManager) {
-      this.toolExecutor = new ReadWriteSplitExecutor(
-        config.toolRegistry ?? new ToolRegistry(),
-        {
-          approvalManager: config.approvalManager,
-          leaderRouter: config.leaderRouter,
-        }
-      );
+      this.toolExecutor = new ReadWriteSplitExecutor(config.toolRegistry ?? new ToolRegistry(), {
+        approvalManager: config.approvalManager,
+        leaderRouter: config.leaderRouter,
+      });
     }
   }
   /**
@@ -161,7 +155,6 @@ export class KkbotAgentRuntime {
   public getLeaderRouter(): LeaderApprovalRouter | undefined {
     return this.leaderRouter;
   }
-
 
   /**
    * 获取内部多模态感知路由器
@@ -249,8 +242,7 @@ export class KkbotAgentRuntime {
         '入站消息触发安全合规拦截'
       );
       return {
-        content:
-          '抱歉，当前输入触发了企业安全合规策略，已被系统拦截。请通过正常业务流程咨询。',
+        content: '抱歉，当前输入触发了企业安全合规策略，已被系统拦截。请通过正常业务流程咨询。',
         toolCalls: [],
         finishReason: 'stop',
         aborted: false,
@@ -264,20 +256,14 @@ export class KkbotAgentRuntime {
       const fastModel = this.intentRouter.getFastModel();
       const deepModel = this.intentRouter.getDeepModel();
       const primary =
-        options.intentLevelOverride === 'FAST'
-          ? fastModel || deepModel
-          : deepModel || fastModel;
+        options.intentLevelOverride === 'FAST' ? fastModel || deepModel : deepModel || fastModel;
 
       if (primary) {
         candidateChain = [primary, ...this.intentRouter.getBackupModels()];
       } else if (this.llmProvider) {
-        candidateChain = [
-          { id: 'default', name: 'Default-LLM', provider: this.llmProvider },
-        ];
+        candidateChain = [{ id: 'default', name: 'Default-LLM', provider: this.llmProvider }];
       } else {
-        throw new LLMExecutionError(
-          '未配置有效 LLMProvider，无法执行大模型推理生成'
-        );
+        throw new LLMExecutionError('未配置有效 LLMProvider，无法执行大模型推理生成');
       }
     } else {
       try {
@@ -289,9 +275,7 @@ export class KkbotAgentRuntime {
             { err: err instanceof Error ? err.message : String(err) },
             '意图路由器未配置独立端点，回退使用默认 LLMProvider'
           );
-          candidateChain = [
-            { id: 'default', name: 'Default-LLM', provider: this.llmProvider },
-          ];
+          candidateChain = [{ id: 'default', name: 'Default-LLM', provider: this.llmProvider }];
         } else {
           throw new LLMExecutionError(
             `未配置有效 LLMProvider 或意图路由失败: ${err instanceof Error ? err.message : String(err)}`,
@@ -314,26 +298,20 @@ export class KkbotAgentRuntime {
     const extraToolMessages: LLMMessage[] = [];
 
     // 5. 模型消息构建工厂 (按候选模型端点能力动态适配多模态或 OCR 文本增强，并二次执行安全护栏防御)
-    const buildMessagesForModel = async (
-      model: ModelEndpointConfig
-    ): Promise<LLMMessage[]> => {
+    const buildMessagesForModel = async (model: ModelEndpointConfig): Promise<LLMMessage[]> => {
       const multiModalResult = await this.multiModalRouter.process(message, {
         modelSupportsVision: Boolean(model.supportsVision),
         ocrEngine: options?.ocrEngine,
       });
 
       // 核心安全防护：对 OCR 提取内容及文件卡片元数据再次执行入站越狱/注入检测
-      const secondCheck = this.sensitiveFilter.checkInbound(
-        multiModalResult.enhancedContent
-      );
+      const secondCheck = this.sensitiveFilter.checkInbound(multiModalResult.enhancedContent);
       if (!secondCheck.safe) {
         log.warn(
           { threadId, reason: secondCheck.reason },
           '多模态提取文本或文件卡片注入触发了入站安全合规拦截'
         );
-        const secErr = new Error(
-          'INBOUND_SECURITY_BLOCKED: ' + (secondCheck.reason || '合规拦截')
-        );
+        const secErr = new Error('INBOUND_SECURITY_BLOCKED: ' + (secondCheck.reason || '合规拦截'));
         secErr.name = 'InboundSecurityBlockedError';
         throw secErr;
       }
@@ -356,13 +334,7 @@ export class KkbotAgentRuntime {
     let rawContent = '';
     let thinkingContent = '';
     let usage: TokenUsage | undefined;
-    let finishReason:
-      | 'stop'
-      | 'tool_calls'
-      | 'abort'
-      | 'length'
-      | 'error'
-      | (string & {}) = 'stop';
+    let finishReason: 'stop' | 'tool_calls' | 'abort' | 'length' | 'error' | (string & {}) = 'stop';
     const toolCalls: ToolExecutionRecord[] = [];
 
     // 5. 工具调度与高危审批拦截执行 (若传入了待执行工具调用)
@@ -455,9 +427,7 @@ export class KkbotAgentRuntime {
       : undefined;
     // 6. 执行推理 (流式优先或阻塞模式，接入 Failover 与全局兜底)
     const isStreamMode =
-      (options?.stream ?? false) ||
-      Boolean(options?.onChunk) ||
-      Boolean(options?.onThinkingChunk);
+      (options?.stream ?? false) || Boolean(options?.onChunk) || Boolean(options?.onThinkingChunk);
 
     if (isStreamMode) {
       const cleaner = new ThinkingTagCleaner();
@@ -513,10 +483,7 @@ export class KkbotAgentRuntime {
         rawContent = cleaner.getAccumulatedCleaned();
         thinkingContent = cleaner.getAccumulatedThinking();
       } catch (err: unknown) {
-        if (
-          options?.signal?.aborted ||
-          (err instanceof Error && err.name === 'AbortError')
-        ) {
+        if (options?.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
           return this.createAbortResult(
             cleaner.getAccumulatedCleaned(),
             cleaner.getAccumulatedThinking(),
@@ -530,16 +497,12 @@ export class KkbotAgentRuntime {
     } else {
       // 阻塞标准调用
       try {
-        const resp = await this.failoverManager.executeChat(
-          candidateChain,
-          buildMessagesForModel,
-          {
-            signal: options?.signal,
-            temperature: options?.temperature,
-            maxTokens: options?.maxTokens,
-            tools: modelTools,
-          }
-        );
+        const resp = await this.failoverManager.executeChat(candidateChain, buildMessagesForModel, {
+          signal: options?.signal,
+          temperature: options?.temperature,
+          maxTokens: options?.maxTokens,
+          tools: modelTools,
+        });
         const cleaned = ThinkingTagCleaner.clean(resp.content);
         rawContent = cleaned.cleanedText;
         thinkingContent = cleaned.thinkingText;
@@ -626,10 +589,7 @@ export class KkbotAgentRuntime {
           finishReason = secondResp.finishReason ?? 'stop';
         }
       } catch (err: unknown) {
-        if (
-          options?.signal?.aborted ||
-          (err instanceof Error && err.name === 'AbortError')
-        ) {
+        if (options?.signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
           return this.createAbortResult('', '', [], usage);
         }
 
@@ -639,12 +599,7 @@ export class KkbotAgentRuntime {
 
     // 若生成结束后 signal 处于 aborted 状态，立即返回 abort 结果
     if (options?.signal?.aborted) {
-      return this.createAbortResult(
-        rawContent,
-        thinkingContent,
-        toolCalls,
-        usage
-      );
+      return this.createAbortResult(rawContent, thinkingContent, toolCalls, usage);
     }
 
     // 7. 出站安全护栏：敏感词脱敏
@@ -703,10 +658,7 @@ export class KkbotAgentRuntime {
     }
 
     if (err instanceof AllModelsFailedError) {
-      log.error(
-        { threadId, err: err.message },
-        '所有可用模型调用均已失败，触发全局宕机安抚兜底'
-      );
+      log.error({ threadId, err: err.message }, '所有可用模型调用均已失败，触发全局宕机安抚兜底');
       return await this.fallbackHandler.handle(threadId, message, err);
     }
 

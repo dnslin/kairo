@@ -13,7 +13,9 @@ export const SearchOrganizationInputSchema = z.object({
   query: z
     .string()
     .min(1, '检索关键词不能为空')
-    .describe('搜索关键词（支持中文姓名、工号如 E1001、拼音缩写如 zs/zhans、电话、邮箱、部门或职位）'),
+    .describe(
+      '搜索关键词（支持中文姓名、工号如 E1001、拼音缩写如 zs/zhans、电话、邮箱、部门或职位）'
+    ),
   limit: z
     .number()
     .int()
@@ -58,11 +60,10 @@ export function createSearchOrganizationTool(options: {
 
   return createAgentTool<SearchOrganizationInput, SearchOrganizationOutput>({
     id: 'search_organization',
-    description:
-      '根据工号、中文名、拼音缩写或部门检索企业员工档案、职位与直属汇报链。只读查询。',
+    description: '根据工号、中文名、拼音缩写或部门检索企业员工档案、职位与直属汇报链。只读查询。',
     readOnly: true,
     inputSchema: SearchOrganizationInputSchema,
-    execute: async (input) => {
+    execute: async input => {
       const cleanQuery = input.query.trim();
       const limit = input.limit ?? 10;
       const includeReportingChain = Boolean(input.includeReportingChain);

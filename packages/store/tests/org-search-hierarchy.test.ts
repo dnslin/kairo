@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Client } from '@libsql/client';
-import { closeDatabase, createDatabaseClient, OrgRepository, type SyncOrgData } from '../src/index.js';
+import {
+  closeDatabase,
+  createDatabaseClient,
+  OrgRepository,
+  type SyncOrgData,
+} from '../src/index.js';
 
 describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关系穿透 (TDD)', () => {
   let db: Client;
@@ -344,7 +349,9 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
     it('includeSubDepts: true 时，应递归获取该部门及其所有子部门全员', async () => {
       // dept_tech 下包含 dept_infra 与 dept_fe
       // 成员应包含：张小龙、张三丰、李四、诸葛孔明
-      const allTechMembers = await repo.getDepartmentMembers('dept_tech', { includeSubDepts: true });
+      const allTechMembers = await repo.getDepartmentMembers('dept_tech', {
+        includeSubDepts: true,
+      });
       const memberNames = allTechMembers.map(m => m.name);
 
       expect(memberNames).toContain('张小龙');
@@ -356,7 +363,9 @@ describe('OrgRepository 拼音首字母检索、多维模糊搜索与层级关�
 
     it('在父部门与子部门同时兼职的员工应自动去重，保留完整任职列表', async () => {
       // 张三丰在 dept_infra 是主职+主管，在 dept_tech 是兼职
-      const allTechMembers = await repo.getDepartmentMembers('dept_tech', { includeSubDepts: true });
+      const allTechMembers = await repo.getDepartmentMembers('dept_tech', {
+        includeSubDepts: true,
+      });
       const zsfList = allTechMembers.filter(m => m.id === 'emp_arch');
       expect(zsfList.length).toBe(1);
       expect(zsfList[0].departments.length).toBe(2);

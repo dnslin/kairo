@@ -158,14 +158,9 @@ export type HitlWorkflow = ReturnType<typeof createHitlWorkflow>;
  * @param client 外部注入的 LibSQL Client (严禁硬编码路径)
  * @param storeId 存储 ID
  */
-export function createHitlStorage(
-  client: Client,
-  storeId = 'kkbot-hitl-storage'
-): LibSQLStore {
+export function createHitlStorage(client: Client, storeId = 'kkbot-hitl-storage'): LibSQLStore {
   if (!client) {
-    throw new ApprovalError(
-      'createHitlStorage 失败: 必须提供有效的 LibSQL Client 实例'
-    );
+    throw new ApprovalError('createHitlStorage 失败: 必须提供有效的 LibSQL Client 实例');
   }
   return new LibSQLStore({ id: storeId, client });
 }
@@ -192,10 +187,7 @@ export async function resumeApprovalWorkflow(
     resumeData: input.decision,
   });
 
-  log.info(
-    { runId: input.runId, status: result.status },
-    'Workflow.resume 恢复执行完毕'
-  );
+  log.info({ runId: input.runId, status: result.status }, 'Workflow.resume 恢复执行完毕');
 
   return result;
 }

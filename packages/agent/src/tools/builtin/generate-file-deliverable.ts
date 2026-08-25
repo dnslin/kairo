@@ -19,19 +19,12 @@ export const GenerateFileDeliverableInputSchema = z.object({
     .string()
     .min(1, '文件名不能为空')
     .describe('目标文件名（如 organization_roster.csv 或 weekly_report.md）'),
-  content: z
-    .string()
-    .optional()
-    .describe('针对 md/markdown 报告的文本内容'),
+  content: z.string().optional().describe('针对 md/markdown 报告的文本内容'),
   data: z
     .array(z.record(z.string(), z.unknown()))
     .optional()
     .describe('针对 csv 表格的行数据数组（对象数组，每个对象的 key 将自动提取为 CSV 表头）'),
-  subDir: z
-    .string()
-    .default('files')
-    .optional()
-    .describe('媒体受控存储子目录，默认 files'),
+  subDir: z.string().default('files').optional().describe('媒体受控存储子目录，默认 files'),
 });
 
 export type GenerateFileDeliverableInput = z.infer<typeof GenerateFileDeliverableInputSchema>;
@@ -75,7 +68,10 @@ function escapeCsvCell(val: unknown): string {
 /**
  * 将结构化对象数组转换为带 UTF-8 BOM 的标准 CSV 字符串
  */
-function convertToCsv(data: Array<Record<string, unknown>>): { csvText: string; lineCount: number } {
+function convertToCsv(data: Array<Record<string, unknown>>): {
+  csvText: string;
+  lineCount: number;
+} {
   if (!Array.isArray(data) || data.length === 0) {
     return { csvText: '\uFEFF', lineCount: 0 };
   }

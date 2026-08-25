@@ -32,7 +32,7 @@ export function createAgentTool<TInput = unknown, TOutput = unknown>(config: {
       inputSchema: config.inputSchema,
       outputSchema: config.outputSchema,
       requireApproval,
-      execute: async (inputData) => {
+      execute: async inputData => {
         return config.execute(inputData);
       },
     });
@@ -88,13 +88,18 @@ export class ToolRegistry {
 
     if (!options) {
       this.tools.set(toolId, tool as unknown as AgentTool<unknown, unknown>);
-      log.debug({ toolId, readOnly: tool.readOnly, requireApproval: tool.requireApproval }, '成功注册工具到注册中心');
+      log.debug(
+        { toolId, readOnly: tool.readOnly, requireApproval: tool.requireApproval },
+        '成功注册工具到注册中心'
+      );
       return;
     }
 
     const effectiveReadOnly = options.readOnly !== undefined ? options.readOnly : tool.readOnly;
     const effectiveRequireApproval =
-      options.requireApproval !== undefined ? options.requireApproval : Boolean(tool.requireApproval);
+      options.requireApproval !== undefined
+        ? options.requireApproval
+        : Boolean(tool.requireApproval);
     const effectiveMetadata = {
       ...(tool.metadata ?? {}),
       ...(options.metadata ?? {}),
@@ -109,7 +114,7 @@ export class ToolRegistry {
           inputSchema: tool.inputSchema as z.ZodType<unknown>,
           outputSchema: tool.outputSchema as z.ZodType<unknown> | undefined,
           requireApproval: effectiveRequireApproval,
-          execute: async (inputData) => {
+          execute: async inputData => {
             return tool.execute(inputData as TIn);
           },
         });
@@ -217,7 +222,7 @@ export class ToolRegistry {
           inputSchema: tool.inputSchema,
           outputSchema: tool.outputSchema,
           requireApproval: Boolean(tool.requireApproval),
-          execute: async (inputData) => {
+          execute: async inputData => {
             return tool.execute(inputData);
           },
         });

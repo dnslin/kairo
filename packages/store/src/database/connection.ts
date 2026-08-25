@@ -42,7 +42,11 @@ export function isMemoryDatabase(path: string): boolean {
 /**
  * 将路径转换为 @libsql/client 支持的 URL
  */
-export function resolveDatabaseUrl(path: string): { url: string; isMemory: boolean; tempFile?: string } {
+export function resolveDatabaseUrl(path: string): {
+  url: string;
+  isMemory: boolean;
+  tempFile?: string;
+} {
   if (isMemoryDatabase(path)) {
     const tempFile = join(tmpdir(), `kkbot_mem_${Date.now()}_${randomUUID()}.db`);
     return {

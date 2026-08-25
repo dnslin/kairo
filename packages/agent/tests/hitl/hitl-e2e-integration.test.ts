@@ -193,9 +193,7 @@ describe('双通道 HITL 人工在环审批端到端全链路集成测试 (E2E F
     const timedOutTask = await manager.getTaskById(task.id);
     expect(timedOutTask?.status).toBe('timed_out');
     expect(timedOutTask?.workflowResumed).toBe(true);
-    expect(timedOutTask?.decision?.reason).toBe(
-      '业务涉及敏感权限，审批超时已为您转人工客服处理'
-    );
+    expect(timedOutTask?.decision?.reason).toBe('业务涉及敏感权限，审批超时已为您转人工客服处理');
 
     // 验证底层的 Workflow Run 状态已被自动恢复且输出 status 为 timed_out
     const runInfo = await workflow.getWorkflowRunById(runId);

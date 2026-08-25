@@ -16,16 +16,16 @@ export const RegisterProactiveScheduleInputSchema = z.object({
   cron: z
     .string()
     .min(5, 'Cron 表达式格式不正确')
-    .describe('标准 5 位 Cron 表达式 (如 "0 9 * * *" 表示每天 9 点, "0 17 * * 5" 表示每周五 17 点)'),
+    .describe(
+      '标准 5 位 Cron 表达式 (如 "0 9 * * *" 表示每天 9 点, "0 17 * * 5" 表示每周五 17 点)'
+    ),
   message: z
     .string()
     .min(1, '提醒内容不能为空')
     .describe('到点主动推送给员工的具体提醒文案或工作内容'),
 });
 
-export type RegisterProactiveScheduleInput = z.infer<
-  typeof RegisterProactiveScheduleInputSchema
->;
+export type RegisterProactiveScheduleInput = z.infer<typeof RegisterProactiveScheduleInputSchema>;
 
 /**
  * 主动定时任务注册工具输出契约
@@ -68,13 +68,9 @@ export function createRegisterProactiveScheduleTool(options: {
 }): AgentTool<RegisterProactiveScheduleInput, RegisterProactiveScheduleOutput> {
   const { scheduleManager } = options;
 
-  return createAgentTool<
-    RegisterProactiveScheduleInput,
-    RegisterProactiveScheduleOutput
-  >({
+  return createAgentTool<RegisterProactiveScheduleInput, RegisterProactiveScheduleOutput>({
     id: 'register_proactive_schedule',
-    description:
-      '注册或创建主动定时任务与工作提醒（支持基于 Cron 表达式在指定时间主动私聊推送）。',
+    description: '注册或创建主动定时任务与工作提醒（支持基于 Cron 表达式在指定时间主动私聊推送）。',
     readOnly: false,
     inputSchema: RegisterProactiveScheduleInputSchema,
     execute: async (input, context) => {
@@ -119,9 +115,7 @@ export function createRegisterProactiveScheduleTool(options: {
           scheduleId: schedule.id,
           name: schedule.name || input.name,
           cron: schedule.cron,
-          nextFireAt: schedule.nextFireAt
-            ? new Date(schedule.nextFireAt).toISOString()
-            : undefined,
+          nextFireAt: schedule.nextFireAt ? new Date(schedule.nextFireAt).toISOString() : undefined,
           message: `已为您成功创建定时提醒【${schedule.name || input.name}】，触发规则: ${schedule.cron}`,
         };
       } catch (err) {

@@ -156,8 +156,8 @@ describe('Canvas 视觉卡片渲染引擎测试 (Canvas Card Engine)', () => {
 
       expect(typeof script).toBe('string');
       expect(script).toContain('(() => {');
-      expect(script).toContain('document.createElement(\'canvas\')');
-      expect(script).toContain('toDataURL(\'image/png\')');
+      expect(script).toContain("document.createElement('canvas')");
+      expect(script).toContain("toDataURL('image/png')");
       expect(script).toContain('TASK-20260819-01');
       expect(script).toContain('生产集群数据库索引重构');
       expect(script).toContain('确认授权执行');
@@ -175,7 +175,11 @@ describe('Canvas 视觉卡片渲染引擎测试 (Canvas Card Engine)', () => {
         fields: [
           { label: '告警服务', value: 'payment-gateway-service', highlight: true },
           { label: '错误率', value: '88.4% (超阈值 5%)', danger: true },
-          { label: '故障详情', value: '第三方网关接口超时达到阈值，触发熔断降级策略，请及时排查网络链路与下游可用性。', span: 'full' },
+          {
+            label: '故障详情',
+            value: '第三方网关接口超时达到阈值，触发熔断降级策略，请及时排查网络链路与下游可用性。',
+            span: 'full',
+          },
         ],
         actions: [
           { text: '立即切流', variant: 'danger', replyCommand: '1' },
@@ -264,9 +268,7 @@ describe('Canvas 视觉卡片渲染引擎测试 (Canvas Card Engine)', () => {
           { label: '构建分支', value: 'release/v2.1.0' },
           { label: '耗时', value: '1m 24s' },
         ],
-        actions: [
-          { text: '查看日志', variant: 'outline' },
-        ],
+        actions: [{ text: '查看日志', variant: 'outline' }],
         footer: {
           text: '系统自动生成，无需回复',
           align: 'left',
@@ -316,11 +318,10 @@ describe('Canvas 视觉卡片渲染引擎测试 (Canvas Card Engine)', () => {
     it('应支持 3 个及以上按钮的栅格排版与右对齐页脚', () => {
       const card: CardData = {
         header: {
-          title: '超长标题测试：这是一条非常非常长的标题文本，用来测试标题过长时的自动截断与省略号处理机制是否正常生效',
+          title:
+            '超长标题测试：这是一条非常非常长的标题文本，用来测试标题过长时的自动截断与省略号处理机制是否正常生效',
         },
-        fields: [
-          { label: '多行文本', value: '第一行内容\n第二行内容\n第三行内容', span: 'full' },
-        ],
+        fields: [{ label: '多行文本', value: '第一行内容\n第二行内容\n第三行内容', span: 'full' }],
         actions: [
           { text: '操作 A', variant: 'primary', replyCommand: 'A' },
           { text: '操作 B', variant: 'warning', replyCommand: 'B' },
@@ -342,7 +343,9 @@ describe('Canvas 视觉卡片渲染引擎测试 (Canvas Card Engine)', () => {
 
   describe('CDP 运行时远程执行 (renderCardToBase64)', () => {
     it('应通过 CDP evaluate 执行生成的脚本并返回 Base64', async () => {
-      const mockEvaluate = vi.fn().mockResolvedValue('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...');
+      const mockEvaluate = vi
+        .fn()
+        .mockResolvedValue('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...');
       const mockCdp = {
         evaluate: mockEvaluate,
       };

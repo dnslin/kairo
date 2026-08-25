@@ -79,12 +79,7 @@ export function escapeCsvField(
     return '';
   }
   const str = typeof value === 'string' ? value : String(value);
-  if (
-    str.includes('"') ||
-    str.includes(',') ||
-    str.includes('\n') ||
-    str.includes('\r')
-  ) {
+  if (str.includes('"') || str.includes(',') || str.includes('\n') || str.includes('\r')) {
     return `"${str.replace(/"/g, '""')}"`;
   }
   return str;
@@ -154,12 +149,9 @@ export function formatDepartmentAppointments(
   return sorted
     .map(appt => {
       const prefix = appt.isPrimary ? '[主]' : '[兼]';
-      const deptDisplay =
-        deptPathMap?.get(appt.deptId) || appt.deptName || appt.deptId;
+      const deptDisplay = deptPathMap?.get(appt.deptId) || appt.deptName || appt.deptId;
       const cleanDept = deptDisplay.trim();
-      const posDisplay = appt.position?.trim()
-        ? ` (${appt.position.trim()})`
-        : '';
+      const posDisplay = appt.position?.trim() ? ` (${appt.position.trim()})` : '';
       return `${prefix} ${cleanDept}${posDisplay}`;
     })
     .join('; ');
@@ -203,9 +195,7 @@ export async function atomicWriteRosterCsv(
     } catch (renameErr) {
       const nodeErr = renameErr as NodeJS.ErrnoException;
       const isLocked =
-        nodeErr.code === 'EBUSY' ||
-        nodeErr.code === 'EPERM' ||
-        nodeErr.code === 'EACCES';
+        nodeErr.code === 'EBUSY' || nodeErr.code === 'EPERM' || nodeErr.code === 'EACCES';
 
       if (!isLocked) {
         throw renameErr;
@@ -364,10 +354,7 @@ export class RosterExporter {
 
     for (const emp of empRows) {
       const appointments = apptMap.get(String(emp.id)) ?? [];
-      const deptFormatted = formatDepartmentAppointments(
-        appointments,
-        deptPathMap
-      );
+      const deptFormatted = formatDepartmentAppointments(appointments, deptPathMap);
 
       const row = [
         String(emp.id),
@@ -401,9 +388,7 @@ export class RosterExporter {
    * @param options 导出选项
    * @returns 导出统计结果
    */
-  public async export(
-    options?: ExportRosterOptions
-  ): Promise<ExportRosterResult> {
+  public async export(options?: ExportRosterOptions): Promise<ExportRosterResult> {
     const startTime = Date.now();
     const targetPath = options?.targetPath ?? DEFAULT_ROSTER_TARGET_PATH;
 
@@ -412,11 +397,9 @@ export class RosterExporter {
     try {
       const { content, rowCount } = await this.buildCsvContent(options);
 
-      const { filePath, isFallback } = await atomicWriteRosterCsv(
-        targetPath,
-        content,
-        { now: options?.now }
-      );
+      const { filePath, isFallback } = await atomicWriteRosterCsv(targetPath, content, {
+        now: options?.now,
+      });
 
       const stats = fs.statSync(filePath);
       const durationMs = Date.now() - startTime;

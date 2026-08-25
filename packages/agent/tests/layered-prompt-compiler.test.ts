@@ -112,9 +112,11 @@ describe('LayeredPromptCompiler', () => {
       expect(compiler.getSoulContent()).toContain('初始人设：严肃技术顾问');
 
       // 监听重载事件
-      const { promise: reloadPromise, resolve } =
-        Promise.withResolvers<{ soulContent: string; timestamp: number }>();
-      compiler.once('prompt_reloaded', (data) => {
+      const { promise: reloadPromise, resolve } = Promise.withResolvers<{
+        soulContent: string;
+        timestamp: number;
+      }>();
+      compiler.once('prompt_reloaded', data => {
         resolve(data);
       });
 

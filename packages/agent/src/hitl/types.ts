@@ -17,11 +17,7 @@ export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'timed_out';
  * - succeeded: 工具执行成功，并已持久化返回值
  * - failed: 工具执行失败，并已持久化错误信息
  */
-export type ToolExecutionStatus =
-  | 'not_started'
-  | 'executing'
-  | 'succeeded'
-  | 'failed';
+export type ToolExecutionStatus = 'not_started' | 'executing' | 'succeeded' | 'failed';
 
 /**
  * 审批决议实体契约
@@ -152,10 +148,7 @@ export interface ApprovalManagerOptions {
   /** 允许直接越级审批的管理员 UID 集合 (如 Web 后台管理员/安全管理员) */
   adminUserIds?: string[] | Set<string>;
   /** 自定义决议人鉴权回调 (可选) */
-  authorizeDecider?: (
-    task: ApprovalTask,
-    deciderId: string
-  ) => boolean | Promise<boolean>;
+  authorizeDecider?: (task: ApprovalTask, deciderId: string) => boolean | Promise<boolean>;
   /** 批准后自动执行高危工具的处理回调函数 (强制接收包含 idempotencyKey 的 context) */
   toolExecutor?: (
     toolName: string,
@@ -177,22 +170,20 @@ export interface ApprovalManagerOptions {
  * 组织架构仓库接口最小约束 (适配 @kkbot/store OrgRepository)
  */
 export interface OrgRepositoryLike {
-  getEmployeeById(
-    id: string | number
-  ): Promise<{
+  getEmployeeById(id: string | number): Promise<{
     id: string;
     name: string;
     leaderId?: string | null;
     [key: string]: unknown;
   } | null>;
-  getReportingChain(
-    employeeId: string | number
-  ): Promise<Array<{
-    id: string;
-    name: string;
-    leaderId?: string | null;
-    [key: string]: unknown;
-  }>>;
+  getReportingChain(employeeId: string | number): Promise<
+    Array<{
+      id: string;
+      name: string;
+      leaderId?: string | null;
+      [key: string]: unknown;
+    }>
+  >;
 }
 
 /**

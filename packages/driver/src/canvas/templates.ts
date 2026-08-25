@@ -199,11 +199,7 @@ function formatDate(d: Date): string {
 /**
  * 辅助函数：根据两个可能存在的可选字段计算双列跨度
  */
-function appendPairedFields(
-  fields: CardField[],
-  field1?: CardField,
-  field2?: CardField
-): void {
+function appendPairedFields(fields: CardField[], field1?: CardField, field2?: CardField): void {
   if (field1 && field2) {
     fields.push({ ...field1, span: 1 }, { ...field2, span: 1 });
   } else if (field1) {
@@ -226,7 +222,10 @@ export function createApprovalCard(params: ApprovalCardParams): CardData {
     throw new DriverError('审批卡片参数非法: params 不能为空', 'INVALID_APPROVAL_PARAMS');
   }
   if (!params.applicant || typeof params.applicant !== 'string') {
-    throw new DriverError('审批卡片参数非法: applicant 申请人不能为空', 'INVALID_APPROVAL_APPLICANT');
+    throw new DriverError(
+      '审批卡片参数非法: applicant 申请人不能为空',
+      'INVALID_APPROVAL_APPLICANT'
+    );
   }
   if (!params.item || typeof params.item !== 'string') {
     throw new DriverError('审批卡片参数非法: item 申请事项不能为空', 'INVALID_APPROVAL_ITEM');
@@ -308,11 +307,10 @@ export function createApprovalCard(params: ApprovalCardParams): CardData {
   }
 
   // 底部提示
-  const footer =
-    params.footer || {
-      icon: '💡',
-      text: '提示：请在会话中直接回复数字 [1] 同意 或 [2] 拒绝',
-    };
+  const footer = params.footer || {
+    icon: '💡',
+    text: '提示：请在会话中直接回复数字 [1] 同意 或 [2] 拒绝',
+  };
 
   return {
     theme: riskConfig.theme,
@@ -401,11 +399,10 @@ export function createAlertCard(params: AlertCardParams): CardData {
   }
 
   // 底部提示与时间戳
-  const footer =
-    params.footer || {
-      icon: '🕒',
-      text: `告警时间：${formatTimestamp(params.timestamp)}`,
-    };
+  const footer = params.footer || {
+    icon: '🕒',
+    text: `告警时间：${formatTimestamp(params.timestamp)}`,
+  };
 
   return {
     theme: sevConfig.theme,
@@ -443,9 +440,7 @@ export function createReportCard(params: ReportCardParams): CardData {
   // 组装结构化字段列表
   const fields: CardField[] = [];
 
-  const reportIdField = params.reportId
-    ? { label: '报告编号', value: params.reportId }
-    : undefined;
+  const reportIdField = params.reportId ? { label: '报告编号', value: params.reportId } : undefined;
   const durationField = params.duration
     ? { label: '执行耗时', value: params.duration, highlight: true }
     : undefined;
@@ -488,11 +483,10 @@ export function createReportCard(params: ReportCardParams): CardData {
   }
 
   // 底部提示
-  const footer =
-    params.footer || {
-      icon: '📊',
-      text: 'KKBot 报告生成中心 · 自动生成',
-    };
+  const footer = params.footer || {
+    icon: '📊',
+    text: 'KKBot 报告生成中心 · 自动生成',
+  };
 
   return {
     theme: statusConfig.theme,
@@ -530,9 +524,7 @@ export function createDecisionCard(params: DecisionCardParams): CardData {
   // 组装结构化字段列表
   const fields: CardField[] = [];
 
-  const sponsorField = params.sponsor
-    ? { label: '发起人', value: params.sponsor }
-    : undefined;
+  const sponsorField = params.sponsor ? { label: '发起人', value: params.sponsor } : undefined;
   const deadlineField = params.deadline
     ? { label: '截止时间', value: params.deadline, variant: 'warning' as const }
     : undefined;

@@ -309,7 +309,7 @@ describe('ToolExecutor 高危工具审批拦截与零信任防篡改防重放验
       inputSchema: z.object({ scope: z.string() }),
       readOnly: false,
       requireApproval: true,
-      execute: async (_input) => {
+      execute: async _input => {
         await Promise.resolve();
         voidSideEffectRan = true;
         // 明确返回 undefined (void 函数标准行为)
@@ -465,9 +465,6 @@ describe('ToolExecutor 高危工具审批拦截与零信任防篡改防重放验
     expect(blockedResult.error).toContain('未配置 ApprovalManager');
     expect(mockDangerousExecute).toHaveBeenCalledTimes(0);
   });
-
-
-
 
   it('超时主动 AbortSignal 级联取消：工具超时时收到 signal.aborted，绝不滞后产生副作用', async () => {
     let sideEffectOccurred = false;

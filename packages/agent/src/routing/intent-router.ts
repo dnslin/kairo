@@ -215,12 +215,7 @@ export class IntentModelRouter {
    * 配置深度推理模型端点 (DEEP)
    */
   public setDeepModel(model: ModelEndpointConfig | LLMProvider): void {
-    this.deepModel = this.normalizeEndpoint(
-      model,
-      'deep-primary',
-      'Deep-Reasoning-Model',
-      'DEEP'
-    );
+    this.deepModel = this.normalizeEndpoint(model, 'deep-primary', 'Deep-Reasoning-Model', 'DEEP');
   }
 
   /**
@@ -245,9 +240,11 @@ export class IntentModelRouter {
   /**
    * 提取消息的意图特征
    */
-  public extractFeatures(
-    input: ConsolidatedMessage | string
-  ): { content: string; features: IntentFeatures; rawMessage?: ConsolidatedMessage } {
+  public extractFeatures(input: ConsolidatedMessage | string): {
+    content: string;
+    features: IntentFeatures;
+    rawMessage?: ConsolidatedMessage;
+  } {
     let content = '';
     let rawMessage: ConsolidatedMessage | undefined;
 
@@ -262,48 +259,36 @@ export class IntentModelRouter {
     const charCount = content.length;
     const hasCode =
       content.includes('```') ||
-      /function\s+\w+|class\s+\w+|const\s+\w+\s*=|def\s+\w+\(|import\s+.*from/i.test(
-        content
-      );
+      /function\s+\w+|class\s+\w+|const\s+\w+\s*=|def\s+\w+\(|import\s+.*from/i.test(content);
 
     const hasImages = rawMessage
-      ? Boolean(
-          rawMessage.messages?.some(
-            (m) => m.images && m.images.length > 0
-          )
-        ) ||
-        /(?:data\/media\/|\.png|\.jpg|\.jpeg|\.webp|\.gif|data:image\/)/i.test(
-          content
-        )
-      : /(?:data\/media\/|\.png|\.jpg|\.jpeg|\.webp|\.gif|data:image\/)/i.test(
-          content
-        );
+      ? Boolean(rawMessage.messages?.some(m => m.images && m.images.length > 0)) ||
+        /(?:data\/media\/|\.png|\.jpg|\.jpeg|\.webp|\.gif|data:image\/)/i.test(content)
+      : /(?:data\/media\/|\.png|\.jpg|\.jpeg|\.webp|\.gif|data:image\/)/i.test(content);
 
     const hasFileCards = rawMessage
-      ? Boolean(rawMessage.messages?.some((m) => m.fileInfo)) ||
+      ? Boolean(rawMessage.messages?.some(m => m.fileInfo)) ||
         /\[(?:文件|附件)\]|收到文件/i.test(content)
       : /\[(?:文件|附件)\]|收到文件/i.test(content);
 
     const hasMultiModal = hasImages || hasFileCards;
 
     // 检查是否包含深度推理/排错/代码编写/对比关键词
-    const hasReasoningKeywords = DEEP_REASONING_KEYWORDS.some((kw) =>
-      lower.includes(kw)
-    );
+    const hasReasoningKeywords = DEEP_REASONING_KEYWORDS.some(kw => lower.includes(kw));
 
     // 检查是否为极速问候/闲聊 (若命中了代码编写或深度推理关键词，则优先判定为深度推理任务)
     const isChitchat =
       charCount < 50 &&
       !hasReasoningKeywords &&
       !hasCode &&
-      FAST_CHITCHAT_KEYWORDS.some((kw) => lower.includes(kw));
+      FAST_CHITCHAT_KEYWORDS.some(kw => lower.includes(kw));
 
     // 检查是否为员工/工位/电话查询
     const isOrgQuery =
       charCount < 60 &&
       !hasReasoningKeywords &&
       !hasCode &&
-      FAST_ORG_QUERY_KEYWORDS.some((kw) => lower.includes(kw));
+      FAST_ORG_QUERY_KEYWORDS.some(kw => lower.includes(kw));
     return {
       content,
       rawMessage,
@@ -323,9 +308,7 @@ export class IntentModelRouter {
   /**
    * 意图复杂度分类判定
    */
-  public async classify(
-    input: ConsolidatedMessage | string
-  ): Promise<IntentClassificationResult> {
+  public async classify(input: ConsolidatedMessage | string): Promise<IntentClassificationResult> {
     const { content, features, rawMessage } = this.extractFeatures(input);
     const lower = content.toLowerCase();
     const matchedKeywords: string[] = [];
@@ -404,7 +387,7 @@ export class IntentModelRouter {
       return {
         intentLevel: 'DEEP',
         reason: `检测到复杂推理需求 (复杂度得分: ${complexityScore}, 关键词: ${matchedKeywords.join(', ') || '无'})`,
-        confidence: Math.min(0.99, 0.6 + (complexityScore / 200)),
+        confidence: Math.min(0.99, 0.6 + complexityScore / 200),
         matchedKeywords,
         estimatedComplexity: Math.min(100, complexityScore),
         features,
@@ -435,9 +418,7 @@ export class IntentModelRouter {
   /**
    * 执行路由选择，返回主候选模型与备用候选链
    */
-  public async route(
-    input: ConsolidatedMessage | string
-  ): Promise<{
+  public async route(input: ConsolidatedMessage | string): Promise<{
     selectedModel: ModelEndpointConfig;
     classification: IntentClassificationResult;
     candidateChain: ModelEndpointConfig[];
@@ -448,33 +429,31 @@ export class IntentModelRouter {
     // 收集所有可用配置模型
     const allConfigured: ModelEndpointConfig[] = [];
     if (this.fastModel) allConfigured.push(this.fastModel);
-    if (this.deepModel && !allConfigured.some((m) => m.id === this.deepModel?.id)) {
+    if (this.deepModel && !allConfigured.some(m => m.id === this.deepModel?.id)) {
       allConfigured.push(this.deepModel);
     }
     for (const backup of this.backupModels) {
-      if (!allConfigured.some((m) => m.id === backup.id)) {
+      if (!allConfigured.some(m => m.id === backup.id)) {
         allConfigured.push(backup);
       }
     }
 
     if (allConfigured.length === 0) {
-      throw new Error(
-        '未配置任何可用的 LLM 模型端点 (fastModel 与 deepModel 均未初始化)'
-      );
+      throw new Error('未配置任何可用的 LLM 模型端点 (fastModel 与 deepModel 均未初始化)');
     }
 
     let primary: ModelEndpointConfig | undefined;
     const chain: ModelEndpointConfig[] = [];
 
     // 检查是否存在多模态媒体 (图片/附件) 且有 Vision 端点可用
-    const visionModels = allConfigured.filter((m) => m.supportsVision);
+    const visionModels = allConfigured.filter(m => m.supportsVision);
 
     if (features.hasImages && visionModels.length > 0) {
       // 存在图片媒体且配置了具备 Vision 能力的模型：优先提升 Vision 端点
       if (intentLevel === 'DEEP') {
-        primary = visionModels.find((m) => m.intentLevel === 'DEEP') || visionModels[0];
+        primary = visionModels.find(m => m.intentLevel === 'DEEP') || visionModels[0];
       } else {
-        primary = visionModels.find((m) => m.intentLevel === 'FAST') || visionModels[0];
+        primary = visionModels.find(m => m.intentLevel === 'FAST') || visionModels[0];
       }
 
       if (primary) {
@@ -483,14 +462,14 @@ export class IntentModelRouter {
 
       // 添加其余 Vision 模型
       for (const vm of visionModels) {
-        if (!chain.some((m) => m.id === vm.id)) {
+        if (!chain.some(m => m.id === vm.id)) {
           chain.push(vm);
         }
       }
 
       // 添加非 Vision 模型作为备用降级链 (纯文本 + OCR 兜底)
       for (const model of allConfigured) {
-        if (!chain.some((m) => m.id === model.id)) {
+        if (!chain.some(m => m.id === model.id)) {
           chain.push(model);
         }
       }
@@ -500,7 +479,7 @@ export class IntentModelRouter {
           intentLevel,
           selectedModel: primary?.name,
           visionModelCount: visionModels.length,
-          candidateChain: chain.map((c) => c.name),
+          candidateChain: chain.map(c => c.name),
         },
         '检测到多模态附件，已优先路由至 Vision 模型端点'
       );
@@ -519,11 +498,11 @@ export class IntentModelRouter {
       if (primary) {
         chain.push(primary);
       }
-      if (secondary && secondary.id !== primary?.id && !chain.some((m) => m.id === secondary?.id)) {
+      if (secondary && secondary.id !== primary?.id && !chain.some(m => m.id === secondary?.id)) {
         chain.push(secondary);
       }
       for (const backup of this.backupModels) {
-        if (!chain.some((m) => m.id === backup.id)) {
+        if (!chain.some(m => m.id === backup.id)) {
           chain.push(backup);
         }
       }
@@ -537,7 +516,7 @@ export class IntentModelRouter {
       {
         intentLevel,
         selectedModel: primary.name,
-        candidateChain: chain.map((c) => c.name),
+        candidateChain: chain.map(c => c.name),
         reason: classification.reason,
       },
       '完成意图识别与模型路由决策'

@@ -27,9 +27,7 @@ export function formatArgsSummary(args: Record<string, unknown>, maxKeys = 5): s
  * 生成多任务消歧引导提示文案纯函数
  */
 export function formatDisambiguationPrompt(tasks: ApprovalTask[]): string {
-  const lines = [
-    `⚠️ 您当前有 ${tasks.length} 项待处理的审批事项：`,
-  ];
+  const lines = [`⚠️ 您当前有 ${tasks.length} 项待处理的审批事项：`];
 
   tasks.forEach((task, index) => {
     const applicant = task.applicantName ?? task.applicantId;
@@ -100,9 +98,7 @@ export class LeaderApprovalRouter {
 
     // 3. 若无直接 leaderId，查询汇报链
     const reportingChain = await this.orgRepository.getReportingChain(empId);
-    const upperLeaders = reportingChain.filter(
-      node => String(node.id).trim() !== empId
-    );
+    const upperLeaders = reportingChain.filter(node => String(node.id).trim() !== empId);
 
     const nearestLeader = upperLeaders[0];
     if (nearestLeader) {

@@ -7,8 +7,10 @@
       "@kkbot/store": ["packages/store/src/index.ts"],
       "@kkbot/gateway": ["packages/gateway/src/index.ts"],
       "@kkbot/coordinator": ["packages/gateway/src/index.ts"],
-      "@kkbot/agent": ["packages/agent/src/index.ts"]
+      "@kkbot/agent": ["packages/agent/src/index.ts"],
+      "@kkbot/knowledge": ["packages/knowledge/src/index.ts"],
+      "@kkbot/app": ["apps/kkbot/src/index.ts"]
     }
   },
-  "include": ["packages/*/src/**/*", "packages/*/examples/**/*"]
+  "include": ["packages/*/src/**/*", "packages/*/examples/**/*", "apps/*/src/**/*"]
 }
