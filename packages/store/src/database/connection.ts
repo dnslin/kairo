@@ -1,4 +1,5 @@
-import { createClient, type Client } from '@libsql/client';
+import { createClient, type Client, type Config as LibsqlConfig } from '@libsql/client';
+export { createClient, type Client, type LibsqlConfig };
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
