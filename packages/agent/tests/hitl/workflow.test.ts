@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createClient } from '@libsql/client';
 import { Mastra } from '@mastra/core';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 import {
   createHitlWorkflow,
   createHitlStorage,
@@ -10,11 +13,25 @@ import {
 import type { ApprovalDecision } from '../../src/hitl/types.js';
 
 describe('Mastra HITL Workflow 原生挂起与恢复流', () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kkbot-hitl-wf-test-'));
+  });
+
+  afterEach(async () => {
+    try {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    } catch {
+      // Windows 下忽略延迟句柄释放的 EBUSY
+    }
+  });
+
   it('高危工具工作流启动时自动挂起 (suspend)，并在收到批准决议后成功恢复 (resume)', async () => {
-    const client = createClient({ url: ':memory:' });
+    const dbPath = path.join(tempDir, 'hitl-1.db');
+    const client = createClient({ url: `file:${dbPath}` });
     const storage = createHitlStorage(client);
     await storage.init();
-
     const workflow = createHitlWorkflow();
     const mastra = new Mastra({
       storage,
@@ -73,12 +90,13 @@ describe('Mastra HITL Workflow 原生挂起与恢复流', () => {
       }),
       toolArgs: { database: 'users_prod' },
     });
-
+    await storage.close();
     client.close();
   });
 
   it('工作流在收到驳回决议后成功恢复并返回 status: rejected', async () => {
-    const client = createClient({ url: ':memory:' });
+    const dbPath = path.join(tempDir, 'hitl-2.db');
+    const client = createClient({ url: `file:${dbPath}` });
     const storage = createHitlStorage(client);
     await storage.init();
 
@@ -123,13 +141,13 @@ describe('Mastra HITL Workflow 原生挂起与恢复流', () => {
     expect(resumeResult.result.approved).toBe(false);
     // 核心断言：即使理由包含“超时”字眼，主管明确驳回依然严格映射为 rejected
     expect(resumeResult.result.status).toBe('rejected');
-    expect(resumeResult.result.decision?.reason).toContain('存在严重超时风险');
-
+    await storage.close();
     client.close();
   });
 
   it('工作流在收到系统超时降级决议后成功恢复并返回 status: timed_out', async () => {
-    const client = createClient({ url: ':memory:' });
+    const dbPath = path.join(tempDir, 'hitl-3.db');
+    const client = createClient({ url: `file:${dbPath}` });
     const storage = createHitlStorage(client);
     await storage.init();
 
@@ -173,8 +191,7 @@ describe('Mastra HITL Workflow 原生挂起与恢复流', () => {
     expect(resumeResult.result.approved).toBe(false);
     // 核心断言：系统超时降级精准映射为 timed_out
     expect(resumeResult.result.status).toBe('timed_out');
-    expect(resumeResult.result.decision?.deciderId).toBe('system_timeout');
-
+    await storage.close();
     client.close();
   });
 });

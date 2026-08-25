@@ -32,10 +32,7 @@ export class SensitiveFilter {
     sensitivePatterns?: RegExp[];
     maskChar?: string;
   }) {
-    this.jailbreakPatterns = [
-      ...DEFAULT_JAILBREAK_PATTERNS,
-      ...(options?.jailbreakPatterns ?? []),
-    ];
+    this.jailbreakPatterns = [...DEFAULT_JAILBREAK_PATTERNS, ...(options?.jailbreakPatterns ?? [])];
     this.sensitiveKeywords = new Set(options?.sensitiveKeywords ?? []);
     this.sensitivePatterns = options?.sensitivePatterns ?? [];
     this.maskChar = options?.maskChar ?? '*';
@@ -118,9 +115,7 @@ export class SensitiveFilter {
     let replacedCount = 0;
 
     // 1. 敏感词字典替换 (按词长降序排列优先替换长词)
-    const sortedKeywords = Array.from(this.sensitiveKeywords).sort(
-      (a, b) => b.length - a.length
-    );
+    const sortedKeywords = Array.from(this.sensitiveKeywords).sort((a, b) => b.length - a.length);
 
     for (const keyword of sortedKeywords) {
       if (!keyword) continue;
@@ -140,7 +135,7 @@ export class SensitiveFilter {
       const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
       const globalPattern = new RegExp(pattern.source, flags);
 
-      filteredText = filteredText.replace(globalPattern, (matched) => {
+      filteredText = filteredText.replace(globalPattern, matched => {
         matchedRules.push(pattern.source);
         replacedCount++;
         return this.maskChar.repeat(Math.max(3, Math.min(matched.length, 10)));

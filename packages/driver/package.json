@@ -3,7 +3,9 @@
   "version": "2.0.0",
   "description": "Pure, event-driven CDP driver for KK9 desktop client",
   "type": "module",
-  "main": "./dist/index.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {

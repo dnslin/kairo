@@ -28,9 +28,7 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
       { id: 'backup', name: 'Backup-Model', provider: backupLLM },
     ];
 
-    const result = await manager.executeChat(chain, [
-      { role: 'user', content: 'hello' },
-    ]);
+    const result = await manager.executeChat(chain, [{ role: 'user', content: 'hello' }]);
     expect(result.content).toBe('Primary 成功回复');
     expect(result.executedModel.id).toBe('primary');
   });
@@ -58,9 +56,7 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
       { id: 'backup', name: 'Backup-Model', provider: workingBackupLLM },
     ];
 
-    const result = await manager.executeChat(chain, [
-      { role: 'user', content: '测试 503 救援' },
-    ]);
+    const result = await manager.executeChat(chain, [{ role: 'user', content: '测试 503 救援' }]);
 
     expect(result.content).toBe('Backup 模型成功救援');
     expect(result.executedModel.id).toBe('backup');
@@ -105,9 +101,7 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
       { id: 'backup', name: 'Quick-Backup', provider: quickBackupLLM },
     ];
 
-    const result = await manager.executeChat(chain, [
-      { role: 'user', content: '测试超时转移' },
-    ]);
+    const result = await manager.executeChat(chain, [{ role: 'user', content: '测试超时转移' }]);
 
     expect(result.content).toBe('快速备用节点回复');
     expect(result.executedModel.id).toBe('backup');
@@ -264,9 +258,7 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
       { id: 'm2', name: 'Backup-Stream-Model', provider: backupStreamLLM },
     ];
 
-    const stream = manager.executeChatStream(chain, [
-      { role: 'user', content: 'test stream' },
-    ]);
+    const stream = manager.executeChatStream(chain, [{ role: 'user', content: 'test stream' }]);
 
     const chunks: string[] = [];
     for await (const chunk of stream) {
@@ -374,18 +366,12 @@ describe('ModelFailoverManager 模型高可用故障转移与熔断测试', () =
     });
 
     it('当 maxRetries 为非法值 (负数、小数、NaN 或 Infinity) 时，构造函数必须抛出 RangeError 异常', () => {
-      expect(() => new ModelFailoverManager({ maxRetries: -1 })).toThrowError(
+      expect(() => new ModelFailoverManager({ maxRetries: -1 })).toThrowError(RangeError);
+      expect(() => new ModelFailoverManager({ maxRetries: 1.5 })).toThrowError(RangeError);
+      expect(() => new ModelFailoverManager({ maxRetries: Number.NaN })).toThrowError(RangeError);
+      expect(() => new ModelFailoverManager({ maxRetries: Number.POSITIVE_INFINITY })).toThrowError(
         RangeError
       );
-      expect(() => new ModelFailoverManager({ maxRetries: 1.5 })).toThrowError(
-        RangeError
-      );
-      expect(() => new ModelFailoverManager({ maxRetries: Number.NaN })).toThrowError(
-        RangeError
-      );
-      expect(
-        () => new ModelFailoverManager({ maxRetries: Number.POSITIVE_INFINITY })
-      ).toThrowError(RangeError);
     });
   });
 });

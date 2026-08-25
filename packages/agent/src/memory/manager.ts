@@ -230,10 +230,7 @@ export class AgentMemoryManager {
    * @param threadId 会话 ID (对应 sessionId)
    * @param messageId 客户端原生消息 ID
    */
-  public async markMessageRecalled(
-    threadId: string,
-    messageId: string
-  ): Promise<boolean> {
+  public async markMessageRecalled(threadId: string, messageId: string): Promise<boolean> {
     const { messageRepo } = this.ensureInitialized();
     return messageRepo.markMessageRecalled(threadId, messageId);
   }
@@ -243,10 +240,7 @@ export class AgentMemoryManager {
    * @param threadId 会话 ID (sessionId)
    * @param limit 限制条数 (默认使用配置的 l1WindowSize)
    */
-  public async getL1Window(
-    threadId: string,
-    limit?: number
-  ): Promise<L1MessageWindow> {
+  public async getL1Window(threadId: string, limit?: number): Promise<L1MessageWindow> {
     const { client, messageRepo } = this.ensureInitialized();
     const effectiveLimit = limit ?? this.l1WindowSize;
 
@@ -265,9 +259,7 @@ export class AgentMemoryManager {
     const filteredRecalledCount = Number(recalledCountRes.rows[0]?.count ?? 0);
 
     // 3. 格式化为可读文本
-    const formattedText = messages
-      .map((msg) => `${msg.sender}: ${msg.content}`)
-      .join('\n');
+    const formattedText = messages.map(msg => `${msg.sender}: ${msg.content}`).join('\n');
 
     return {
       threadId,
@@ -374,9 +366,7 @@ export class AgentMemoryManager {
     const existingSummary = await this.getL2Summary(threadId);
 
     // 3. 构建提炼输入
-    const messagesText = messages
-      .map((m) => `[${m.sender}]: ${m.content}`)
-      .join('\n');
+    const messagesText = messages.map(m => `[${m.sender}]: ${m.content}`).join('\n');
 
     let newSummaryContent = '';
 
@@ -406,12 +396,7 @@ export class AgentMemoryManager {
     }
     const lastMsg = messages[messages.length - 1];
     const lastMsgId = lastMsg?.messageId ?? (lastMsg ? String(lastMsg.id) : null);
-    return this.updateL2Summary(
-      threadId,
-      newSummaryContent,
-      messages.length,
-      lastMsgId
-    );
+    return this.updateL2Summary(threadId, newSummaryContent, messages.length, lastMsgId);
   }
 
   /**
@@ -572,10 +557,7 @@ export class AgentMemoryManager {
   /**
    * 为员工长期协同画像追加关键事实 (自动执行文本去重)
    */
-  public async recordColleagueFact(
-    resourceId: string,
-    fact: string
-  ): Promise<L3ColleagueProfile> {
+  public async recordColleagueFact(resourceId: string, fact: string): Promise<L3ColleagueProfile> {
     const cleanFact = fact.trim();
     if (!cleanFact) {
       return this.getL3Profile(resourceId);
@@ -604,7 +586,7 @@ export class AgentMemoryManager {
 
     const current = await this.getL3Profile(resourceId);
     // 过滤掉同名话题后追加到末尾，保留最近 10 个
-    const filteredTopics = current.recentTopics.filter((t) => t !== cleanTopic);
+    const filteredTopics = current.recentTopics.filter(t => t !== cleanTopic);
     const updatedTopics = [...filteredTopics, cleanTopic].slice(-10);
 
     return this.updateL3Profile(resourceId, { recentTopics: updatedTopics });
@@ -617,9 +599,7 @@ export class AgentMemoryManager {
   /**
    * 一键检索组装 3 级记忆上下文实体
    */
-  public async getContext(
-    options: MemoryContextOptions
-  ): Promise<MemoryContextResult> {
+  public async getContext(options: MemoryContextOptions): Promise<MemoryContextResult> {
     const threadId = options.threadId;
     const resourceId = options.resourceId;
 
@@ -674,9 +654,7 @@ export class AgentMemoryManager {
 
       const prefKeys = Object.keys(p.preferences);
       if (prefKeys.length > 0) {
-        lines.push(
-          `- 业务偏好: ${JSON.stringify(p.preferences, null, 0)}`
-        );
+        lines.push(`- 业务偏好: ${JSON.stringify(p.preferences, null, 0)}`);
       }
 
       if (p.keyFacts.length > 0) {
@@ -698,16 +676,12 @@ export class AgentMemoryManager {
 
     // 2. L2 工作摘要部分
     if (result.l2Summary && result.l2Summary.summary.trim()) {
-      sections.push(
-        `### [L2 会话级滚动工作记忆摘要]\n${result.l2Summary.summary.trim()}`
-      );
+      sections.push(`### [L2 会话级滚动工作记忆摘要]\n${result.l2Summary.summary.trim()}`);
     }
 
     // 3. L1 历史消息部分
     if (result.l1Window && result.l1Window.messages.length > 0) {
-      sections.push(
-        `### [L1 会话近期对话历史]\n${result.l1Window.formattedText}`
-      );
+      sections.push(`### [L1 会话近期对话历史]\n${result.l1Window.formattedText}`);
     }
 
     return sections.join('\n\n');

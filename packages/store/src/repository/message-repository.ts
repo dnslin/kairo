@@ -463,10 +463,7 @@ export class MessageRepository {
   /**
    * 获取指定会话的消息总数
    */
-  public async countSessionMessages(
-    sessionId: string,
-    includeRecalled = false
-  ): Promise<number> {
+  public async countSessionMessages(sessionId: string, includeRecalled = false): Promise<number> {
     const sql = includeRecalled
       ? 'SELECT COUNT(*) as total FROM session_messages WHERE session_id = ?'
       : 'SELECT COUNT(*) as total FROM session_messages WHERE session_id = ? AND is_recalled = 0';

@@ -5,10 +5,7 @@ import { Mastra } from '@mastra/core';
 import { createWorkflow, createStep } from '@mastra/core/workflows';
 import { LibSQLStore } from '@mastra/libsql';
 import { z } from 'zod';
-import type {
-  CoordinatorDispatchResult,
-  DispatchReplyOptions,
-} from '../types/index.js';
+import type { CoordinatorDispatchResult, DispatchReplyOptions } from '../types/index.js';
 import type {
   ProactiveSchedule,
   ProactiveScheduleDefinition,
@@ -45,10 +42,7 @@ export interface ProactiveScheduleManagerOptions {
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export declare interface ProactiveScheduleManager {
-  on<U extends keyof ScheduleManagerEvents>(
-    event: U,
-    listener: ScheduleManagerEvents[U]
-  ): this;
+  on<U extends keyof ScheduleManagerEvents>(event: U, listener: ScheduleManagerEvents[U]): this;
   emit<U extends keyof ScheduleManagerEvents>(
     event: U,
     ...args: Parameters<ScheduleManagerEvents[U]>
@@ -98,7 +92,6 @@ export class ProactiveScheduleManager extends EventEmitter {
     this.dispatchReplyFn = fn;
     log.info('已成功绑定 Coordinator 全局串行 dispatchReply 分发函数');
   }
-
 
   /**
    * 初始化 Mastra Schedules 存储底座、Workflow 执行器与实例
@@ -163,7 +156,9 @@ export class ProactiveScheduleManager extends EventEmitter {
           messageId: z.string().optional(),
           error: z.string().optional(),
         }),
-      }).then(pushStep).commit();
+      })
+        .then(pushStep)
+        .commit();
 
       this.mastra = new Mastra({
         storage,
@@ -188,11 +183,7 @@ export class ProactiveScheduleManager extends EventEmitter {
     await this.ensureInitialized();
     this.isRunning = true;
 
-    if (
-      this.isMastraOwned &&
-      this.mastra &&
-      typeof this.mastra.startWorkers === 'function'
-    ) {
+    if (this.isMastraOwned && this.mastra && typeof this.mastra.startWorkers === 'function') {
       try {
         await this.mastra.startWorkers();
       } catch (err) {
@@ -214,11 +205,7 @@ export class ProactiveScheduleManager extends EventEmitter {
     }
     this.isRunning = false;
 
-    if (
-      this.isMastraOwned &&
-      this.mastra &&
-      typeof this.mastra.stopWorkers === 'function'
-    ) {
+    if (this.isMastraOwned && this.mastra && typeof this.mastra.stopWorkers === 'function') {
       try {
         await this.mastra.stopWorkers();
       } catch (err) {
@@ -233,9 +220,7 @@ export class ProactiveScheduleManager extends EventEmitter {
   /**
    * 基于 Mastra Schedules 注册主动定时任务 (绑定 proactivePushWorkflow 原生执行闭环)
    */
-  public async registerSchedule(
-    def: ProactiveScheduleDefinition
-  ): Promise<ProactiveSchedule> {
+  public async registerSchedule(def: ProactiveScheduleDefinition): Promise<ProactiveSchedule> {
     await this.ensureInitialized();
     const mastra = this.mastra!;
 
@@ -277,9 +262,7 @@ export class ProactiveScheduleManager extends EventEmitter {
         id: schedule.id,
         cron: schedule.cron,
         targetSessionId: schedule.targetSessionId,
-        nextFireAt: schedule.nextFireAt
-          ? new Date(schedule.nextFireAt).toISOString()
-          : null,
+        nextFireAt: schedule.nextFireAt ? new Date(schedule.nextFireAt).toISOString() : null,
       },
       '已成功在 Mastra Schedules 注册主动定时推送任务'
     );
@@ -318,9 +301,7 @@ export class ProactiveScheduleManager extends EventEmitter {
   /**
    * 暂停指定定时任务
    */
-  public async pauseSchedule(
-    scheduleId: string
-  ): Promise<ProactiveSchedule | null> {
+  public async pauseSchedule(scheduleId: string): Promise<ProactiveSchedule | null> {
     await this.ensureInitialized();
     const updated = await this.mastra!.schedules.pause(scheduleId);
     if (!updated) {
@@ -332,9 +313,7 @@ export class ProactiveScheduleManager extends EventEmitter {
   /**
    * 恢复指定定时任务
    */
-  public async resumeSchedule(
-    scheduleId: string
-  ): Promise<ProactiveSchedule | null> {
+  public async resumeSchedule(scheduleId: string): Promise<ProactiveSchedule | null> {
     await this.ensureInitialized();
     const updated = await this.mastra!.schedules.resume(scheduleId);
     if (!updated) {
@@ -363,9 +342,7 @@ export class ProactiveScheduleManager extends EventEmitter {
   /**
    * 手动触发执行定时任务 (直接委托单一执行源 executeWorkflowPush，杜绝双发)
    */
-  public async triggerSchedule(
-    scheduleId: string
-  ): Promise<CoordinatorDispatchResult | void> {
+  public async triggerSchedule(scheduleId: string): Promise<CoordinatorDispatchResult | void> {
     await this.ensureInitialized();
     const schedule = await this.getSchedule(scheduleId);
     if (!schedule) {
@@ -446,11 +423,9 @@ export class ProactiveScheduleManager extends EventEmitter {
         );
       }
 
-      dispatchResult = await this.dispatchReplyFn(
-        input.targetSessionId,
-        contentToPush,
-        { markRead: false }
-      );
+      dispatchResult = await this.dispatchReplyFn(input.targetSessionId, contentToPush, {
+        markRead: false,
+      });
       fakeSched.status = 'active';
       fakeSched.lastRunAt = Date.now();
       this.emit('executed', fakeSched, dispatchResult);
@@ -511,10 +486,8 @@ export class ProactiveScheduleManager extends EventEmitter {
       createdAt: typeof obj.createdAt === 'number' ? obj.createdAt : undefined,
       updatedAt: typeof obj.updatedAt === 'number' ? obj.updatedAt : undefined,
       targetSessionId,
-      targetEmployeeId:
-        typeof rawEmployeeId === 'string' ? rawEmployeeId : undefined,
-      targetEmployeeName:
-        typeof rawEmployeeName === 'string' ? rawEmployeeName : undefined,
+      targetEmployeeId: typeof rawEmployeeId === 'string' ? rawEmployeeId : undefined,
+      targetEmployeeName: typeof rawEmployeeName === 'string' ? rawEmployeeName : undefined,
       name: typeof rawName === 'string' ? rawName : undefined,
       message: typeof rawMessage === 'string' ? rawMessage : undefined,
       metadata: meta,

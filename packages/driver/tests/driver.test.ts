@@ -215,7 +215,9 @@ describe('KK9Driver 端到端事件驱动测试', () => {
     const driver = new KK9Driver({
       cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
     });
-    const internal = driver as unknown as { cdp: { evaluate: (script: string) => Promise<string> } };
+    const internal = driver as unknown as {
+      cdp: { evaluate: (script: string) => Promise<string> };
+    };
     internal.cdp.evaluate = vi.fn().mockResolvedValue('data:image/png;base64,CARD_PNG_BASE64_DATA');
 
     const result = await driver.renderCardToBase64({

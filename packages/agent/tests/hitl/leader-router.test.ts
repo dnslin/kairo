@@ -64,9 +64,7 @@ describe('LeaderApprovalRouter 直属主管审批路由解析器', () => {
   it('当员工无直属主管且无上级汇报链时，若未配置 fallback 应抛出 LeaderNotFoundError', async () => {
     const router = new LeaderApprovalRouter({ orgRepository: mockOrgRepo });
 
-    await expect(router.resolveLeader('emp_ceo')).rejects.toThrow(
-      LeaderNotFoundError
-    );
+    await expect(router.resolveLeader('emp_ceo')).rejects.toThrow(LeaderNotFoundError);
   });
 
   it('当员工无直属主管但配置了 fallbackLeaderId 时，降级返回配置的主管', async () => {
@@ -159,9 +157,7 @@ describe('LeaderApprovalRouter 直属主管审批路由解析器', () => {
 
       // 同步测试组织架构数据
       await realOrgRepo.syncOrganization({
-        departments: [
-          { id: 'dept_1', name: '技术部', parent_id: null, leader_id: 'leader_99' },
-        ],
+        departments: [{ id: 'dept_1', name: '技术部', parent_id: null, leader_id: 'leader_99' }],
         employees: [
           {
             id: 'emp_dev_1',

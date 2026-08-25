@@ -26,7 +26,10 @@ const DEFAULT_MAX_FINGERPRINTS = 10000;
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export declare interface KK9EventBridge {
   on<U extends keyof EventBridgeEvents>(event: U, listener: EventBridgeEvents[U]): this;
-  emit<U extends keyof EventBridgeEvents>(event: U, ...args: Parameters<EventBridgeEvents[U]>): boolean;
+  emit<U extends keyof EventBridgeEvents>(
+    event: U,
+    ...args: Parameters<EventBridgeEvents[U]>
+  ): boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare

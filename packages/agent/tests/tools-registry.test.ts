@@ -178,7 +178,9 @@ describe('ToolRegistry 与内置企业工具集 (TDD Red -> Green)', () => {
           email: 'lisi@kkbot.com',
           region: '北京 A 栋 501',
           leaderId: '1003',
-          departments: [{ deptId: 'dept_tech', position: '技术总监', isPrimary: true, isLeader: true }],
+          departments: [
+            { deptId: 'dept_tech', position: '技术总监', isPrimary: true, isLeader: true },
+          ],
         },
         {
           id: '1003',
@@ -188,7 +190,9 @@ describe('ToolRegistry 与内置企业工具集 (TDD Red -> Green)', () => {
           phone: '13800000003',
           email: 'wangwu@kkbot.com',
           region: '上海总部 801',
-          departments: [{ deptId: 'dept_root', position: '总经理', isPrimary: true, isLeader: true }],
+          departments: [
+            { deptId: 'dept_root', position: '总经理', isPrimary: true, isLeader: true },
+          ],
         },
       ],
     };
@@ -321,7 +325,10 @@ describe('ToolRegistry 与内置企业工具集 (TDD Red -> Green)', () => {
     let testTempDir: string;
 
     beforeEach(() => {
-      testTempDir = join(tmpdir(), `kkbot-deliverable-test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+      testTempDir = join(
+        tmpdir(),
+        `kkbot-deliverable-test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+      );
     });
 
     afterEach(() => {

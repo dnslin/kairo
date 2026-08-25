@@ -5,7 +5,7 @@
   "description": "KKBot v2 - Modern Agent & IM Gateway Monorepo",
   "type": "module",
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.13.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -14,22 +14,27 @@
     ]
   },
   "scripts": {
+    "dev": "pnpm --filter @kkbot/app dev",
+    "start": "pnpm --filter @kkbot/app start",
+    "doctor": "pnpm --filter @kkbot/app doctor",
+    "knowledge:ingest": "pnpm --filter @kkbot/app knowledge:ingest",
+    "knowledge:rebuild": "pnpm --filter @kkbot/app knowledge:rebuild",
     "build": "pnpm -r run build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\"",
+    "lint": "eslint \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\" \"apps/*/src/**/*.ts\" \"apps/*/tests/**/*.ts\"",
     "bench": "tsx scripts/benchmarks/index.ts",
     "bench:latency": "tsx scripts/benchmarks/latency.bench.ts",
     "bench:resource": "tsx scripts/benchmarks/resource.bench.ts",
     "bench:throughput": "tsx scripts/benchmarks/throughput.bench.ts",
     "verify:bridge": "tsx scripts/verify-event-bridge-live.ts",
-    "format": "prettier --write \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\""
+    "format": "prettier --write \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\" \"apps/*/src/**/*.ts\" \"apps/*/tests/**/*.ts\""
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
-    "@mastra/core": "^1.60.0",
-    "@mastra/libsql": "^1.21.0",
+    "@mastra/core": "1.61.0",
+    "@mastra/libsql": "1.21.1",
     "@types/node": "^22.12.0",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.22.0",
@@ -40,6 +45,7 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^3.0.4",
-    "zod": "^4.4.3"
+    "yaml": "^2.7.0",
+    "zod": "4.4.3"
   }
 }

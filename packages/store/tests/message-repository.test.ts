@@ -464,7 +464,10 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
       expect(msg.rawPayload?.images?.[0].relativePath).toBe(mediaResult.relativePath);
 
       // 3. 原生 ID 精确撤回
-      const recalled = await store.messages.markMessageRecalled('session-store-facade', 'store-native-1');
+      const recalled = await store.messages.markMessageRecalled(
+        'session-store-facade',
+        'store-native-1'
+      );
       expect(recalled).toBe(true);
 
       // 4. 获取历史过滤

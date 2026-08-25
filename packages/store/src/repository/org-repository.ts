@@ -771,9 +771,7 @@ export class OrgRepository {
   /**
    * 批量将员工行关联任职数据并组装为聚合员工实体
    */
-  private async hydrateEmployeesWithDepts(
-    empRows: EmployeeRow[]
-  ): Promise<OrgEmployeeWithDepts[]> {
+  private async hydrateEmployeesWithDepts(empRows: EmployeeRow[]): Promise<OrgEmployeeWithDepts[]> {
     const empIds = empRows.map(e => String(e.id));
     const placeholders = empIds.map(() => '?').join(',');
 

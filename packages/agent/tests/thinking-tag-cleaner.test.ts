@@ -13,7 +13,8 @@ describe('ThinkingTagCleaner', () => {
     });
 
     it('应当精确剥离标准闭合的 <think>...</think> 标签', () => {
-      const input = '<think>\n用户在询问 KK9 登录方式，需要给出标准指南。\n</think>您好，请使用企业微信或手机验证码登录 KK9 客户端。';
+      const input =
+        '<think>\n用户在询问 KK9 登录方式，需要给出标准指南。\n</think>您好，请使用企业微信或手机验证码登录 KK9 客户端。';
       const result = ThinkingTagCleaner.clean(input);
 
       expect(result.cleanedText).toBe('您好，请使用企业微信或手机验证码登录 KK9 客户端。');

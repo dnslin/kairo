@@ -15,10 +15,7 @@ import type {
   LeaderApprovalRouter,
   StatefulApprovalMatcher,
 } from '@kkbot/agent';
-import type {
-  ProactiveSchedule,
-  ProactiveScheduleManager,
-} from '../schedule/index.js';
+import type { ProactiveSchedule, ProactiveScheduleManager } from '../schedule/index.js';
 
 /**
  * 防抖合并后的聚合消息上下文实体
@@ -142,19 +139,11 @@ export interface SessionCoordinatorOptions {
  */
 export interface CoordinatorEvents {
   /** 消息压入防抖队列事件 */
-  message_queued: (
-    sessionId: string,
-    message: KK9Message,
-    queueLength: number
-  ) => void;
+  message_queued: (sessionId: string, message: KK9Message, queueLength: number) => void;
   /** 消息防抖合并触发事件 */
   consolidated: (message: ConsolidatedMessage) => void;
   /** 撤回即时熔断事件 (防抖期内消息被撤回) */
-  recall_fused: (
-    sessionId: string,
-    recalledMessageId: string,
-    remainingCount: number
-  ) => void;
+  recall_fused: (sessionId: string, recalledMessageId: string, remainingCount: number) => void;
   /** 人机协同退避触发事件 */
   takeover: (sessionId: string, takeoverUntil: number, message?: KK9Message) => void;
   /** 消息被静默拦截抑制事件 (处于人工退避、会话禁用、空队列或被撤回) */
@@ -169,16 +158,9 @@ export interface CoordinatorEvents {
     message?: KK9Message
   ) => void;
   /** 在途请求被 50ms 瞬时中断切断事件 */
-  in_flight_aborted: (
-    sessionId: string,
-    elapsedMs: number,
-    reason: string
-  ) => void;
+  in_flight_aborted: (sessionId: string, elapsedMs: number, reason: string) => void;
   /** 在途请求打断后消息自动归并重聚事件 */
-  in_flight_regrouped: (
-    sessionId: string,
-    totalMessageCount: number
-  ) => void;
+  in_flight_regrouped: (sessionId: string, totalMessageCount: number) => void;
   /** Agent 认知微内核开始执行生成事件 */
   agent_started: (sessionId: string, message: ConsolidatedMessage) => void;
   /** Agent 认知微内核执行完毕事件 */
@@ -188,25 +170,15 @@ export interface CoordinatorEvents {
   /** 高危工具触发 HITL 审批挂起事件 */
   approval_suspended: (sessionId: string, task: ApprovalTask) => void;
   /** 主管审批决议已流转并恢复事件 */
-  approval_resolved: (
-    leaderId: string,
-    task: ApprovalTask,
-    approved: boolean
-  ) => void;
+  approval_resolved: (leaderId: string, task: ApprovalTask, approved: boolean) => void;
   /** 主管私聊审批卡片已推送通知事件 */
   approval_notified: (leaderId: string, task: ApprovalTask) => void;
   /** 消息分发完成事件 */
-  reply_dispatched: (
-    sessionId: string,
-    result: CoordinatorDispatchResult
-  ) => void;
+  reply_dispatched: (sessionId: string, result: CoordinatorDispatchResult) => void;
   /** 主动定时任务触发事件 */
   schedule_triggered: (schedule: ProactiveSchedule) => void;
   /** 主动定时任务执行完成事件 */
-  schedule_executed: (
-    schedule: ProactiveSchedule,
-    result: CoordinatorDispatchResult
-  ) => void;
+  schedule_executed: (schedule: ProactiveSchedule, result: CoordinatorDispatchResult) => void;
   /** 主动定时任务执行异常事件 */
   schedule_failed: (schedule: ProactiveSchedule, error: Error) => void;
   /** 异常事件 */

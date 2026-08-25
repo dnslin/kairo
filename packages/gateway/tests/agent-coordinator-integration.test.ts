@@ -33,32 +33,40 @@ class MockDriver extends EventEmitter {
     return Promise.resolve(true);
   });
   public getCurrentSession = vi.fn().mockImplementation(() => {
-    return Promise.resolve({ id: this.activeSessionId, name: this.activeSessionId, type: 'private' });
-  });
-  public sendText = vi.fn().mockImplementation((_text: string, options?: { targetSessionId?: string }) => {
-    if (options?.targetSessionId && options.targetSessionId !== this.activeSessionId) {
-      return Promise.resolve({
-        success: false,
-        error: `发送前状态校验失败: session_switched - 当前活跃会话 [${this.activeSessionId}] 与目标会话 [${options.targetSessionId}] 不一致`,
-      } as SendResult);
-    }
     return Promise.resolve({
-      success: true,
-      messageId: `bot_reply_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    } as SendResult);
+      id: this.activeSessionId,
+      name: this.activeSessionId,
+      type: 'private',
+    });
   });
-  public sendRichText = vi.fn().mockImplementation((_text: unknown, options?: { targetSessionId?: string }) => {
-    if (options?.targetSessionId && options.targetSessionId !== this.activeSessionId) {
+  public sendText = vi
+    .fn()
+    .mockImplementation((_text: string, options?: { targetSessionId?: string }) => {
+      if (options?.targetSessionId && options.targetSessionId !== this.activeSessionId) {
+        return Promise.resolve({
+          success: false,
+          error: `发送前状态校验失败: session_switched - 当前活跃会话 [${this.activeSessionId}] 与目标会话 [${options.targetSessionId}] 不一致`,
+        } as SendResult);
+      }
       return Promise.resolve({
-        success: false,
-        error: `发送前状态校验失败: session_switched - 当前活跃会话 [${this.activeSessionId}] 与目标会话 [${options.targetSessionId}] 不一致`,
+        success: true,
+        messageId: `bot_reply_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       } as SendResult);
-    }
-    return Promise.resolve({
-      success: true,
-      messageId: `bot_reply_rich_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    } as SendResult);
-  });
+    });
+  public sendRichText = vi
+    .fn()
+    .mockImplementation((_text: unknown, options?: { targetSessionId?: string }) => {
+      if (options?.targetSessionId && options.targetSessionId !== this.activeSessionId) {
+        return Promise.resolve({
+          success: false,
+          error: `发送前状态校验失败: session_switched - 当前活跃会话 [${this.activeSessionId}] 与目标会话 [${options.targetSessionId}] 不一致`,
+        } as SendResult);
+      }
+      return Promise.resolve({
+        success: true,
+        messageId: `bot_reply_rich_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      } as SendResult);
+    });
   public emitMessage(msg: KK9Message): void {
     this.emit('message', msg);
   }
@@ -124,14 +132,18 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
           loginName: 'dev1',
           name: '张三',
           leaderId: 'emp_leader_1',
-          departments: [{ deptId: 'dept_tech', isPrimary: true, isLeader: false, position: '高级研发' }],
+          departments: [
+            { deptId: 'dept_tech', isPrimary: true, isLeader: false, position: '高级研发' },
+          ],
         },
         {
           id: 'emp_leader_1',
           loginName: 'leader1',
           name: '李总监',
           leaderId: null,
-          departments: [{ deptId: 'dept_tech', isPrimary: true, isLeader: true, position: '部门总监' }],
+          departments: [
+            { deptId: 'dept_tech', isPrimary: true, isLeader: true, position: '部门总监' },
+          ],
         },
       ],
     });
@@ -170,10 +182,12 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
 
     // 5. 初始化工具注册中心 (注册一个只读工具和一个高危审批工具)
     toolRegistry = new ToolRegistry();
-    mockDangerousExecute = vi.fn().mockImplementation(async (args: { configKey: string; value: string }) => {
-      await Promise.resolve();
-      return { modified: true, configKey: args.configKey, value: args.value };
-    });
+    mockDangerousExecute = vi
+      .fn()
+      .mockImplementation(async (args: { configKey: string; value: string }) => {
+        await Promise.resolve();
+        return { modified: true, configKey: args.configKey, value: args.value };
+      });
 
     const updateConfigTool = createAgentTool({
       id: 'update_system_security_policy',
@@ -303,12 +317,16 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
 
       // 第一轮：发送消息
       const round1Done = new Promise(resolve => coordinator!.once('agent_completed', resolve));
-      mockDriver.emitMessage(createSampleMsg({ id: 'turn_1', content: '第一轮提问：我的工号是多少？' }));
+      mockDriver.emitMessage(
+        createSampleMsg({ id: 'turn_1', content: '第一轮提问：我的工号是多少？' })
+      );
       await round1Done;
 
       // 第二轮：发送新消息
       const round2Done = new Promise(resolve => coordinator!.once('agent_completed', resolve));
-      mockDriver.emitMessage(createSampleMsg({ id: 'turn_2', content: '第二轮提问：今天技术部有什么会议？' }));
+      mockDriver.emitMessage(
+        createSampleMsg({ id: 'turn_2', content: '第二轮提问：今天技术部有什么会议？' })
+      );
       await round2Done;
 
       expect(chatMessagesList).toHaveLength(2);
@@ -562,7 +580,11 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       mockDriver.emitMessage(applicantMsg);
 
       // 等待高危工具触发挂起
-      const task = (await approvalSuspendedPromise) as { id: string; leaderId: string; toolName: string };
+      const task = (await approvalSuspendedPromise) as {
+        id: string;
+        leaderId: string;
+        toolName: string;
+      };
       expect(task.toolName).toBe('update_system_security_policy');
       expect(task.leaderId).toBe('emp_leader_1');
 
@@ -625,7 +647,9 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
 
       // 验证跨会话向申请人原会话 (session_emp_001) 推送了执行结果通知
       expect(mockDriver.sendText).toHaveBeenCalledWith(
-        expect.stringContaining('您的直属主管【李总监】已批准操作【update_system_security_policy】'),
+        expect.stringContaining(
+          '您的直属主管【李总监】已批准操作【update_system_security_policy】'
+        ),
         expect.objectContaining({ targetSessionId: 'session_emp_001' })
       );
     });
@@ -797,7 +821,10 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       mockDriver.activeSessionId = 'session_emp_001';
 
       // 向主管私聊会话 B 发送跨会话消息
-      const res = await coordinator.dispatchReply('session_leader_chat', '【审批待办】请审批张三的操作');
+      const res = await coordinator.dispatchReply(
+        'session_leader_chat',
+        '【审批待办】请审批张三的操作'
+      );
 
       // 验证自动触发了 selectSession 切换到 session_leader_chat
       expect(mockDriver.selectSession).toHaveBeenCalledWith('session_leader_chat');
@@ -826,10 +853,7 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       expect(res.error).toContain('selectSession [session_leader_chat] 返回 false');
 
       // 核心安全断言：切换失败时严禁调用底层的 sendText
-      expect(mockDriver.sendText).not.toHaveBeenCalledWith(
-        '【测试消息】',
-        expect.anything()
-      );
+      expect(mockDriver.sendText).not.toHaveBeenCalledWith('【测试消息】', expect.anything());
     });
 
     it('跨会话发送时若 selectSession 抛出异常，执行 Fail-Closed 安全拦截，严禁调用 sendText', async () => {
@@ -851,10 +875,7 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       expect(res.error).toContain('CDP 连接已断开');
 
       // 核心安全断言：抛错时严禁调用底层 sendText 避免发到错误会话
-      expect(mockDriver.sendText).not.toHaveBeenCalledWith(
-        '【测试消息】',
-        expect.anything()
-      );
+      expect(mockDriver.sendText).not.toHaveBeenCalledWith('【测试消息】', expect.anything());
     });
   });
 
@@ -999,38 +1020,45 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       let round = 0;
       let receivedTools: unknown[] | undefined;
       const mockReActLLM = {
-        chat: vi.fn().mockImplementation((messages: Array<{ role: string; content: unknown }>, options?: { tools?: unknown[] }) => {
-          round++;
-          if (round === 1) {
-            // 首轮：模型断言收到 JSON Schema tools 且结构合规，返回 register_proactive_schedule toolCalls
-            receivedTools = options?.tools;
-            return Promise.resolve({
-              content: '正在为您创建定时提醒...',
-              finishReason: 'tool_calls',
-              toolCalls: [
-                {
-                  id: 'call_sched_nl_001',
-                  name: 'register_proactive_schedule',
-                  arguments: {
-                    name: '工作日早晨站会提醒',
-                    cron: '0 9 * * 1-5',
-                    message: '早上好！9:30 组内站会请准备。',
-                  },
-                },
-              ],
-            });
-          }
-          // 第二轮：模型接收到了 role: 'tool' 的执行结果，生成最终回复
-          const toolMsg = messages.find(m => m.role === 'tool');
-          const toolContentStr =
-            typeof toolMsg?.content === 'string'
-              ? toolMsg.content
-              : JSON.stringify(toolMsg?.content || {});
-          return Promise.resolve({
-            content: `已为您成功设置【工作日早晨站会提醒】！触发结果: ${toolContentStr}`,
-            finishReason: 'stop',
-          });
-        }),
+        chat: vi
+          .fn()
+          .mockImplementation(
+            (
+              messages: Array<{ role: string; content: unknown }>,
+              options?: { tools?: unknown[] }
+            ) => {
+              round++;
+              if (round === 1) {
+                // 首轮：模型断言收到 JSON Schema tools 且结构合规，返回 register_proactive_schedule toolCalls
+                receivedTools = options?.tools;
+                return Promise.resolve({
+                  content: '正在为您创建定时提醒...',
+                  finishReason: 'tool_calls',
+                  toolCalls: [
+                    {
+                      id: 'call_sched_nl_001',
+                      name: 'register_proactive_schedule',
+                      arguments: {
+                        name: '工作日早晨站会提醒',
+                        cron: '0 9 * * 1-5',
+                        message: '早上好！9:30 组内站会请准备。',
+                      },
+                    },
+                  ],
+                });
+              }
+              // 第二轮：模型接收到了 role: 'tool' 的执行结果，生成最终回复
+              const toolMsg = messages.find(m => m.role === 'tool');
+              const toolContentStr =
+                typeof toolMsg?.content === 'string'
+                  ? toolMsg.content
+                  : JSON.stringify(toolMsg?.content || {});
+              return Promise.resolve({
+                content: `已为您成功设置【工作日早晨站会提醒】！触发结果: ${toolContentStr}`,
+                finishReason: 'stop',
+              });
+            }
+          ),
       };
 
       const reactAgentRuntime = new KkbotAgentRuntime({
@@ -1063,9 +1091,9 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
 
       // 1. 验证首轮模型确实收到了包含 Draft-07 JSON Schema parameters 的 tools
       expect(receivedTools).toBeDefined();
-      const schedDef = (receivedTools as Array<{ function: { name: string; parameters: Record<string, unknown> } }>).find(
-        t => t.function.name === 'register_proactive_schedule'
-      );
+      const schedDef = (
+        receivedTools as Array<{ function: { name: string; parameters: Record<string, unknown> } }>
+      ).find(t => t.function.name === 'register_proactive_schedule');
       expect(schedDef).toBeDefined();
       expect(schedDef?.function.parameters).toHaveProperty('type', 'object');
       expect(schedDef?.function.parameters).toHaveProperty('properties');
@@ -1114,7 +1142,9 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
           debounceMs: 20,
           knowledgeRetriever: (query, _sid) => {
             if (query.includes('上线流程')) {
-              return Promise.resolve(['【企业知识库】: 上线流程需提前 2 小时申请发布窗口并在预发验证通过。']);
+              return Promise.resolve([
+                '【企业知识库】: 上线流程需提前 2 小时申请发布窗口并在预发验证通过。',
+              ]);
             }
             return Promise.resolve([]);
           },

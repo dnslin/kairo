@@ -169,7 +169,9 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
     expect(await coordinator.isTakeoverActive('session_e2e')).toBe(true);
 
     // 2. 客户紧接着发送新消息
-    await coordinator.handleInboundMessage(createMsg({ id: 'user_reply_1', content: '好的麻烦尽快' }));
+    await coordinator.handleInboundMessage(
+      createMsg({ id: 'user_reply_1', content: '好的麻烦尽快' })
+    );
 
     // 3. 等待防抖窗口
     await vi.advanceTimersByTimeAsync(3000);

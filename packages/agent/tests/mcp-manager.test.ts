@@ -12,7 +12,10 @@ describe('McpClientManager 外部 MCP 客户端管理器与动态工具挂载 (T
       description?: string;
       inputSchema?: Record<string, unknown>;
     }>;
-    callToolHandler?: (name: string, args: Record<string, unknown>) => Promise<{
+    callToolHandler?: (
+      name: string,
+      args: Record<string, unknown>
+    ) => Promise<{
       content: Array<{ type: string; text?: string; data?: string }>;
       isError?: boolean;
     }>;
@@ -43,38 +46,50 @@ describe('McpClientManager 外部 MCP 客户端管理器与动态工具挂载 (T
       },
     ];
 
-    const callTool = options?.callToolHandler ?? (async (name: string, args: Record<string, unknown>) => {
-      await Promise.resolve();
-      if (name === 'query_erp_order') {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({ orderId: args.orderId, amount: 998, status: 'PAID' }),
-            },
-          ],
-        };
-      }
-      if (name === 'update_order_status') {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({ success: true, newStatus: args.status }),
-            },
-          ],
-        };
-      }
-      throw new Error(`未知 MCP 工具: ${name}`);
-    });
+    const callTool =
+      options?.callToolHandler ??
+      (async (name: string, args: Record<string, unknown>) => {
+        await Promise.resolve();
+        if (name === 'query_erp_order') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({ orderId: args.orderId, amount: 998, status: 'PAID' }),
+              },
+            ],
+          };
+        }
+        if (name === 'update_order_status') {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({ success: true, newStatus: args.status }),
+              },
+            ],
+          };
+        }
+        throw new Error(`未知 MCP 工具: ${name}`);
+      });
 
     return {
       connect: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockResolvedValue(undefined),
       listTools: vi.fn().mockResolvedValue({ tools: mockTools }),
-      callTool: vi.fn().mockImplementation(async ({ name, arguments: args }: { name: string; arguments?: Record<string, unknown> }) => {
-        return callTool(name, args ?? {});
-      }),
+      callTool: vi
+        .fn()
+        .mockImplementation(
+          async ({
+            name,
+            arguments: args,
+          }: {
+            name: string;
+            arguments?: Record<string, unknown>;
+          }) => {
+            return callTool(name, args ?? {});
+          }
+        ),
     };
   };
 
@@ -164,8 +179,12 @@ describe('McpClientManager 外部 MCP 客户端管理器与动态工具挂载 (T
     });
 
     const queryTool = registry.get('erp_query_erp_order');
-    await expect(queryTool!.execute({ orderId: 'ORD_NOT_EXIST' })).rejects.toThrowError(McpClientError);
-    await expect(queryTool!.execute({ orderId: 'ORD_NOT_EXIST' })).rejects.toThrowError(/订单不存在或已被删除/);
+    await expect(queryTool!.execute({ orderId: 'ORD_NOT_EXIST' })).rejects.toThrowError(
+      McpClientError
+    );
+    await expect(queryTool!.execute({ orderId: 'ORD_NOT_EXIST' })).rejects.toThrowError(
+      /订单不存在或已被删除/
+    );
   });
 
   it('断开 MCP Server 连接时应当从 ToolRegistry 中自动注销卸载对应的工具', async () => {

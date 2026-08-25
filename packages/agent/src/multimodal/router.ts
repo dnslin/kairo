@@ -135,9 +135,7 @@ export class MultiModalRouter {
    * 将本地文件、Base64 或远程 URL 转换为 Vision API 安全可用的 Data URI 或公开 URL
    * 若本地文件不存在或读取失败，返回 null，严禁将未转化的裸本地路径直接提交给远端 Vision API
    */
-  public static async toDataUri(
-    img: ImageMediaSource
-  ): Promise<string | null> {
+  public static async toDataUri(img: ImageMediaSource): Promise<string | null> {
     if (!img.data) return null;
 
     // 1. 已经是 Base64 Data URI
@@ -151,9 +149,7 @@ export class MultiModalRouter {
 
     // 2. HTTP / HTTPS 远程公开 URL，直接使用
     if (
-      (img.type === 'url' ||
-        img.data.startsWith('http://') ||
-        img.data.startsWith('https://')) &&
+      (img.type === 'url' || img.data.startsWith('http://') || img.data.startsWith('https://')) &&
       !img.data.startsWith('file://')
     ) {
       return img.data;
@@ -219,8 +215,7 @@ export class MultiModalRouter {
     // 2. 从未受信消息正文中通过严格正则识别安全媒体 (Base64, HTTP/HTTPS URL, 受控 data/media)
     if (message.content) {
       // 2.1 识别 Base64 数据 URI
-      const base64Regex =
-        /data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+/g;
+      const base64Regex = /data:image\/(png|jpeg|jpg|webp|gif);base64,[A-Za-z0-9+/=]+/g;
       let b64Match: RegExpExecArray | null;
       while ((b64Match = base64Regex.exec(message.content)) !== null) {
         const dataUri = b64Match[0];
@@ -270,10 +265,7 @@ export class MultiModalRouter {
       }
     }
 
-    log.debug(
-      { sessionId: message.sessionId, count: images.length },
-      '检测到消息中的图片媒体'
-    );
+    log.debug({ sessionId: message.sessionId, count: images.length }, '检测到消息中的图片媒体');
     return images;
   }
 
@@ -292,10 +284,7 @@ export class MultiModalRouter {
 
     // 1. 提取并注入办公文件卡片
     const fileCards = this.fileCardAwareness.extractFileCards(message);
-    let enhancedContent = this.fileCardAwareness.enhanceMessageContent(
-      message.content,
-      fileCards
-    );
+    let enhancedContent = this.fileCardAwareness.enhanceMessageContent(message.content, fileCards);
 
     // 2. 检测图片媒体
     const images = this.detectImages(message);
@@ -377,19 +366,14 @@ export class MultiModalRouter {
                 extractedText = res.text.trim();
               }
             } catch (err) {
-              log.warn(
-                { img: img.fileName || img.data, err },
-                'OCR 引擎文字提取异常'
-              );
+              log.warn({ img: img.fileName || img.data, err }, 'OCR 引擎文字提取异常');
             }
           }
 
           if (extractedText) {
             ocrResults.push({ source: img, text: extractedText });
             const nameLabel = img.fileName ? `[${img.fileName}]` : '';
-            ocrPromptSections.push(
-              `[用户附件数据 - 图片文字识别 ${nameLabel}]:\n${extractedText}`
-            );
+            ocrPromptSections.push(`[用户附件数据 - 图片文字识别 ${nameLabel}]:\n${extractedText}`);
           } else if (this.injectImagePlaceholder) {
             const nameLabel = img.fileName || img.data;
             ocrPromptSections.push(

@@ -3,7 +3,9 @@
   "version": "2.0.0",
   "description": "Cognitive microkernel and ReAct agent runtime for KKBot",
   "type": "module",
-  "main": "./dist/index.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -21,13 +23,13 @@
     "@kkbot/driver": "workspace:*",
     "@kkbot/store": "workspace:*",
     "@libsql/client": "^0.17.4",
-    "@mastra/core": "^1.60.0",
-    "@mastra/libsql": "^1.21.0",
-    "@mastra/memory": "^1.27.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@mastra/core": "1.61.0",
+    "@mastra/libsql": "1.21.1",
+    "@mastra/memory": "1.27.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "chokidar": "^4.0.3",
     "pino": "^9.6.0",
-    "zod": "^4.4.3"
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",

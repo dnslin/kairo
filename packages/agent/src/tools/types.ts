@@ -153,9 +153,7 @@ export interface ApprovalManagerPort {
  * 读写执行器与 LeaderApprovalRouter 交互的端口契约 (LeaderApprovalRouterPort)
  */
 export interface LeaderApprovalRouterPort {
-  resolveLeader: (
-    applicantId: string
-  ) => Promise<{ leaderId: string; leaderName?: string }>;
+  resolveLeader: (applicantId: string) => Promise<{ leaderId: string; leaderName?: string }>;
 }
 
 /**

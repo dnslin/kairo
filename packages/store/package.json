@@ -3,7 +3,9 @@
   "version": "2.0.0",
   "description": "Pure SQLite persistence layer and organization repository for KKBot",
   "type": "module",
-  "main": "./dist/index.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {

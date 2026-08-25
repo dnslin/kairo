@@ -116,8 +116,7 @@ export class SessionCoordinator extends EventEmitter {
     this.config = {
       debounceMs: options.config?.debounceMs ?? DEFAULT_DEBOUNCE_MS,
       maxWaitMs: options.config?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
-      takeoverDurationMs:
-        options.config?.takeoverDurationMs ?? DEFAULT_TAKEOVER_DURATION_MS,
+      takeoverDurationMs: options.config?.takeoverDurationMs ?? DEFAULT_TAKEOVER_DURATION_MS,
       autoMarkRead: options.config?.autoMarkRead ?? true,
       enableHitlRouter: options.config?.enableHitlRouter ?? true,
       onConsolidatedMessage: options.config?.onConsolidatedMessage,
@@ -126,8 +125,8 @@ export class SessionCoordinator extends EventEmitter {
 
     // 显式绑定 scheduleManager 的全局串行分发通道 (带 sendMutex 锁、自动会话切换与红点守护)
     if (this.scheduleManager && typeof this.scheduleManager.bindDispatchReply === 'function') {
-      this.scheduleManager.bindDispatchReply(
-        (sid, content, opt) => this.dispatchReply(sid, content, opt)
+      this.scheduleManager.bindDispatchReply((sid, content, opt) =>
+        this.dispatchReply(sid, content, opt)
       );
     }
 
@@ -186,13 +185,10 @@ export class SessionCoordinator extends EventEmitter {
       }
     }
 
-
     // 绑定 ScheduleManager 事件代理
     if (this.scheduleManager) {
       this.scheduleManager.on('triggered', s => this.emit('schedule_triggered', s));
-      this.scheduleManager.on('executed', (s, r) =>
-        this.emit('schedule_executed', s, r)
-      );
+      this.scheduleManager.on('executed', (s, r) => this.emit('schedule_executed', s, r));
       this.scheduleManager.on('failed', (s, e) => this.emit('schedule_failed', s, e));
     }
   }
@@ -575,14 +571,9 @@ export class SessionCoordinator extends EventEmitter {
     // 若在途生成中包含被撤回消息，立即中断
     const inFlight = this.inFlightSessions.get(sessionId);
     if (inFlight) {
-      const containsRecalled = inFlight.message.messages.some(
-        m => m.id === messageId
-      );
+      const containsRecalled = inFlight.message.messages.some(m => m.id === messageId);
       if (containsRecalled) {
-        log.info(
-          { sessionId, messageId },
-          '在途生成任务包含被撤回消息，立即 50ms 瞬时中断'
-        );
+        log.info({ sessionId, messageId }, '在途生成任务包含被撤回消息，立即 50ms 瞬时中断');
         inFlight.abortController.abort();
         this.inFlightSessions.delete(sessionId);
         const elapsedMs = Date.now() - inFlight.startedAt;
@@ -824,7 +815,6 @@ export class SessionCoordinator extends EventEmitter {
     );
     return next;
   }
-
 
   /**
    * 显式手动触发指定会话的防抖聚合
@@ -1100,10 +1090,7 @@ export class SessionCoordinator extends EventEmitter {
     // 知识库 RAG 检索 (注入 Layer 4 事实层)
     if (this.config.knowledgeRetriever) {
       try {
-        const kbFacts = await this.config.knowledgeRetriever(
-          consolidated.content,
-          sessionId
-        );
+        const kbFacts = await this.config.knowledgeRetriever(consolidated.content, sessionId);
         if (kbFacts && kbFacts.length > 0) {
           retrievedFacts = [...(retrievedFacts ?? []), ...kbFacts];
         }
@@ -1142,8 +1129,7 @@ export class SessionCoordinator extends EventEmitter {
           userProfile = {
             nickname: memCtx.l3Profile.name ?? undefined,
             customPreferences:
-              memCtx.l3Profile.preferences &&
-              Object.keys(memCtx.l3Profile.preferences).length > 0
+              memCtx.l3Profile.preferences && Object.keys(memCtx.l3Profile.preferences).length > 0
                 ? (memCtx.l3Profile.preferences as Record<string, string>)
                 : undefined,
           };
@@ -1179,17 +1165,10 @@ export class SessionCoordinator extends EventEmitter {
       agentRes.finishReason === 'tool_calls' &&
       agentRes.toolCalls.some(t => t.status === 'suspended')
     ) {
-      log.info(
-        { sessionId },
-        '工具调用触发 HITL 审批挂起，开始向直属主管推送私聊通知'
-      );
+      log.info({ sessionId }, '工具调用触发 HITL 审批挂起，开始向直属主管推送私聊通知');
 
       for (const tc of agentRes.toolCalls) {
-        if (
-          tc.status === 'suspended' &&
-          tc.approvalTaskId &&
-          this.approvalManager
-        ) {
+        if (tc.status === 'suspended' && tc.approvalTaskId && this.approvalManager) {
           try {
             const task = await this.approvalManager.getTaskById(tc.approvalTaskId);
             if (task) {
@@ -1222,11 +1201,9 @@ export class SessionCoordinator extends EventEmitter {
       const dispatchRes = await this.dispatchReply(sessionId, agentRes.content);
       if (dispatchRes.success && this.memoryManager) {
         // 统一由 Store 持久化消息历史，此处仅异步尝试触发 L2 滚动摘要提炼 (显式 catch 避免未捕获拒绝)
-        void this.memoryManager
-          .maybeTriggerAsyncSummary(sessionId)
-          .catch(memErr => {
-            log.warn({ memErr, sessionId }, '触发 3-Tier 异步摘要异常');
-          });
+        void this.memoryManager.maybeTriggerAsyncSummary(sessionId).catch(memErr => {
+          log.warn({ memErr, sessionId }, '触发 3-Tier 异步摘要异常');
+        });
       }
     }
     this.emit('agent_completed', sessionId, agentRes);
@@ -1254,8 +1231,6 @@ export class SessionCoordinator extends EventEmitter {
 /**
  * 工厂函数：创建 SessionCoordinator 实例
  */
-export function createSessionCoordinator(
-  options: SessionCoordinatorOptions
-): SessionCoordinator {
+export function createSessionCoordinator(options: SessionCoordinatorOptions): SessionCoordinator {
   return new SessionCoordinator(options);
 }

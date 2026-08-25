@@ -8,10 +8,7 @@ const log = createChildLogger('file-card-awareness');
 /**
  * 文件扩展名与业务分类映射表
  */
-const EXTENSION_CATEGORY_MAP: Record<
-  string,
-  { category: FileCategory; label: string }
-> = {
+const EXTENSION_CATEGORY_MAP: Record<string, { category: FileCategory; label: string }> = {
   // 电子表格
   xlsx: { category: 'spreadsheet', label: '电子表格/数据分析' },
   xls: { category: 'spreadsheet', label: '电子表格/数据分析' },
@@ -161,9 +158,7 @@ export class FileCardAwareness {
   /**
    * 解析单一文件卡片实体
    */
-  public parseFileCard(
-    input: KK9FileInfo | KK9Message | string
-  ): FileCardInfo | null {
+  public parseFileCard(input: KK9FileInfo | KK9Message | string): FileCardInfo | null {
     // 1. 处理 KK9Message 实体
     if (typeof input === 'object' && input !== null && 'content' in input && 'id' in input) {
       if (input.fileInfo) {
@@ -219,7 +214,8 @@ export class FileCardAwareness {
       }
 
       // 匹配常见文件卡片文本格式: [文件] 考勤表.xlsx (1.2MB) 或 收到文件: test.pdf
-      const cardPattern = /(?:\[(?:文件|附件|File)\]|收到文件[:：]|发送了文件[:：])\s*([^\s()]+\.[a-zA-Z0-9]+)(?:\s*\(([^()]+)\))?/i;
+      const cardPattern =
+        /(?:\[(?:文件|附件|File)\]|收到文件[:：]|发送了文件[:：])\s*([^\s()]+\.[a-zA-Z0-9]+)(?:\s*\(([^()]+)\))?/i;
       const match = text.match(cardPattern);
       if (match) {
         const fileName = match[1]!;
@@ -290,10 +286,7 @@ export class FileCardAwareness {
     }
 
     const cards = Array.from(cardMap.values());
-    log.debug(
-      { sessionId: message.sessionId, count: cards.length },
-      '提取到文件卡片元数据'
-    );
+    log.debug({ sessionId: message.sessionId, count: cards.length }, '提取到文件卡片元数据');
     return cards;
   }
 
@@ -307,9 +300,7 @@ export class FileCardAwareness {
     lines.push(`[用户附件数据 - 文件卡片] 收到 ${fileCards.length} 个办公文件卡片附件:`);
     for (const card of fileCards) {
       const sizeInfo = card.fileSize ? ` (${card.fileSize})` : '';
-      lines.push(
-        `- 文件: ${card.fileName}${sizeInfo} [${card.categoryLabel}]`
-      );
+      lines.push(`- 文件: ${card.fileName}${sizeInfo} [${card.categoryLabel}]`);
     }
     lines.push(
       `[提示: 以上为用户发送的文件卡片外部附件元数据。如需深度解析文件数据，请结合具体需求或文件工具处理。]`
@@ -321,10 +312,7 @@ export class FileCardAwareness {
   /**
    * 将文件卡片元数据注入到消息文本中
    */
-  public enhanceMessageContent(
-    originalContent: string,
-    fileCards: FileCardInfo[]
-  ): string {
+  public enhanceMessageContent(originalContent: string, fileCards: FileCardInfo[]): string {
     if (fileCards.length === 0) {
       return originalContent;
     }

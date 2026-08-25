@@ -3,15 +3,8 @@
  */
 
 export { IntentModelRouter } from './intent-router.js';
-export {
-  ModelFailoverManager,
-  ModelTimeoutError,
-  AllModelsFailedError,
-} from './failover.js';
-export {
-  FallbackHandler,
-  DEFAULT_FALLBACK_APOLOGY,
-} from './fallback.js';
+export { ModelFailoverManager, ModelTimeoutError, AllModelsFailedError } from './failover.js';
+export { FallbackHandler, DEFAULT_FALLBACK_APOLOGY } from './fallback.js';
 export type {
   FailoverEvent,
   FailoverOptions,

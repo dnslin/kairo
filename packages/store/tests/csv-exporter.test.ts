@@ -46,9 +46,7 @@ describe('CSV 花名册导出器与 Excel 独占锁免疫测试 (TDD Red -> Gree
         phone: '13800000002',
         email: 'lisi@example.com',
         region: '上海',
-        departments: [
-          { deptId: 'dept-arch', isPrimary: true },
-        ],
+        departments: [{ deptId: 'dept-arch', isPrimary: true }],
       },
       {
         id: 'emp-003',
@@ -128,7 +126,9 @@ describe('CSV 花名册导出器与 Excel 独占锁免疫测试 (TDD Red -> Gree
       const content = fs.readFileSync(res.filePath, 'utf8');
 
       // 验证张三（主职在基础架构组，兼职在创新实验室）
-      expect(content).toContain('[主] 总经办/技术研发中心/基础架构组 (首席架构师); [兼] 总经办/技术研发中心/创新实验室 (研究员)');
+      expect(content).toContain(
+        '[主] 总经办/技术研发中心/基础架构组 (首席架构师); [兼] 总经办/技术研发中心/创新实验室 (研究员)'
+      );
       // 验证李四（仅主职）
       expect(content).toContain('[主] 总经办/技术研发中心/基础架构组');
       // 验证王五（无部门）
@@ -159,14 +159,16 @@ describe('CSV 花名册导出器与 Excel 独占锁免疫测试 (TDD Red -> Gree
 
       // 模拟 fs.promises.rename 在重命名为 targetPath 时抛出 EBUSY
       const originalRename = fs.promises.rename;
-      const renameSpy = vi.spyOn(fs.promises, 'rename').mockImplementation(async (oldPath, newPath) => {
-        if (newPath === targetPath) {
-          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
-          err.code = 'EBUSY';
-          throw err;
-        }
-        return originalRename(oldPath, newPath);
-      });
+      const renameSpy = vi
+        .spyOn(fs.promises, 'rename')
+        .mockImplementation(async (oldPath, newPath) => {
+          if (newPath === targetPath) {
+            const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+            err.code = 'EBUSY';
+            throw err;
+          }
+          return originalRename(oldPath, newPath);
+        });
 
       const res = await exporter.export({
         targetPath,
@@ -256,7 +258,10 @@ describe('CSV 花名册导出器与 Excel 独占锁免疫测试 (TDD Red -> Gree
       const originalRename = fs.promises.rename;
       vi.spyOn(fs.promises, 'rename').mockImplementation(async (oldPath, newPath) => {
         const targetStr = String(newPath);
-        if (targetStr.endsWith('double_locked.csv') || targetStr.endsWith('double_locked_2026-08-19.csv')) {
+        if (
+          targetStr.endsWith('double_locked.csv') ||
+          targetStr.endsWith('double_locked_2026-08-19.csv')
+        ) {
           const err = new Error('EBUSY') as NodeJS.ErrnoException;
           err.code = 'EBUSY';
           throw err;

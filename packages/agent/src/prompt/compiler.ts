@@ -1,10 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import { watch, type FSWatcher } from 'chokidar';
-import type {
-  LayeredPromptResult,
-  PromptCompilerOptions,
-} from '../types/index.js';
+import type { LayeredPromptResult, PromptCompilerOptions } from '../types/index.js';
 import { createChildLogger } from '../utils/logger.js';
 import { PromptCompileError } from '../utils/errors.js';
 
@@ -32,11 +29,7 @@ export class LayeredPromptCompiler extends EventEmitter {
   private watcher: FSWatcher | null = null;
   private initialized = false;
 
-  constructor(options?: {
-    soulPath?: string;
-    defaultSoul?: string;
-    watchSoul?: boolean;
-  }) {
+  constructor(options?: { soulPath?: string; defaultSoul?: string; watchSoul?: boolean }) {
     super();
     this.soulPath = options?.soulPath;
     this.soulContent = options?.defaultSoul ?? DEFAULT_SOUL_PROMPT;
@@ -145,9 +138,7 @@ export class LayeredPromptCompiler extends EventEmitter {
   /**
    * 结构化编译 4 层完整 System Prompt
    */
-  public async compile(
-    options?: PromptCompilerOptions
-  ): Promise<LayeredPromptResult> {
+  public async compile(options?: PromptCompilerOptions): Promise<LayeredPromptResult> {
     if (!this.initialized && this.soulPath) {
       await this.init();
     }
@@ -203,10 +194,7 @@ export class LayeredPromptCompiler extends EventEmitter {
           ? new Date(ts).toISOString().replace('T', ' ').substring(0, 19)
           : String(ts);
 
-    const lines: string[] = [
-      '### [Layer 2: 当前动态运行时上下文]',
-      `- 当前系统时间: ${dateStr}`,
-    ];
+    const lines: string[] = ['### [Layer 2: 当前动态运行时上下文]', `- 当前系统时间: ${dateStr}`];
 
     if (options?.userProfile) {
       const up = options.userProfile;

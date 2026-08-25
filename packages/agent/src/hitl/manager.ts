@@ -11,11 +11,7 @@ import type {
   StartApprovalWorkflowResult,
   ToolExecutionStatus,
 } from './types.js';
-import {
-  APPROVAL_STEP_ID,
-  resumeApprovalWorkflow,
-  type HitlWorkflow,
-} from './workflow.js';
+import { APPROVAL_STEP_ID, resumeApprovalWorkflow, type HitlWorkflow } from './workflow.js';
 import { initApprovalSchema } from './schema.js';
 import {
   ApprovalError,
@@ -88,10 +84,7 @@ function mapRowToTask(row: Record<string, unknown>): ApprovalTask {
   }
 
   let toolExecutionResult: unknown = undefined;
-  if (
-    typeof row.tool_execution_result === 'string' &&
-    row.tool_execution_result.trim() !== ''
-  ) {
+  if (typeof row.tool_execution_result === 'string' && row.tool_execution_result.trim() !== '') {
     toolExecutionResult = parseStoredToolResult(row.tool_execution_result);
   }
 
@@ -101,26 +94,17 @@ function mapRowToTask(row: Record<string, unknown>): ApprovalTask {
     toolName: String(row.tool_name),
     toolArgs,
     applicantId: String(row.applicant_id),
-    applicantName:
-      typeof row.applicant_name === 'string' ? row.applicant_name : undefined,
+    applicantName: typeof row.applicant_name === 'string' ? row.applicant_name : undefined,
     leaderId: String(row.leader_id),
-    leaderName:
-      typeof row.leader_name === 'string' ? row.leader_name : undefined,
+    leaderName: typeof row.leader_name === 'string' ? row.leader_name : undefined,
     threadId: String(row.thread_id),
-    workflowRunId:
-      typeof row.workflow_run_id === 'string' ? row.workflow_run_id : undefined,
-    workflowStepId:
-      typeof row.workflow_step_id === 'string'
-        ? row.workflow_step_id
-        : undefined,
+    workflowRunId: typeof row.workflow_run_id === 'string' ? row.workflow_run_id : undefined,
+    workflowStepId: typeof row.workflow_step_id === 'string' ? row.workflow_step_id : undefined,
     workflowResumed: Boolean(row.workflow_resumed),
-    toolExecutionStatus:
-      (row.tool_execution_status as ToolExecutionStatus) ?? 'not_started',
+    toolExecutionStatus: (row.tool_execution_status as ToolExecutionStatus) ?? 'not_started',
     toolExecutionResult,
     toolExecutionError:
-      typeof row.tool_execution_error === 'string'
-        ? row.tool_execution_error
-        : undefined,
+      typeof row.tool_execution_error === 'string' ? row.tool_execution_error : undefined,
     status: row.status as ApprovalStatus,
     decision,
     timeoutMs: Number(row.timeout_ms || 60000),
@@ -170,9 +154,7 @@ export class ApprovalManager extends EventEmitter {
   constructor(options: ApprovalManagerOptions) {
     super();
     if (!options.client) {
-      throw new ApprovalError(
-        'ApprovalManager 初始化失败: 必须提供有效的 LibSQL Client 实例'
-      );
+      throw new ApprovalError('ApprovalManager 初始化失败: 必须提供有效的 LibSQL Client 实例');
     }
     this.client = options.client;
     this.workflow = options.workflow;
@@ -184,8 +166,7 @@ export class ApprovalManager extends EventEmitter {
     this.toolExecutor = options.toolExecutor;
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 60000;
     this.fallbackDegradeMessage =
-      options.fallbackDegradeMessage ??
-      '业务涉及敏感权限，审批超时已为您转人工客服处理';
+      options.fallbackDegradeMessage ?? '业务涉及敏感权限，审批超时已为您转人工客服处理';
   }
   /**
    * 动态设置工具执行委托函数 (用于审批通过后自动执行高危操作并回写结果)
@@ -205,7 +186,6 @@ export class ApprovalManager extends EventEmitter {
   ): void {
     this.toolExecutor = executor;
   }
-
 
   /**
    * 初始化数据库 Schema 并执行进程重启自愈扫描
@@ -285,10 +265,7 @@ export class ApprovalManager extends EventEmitter {
       return;
     }
 
-    log.info(
-      { count: result.rows.length },
-      '检测到未成功恢复执行的遗留工作流，开始自愈重试'
-    );
+    log.info({ count: result.rows.length }, '检测到未成功恢复执行的遗留工作流，开始自愈重试');
 
     for (const rawRow of result.rows) {
       const task = mapRowToTask(rawRow as unknown as Record<string, unknown>);
@@ -548,9 +525,7 @@ export class ApprovalManager extends EventEmitter {
       args: [leaderId],
     });
 
-    return result.rows.map(row =>
-      mapRowToTask(row as unknown as Record<string, unknown>)
-    );
+    return result.rows.map(row => mapRowToTask(row as unknown as Record<string, unknown>));
   }
 
   /**
@@ -562,9 +537,7 @@ export class ApprovalManager extends EventEmitter {
       args: [threadId],
     });
 
-    return result.rows.map(row =>
-      mapRowToTask(row as unknown as Record<string, unknown>)
-    );
+    return result.rows.map(row => mapRowToTask(row as unknown as Record<string, unknown>));
   }
 
   /**
@@ -585,10 +558,7 @@ export class ApprovalManager extends EventEmitter {
     }
 
     if (task.status !== 'approved') {
-      throw new ApprovalStateConflictError(
-        taskId,
-        `任务状态为 ${task.status}，未获审批通过`
-      );
+      throw new ApprovalStateConflictError(taskId, `任务状态为 ${task.status}，未获审批通过`);
     }
 
     // 1. 严格校验申请人身份与会话上下文绑定 (防跨用户/跨会话冒名盗用)
@@ -632,24 +602,17 @@ export class ApprovalManager extends EventEmitter {
     const taskArgsStr = JSON.stringify(task.toolArgs);
     const expectedArgsStr = JSON.stringify(expected.toolArgs);
     if (taskArgsStr !== expectedArgsStr) {
-      throw new ApprovalError(
-        `高危工具授权防篡改校验失败: 传入参数与主管审批通过的参数不一致`
-      );
+      throw new ApprovalError(`高危工具授权防篡改校验失败: 传入参数与主管审批通过的参数不一致`);
     }
     // 3. 若已经执行成功过，直接返回已持久化的结果并标记 alreadyExecuted = true (防重复产生副作用)
     if (task.toolExecutionStatus === 'succeeded') {
-      log.info(
-        { taskId, toolName: task.toolName },
-        '任务此前已成功执行，返回已持久化的执行结果'
-      );
+      log.info({ taskId, toolName: task.toolName }, '任务此前已成功执行，返回已持久化的执行结果');
       return { task, alreadyExecuted: true };
     }
 
     // 4. 若已被其他进程抢占执行中，坚决拒绝并发执行 (严格排他互斥)
     if (task.toolExecutionStatus === 'executing') {
-      throw new ApprovalError(
-        `高危任务 ${taskId} 当前正在由其他进程执行中，拒绝并发重复执行`
-      );
+      throw new ApprovalError(`高危任务 ${taskId} 当前正在由其他进程执行中，拒绝并发重复执行`);
     }
 
     // 5. 严格 CAS 抢占执行锁 (强制 rowsAffected === 1)
@@ -670,10 +633,7 @@ export class ApprovalManager extends EventEmitter {
   /**
    * 记录工具执行成功结果 (条件更新：仅允许处于 executing 状态的持有者更新)
    */
-  public async recordToolExecutionResult(
-    taskId: string,
-    result: unknown
-  ): Promise<void> {
+  public async recordToolExecutionResult(taskId: string, result: unknown): Promise<void> {
     const serialized = safeJsonStringify(result);
     await this.client.execute({
       sql: `UPDATE approval_tasks
@@ -686,10 +646,7 @@ export class ApprovalManager extends EventEmitter {
   /**
    * 记录工具执行失败信息 (条件更新：仅允许处于 executing 状态的持有者更新)
    */
-  public async recordToolExecutionError(
-    taskId: string,
-    error: string
-  ): Promise<void> {
+  public async recordToolExecutionError(taskId: string, error: string): Promise<void> {
     await this.client.execute({
       sql: `UPDATE approval_tasks
             SET tool_execution_status = 'failed', tool_execution_error = ?
@@ -792,16 +749,12 @@ export class ApprovalManager extends EventEmitter {
             { taskId: task.id, toolName: task.toolName, idempotencyKey: task.id },
             '审批批准，CAS 抢占成功，开始调用高危底层工具 (传递稳定 idempotencyKey)'
           );
-          toolExecutionResult = await this.toolExecutor(
-            task.toolName,
-            task.toolArgs,
-            {
-              approvalTaskId: task.id,
-              idempotencyKey: task.id,
-              threadId: task.threadId,
-              applicantId: task.applicantId,
-            }
-          );
+          toolExecutionResult = await this.toolExecutor(task.toolName, task.toolArgs, {
+            approvalTaskId: task.id,
+            idempotencyKey: task.id,
+            threadId: task.threadId,
+            applicantId: task.applicantId,
+          });
           toolExecutionStatus = 'succeeded';
 
           await this.client.execute({
@@ -820,10 +773,7 @@ export class ApprovalManager extends EventEmitter {
                   WHERE id = ? AND tool_execution_status = 'executing'`,
             args: [err.message, task.id],
           });
-          log.error(
-            { err, taskId: task.id, toolName: task.toolName },
-            '高危工具执行失败'
-          );
+          log.error({ err, taskId: task.id, toolName: task.toolName }, '高危工具执行失败');
           throw error;
         }
       }
@@ -869,10 +819,7 @@ export class ApprovalManager extends EventEmitter {
       resolvedAt: now,
     };
 
-    log.info(
-      { taskId: updatedTask.id, status, deciderId: input.deciderId },
-      '审批任务决议成功'
-    );
+    log.info({ taskId: updatedTask.id, status, deciderId: input.deciderId }, '审批任务决议成功');
 
     // 派发事件
     this.emit(status === 'approved' ? 'taskApproved' : 'taskRejected', updatedTask);
@@ -969,15 +916,18 @@ export class ApprovalManager extends EventEmitter {
   private scheduleTimeout(taskId: string, delayMs: number): void {
     this.clearTimer(taskId);
 
-    const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          await this.timeoutTask(taskId);
-        } catch (error) {
-          log.error({ err: error, taskId }, '定时器执行任务超时结算失败');
-        }
-      })();
-    }, Math.max(0, delayMs));
+    const timer = setTimeout(
+      () => {
+        void (async () => {
+          try {
+            await this.timeoutTask(taskId);
+          } catch (error) {
+            log.error({ err: error, taskId }, '定时器执行任务超时结算失败');
+          }
+        })();
+      },
+      Math.max(0, delayMs)
+    );
 
     this.activeTimers.set(taskId, timer);
   }

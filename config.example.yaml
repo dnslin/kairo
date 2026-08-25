@@ -1,86 +1,55 @@
-# KKBot 配置示例
-# 复制此文件为 config.yaml 并修改配置
+# KKBot 统一配置文件示例 (Spec 4.29)
+# 复制此文件为 config.yaml 并修改相关配置
 
-cdp:
-  url: http://127.0.0.1:9222
-  reconnect:
-    maxRetries: 5
-    baseDelayMs: 1000
-    maxDelayMs: 30000
+kk:
+  cdp:
+    url: http://127.0.0.1:9222
+  debounceMs: 1500
+  maxWaitMs: 5000
+  takeoverMinutes: 10
 
-page:
-  match: renderer.html
+storage:
+  url: file:./data/kkbot.db
 
-selectors:
-  messageList: ".chat-message-list"
-  messageNode: ".message-item"
-  messageSender: ".sender-name"
-  messageTime: ".message-time"
-  messageContent: ".message-text"
-  inputBox: "#message-input"
-  sendButton: ".send-btn"
-  sessionList: ".session-list"
-  sessionItem: ".session-item"
-  sessionName: ".session-name"
-  unreadBadge: ".unread-badge"
-  groupIndicator: ".group-indicator"  # 群聊标识
+mastra:
+  observability:
+    enabled: true
+    redactSensitiveData: true
 
-watcher:
-  intervalMs: 3000
-  maxMessages: 20
+mcp:
+  perServerTimeoutMs: 5000
+  servers:
+    enterprise-search:
+      required: true
 
-policy:
-  whitelist: []
-  blacklist: []
-  sessionTypes:
-    - private
-    - group
-  workingHours: "09:00-18:00"
-  throttle:
-    perSessionMinIntervalSeconds: 60
-    dailyMaxPerSession: 50
+agent:
+  id: kk-assistant
+  soulPath: ./config/soul.md
+  maxSteps: 5
+  memory:
+    lastMessages: 20
+    observationalMemory: true
 
-llm:
-  baseUrl: https://api.openai.com/v1
-  apiKey: ${LLM_API_KEY}
-  model: gpt-4o-mini
-  temperature: 0.7
-  timeout: 30000
-  maxTokens: 500
-  contextMessages: 5
-  systemPrompt: |
-    你是一个友好的客服助手。请根据用户的问题给出简洁、专业的回复。
-    注意事项：
-    - 保持礼貌和专业
-    - 回复简洁明了
-    - 如果不确定，建议用户咨询人工客服
-  summaryIntervalMessages: 20  # 触发摘要的消息间隔（0 = 禁用）
-  summaryPrompt: |
-    请将以下对话历史压缩为一段简明摘要，保留关键信息、用户核心问题和解决状态。
-    摘要应便于后续对话中快速理解上下文。请直接输出摘要，不要添加额外解释。
+knowledge:
+  sources: ./data/knowledge/sources
+  normalized: ./data/knowledge/normalized
+  lexical:
+    enabled: true
+  embedding:
+    enabled: true
+    baseUrl: ${EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+    apiKey: ${EMBEDDING_API_KEY}
+    model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  rerank:
+    enabled: false
 
-validation:
-  sensitiveWords:
-    - 密码
-    - 银行卡
-  maxReplyLength: 500
+limits:
+  timezone: Asia/Shanghai
+  globalDailyTokens: 1000000
+  userDailyTokens: 50000
+  userDailyRequests: 100
 
-mode: draft_only  # draft_only | auto_send
-
-ops:
-  port: 3000
-  host: 127.0.0.1
-
-logging:
-  level: info  # trace | debug | info | warn | error | fatal
-  pretty: true
-
-store:
-  dbPath: ./data/kkbot.db
-  storeMessageContent: true  # 是否存储消息内容（敏感信息控制）
-
-sender:
-  verifyTimeoutMs: 3000
-  logMasking: false
-  sendCheck:
-    abortOnNewMessages: true  # 发送前检测到新消息时中止发送
+retention:
+  mediaDays: 30
+  deliverableDays: 30
+  logDays: 7

@@ -238,9 +238,15 @@ describe('SessionCoordinator 业务编排器测试', () => {
       });
       await coordinator.start();
 
-      await coordinator.handleInboundMessage(createSampleMessage({ id: 'm1', content: '正常消息 1' }));
-      await coordinator.handleInboundMessage(createSampleMessage({ id: 'm2', content: '手误发送的敏感信息' }));
-      await coordinator.handleInboundMessage(createSampleMessage({ id: 'm3', content: '正常消息 2' }));
+      await coordinator.handleInboundMessage(
+        createSampleMessage({ id: 'm1', content: '正常消息 1' })
+      );
+      await coordinator.handleInboundMessage(
+        createSampleMessage({ id: 'm2', content: '手误发送的敏感信息' })
+      );
+      await coordinator.handleInboundMessage(
+        createSampleMessage({ id: 'm3', content: '正常消息 2' })
+      );
 
       expect(coordinator.getPendingQueue('session_001')).toHaveLength(3);
 
@@ -371,7 +377,9 @@ describe('SessionCoordinator 业务编排器测试', () => {
       expect(await coordinator.isTakeoverActive('session_001')).toBe(true);
 
       // 客户发送新消息
-      await coordinator.handleInboundMessage(createSampleMessage({ id: 'u2', content: '还在吗？' }));
+      await coordinator.handleInboundMessage(
+        createSampleMessage({ id: 'u2', content: '还在吗？' })
+      );
 
       // 防抖队列应为空，且触发 suppressed 事件
       expect(coordinator.getPendingQueue('session_001')).toHaveLength(0);

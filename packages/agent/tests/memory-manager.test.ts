@@ -29,9 +29,7 @@ describe('AgentMemoryManager 3-Tier 记忆管理系统与物理隔离测试 (TDD
       const res = await db.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name ASC"
       );
-      const tables = res.rows.map((r) =>
-        typeof r.name === 'string' ? r.name : ''
-      );
+      const tables = res.rows.map(r => (typeof r.name === 'string' ? r.name : ''));
 
       expect(tables).toContain('session_messages');
       expect(tables).toContain('sessions');
@@ -99,10 +97,7 @@ describe('AgentMemoryManager 3-Tier 记忆管理系统与物理隔离测试 (TDD
       });
 
       // 撤回第 2 条消息
-      const recallResult = await memoryManager.markMessageRecalled(
-        threadId,
-        'msg_secret_2'
-      );
+      const recallResult = await memoryManager.markMessageRecalled(threadId, 'msg_secret_2');
       expect(recallResult).toBe(true);
 
       // 读取 L1 窗口
@@ -111,10 +106,7 @@ describe('AgentMemoryManager 3-Tier 记忆管理系统与物理隔离测试 (TDD
       expect(window.totalCount).toBe(2);
       expect(window.filteredRecalledCount).toBe(1);
       expect(window.messages).toHaveLength(2);
-      expect(window.messages.map((m) => m.content)).toEqual([
-        '第一条有效消息',
-        '第三条有效消息',
-      ]);
+      expect(window.messages.map(m => m.content)).toEqual(['第一条有效消息', '第三条有效消息']);
       expect(window.formattedText).not.toContain('包含机密信息');
     });
 
@@ -156,7 +148,7 @@ describe('AgentMemoryManager 3-Tier 记忆管理系统与物理隔离测试 (TDD
       const mockLLM: LLMProvider = {
         chat(messages: LLMMessage[]) {
           llmCallCount++;
-          const userMsg = messages.find((m) => m.role === 'user');
+          const userMsg = messages.find(m => m.role === 'user');
           expect(userMsg?.content).toContain('请提炼以下会话的核心事实摘要');
 
           return Promise.resolve({
@@ -279,10 +271,7 @@ describe('AgentMemoryManager 3-Tier 记忆管理系统与物理隔离测试 (TDD
 
       const profile = await memoryManager.getL3Profile(resourceId);
       expect(profile.keyFacts).toHaveLength(2);
-      expect(profile.keyFacts).toEqual([
-        '习惯在早上 9 点前处理工单',
-        '主要负责支付网关模块',
-      ]);
+      expect(profile.keyFacts).toEqual(['习惯在早上 9 点前处理工单', '主要负责支付网关模块']);
     });
 
     it('recordTopicTransition 应当支持多轮话题平滑过渡并维护最近话题窗口', async () => {
@@ -313,11 +302,7 @@ describe('AgentMemoryManager 3-Tier 记忆管理系统与物理隔离测试 (TDD
         content: 'Alice 的机密薪酬调整讨论',
         senderId: 'user_alice',
       });
-      await memoryManager.updateL2Summary(
-        threadA,
-        '【机密】Alice 讨论薪酬与期权激励方案',
-        1
-      );
+      await memoryManager.updateL2Summary(threadA, '【机密】Alice 讨论薪酬与期权激励方案', 1);
 
       // 在 B 会话中存储普通消息
       await memoryManager.saveMessage({
@@ -326,11 +311,7 @@ describe('AgentMemoryManager 3-Tier 记忆管理系统与物理隔离测试 (TDD
         content: 'Bob 询问周报提交截止时间',
         senderId: 'user_bob',
       });
-      await memoryManager.updateL2Summary(
-        threadB,
-        'Bob 咨询日常周报流程',
-        1
-      );
+      await memoryManager.updateL2Summary(threadB, 'Bob 咨询日常周报流程', 1);
 
       // 验证 B 会话的 L1 窗口绝无 Alice 的任何消息
       const windowB = await memoryManager.getL1Window(threadB);
@@ -526,9 +507,9 @@ describe('AgentMemoryManager 3-Tier 记忆管理系统与物理隔离测试 (TDD
   describe('7. 边界与防御性分支测试', () => {
     it('未调用 init 时直接执行数据操作应明确抛出错误', async () => {
       const uninitManager = new AgentMemoryManager({ client: db });
-      await expect(
-        uninitManager.getL1Window('some_thread')
-      ).rejects.toThrow('AgentMemoryManager 尚未初始化');
+      await expect(uninitManager.getL1Window('some_thread')).rejects.toThrow(
+        'AgentMemoryManager 尚未初始化'
+      );
     });
 
     it('支持使用独立数据库配置自动创建与关闭 LibSQL 实例', async () => {

@@ -12,13 +12,14 @@ export default defineConfig({
       '@kkbot/gateway': path.resolve(__dirname, 'packages/gateway/src/index.ts'),
       '@kkbot/coordinator': path.resolve(__dirname, 'packages/gateway/src/index.ts'),
       '@kkbot/agent': path.resolve(__dirname, 'packages/agent/src/index.ts'),
+      '@kkbot/knowledge': path.resolve(__dirname, 'packages/knowledge/src/index.ts'),
+      '@kkbot/app': path.resolve(__dirname, 'apps/kkbot/src/index.ts'),
     },
   },
   test: {
     globals: true,
     environment: 'node',
-    pool: 'forks',
-    include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'packages/*/tests/**/*.test.ts', 'apps/*/tests/**/*.test.ts', 'src/**/*.test.ts', '**/fixtures/*/src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],

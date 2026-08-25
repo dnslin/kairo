@@ -29,7 +29,10 @@ function tryParseJson(val: unknown): Record<string, unknown> | null {
   if (typeof val === 'object') return val as Record<string, unknown>;
   if (typeof val === 'string') {
     const trimmed = val.trim();
-    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+    if (
+      (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+      (trimmed.startsWith('[') && trimmed.endsWith(']'))
+    ) {
       try {
         const res = JSON.parse(trimmed) as unknown;
         if (res && typeof res === 'object') return res as Record<string, unknown>;
@@ -121,7 +124,10 @@ function isCancelMessageItem(item: Record<string, unknown>): boolean {
     return true;
   }
   const contentObj = tryParseJson(item['content']);
-  if (contentObj && (contentObj['event'] === 'CancelMessage' || contentObj['type'] === 'CancelMessage')) {
+  if (
+    contentObj &&
+    (contentObj['event'] === 'CancelMessage' || contentObj['type'] === 'CancelMessage')
+  ) {
     return true;
   }
   return false;
@@ -144,9 +150,9 @@ export function normalizeNativeMessage(
   const rawObj = payload as Record<string, unknown>;
 
   // 1. 解析嵌套的会话信息
-  const sessionObj = (rawObj['session'] && typeof rawObj['session'] === 'object'
-    ? rawObj['session']
-    : {}) as Record<string, unknown>;
+  const sessionObj = (
+    rawObj['session'] && typeof rawObj['session'] === 'object' ? rawObj['session'] : {}
+  ) as Record<string, unknown>;
 
   const rawSessionId =
     rawObj['sessionId'] ??
@@ -192,10 +198,14 @@ export function normalizeNativeMessage(
     rawList = [rawObj];
   }
   const now = Date.now();
-  const currentUserId = context?.currentUserId !== undefined ? toSafeString(context.currentUserId) : null;
+  const currentUserId =
+    context?.currentUserId !== undefined ? toSafeString(context.currentUserId) : null;
 
   return rawList
-    .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !isCancelMessageItem(item))
+    .filter(
+      (item): item is Record<string, unknown> =>
+        !!item && typeof item === 'object' && !isCancelMessageItem(item)
+    )
     .map(item => {
       const rawSender =
         item['sender'] ??
@@ -214,9 +224,9 @@ export function normalizeNativeMessage(
 
       const isMe = Boolean(
         item['isMe'] === true ||
-          item['fromMe'] === true ||
-          (currentUserId && senderId && senderId === currentUserId) ||
-          (currentUserId && sender === currentUserId)
+        item['fromMe'] === true ||
+        (currentUserId && senderId && senderId === currentUserId) ||
+        (currentUserId && sender === currentUserId)
       );
 
       // 时间戳处理（秒级转毫秒级兼容）
@@ -228,14 +238,29 @@ export function normalizeNativeMessage(
       }
 
       // @ 提及信息解析
-      let atMe = Boolean(item['atMe'] || item['isAtMe'] || item['atState'] === 1 || item['atState'] === 2);
-      let atAll = Boolean(item['atAll'] || item['isAtAll'] || item['atState'] === 3 || content.includes('@全体') || content.includes('@所有人'));
+      let atMe = Boolean(
+        item['atMe'] || item['isAtMe'] || item['atState'] === 1 || item['atState'] === 2
+      );
+      let atAll = Boolean(
+        item['atAll'] ||
+        item['isAtAll'] ||
+        item['atState'] === 3 ||
+        content.includes('@全体') ||
+        content.includes('@所有人')
+      );
 
       const atMemberList = Array.isArray(item['atMemberIDList']) ? item['atMemberIDList'] : [];
-      if (atMemberList.includes('all') || atMemberList.includes(-1) || atMemberList.includes('-1')) {
+      if (
+        atMemberList.includes('all') ||
+        atMemberList.includes(-1) ||
+        atMemberList.includes('-1')
+      ) {
         atAll = true;
       }
-      if (currentUserId && (atMemberList.includes(currentUserId) || atMemberList.includes(Number(currentUserId)))) {
+      if (
+        currentUserId &&
+        (atMemberList.includes(currentUserId) || atMemberList.includes(Number(currentUserId)))
+      ) {
         atMe = true;
       }
 
@@ -257,7 +282,8 @@ export function normalizeNativeMessage(
         replyTo = {
           replyToSender: toSafeString(r['sender'] ?? r['senderName'] ?? r['replyToSender'], ''),
           replyToContent: toSafeString(r['content'] ?? r['text'] ?? r['replyToContent'], ''),
-          replyToId: r['id'] ?? r['replyToId'] ? toSafeString(r['id'] ?? r['replyToId']) : undefined,
+          replyToId:
+            (r['id'] ?? r['replyToId']) ? toSafeString(r['id'] ?? r['replyToId']) : undefined,
         };
       }
 
@@ -269,7 +295,11 @@ export function normalizeNativeMessage(
         images = [
           {
             filePath: item['picPath'] ? toSafeString(item['picPath']) : undefined,
-            url: item['imgUrl'] ? toSafeString(item['imgUrl']) : item['picUrl'] ? toSafeString(item['picUrl']) : undefined,
+            url: item['imgUrl']
+              ? toSafeString(item['imgUrl'])
+              : item['picUrl']
+                ? toSafeString(item['picUrl'])
+                : undefined,
             width: typeof item['width'] === 'number' ? item['width'] : undefined,
             height: typeof item['height'] === 'number' ? item['height'] : undefined,
           },
@@ -282,7 +312,8 @@ export function normalizeNativeMessage(
         fileInfo = item['fileInfo'] as KK9FileInfo;
       } else if (item['fileName'] || item['filePath']) {
         const fileName = toSafeString(item['fileName'], '未知文件');
-        const extMatch = fileName.lastIndexOf('.') !== -1 ? fileName.slice(fileName.lastIndexOf('.')) : undefined;
+        const extMatch =
+          fileName.lastIndexOf('.') !== -1 ? fileName.slice(fileName.lastIndexOf('.')) : undefined;
         fileInfo = {
           fileName,
           fileSize:
@@ -366,7 +397,10 @@ export function extractRecalledEventsFromPayload(
       events.push({
         messageId,
         sessionId: defaultSessionId,
-        sender: toSafeString(rawObj['sender'] ?? rawObj['senderName'] ?? rawObj['fromUserName'], '某人'),
+        sender: toSafeString(
+          rawObj['sender'] ?? rawObj['senderName'] ?? rawObj['fromUserName'],
+          '某人'
+        ),
         time: toSafeString(rawObj['time'], new Date().toLocaleTimeString()),
         timestamp: typeof rawObj['timestamp'] === 'number' ? rawObj['timestamp'] : Date.now(),
       });
@@ -388,14 +422,25 @@ export function extractRecalledEventsFromPayload(
   for (const item of rawList) {
     if (!item || typeof item !== 'object') continue;
     const contentObj = tryParseJson(item['content']);
-    if (contentObj && (contentObj['event'] === 'CancelMessage' || contentObj['type'] === 'CancelMessage')) {
-      const rawId = contentObj['msgID'] ?? contentObj['msgId'] ?? contentObj['id'] ?? item['msgID'] ?? item['id'];
+    if (
+      contentObj &&
+      (contentObj['event'] === 'CancelMessage' || contentObj['type'] === 'CancelMessage')
+    ) {
+      const rawId =
+        contentObj['msgID'] ??
+        contentObj['msgId'] ??
+        contentObj['id'] ??
+        item['msgID'] ??
+        item['id'];
       const messageId = toSafeString(rawId, '');
       if (messageId) {
         events.push({
           messageId,
           sessionId: toSafeString(item['sessionID'] ?? item['sessionId'] ?? defaultSessionId),
-          sender: toSafeString(item['sender'] ?? item['senderName'] ?? contentObj['sender'], '某人'),
+          sender: toSafeString(
+            item['sender'] ?? item['senderName'] ?? contentObj['sender'],
+            '某人'
+          ),
           time: toSafeString(item['time'] ?? item['sendTime'], new Date().toLocaleTimeString()),
           timestamp: typeof item['timestamp'] === 'number' ? item['timestamp'] : Date.now(),
         });
