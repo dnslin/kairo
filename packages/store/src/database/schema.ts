@@ -139,6 +139,54 @@ CREATE TABLE IF NOT EXISTS delivery_adjudications (
 );
 
 CREATE INDEX IF NOT EXISTS idx_delivery_adjudications_delivery_id ON delivery_adjudications(delivery_id);
+
+-- Tombstone 墓碑持久化表 (阻止撤回与合规删除消息复活)
+CREATE TABLE IF NOT EXISTS message_tombstones (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  tombstone_type TEXT NOT NULL,
+  operator TEXT,
+  reason TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE (session_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_tombstones_session_id ON message_tombstones(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_tombstones_session_msg ON message_tombstones(session_id, message_id);
+
+-- Compliance Deletions 正式合规删除审计记录表
+CREATE TABLE IF NOT EXISTS compliance_deletions (
+  id TEXT PRIMARY KEY,
+  command_id TEXT NOT NULL UNIQUE,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  session_id TEXT,
+  scope TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  operator TEXT NOT NULL,
+  status TEXT NOT NULL,
+  erased_messages_count INTEGER NOT NULL DEFAULT 0,
+  erased_deliveries_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_compliance_deletions_command_id ON compliance_deletions(command_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_deletions_target ON compliance_deletions(target_type, target_id);
+
+-- Delivery 输入消息关联映射表 (支持精准追踪与单消息合规删除)
+CREATE TABLE IF NOT EXISTS delivery_input_messages (
+  delivery_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (delivery_id, message_id),
+  FOREIGN KEY (delivery_id) REFERENCES message_deliveries(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_input_messages_msg ON delivery_input_messages(session_id, message_id);
 `;
 
 /**

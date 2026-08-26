@@ -88,6 +88,8 @@ export {
   deriveAssistantMessageId,
   ensureMastraThread,
   createMastraTextMessage,
+  removeMastraMessage,
+  resetObservationalMemoryScope,
   type MastraTextMessageV2,
   type KKBotAgentOptions,
   type ExecuteAgentOptions,

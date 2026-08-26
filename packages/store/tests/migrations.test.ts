@@ -102,6 +102,8 @@ describe('KKBot Database Migrations', () => {
       '0002_inbound_identity_and_groupsession_shortcircuit',
       '0003_message_deliveries',
       '0004_delivery_adjudications_and_retries',
+      '0005_tombstones_and_compliance_deletion',
+      '0006_delivery_input_messages',
     ]);
     expect(migrationResult.total).toBe(KKBOT_MIGRATIONS.length);
     // 3. 验证 session_messages 已拥有 origin 列且旧数据默认为 'external'
@@ -176,5 +178,40 @@ describe('KKBot Database Migrations', () => {
       "SELECT * FROM _kkbot_migrations WHERE id = '0004_delivery_adjudications_and_retries'"
     );
     expect(migRes.rows).toHaveLength(0);
+  });
+
+  it('数据库已记录 0001–0005 后升级仍能安全创建 0006 新表 delivery_input_messages', async () => {
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS _kkbot_migrations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at INTEGER NOT NULL,
+        checksum TEXT
+      );
+    `);
+    // 应用前 5 个迁移
+    for (const m of KKBOT_MIGRATIONS.slice(0, 5)) {
+      await client.executeMultiple(m.up);
+      await client.execute({
+        sql: 'INSERT INTO _kkbot_migrations (id, name, applied_at) VALUES (?, ?, ?)',
+        args: [m.id, m.name, Date.now()],
+      });
+    }
+
+    // 确认此时无 delivery_input_messages 表
+    const before = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name = 'delivery_input_messages'"
+    );
+    expect(before.rows).toHaveLength(0);
+
+    // 执行升级
+    const res = await runKKBotMigrations(client);
+    expect(res.applied).toEqual(['0006_delivery_input_messages']);
+
+    // 验证 delivery_input_messages 表与索引已成功建立
+    const after = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name = 'delivery_input_messages'"
+    );
+    expect(after.rows).toHaveLength(1);
   });
 });

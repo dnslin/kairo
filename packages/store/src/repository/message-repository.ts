@@ -7,6 +7,7 @@ import type {
   SaveMessageInput,
   SessionMessage,
   SessionMessageOrigin,
+  TombstoneType,
 } from '../types/index.js';
 import { DatabaseError, TransactionError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
@@ -117,12 +118,18 @@ export class MessageRepository {
     const replyTargetId = input.replyTargetId ?? null;
 
     try {
+      // 原子插入：若 messageId 已存在于 message_tombstones，则 WHERE NOT EXISTS 阻止正文写入；ON CONFLICT 防止重复
       const info = await this.client.execute({
         sql: `INSERT INTO session_messages (
           session_id, message_id, sender, sender_id, content,
           message_type, origin, raw_payload, reply_target_id, is_from_self,
           is_recalled, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM message_tombstones
+          WHERE session_id = ? AND message_id IS NOT NULL AND message_id = ?
+        )
         ON CONFLICT (session_id, message_id) DO NOTHING`,
         args: [
           input.sessionId,
@@ -137,13 +144,54 @@ export class MessageRepository {
           isFromSelf,
           isRecalled,
           createdAt,
+          input.sessionId,
+          messageId ?? '',
         ],
       });
+
       const isNewlyInserted = info.rowsAffected > 0;
       if (!isNewlyInserted && messageId) {
+        // 1. 检查数据库中是否已存在既有真实记录
         const existing = await this.getMessageBySessionAndMessageId(input.sessionId, messageId);
         if (existing) {
-          return { ...existing, isNewlyInserted: false };
+          const tombRes = await this.client.execute({
+            sql: `SELECT tombstone_type FROM message_tombstones WHERE session_id = ? AND message_id = ? LIMIT 1`,
+            args: [input.sessionId, messageId],
+          });
+          const isTomb = tombRes.rows.length > 0;
+          const tombType = isTomb && tombRes.rows[0] ? ((tombRes.rows[0] as unknown as { tombstone_type: string }).tombstone_type as TombstoneType) : undefined;
+          return {
+            ...existing,
+            isNewlyInserted: false,
+            isTombstoned: isTomb,
+            tombstoneType: tombType,
+          };
+        }
+        // 2. 若无既有记录，说明被持久墓碑原子拒绝写入，返回墓碑擦除结果（绝不回传原始明文）
+        const tombRes = await this.client.execute({
+          sql: `SELECT tombstone_type, operator, reason FROM message_tombstones WHERE session_id = ? AND message_id = ? LIMIT 1`,
+          args: [input.sessionId, messageId],
+        });
+        if (tombRes.rows.length > 0 && tombRes.rows[0]) {
+          const tombType = (tombRes.rows[0] as unknown as { tombstone_type: string }).tombstone_type as TombstoneType;
+          return {
+            id: 0,
+            sessionId: input.sessionId,
+            messageId,
+            sender: input.sender,
+            senderId,
+            content: '[COMPLIANCE_DELETED]',
+            messageType,
+            origin,
+            rawPayload: null,
+            replyTargetId,
+            isFromSelf: Boolean(input.isFromSelf),
+            isRecalled: true,
+            createdAt,
+            isNewlyInserted: false,
+            isTombstoned: true,
+            tombstoneType: tombType,
+          };
         }
       }
 
@@ -164,6 +212,7 @@ export class MessageRepository {
         isRecalled: Boolean(input.isRecalled),
         createdAt,
         isNewlyInserted,
+        isTombstoned: false,
       };
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
@@ -201,7 +250,12 @@ export class MessageRepository {
             session_id, message_id, sender, sender_id, content,
             message_type, origin, raw_payload, reply_target_id, is_from_self,
             is_recalled, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          )
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE NOT EXISTS (
+            SELECT 1 FROM message_tombstones
+            WHERE session_id = ? AND message_id IS NOT NULL AND message_id = ?
+          )
           ON CONFLICT (session_id, message_id) DO NOTHING`,
           args: [
             input.sessionId,
@@ -216,18 +270,62 @@ export class MessageRepository {
             isFromSelf,
             isRecalled,
             createdAt,
+            input.sessionId,
+            messageId ?? '',
           ],
         });
 
-        let finalId = Number(info.lastInsertRowid);
         if (info.rowsAffected === 0 && messageId) {
-          const existing = await this.getMessageBySessionAndMessageId(input.sessionId, messageId);
-          if (existing) {
-            results.push(existing);
+          const existingRes = await tx.execute({
+            sql: `SELECT * FROM session_messages WHERE session_id = ? AND message_id = ? LIMIT 1`,
+            args: [input.sessionId, messageId],
+          });
+          if (existingRes.rows.length > 0) {
+            const existingMsg = mapRowToMessage(existingRes.rows[0] as unknown as MessageRow);
+            const tombRes = await tx.execute({
+              sql: `SELECT tombstone_type FROM message_tombstones WHERE session_id = ? AND message_id = ? LIMIT 1`,
+              args: [input.sessionId, messageId],
+            });
+            const isTomb = tombRes.rows.length > 0;
+            const tombType = isTomb && tombRes.rows[0] ? ((tombRes.rows[0] as unknown as { tombstone_type: string }).tombstone_type as TombstoneType) : undefined;
+            results.push({
+              ...existingMsg,
+              isNewlyInserted: false,
+              isTombstoned: isTomb,
+              tombstoneType: tombType,
+            });
+            continue;
+          }
+          // 墓碑命中且无既有记录：返回墓碑状态，绝不回传原始明文
+          const tombRes = await tx.execute({
+            sql: `SELECT tombstone_type, operator, reason FROM message_tombstones WHERE session_id = ? AND message_id = ? LIMIT 1`,
+            args: [input.sessionId, messageId],
+          });
+          if (tombRes.rows.length > 0 && tombRes.rows[0]) {
+            const tombType = (tombRes.rows[0] as unknown as { tombstone_type: string }).tombstone_type as TombstoneType;
+            results.push({
+              id: 0,
+              sessionId: input.sessionId,
+              messageId,
+              sender: input.sender,
+              senderId,
+              content: '[COMPLIANCE_DELETED]',
+              messageType,
+              origin,
+              rawPayload: null,
+              replyTargetId,
+              isFromSelf: Boolean(input.isFromSelf),
+              isRecalled: true,
+              createdAt,
+              isNewlyInserted: false,
+              isTombstoned: true,
+              tombstoneType: tombType,
+            });
             continue;
           }
         }
 
+        const finalId = Number(info.lastInsertRowid);
         results.push({
           id: finalId,
           sessionId: input.sessionId,
@@ -242,26 +340,20 @@ export class MessageRepository {
           isFromSelf: Boolean(input.isFromSelf),
           isRecalled: Boolean(input.isRecalled),
           createdAt,
+          isNewlyInserted: info.rowsAffected > 0,
         });
       }
 
       await tx.commit();
       return results;
     } catch (error) {
-      try {
-        await tx.rollback();
-      } catch {
-        // 忽略已回滚事务的异常
-      }
+      await tx.rollback();
       const err = error instanceof Error ? error : new Error(String(error));
-      log.error({ err, count: inputs.length }, '原子批量保存会话消息失败');
-      throw new TransactionError(`原子批量保存会话消息失败: ${err.message}`, err);
+      throw new TransactionError(`批量保存会话消息失败: ${err.message}`, err);
     }
   }
 
   /**
-   * 基于客户端原生 messageId 100% 精准标记消息为已撤回
-   *
    * @param sessionId 会话 ID（确保跨会话隔离）
    * @param nativeMessageId 客户端原生消息 ID
    * @returns 是否成功匹配并更新记录
@@ -576,5 +668,44 @@ export class MessageRepository {
     const res = await this.client.execute({ sql, args: params });
     const row = res.rows[0] as unknown as { total: number } | undefined;
     return Number(row?.total ?? 0);
+  }
+
+  /**
+   * 擦除单条消息的正文与多模态载荷（合规删除）
+   */
+  public async eraseMessageContent(sessionId: string, messageId: string): Promise<number> {
+    const res = await this.client.execute({
+      sql: `UPDATE session_messages
+            SET content = '[COMPLIANCE_DELETED]', raw_payload = NULL, is_recalled = 1
+            WHERE session_id = ? AND message_id = ?`,
+      args: [sessionId, messageId],
+    });
+    return res.rowsAffected;
+  }
+
+  /**
+   * 擦除会话内所有消息的正文与多模态载荷（合规删除）
+   */
+  public async eraseSessionMessagesContent(sessionId: string): Promise<number> {
+    const res = await this.client.execute({
+      sql: `UPDATE session_messages
+            SET content = '[COMPLIANCE_DELETED]', raw_payload = NULL, is_recalled = 1
+            WHERE session_id = ?`,
+      args: [sessionId],
+    });
+    return res.rowsAffected;
+  }
+
+  /**
+   * 擦除指定员工发出的所有消息正文与多模态载荷（合规删除）
+   */
+  public async eraseEmployeeMessagesContent(employeeId: string): Promise<number> {
+    const res = await this.client.execute({
+      sql: `UPDATE session_messages
+            SET content = '[COMPLIANCE_DELETED]', raw_payload = NULL, is_recalled = 1
+            WHERE sender_id = ?`,
+      args: [employeeId],
+    });
+    return res.rowsAffected;
   }
 }

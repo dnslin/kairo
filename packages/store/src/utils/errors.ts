@@ -81,3 +81,20 @@ export class DeliveryStateTransitionError extends StoreError {
     this.toStatus = toStatus;
   }
 }
+
+export class MessageTombstonedError extends StoreError {
+  public readonly sessionId: string;
+  public readonly messageId: string;
+  public readonly tombstoneType: string;
+
+  constructor(sessionId: string, messageId: string, tombstoneType: string = 'compliance_deletion', message?: string) {
+    super(
+      message || `消息 [${sessionId}:${messageId}] 已处于墓碑状态 (${tombstoneType})，拒绝写入`,
+      'MESSAGE_TOMBSTONED_ERROR'
+    );
+    this.name = 'MessageTombstonedError';
+    this.sessionId = sessionId;
+    this.messageId = messageId;
+    this.tombstoneType = tombstoneType;
+  }
+}

@@ -522,6 +522,13 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
         },
       });
       const agent = new KKBotAgent({ modelFactory: factory, memory: mastraMemory });
+      mockDriver.selectSession.mockResolvedValue(true);
+      mockDriver.sendText.mockImplementation((_text) =>
+        Promise.resolve({
+          success: true,
+          messageId: `mock_sent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        })
+      );
 
       privCoordinator = new SessionCoordinator({
         driver: mockDriver as unknown as KK9Driver,
@@ -579,6 +586,151 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
       expect(deliv2.length).toBe(1);
       expect(deliv2[0].content).toBe('回复会话 102');
       expect(deliv2[0].sessionId).toBe(session2);
+    });
+
+    it('DELIVERY-01.10: generated 阶段中断进入 aborted，发送边界不明时保持 unknown，已 sent 保持 sent 交付事实', async () => {
+      const fakeModel = createFakeModel({
+        responses: [{ text: '待生成内容', finishReason: 'stop' }],
+      });
+      const factory = new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model: fakeModel }] },
+          DEEP: { models: [{ model: fakeModel }] },
+          VISION: { models: [{ model: fakeModel }] },
+        },
+      });
+      const agent = new KKBotAgent({ modelFactory: factory, memory: mastraMemory });
+
+      let capturedDeliveryId = '';
+      privCoordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store: privStore,
+        agent,
+        mastraMemory,
+        config: { debounceMs: 20, maxWaitMs: 100 },
+        hooks: {
+          afterDeliveryGeneratedBeforeSending: (delivId) => {
+            capturedDeliveryId = delivId;
+            const inFlight = privCoordinator.getInFlightSession('session_deliv_abort_c1');
+            inFlight?.abortController.abort();
+            return Promise.resolve();
+          },
+        },
+      });
+      await privCoordinator.start();
+
+      const sessionId = 'session_deliv_abort_c1';
+      await privCoordinator.handleInboundMessage({
+        id: 'msg_deliv_ab_1',
+        messageId: 'msg_deliv_ab_1',
+        sessionId,
+        sessionType: 'private',
+        sender: '员工',
+        senderId: 'emp_ab',
+        content: '测试中止',
+        messageType: 'text',
+        isMe: false,
+      });
+
+      await privCoordinator.flushSession(sessionId);
+
+      expect(capturedDeliveryId).toBeTruthy();
+      const deliv = await privStore.deliveries.getDeliveryById(capturedDeliveryId);
+      expect(deliv?.status).toBe('aborted');
+    });
+
+    it('DELIVERY-01.11: Operator 消息触发 HumanTakeover，中止 generated 输出，保留已 sent 交付', async () => {
+      const fakeModel = createFakeModel({
+        responses: [{ text: '自动回复', finishReason: 'stop' }],
+      });
+      const factory = new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model: fakeModel }] },
+          DEEP: { models: [{ model: fakeModel }] },
+          VISION: { models: [{ model: fakeModel }] },
+        },
+      });
+      const agent = new KKBotAgent({ modelFactory: factory, memory: mastraMemory });
+
+      privCoordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store: privStore,
+        agent,
+        mastraMemory,
+        config: { debounceMs: 50, maxWaitMs: 200 },
+      });
+      await privCoordinator.start();
+
+      const sessionId = 'session_deliv_takeover_c1';
+
+      // 用户入站排队中
+      await privCoordinator.handleInboundMessage({
+        id: 'msg_takeover_u1',
+        messageId: 'msg_takeover_u1',
+        sessionId,
+        sessionType: 'private',
+        sender: '员工',
+        senderId: 'emp_u',
+        content: '需要帮助',
+        isMe: false,
+      });
+
+      // 操作员接管
+      await privCoordinator.handleInboundMessage({
+        id: 'msg_takeover_op1',
+        messageId: 'msg_takeover_op1',
+        sessionId,
+        sessionType: 'private',
+        sender: '操作员',
+        senderId: 'emp_op',
+        content: '我来接管',
+        origin: 'operator',
+        isMe: true,
+      });
+
+      expect(await privCoordinator.isTakeoverActive(sessionId)).toBe(true);
+      expect(privCoordinator.getPendingQueue(sessionId)).toHaveLength(0);
+    });
+
+    it('DELIVERY-01.12: ComplianceDeletion 擦除 Delivery 生成正文，但保留真实交付状态 (如 sent) 与审计身份', async () => {
+      const sessionId = 'session_deliv_comp_c1';
+      const deliveryId = 'deliv_contract_comp_1';
+
+      await privStore.deliveries.createDelivery({
+        id: deliveryId,
+        runId: 'run_comp_1',
+        sessionId,
+        mastraMessageId: 'msg_asst_comp_1',
+        content: '已送达的真实内容包含个人手机号',
+        contentHash: 'hash_comp_1',
+        status: 'sent',
+        kkMessageId: 'kk_sent_comp_1',
+      });
+
+      privCoordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store: privStore,
+        mastraMemory,
+        complianceAuthorizer: () => ({ authorized: true }),
+      });
+
+      const record = await privCoordinator.executeComplianceDeletion({
+        commandId: 'cmd_deliv_comp_1',
+        targetType: 'session',
+        targetId: sessionId,
+        scope: { deliveries: true },
+        reason: '合规要求擦除内容',
+        operator: 'compliance_officer',
+      });
+
+      expect(record.status).toBe('completed');
+      expect(record.erasedDeliveriesCount).toBe(1);
+
+      // 验证: Delivery 正文被擦除为 [COMPLIANCE_DELETED]，但 status='sent' 真实交付事实严格保留
+      const deliv = await privStore.deliveries.getDeliveryById(deliveryId);
+      expect(deliv?.content).toBe('[COMPLIANCE_DELETED]');
+      expect(deliv?.status).toBe('sent');
+      expect(deliv?.kkMessageId).toBe('kk_sent_comp_1');
     });
   });
 });

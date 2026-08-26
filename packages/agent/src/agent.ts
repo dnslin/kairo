@@ -224,3 +224,73 @@ export function createMastraTextMessage(options: {
     createdAt: options.createdAt ?? new Date(),
   };
 }
+
+/**
+ * 从 Mastra Thread Memory 中安全删除指定 Message ID
+ * 删除完成后自动等待 memory.settled() 排空向量清理与后台任务
+ */
+export async function removeMastraMessage(
+  memory: Memory,
+  messageId: string
+): Promise<void> {
+  try {
+    await (memory as unknown as { deleteMessages: (ids: string[] | { messageIds: string[] }) => Promise<void> }).deleteMessages([messageId]);
+  } catch (err) {
+    try {
+      await (memory as unknown as { deleteMessages: (ids: string[] | { messageIds: string[] }) => Promise<void> }).deleteMessages({ messageIds: [messageId] });
+    } catch {
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  // 等待内存后台任务排空
+  if (typeof memory.settled === 'function') {
+    await memory.settled();
+  }
+}
+
+/**
+ * 重置指定 Thread / Resource 的 Observational Memory 范围 (Scope Reset)
+ * 1. 直接调用 storage memory domain 的 clearObservationalMemory 清除观察
+ * 2. 不删除 Thread 显式消息（保留会话中其他合法 user/operator/sent assistant，避免丢消息）
+ * 3. 等待 memory.settled() 排空；任何清理异常直接失败 (Fail-Closed)
+ */
+export async function resetObservationalMemoryScope(options: {
+  memory: Memory;
+  threadId: string;
+  resourceId?: string;
+  storage?: unknown;
+}): Promise<void> {
+  const { memory, threadId, resourceId, storage: explicitStorage } = options;
+
+  const storage =
+    explicitStorage ??
+    (memory as unknown as { storage?: { getStore?: (domain: string) => Promise<unknown> } }).storage;
+
+  if (!storage || typeof (storage as { getStore?: (domain: string) => Promise<unknown> }).getStore !== 'function') {
+    throw new Error('执行 Observational Memory Scope Reset 必须提供有效的 Storage 实例');
+  }
+
+  try {
+    const memDomain = (await (storage as { getStore: (domain: string) => Promise<unknown> }).getStore('memory')) as {
+      clearObservationalMemory?: (threadId: string | null, resourceId?: string | null) => Promise<void>;
+    } | null;
+
+    if (!memDomain || typeof memDomain.clearObservationalMemory !== 'function') {
+      throw new Error('Storage Memory Domain 未提供 clearObservationalMemory 能力');
+    }
+
+    await memDomain.clearObservationalMemory(threadId, resourceId ?? null);
+    if (resourceId) {
+      await memDomain.clearObservationalMemory(null, resourceId);
+    }
+  } catch (omErr) {
+    // Fail-Closed: OM scope 清理失败直接抛出异常
+    throw new Error(`Observational Memory scope 清理失败: ${omErr instanceof Error ? omErr.message : String(omErr)}`);
+  }
+
+  // 等待内存后台任务排空
+  if (typeof memory.settled === 'function') {
+    await memory.settled();
+  }
+}

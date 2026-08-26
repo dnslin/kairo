@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Memory } from '@mastra/memory';
 import { LibSQLStore } from '@mastra/libsql';
-import { KKBotAgent } from '../src/agent.js';
+import {
+  KKBotAgent,
+  removeMastraMessage,
+  resetObservationalMemoryScope,
+} from '../src/agent.js';
 import { MastraModelFactory } from '../src/models/factory.js';
 import { createFakeModel } from './fixtures/fake-model.js';
 import fs from 'node:fs';
@@ -220,5 +224,158 @@ describe('Mastra Memory & LibSQLStore API Verification', () => {
     expect(messagesAfterExplicitCommit[1].role).toBe('assistant');
     expect(messagesAfterExplicitCommit[1].id).toBe(stableAsstMsgId);
     expect(extractTextContent(messagesAfterExplicitCommit[1].content)).toBe('1+1等于2。');
+  });
+
+  it('deleteMessages removes message by ID from thread', async () => {
+    const threadId = 'session_delete_001';
+    const resourceId = 'emp_user_del_001';
+    const msgId1 = 'msg_user_session_delete_001_1';
+    const msgId2 = 'msg_user_session_delete_001_2';
+
+    await ensureThread(memory, threadId, resourceId);
+
+    await memory.saveMessages({
+      messages: [
+        {
+          id: msgId1,
+          role: 'user',
+          content: '消息1',
+          threadId,
+          resourceId,
+          createdAt: new Date(Date.now() - 1000),
+        },
+        {
+          id: msgId2,
+          role: 'user',
+          content: '消息2',
+          threadId,
+          resourceId,
+          createdAt: new Date(),
+        },
+      ],
+    });
+
+    let recallRes = await memory.recall({ threadId, resourceId });
+    expect(recallRes.messages.length).toBe(2);
+
+    // 测试删除 msgId1
+    // @ts-expect-error test signature
+    await memory.deleteMessages([msgId1]);
+    const recallAfter = await memory.recall({ threadId, resourceId });
+    expect(recallAfter.messages.length).toBe(1);
+    expect(recallAfter.messages[0].id).toBe(msgId2);
+  });
+
+  it('deleteThread deletes thread and its messages', async () => {
+    const threadId = 'session_delete_thread_001';
+    const resourceId = 'emp_user_del_002';
+    const msgId1 = 'msg_user_session_del_t1';
+
+    await ensureThread(memory, threadId, resourceId);
+    await memory.saveMessages({
+      messages: [
+        {
+          id: msgId1,
+          role: 'user',
+          content: '待删除线程的消息',
+          threadId,
+          resourceId,
+          createdAt: new Date(),
+        },
+      ],
+    });
+
+    expect(await memory.getThreadById({ threadId })).toBeDefined();
+
+    // @ts-expect-error testing API signature
+    // @ts-expect-error test signature
+    await memory.deleteThread(threadId);
+    const thread = await memory.getThreadById({ threadId });
+    expect(thread).toBeNull();
+  });
+
+  it('removeMastraMessage safely deletes a message from thread', async () => {
+    const threadId = 'session_rm_msg_01';
+    const resourceId = 'emp_rm_01';
+    const msgId = 'msg_user_rm_001';
+
+    await ensureThread(memory, threadId, resourceId);
+    await memory.saveMessages({
+      messages: [
+        {
+          id: msgId,
+          role: 'user',
+          content: '这是一条将被撤回的消息',
+          threadId,
+          resourceId,
+          createdAt: new Date(),
+        },
+      ],
+    });
+
+    let recall = await memory.recall({ threadId, resourceId });
+    expect(recall.messages.length).toBe(1);
+
+    await removeMastraMessage(memory, msgId);
+
+    recall = await memory.recall({ threadId, resourceId });
+    expect(recall.messages.length).toBe(0);
+  });
+
+  it('resetObservationalMemoryScope resets thread and only rebuilds from visible messages', async () => {
+    const threadId = 'session_om_reset_01';
+    const resourceId = 'emp_om_01';
+    const msgId1 = 'msg_user_om_keep';
+    const msgId2 = 'msg_user_om_recalled';
+
+    await ensureThread(memory, threadId, resourceId);
+    await memory.saveMessages({
+      messages: [
+        {
+          id: msgId1,
+          role: 'user',
+          content: '保留的消息1',
+          threadId,
+          resourceId,
+          createdAt: new Date(Date.now() - 1000),
+        },
+        {
+          id: msgId2,
+          role: 'user',
+          content: '被撤回的消息2',
+          threadId,
+          resourceId,
+          createdAt: new Date(),
+        },
+      ],
+    });
+    // 1. 从 Thread 中显式移除 msgId2
+    await removeMastraMessage(memory, msgId2);
+
+    // 2. 重置 OM 范围
+    await resetObservationalMemoryScope({
+      memory,
+      threadId,
+      resourceId,
+      storage: libSqlStore,
+    });
+
+    const recall = await memory.recall({ threadId, resourceId });
+    expect(recall.messages.length).toBe(1);
+    expect(recall.messages[0].id).toBe(msgId1);
+    expect(extractTextContent(recall.messages[0].content)).toBe('保留的消息1');
+  });
+
+  it('verifies clearObservationalMemory on LibSQLStore memory domain and memory.settled()', async () => {
+    const memDomain = await libSqlStore.getStore('memory');
+    expect(memDomain).toBeDefined();
+
+    // @ts-expect-error test clearObservationalMemory
+    expect(typeof memDomain?.clearObservationalMemory).toBe('function');
+
+    const resourceId = 'emp_test_om_clear';
+    // @ts-expect-error call clearObservationalMemory
+    await memDomain?.clearObservationalMemory(null, resourceId);
+    await memory.settled();
   });
 });

@@ -10,7 +10,7 @@ import type {
   DeliveryStatus,
   UpdateDeliveryStatusOptions,
 } from '../types/index.js';
-import { DatabaseError, DeliveryStateTransitionError, StoreError } from '../utils/errors.js';
+import { DatabaseError, DeliveryStateTransitionError, MessageTombstonedError, StoreError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('delivery-repo');
@@ -161,57 +161,117 @@ export class DeliveryRepository {
    * 采用 ON CONFLICT (run_id, content_hash) DO NOTHING 保证幂等
    */
   async createDelivery(input: CreateDeliveryInput): Promise<Delivery> {
-    const now = input.createdAt ?? Date.now();
-    const status: DeliveryStatus = input.status ?? 'generated';
-    const kkMessageId = input.kkMessageId ?? null;
-    const errorCode = input.errorCode ?? null;
-    const retryCount = input.retryCount ?? 0;
+    return this.withWriteLock(async () => {
+      const now = input.createdAt ?? Date.now();
+      const status: DeliveryStatus = input.status ?? 'generated';
+      const kkMessageId = input.kkMessageId ?? null;
+      const errorCode = input.errorCode ?? null;
+      const retryCount = input.retryCount ?? 0;
 
-    try {
-      await this.client.execute({
-        sql: `
-          INSERT INTO message_deliveries (
-            id, run_id, session_id, mastra_message_id, kk_message_id,
-            content, content_hash, status, memory_committed_at, error_code,
-            retry_count, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
-          ON CONFLICT(run_id, content_hash) DO NOTHING
-        `,
-        args: [
-          input.id,
-          input.runId,
-          input.sessionId,
-          input.mastraMessageId,
-          kkMessageId,
-          input.content,
-          input.contentHash,
-          status,
-          errorCode,
-          retryCount,
-          now,
-          now,
-        ],
-      });
+      const tx = await this.client.transaction('write');
+      try {
+        // 1. 【防复活门禁】：在同一事务内检查所有 inputMessageIds 是否存在 tombstone
+        if (input.inputMessageIds && input.inputMessageIds.length > 0) {
+          for (const msgId of input.inputMessageIds) {
+            const tombRes = await tx.execute({
+              sql: `SELECT tombstone_type FROM message_tombstones WHERE session_id = ? AND message_id = ? LIMIT 1`,
+              args: [input.sessionId, msgId],
+            });
+            const tombRow = tombRes.rows[0] as unknown as { tombstone_type: string } | undefined;
+            if (tombRow) {
+              const tombType = tombRow.tombstone_type;
+              await tx.rollback();
+              throw new MessageTombstonedError(
+                input.sessionId,
+                msgId,
+                tombType,
+                `创建 Delivery 失败: 输入消息 [${input.sessionId}:${msgId}] 已被墓碑化 (${tombType})，严禁生成或交付`
+              );
+            }
+          }
+        }
 
-      const existing = await this.getDeliveryByRunAndHash(input.runId, input.contentHash);
-      if (existing) {
-        return existing;
+        // 2. 插入 message_deliveries
+        await tx.execute({
+          sql: `
+            INSERT INTO message_deliveries (
+              id, run_id, session_id, mastra_message_id, kk_message_id,
+              content, content_hash, status, memory_committed_at, error_code,
+              retry_count, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            ON CONFLICT(run_id, content_hash) DO NOTHING
+          `,
+          args: [
+            input.id,
+            input.runId,
+            input.sessionId,
+            input.mastraMessageId,
+            kkMessageId,
+            input.content,
+            input.contentHash,
+            status,
+            errorCode,
+            retryCount,
+            now,
+            now,
+          ],
+        });
+
+        // 3. 查询实际落库/既有 Delivery 实体与实际 ID
+        const existingRes = await tx.execute({
+          sql: `SELECT * FROM message_deliveries WHERE run_id = ? AND content_hash = ? LIMIT 1`,
+          args: [input.runId, input.contentHash],
+        });
+
+        let actualDelivery: Delivery | null = null;
+        if (existingRes.rows.length > 0) {
+          actualDelivery = mapRowToDelivery(existingRes.rows[0] as unknown as DeliveryRow);
+        } else {
+          const byIdRes = await tx.execute({
+            sql: `SELECT * FROM message_deliveries WHERE id = ? LIMIT 1`,
+            args: [input.id],
+          });
+          if (byIdRes.rows.length > 0) {
+            actualDelivery = mapRowToDelivery(byIdRes.rows[0] as unknown as DeliveryRow);
+          }
+        }
+
+        if (!actualDelivery) {
+          await tx.rollback();
+          throw new DatabaseError(`创建 Delivery 记录失败，未查找到记录: ID [${input.id}]`);
+        }
+
+        // 4. 使用实际 Delivery ID 写入 delivery_input_messages 映射
+        if (input.inputMessageIds && input.inputMessageIds.length > 0) {
+          for (const msgId of input.inputMessageIds) {
+            await tx.execute({
+              sql: `INSERT INTO delivery_input_messages (delivery_id, session_id, message_id, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(delivery_id, message_id) DO NOTHING`,
+              args: [actualDelivery.id, input.sessionId, msgId, now],
+            });
+          }
+        }
+
+        await tx.commit();
+        return actualDelivery;
+      } catch (err) {
+        try {
+          await tx.rollback();
+        } catch {
+          // ignore rollback error
+        }
+        if (err instanceof MessageTombstonedError) {
+          throw err;
+        }
+        if (err instanceof DatabaseError) {
+          throw err;
+        }
+        log.error({ err, input: { id: input.id, runId: input.runId, sessionId: input.sessionId } }, '创建 Delivery 异常');
+        const cause = err instanceof Error ? err : new Error(String(err));
+        throw new DatabaseError(`创建 Delivery 异常: ${cause.message}`, cause);
       }
-
-      const byId = await this.getDeliveryById(input.id);
-      if (byId) {
-        return byId;
-      }
-
-      throw new DatabaseError(`创建 Delivery 记录失败，未查找到记录: ID [${input.id}]`);
-    } catch (err) {
-      if (err instanceof DatabaseError) {
-        throw err;
-      }
-      log.error({ err, id: input.id, runId: input.runId }, '创建 Delivery 异常');
-      const cause = err instanceof Error ? err : new Error(String(err));
-      throw new DatabaseError(`创建 Delivery 异常: ${cause.message}`, cause);
-    }
+    });
   }
 
   /**
@@ -222,7 +282,8 @@ export class DeliveryRepository {
     status: DeliveryStatus,
     options?: UpdateDeliveryStatusOptions
   ): Promise<Delivery> {
-    const now = options?.updatedAt ?? Date.now();
+    return this.withWriteLock(async () => {
+      const now = options?.updatedAt ?? Date.now();
 
     const current = await this.getDeliveryById(id);
     if (!current) {
@@ -362,7 +423,8 @@ export class DeliveryRepository {
       log.error({ err, id, status }, '更新 Delivery 状态异常');
       const cause = err instanceof Error ? err : new Error(String(err));
       throw new DatabaseError(`更新 Delivery 状态异常: ${cause.message}`, cause);
-    }
+      }
+    });
   }
 
   /**
@@ -614,5 +676,55 @@ export class DeliveryRepository {
     });
 
     return res.rows.map(row => mapRowToDelivery(row as unknown as DeliveryRow));
+  }
+
+  /**
+   * 擦除单条 Delivery 的正文与哈希（合规删除）
+   * 严格保留交付状态 (如 sent/unknown/aborted) 与审计身份
+   */
+  async eraseDeliveryContent(deliveryId: string): Promise<boolean> {
+    const res = await this.client.execute({
+      sql: `UPDATE message_deliveries SET content = '[COMPLIANCE_DELETED]', content_hash = '' WHERE id = ?`,
+      args: [deliveryId],
+    });
+    return res.rowsAffected > 0;
+  }
+
+  /**
+   * 擦除指定会话内所有 Delivery 的正文与哈希（合规删除）
+   */
+  async eraseDeliveriesBySession(sessionId: string): Promise<number> {
+    const res = await this.client.execute({
+      sql: `UPDATE message_deliveries SET content = '[COMPLIANCE_DELETED]', content_hash = '' WHERE session_id = ?`,
+      args: [sessionId],
+    });
+    return res.rowsAffected;
+  }
+
+  /**
+   * 擦除指定 runId 的所有 Delivery 正文与哈希（合规删除）
+   */
+  async eraseDeliveriesByRunId(runId: string): Promise<number> {
+    const res = await this.client.execute({
+      sql: `UPDATE message_deliveries SET content = '[COMPLIANCE_DELETED]', content_hash = '' WHERE run_id = ?`,
+      args: [runId],
+    });
+    return res.rowsAffected;
+  }
+
+  /**
+   * 擦除由指定原生输入消息产生的所有 Delivery 正文（精准合规删除，非级联）
+   */
+  async eraseDeliveriesByMessageId(sessionId: string, messageId: string): Promise<number> {
+    const res = await this.client.execute({
+      sql: `UPDATE message_deliveries
+            SET content = '[COMPLIANCE_DELETED]', content_hash = ''
+            WHERE id IN (
+              SELECT delivery_id FROM delivery_input_messages
+              WHERE session_id = ? AND message_id = ?
+            )`,
+      args: [sessionId, messageId],
+    });
+    return res.rowsAffected;
   }
 }

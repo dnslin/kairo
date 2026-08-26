@@ -557,4 +557,254 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     const thread = await mastraMemory.getThreadById({ threadId: groupSessionId });
     expect(thread).toBeNull();
   });
+
+  it('MEMORY-01.9: 同一私聊新消息在在途 Run 期间到达时，0ms 瞬时中断只读 Run，已提交旧 user 事实保留在 Thread，新一轮只提交新 user 消息', async () => {
+    const sessionId = 'session_mem_contract_abort';
+    const senderId = 'emp_contract_user';
+
+    const { promise: modelStarted, resolve: resolveModelStarted } = Promise.withResolvers<void>();
+    const fakeModel = createFakeModel({
+      onGenerate: (callCount) => {
+        if (callCount === 1) {
+          resolveModelStarted();
+        }
+      },
+      responses: [
+        { text: '第一轮回复', finishReason: 'stop' },
+        { text: '第二轮回复', finishReason: 'stop' },
+      ],
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+      config: { debounceMs: 20, maxWaitMs: 100 },
+    });
+    await coordinator.start();
+
+    // 1. 发出第一条消息
+    await coordinator.handleInboundMessage({
+      id: 'msg_round_1',
+      sessionId,
+      sender: '测试员',
+      senderId,
+      content: '第一轮输入',
+      sessionType: 'private',
+      isMe: false,
+    });
+
+    await modelStarted;
+    expect(coordinator.hasInFlightSession(sessionId)).toBe(true);
+
+    // 2. 发送第二条消息中断
+    await coordinator.handleInboundMessage({
+      id: 'msg_round_2',
+      sessionId,
+      sender: '测试员',
+      senderId,
+      content: '第二轮输入打断',
+      sessionType: 'private',
+      isMe: false,
+    });
+
+    // 等待第二轮执行完毕
+    await new Promise(r => setTimeout(r, 200));
+
+    // 验证: Thread 中保留了第 1 轮和第 2 轮 user 消息
+    const { messages } = await mastraMemory.recall({ threadId: sessionId, resourceId: senderId });
+    const userMsgs = messages.filter(m => m.role === 'user');
+    expect(userMsgs).toHaveLength(2);
+    expect(userMsgs[0].id).toBe(deriveUserMessageId(sessionId, 'msg_round_1'));
+    expect(userMsgs[1].id).toBe(deriveUserMessageId(sessionId, 'msg_round_2'));
+  });
+
+  it('MEMORY-01.10: MessageRecall 按稳定 ID 移出活动上下文，重置 Observational Memory Scope，Raw Store 保留原消息事实', async () => {
+    const sessionId = 'session_mem_contract_recall';
+    const senderId = 'emp_recall_contract';
+    const msgId = 'msg_to_recall_contract';
+
+    const fakeModel = createFakeModel({
+      responses: [{ text: '回复完成', finishReason: 'stop' }],
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+      config: { debounceMs: 20, maxWaitMs: 100 },
+    });
+    await coordinator.start();
+
+    await coordinator.handleInboundMessage({
+      id: msgId,
+      sessionId,
+      sender: '员工',
+      senderId,
+      content: '将被撤回的内容',
+      sessionType: 'private',
+      isMe: false,
+    });
+
+    await new Promise(r => setTimeout(r, 150));
+
+    // 确认已提交
+    let recall = await mastraMemory.recall({ threadId: sessionId, resourceId: senderId });
+    expect(recall.messages.find(m => m.id === deriveUserMessageId(sessionId, msgId))).toBeDefined();
+
+    // 发起撤回
+    await coordinator.handleRecalled({
+      sessionId,
+      messageId: msgId,
+      sender: '员工',
+    });
+
+    // 验证 1: 活动上下文 (Mastra Memory) 中该消息已被移出
+    recall = await mastraMemory.recall({ threadId: sessionId, resourceId: senderId });
+    expect(recall.messages.find(m => m.id === deriveUserMessageId(sessionId, msgId))).toBeUndefined();
+
+    // 验证 2: Raw Store 原文保留且标记 is_recalled
+    const raw = await store.messages.getMessageBySessionAndMessageId(sessionId, msgId);
+    expect(raw?.content).toBe('将被撤回的内容');
+    expect(raw?.isRecalled).toBe(true);
+  });
+
+  it('MEMORY-01.11: ComplianceDeletion 经授权后擦除 Raw Store 正文、显式 Memory 与 Delivery 正文，重置 OM Scope 并保留 tombstone', async () => {
+    const sessionId = 'session_mem_contract_compliance';
+    const senderId = 'emp_comp_contract';
+    const msgId = 'msg_to_comp_contract';
+
+    const fakeModel = createFakeModel({
+      responses: [{ text: '敏感分析回复', finishReason: 'stop' }],
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+      config: { debounceMs: 20, maxWaitMs: 100 },
+      complianceAuthorizer: () => ({ authorized: true, policyReference: 'GDPR-ARTICLE-17' }),
+    });
+    await coordinator.start();
+
+    await coordinator.handleInboundMessage({
+      id: msgId,
+      sessionId,
+      sender: '员工',
+      senderId,
+      content: '机密个人数据',
+      sessionType: 'private',
+      isMe: false,
+    });
+
+    await new Promise(r => setTimeout(r, 150));
+
+    // 执行正式合规删除
+    const record = await coordinator.executeComplianceDeletion({
+      commandId: 'cmd_contract_comp_01',
+      targetType: 'message',
+      targetId: msgId,
+      sessionId,
+      scope: { rawStore: true, explicitMemory: true, deliveries: true },
+      reason: '合规销毁',
+      operator: 'dpo_officer',
+    });
+
+    expect(record.status).toBe('completed');
+
+    // 验证 1: Raw Store 正文被擦除为 [COMPLIANCE_DELETED]
+    const raw = await store.messages.getMessageBySessionAndMessageId(sessionId, msgId);
+    expect(raw?.content).toBe('[COMPLIANCE_DELETED]');
+
+    // 验证 2: 显式 Memory 已被彻底移除
+    const recall = await mastraMemory.recall({ threadId: sessionId, resourceId: senderId });
+    expect(recall.messages.find(m => m.id === deriveUserMessageId(sessionId, msgId))).toBeUndefined();
+
+    // 验证 3: 持久 tombstone 记录存在
+    expect(await store.tombstones.isTombstoned(sessionId, msgId)).toBe(true);
+  });
+
+  it('MEMORY-01.12: tombstone 跨串行、并发重放与重启阻止正文复活，绝不再次进入活动上下文', async () => {
+    const sessionId = 'session_mem_contract_antires';
+    const deadMsgId = 'msg_permanently_dead';
+
+    // 预先建立持久合规删除墓碑
+    await store.tombstones.recordTombstone({
+      sessionId,
+      messageId: deadMsgId,
+      type: 'compliance_deletion',
+      reason: '已合规销毁',
+    });
+
+    const fakeModel = createFakeModel({
+      responses: [{ text: '不应调用', finishReason: 'stop' }],
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+      config: { debounceMs: 20, maxWaitMs: 100 },
+    });
+    await coordinator.start();
+
+    // 模拟重放该已删除消息
+    await coordinator.handleInboundMessage({
+      id: deadMsgId,
+      sessionId,
+      sender: '员工',
+      senderId: 'emp_dead_retry',
+      content: '试图复活的数据',
+      sessionType: 'private',
+      isMe: false,
+    });
+
+    // 验证 1: Thread 不存在
+    const thread = await mastraMemory.getThreadById({ threadId: sessionId });
+    expect(thread).toBeNull();
+
+    // 验证 2: Raw Store 绝无明文
+    const raw = await store.messages.getMessageBySessionAndMessageId(sessionId, deadMsgId);
+    expect(raw).toBeNull();
+  });
 });

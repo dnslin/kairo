@@ -570,4 +570,100 @@ describe('DeliveryRepository & Delivery Lifecycle Persistence', () => {
       expect(unknowns.some((item) => item.id === d.id)).toBe(true);
     });
   });
+
+  describe('防复活门禁与事务原子回滚保障 (MEMORY-01 / DELIVERY-01)', () => {
+    it('当输入消息已被墓碑化时，createDelivery 在事务内抛出 MessageTombstonedError 且整笔事务回滚不留孤立记录', async () => {
+      const sessionId = 'ses_tomb_atomic';
+      const inputMsgId = 'msg_tomb_target_1';
+
+      // 先在 message_tombstones 写入墓碑
+      await client.execute({
+        sql: `INSERT INTO message_tombstones (id, session_id, message_id, tombstone_type, created_at)
+              VALUES ('tb_atomic_1', ?, ?, 'compliance_deletion', ?)`,
+        args: [sessionId, inputMsgId, Date.now()],
+      });
+
+      // 尝试创建关联此输入消息的 Delivery
+      await expect(
+        repo.createDelivery({
+          id: 'deliv_atomic_fail',
+          runId: 'run_atomic_fail',
+          sessionId,
+          mastraMessageId: 'asst_atomic_fail',
+          content: '不应落库的违规内容',
+          contentHash: 'hash_atomic_fail',
+          inputMessageIds: [inputMsgId],
+        })
+      ).rejects.toThrow(/已被墓碑化/);
+
+      // 验证 message_deliveries 中绝对无此记录
+      const delivRes = await client.execute({
+        sql: 'SELECT * FROM message_deliveries WHERE id = ?',
+        args: ['deliv_atomic_fail'],
+      });
+      expect(delivRes.rows).toHaveLength(0);
+
+      // 验证 delivery_input_messages 中绝对无此映射
+      const mapRes = await client.execute({
+        sql: 'SELECT * FROM delivery_input_messages WHERE delivery_id = ?',
+        args: ['deliv_atomic_fail'],
+      });
+      expect(mapRes.rows).toHaveLength(0);
+    });
+
+    it('并发竞争场景：createDelivery 与写入 tombstone 竞争时保证原子互斥，绝不形成孤立或违规 Delivery', async () => {
+      const sessionId = 'ses_tomb_concur';
+      const inputMsgId = 'msg_tomb_target_concur';
+
+      // 并发执行：10 次 createDelivery 与 1 次写入 tombstone
+      const promises: Promise<unknown>[] = [];
+      for (let i = 0; i < 5; i++) {
+        promises.push(
+          repo.createDelivery({
+            id: `deliv_concur_${i}`,
+            runId: `run_concur_${i}`,
+            sessionId,
+            mastraMessageId: `asst_concur_${i}`,
+            content: `并发回复 ${i}`,
+            contentHash: `hash_concur_${i}`,
+            inputMessageIds: [inputMsgId],
+          })
+        );
+      }
+      promises.push(
+        client.execute({
+          sql: `INSERT INTO message_tombstones (id, session_id, message_id, tombstone_type, created_at)
+                VALUES ('tb_atomic_concur', ?, ?, 'message_recall', ?)`,
+          args: [sessionId, inputMsgId, Date.now()],
+        })
+      );
+      for (let i = 5; i < 10; i++) {
+        promises.push(
+          repo.createDelivery({
+            id: `deliv_concur_${i}`,
+            runId: `run_concur_${i}`,
+            sessionId,
+            mastraMessageId: `asst_concur_${i}`,
+            content: `并发回复 ${i}`,
+            contentHash: `hash_concur_${i}`,
+            inputMessageIds: [inputMsgId],
+          })
+        );
+      }
+
+      const results = await Promise.allSettled(promises);
+      expect(results).toHaveLength(11);
+
+      // 查询所有已成功落库的 Delivery
+      const createdDeliveries = await repo.getDeliveriesBySession(sessionId);
+      // 每个已创建的 Delivery 在 delivery_input_messages 中必有对应映射
+      for (const d of createdDeliveries) {
+        const mapRes = await client.execute({
+          sql: 'SELECT * FROM delivery_input_messages WHERE delivery_id = ?',
+          args: [d.id],
+        });
+        expect(mapRes.rows).toHaveLength(1);
+      }
+    });
+  });
 });

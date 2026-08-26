@@ -6,7 +6,7 @@ import type {
   SendOptions,
   SendResult,
 } from '@kkbot/driver';
-import type { KKBotStore, SessionMessage, SessionMode } from '@kkbot/store';
+import type { KKBotStore, SessionMessage, SessionMode, ComplianceDeletionCommand } from '@kkbot/store';
 import type {
   AgentMemoryManager,
   AgentReplyResult,
@@ -79,6 +79,10 @@ export interface CoordinatorDispatchResult {
 export interface InFlightSession {
   /** 会话 ID */
   sessionId: string;
+  /** 当前运行的唯一 Run ID */
+  runId?: string;
+  /** 当前在途处理的原生消息 ID 列表 */
+  inputMessageIds?: string[];
   /** 用于 50ms 瞬时切断的中断控制器 */
   abortController: AbortController;
   /** 开始生成时间戳 */
@@ -150,6 +154,22 @@ export interface CoordinatorFaultHooks {
   /** 人工裁定 sent 落库后，但在 Mastra Memory 补交保存前 */
   afterAdjudicationPersistBeforeMemorySave?: (deliveryId: string) => Promise<void> | void;
 }
+
+/**
+ * 合规删除授权验证结果
+ */
+export interface ComplianceAuthorizationResult {
+  authorized: boolean;
+  policyReference?: string;
+  reason?: string;
+}
+
+/**
+ * 合规删除独立授权验证器函数类型
+ */
+export type ComplianceDeletionAuthorizer = (
+  command: ComplianceDeletionCommand
+) => Promise<ComplianceAuthorizationResult> | ComplianceAuthorizationResult;
 /**
  * SessionCoordinator 装配选项
  */
@@ -162,6 +182,10 @@ export interface SessionCoordinatorOptions {
   agent?: KKBotAgent;
   /** Mastra Memory 记忆中枢 (Issue #176) */
   mastraMemory?: Memory;
+  /** Mastra Storage 存储实例 (用于 Observational Memory scope reset 等底座操作) */
+  mastraStorage?: unknown;
+  /** 合规删除独立授权验证器 */
+  complianceAuthorizer?: ComplianceDeletionAuthorizer;
   /** 认知微内核 Runtime (可选向后兼容) */
   agentRuntime?: KkbotAgentRuntime;
   memoryManager?: AgentMemoryManager;
@@ -173,9 +197,9 @@ export interface SessionCoordinatorOptions {
   statefulMatcher?: StatefulApprovalMatcher;
   /** 主动定时推送调度管理器 (可选) */
   scheduleManager?: ProactiveScheduleManager;
-  /** 会话编排器配置项 */
   /** 故障与崩溃注入钩子 (测试与 Oracle 验证专用) */
   hooks?: CoordinatorFaultHooks;
+  /** 会话编排器配置项 */
   config?: CoordinatorConfig;
 }
 
@@ -207,6 +231,7 @@ export interface CoordinatorEvents {
       | 'session_disabled'
       | 'empty_queue'
       | 'recalled'
+      | 'tombstoned'
       | 'in_flight_aborted',
     message?: KK9Message
   ) => void;
