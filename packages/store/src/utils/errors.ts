@@ -64,3 +64,20 @@ export class InvalidPathError extends StoreError {
     this.name = 'InvalidPathError';
   }
 }
+
+export class DeliveryStateTransitionError extends StoreError {
+  public readonly deliveryId: string;
+  public readonly fromStatus: string;
+  public readonly toStatus: string;
+
+  constructor(deliveryId: string, fromStatus: string, toStatus: string, message?: string) {
+    super(
+      message || `非法 Delivery 状态转换: 无法从 [${fromStatus}] 迁移至 [${toStatus}] (ID: ${deliveryId})`,
+      'DELIVERY_STATE_TRANSITION_ERROR'
+    );
+    this.name = 'DeliveryStateTransitionError';
+    this.deliveryId = deliveryId;
+    this.fromStatus = fromStatus;
+    this.toStatus = toStatus;
+  }
+}

@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS message_deliveries (
   status TEXT NOT NULL,
   memory_committed_at INTEGER,
   error_code TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -125,6 +126,19 @@ CREATE INDEX IF NOT EXISTS idx_message_deliveries_session_id ON message_deliveri
 CREATE INDEX IF NOT EXISTS idx_message_deliveries_run_id ON message_deliveries(run_id);
 CREATE INDEX IF NOT EXISTS idx_message_deliveries_status ON message_deliveries(status);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_message_deliveries_run_content ON message_deliveries(run_id, content_hash);
+
+-- Delivery 人工裁定审计记录表 (auditable adjudication records)
+CREATE TABLE IF NOT EXISTS delivery_adjudications (
+  id TEXT PRIMARY KEY,
+  delivery_id TEXT NOT NULL,
+  operator TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  evidence_summary TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (delivery_id) REFERENCES message_deliveries(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_adjudications_delivery_id ON delivery_adjudications(delivery_id);
 `;
 
 /**

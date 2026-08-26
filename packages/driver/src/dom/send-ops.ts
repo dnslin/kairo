@@ -116,13 +116,46 @@ export class SendOps {
     `;
     try {
       const res = await this.cdp.evaluate<PreSendCheckResult>(script);
-      return res || { canSend: true };
+      if (!res) {
+        return {
+          canSend: false,
+          reason: 'unknown',
+          details: '发送前状态校验未获得有效返回结果 (Fail-Closed)',
+        };
+      }
+      return res;
     } catch (err) {
-      log.warn({ err: String(err) }, '发送前校验脚本执行异常，放行');
-      return { canSend: true };
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.warn({ err: errMsg }, '发送前校验脚本执行异常，执行 Fail-Closed 拦截');
+      return {
+        canSend: false,
+        reason: 'unknown',
+        details: `发送前状态校验异常: ${errMsg} (Fail-Closed)`,
+      };
     }
   }
-
+  /**
+   * 确保前台窗口已激活 (触发前校验与前置准备)
+   */
+  private async ensureWindowActivated(
+    contextLabel = '窗口'
+  ): Promise<{ success: true } | { success: false; result: SendResult }> {
+    try {
+      await this.cdp.bringToFront();
+      return { success: true };
+    } catch (bringErr) {
+      const msg = bringErr instanceof Error ? bringErr.message : String(bringErr);
+      log.warn({ err: bringErr }, `bringToFront 激活${contextLabel}失败 (触发前失败)`);
+      return {
+        success: false,
+        result: {
+          success: false,
+          error: `激活${contextLabel}失败: ${msg}`,
+          isPreTrigger: true,
+        },
+      };
+    }
+  }
   /**
    * 激活引用/回复目标
    */
@@ -179,16 +212,19 @@ export class SendOps {
   ): Promise<SendResult> {
     const parsed = parseFormattedTextToKK(content);
     if (!parsed.plainText.trim() && !options.mentions) {
-      return { success: false, error: '富文本内容不能为空' };
+      return { success: false, error: '富文本内容不能为空', isPreTrigger: true };
     }
 
     if (options.targetSessionId) {
       const check = await this.checkPreSendState(options.targetSessionId);
       if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason} (${check.details})` };
+        return {
+          success: false,
+          error: `发送前检查未通过: ${check.reason} (${check.details})`,
+          isPreTrigger: true,
+        };
       }
     }
-
     if (options.replyTo) {
       return this.sendReply(options.replyTo, content, options);
     }
@@ -241,12 +277,15 @@ export class SendOps {
     `;
 
     const startTime = Date.now();
-    try {
-      await this.cdp.bringToFront();
+    const activated = await this.ensureWindowActivated('窗口');
+    if (!activated.success) {
+      return activated.result;
+    }
 
+    try {
       const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
       if (!injectRes?.success) {
-        return { success: false, error: injectRes?.error || '注入富文本失败' };
+        return { success: false, error: injectRes?.error || '注入富文本失败', isPreTrigger: true };
       }
 
       const verifyTimeout = options.verifyTimeoutMs ?? 5000;
@@ -258,6 +297,7 @@ export class SendOps {
         return {
           success: false,
           error: '富文本已触发发送但在指定超时内未能确认消息上屏',
+          isPreTrigger: false,
           verifyLatencyMs: latency,
         };
       }
@@ -288,16 +328,19 @@ export class SendOps {
   ): Promise<SendResult> {
     const parsed = parseFormattedTextToKK(content);
     if (!parsed.plainText.trim()) {
-      return { success: false, error: '回复内容不能为空' };
+      return { success: false, error: '回复内容不能为空', isPreTrigger: true };
     }
 
     if (options.targetSessionId) {
       const check = await this.checkPreSendState(options.targetSessionId);
       if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason} (${check.details})` };
+        return {
+          success: false,
+          error: `发送前检查未通过: ${check.reason} (${check.details})`,
+          isPreTrigger: true,
+        };
       }
     }
-
     const targetObj =
       typeof replyTo === 'string' ? { content: replyTo, messageId: replyTo } : replyTo;
     const mentionNodes = buildMentionNodes(options.mentions);
@@ -369,12 +412,15 @@ export class SendOps {
     `;
 
     const startTime = Date.now();
-    try {
-      await this.cdp.bringToFront();
+    const activated = await this.ensureWindowActivated('回复窗口');
+    if (!activated.success) {
+      return activated.result;
+    }
 
+    try {
       const sendRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
       if (!sendRes?.success) {
-        return { success: false, error: sendRes?.error || '发送回复消息失败' };
+        return { success: false, error: sendRes?.error || '发送回复消息失败', isPreTrigger: true };
       }
 
       const verifyTimeout = options.verifyTimeoutMs ?? 5000;
@@ -386,6 +432,7 @@ export class SendOps {
         return {
           success: false,
           error: '回复消息已触发发送但在指定超时内未能确认消息上屏',
+          isPreTrigger: false,
           verifyLatencyMs: latency,
         };
       }
@@ -412,21 +459,25 @@ export class SendOps {
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(filePath);
     if (!fs.existsSync(fullPath)) {
-      return { success: false, error: `文件不存在: ${fullPath}` };
+      return { success: false, error: `文件不存在: ${fullPath}`, isPreTrigger: true };
     }
 
     const stats = fs.statSync(fullPath);
     if (stats.isDirectory()) {
-      return { success: false, error: `不能发送目录: ${fullPath}` };
+      return { success: false, error: `不能发送目录: ${fullPath}`, isPreTrigger: true };
     }
     if (stats.size > MAX_FILE_SIZE_BYTES) {
-      return { success: false, error: `文件大小超出限制 (100MB): ${stats.size} bytes` };
+      return {
+        success: false,
+        error: `文件大小超出限制 (100MB): ${stats.size} bytes`,
+        isPreTrigger: true,
+      };
     }
 
     if (options.targetSessionId) {
       const check = await this.checkPreSendState(options.targetSessionId);
       if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason}` };
+        return { success: false, error: `发送前检查未通过: ${check.reason}`, isPreTrigger: true };
       }
     }
 
@@ -434,9 +485,12 @@ export class SendOps {
     const mimeType = mime.lookup(fullPath) || 'application/octet-stream';
     const startTime = Date.now();
 
-    try {
-      await this.cdp.bringToFront();
+    const activated = await this.ensureWindowActivated('文件发送窗口');
+    if (!activated.success) {
+      return activated.result;
+    }
 
+    try {
       // 原生 Vue File 协议分发
       const injectScript = `
         (() => {
@@ -460,7 +514,7 @@ export class SendOps {
 
       const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(injectScript);
       if (!injectRes?.success) {
-        return { success: false, error: injectRes?.error || '文件发送初始化失败' };
+        return { success: false, error: injectRes?.error || '文件发送初始化失败', isPreTrigger: true };
       }
 
       const verifyTimeout = options.verifyTimeoutMs ?? 8000;
@@ -472,6 +526,7 @@ export class SendOps {
         return {
           success: false,
           error: '文件已触发发送但在指定超时内未能确认文件卡片上屏',
+          isPreTrigger: false,
           verifyLatencyMs: latency,
         };
       }
@@ -488,39 +543,45 @@ export class SendOps {
       throw new SendError(`发送文件异常: ${errorMsg}`, err instanceof Error ? err : undefined);
     }
   }
-
   /**
    * 发送本地图片（通过渲染进程 Clipboard API 写入与跨平台按键模拟）
    */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(imagePath);
     if (!fs.existsSync(fullPath)) {
-      return { success: false, error: `图片文件不存在: ${fullPath}` };
+      return { success: false, error: `图片文件不存在: ${fullPath}`, isPreTrigger: true };
     }
 
     const stats = fs.statSync(fullPath);
     if (stats.size > MAX_IMAGE_SIZE_BYTES) {
-      return { success: false, error: `图片大小超出限制 (10MB): ${stats.size} bytes` };
+      return {
+        success: false,
+        error: `图片大小超出限制 (10MB): ${stats.size} bytes`,
+        isPreTrigger: true,
+      };
     }
 
     const mimeType = mime.lookup(fullPath) || 'image/png';
     if (!mimeType.startsWith('image/')) {
-      return { success: false, error: `不支持的图片格式: ${mimeType}` };
+      return { success: false, error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
     }
 
     if (options.targetSessionId) {
       const check = await this.checkPreSendState(options.targetSessionId);
       if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason}` };
+        return { success: false, error: `发送前检查未通过: ${check.reason}`, isPreTrigger: true };
       }
     }
 
     const base64Data = fs.readFileSync(fullPath).toString('base64');
     const startTime = Date.now();
 
-    try {
-      await this.cdp.bringToFront();
+    const activated = await this.ensureWindowActivated('图片发送窗口');
+    if (!activated.success) {
+      return activated.result;
+    }
 
+    try {
       // 1. 写入渲染进程剪贴板
       const clipScript = `
         (async () => {
@@ -549,7 +610,7 @@ export class SendOps {
 
       const clipRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(clipScript);
       if (!clipRes?.success) {
-        return { success: false, error: `剪贴板写入失败: ${clipRes?.error}` };
+        return { success: false, error: `剪贴板写入失败: ${clipRes?.error}`, isPreTrigger: true };
       }
 
       await sleep(400);
@@ -618,7 +679,7 @@ export class SendOps {
 
       const sendRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(sendScript);
       if (!sendRes?.success) {
-        return { success: false, error: `点击发送图片失败: ${sendRes?.error}` };
+        return { success: false, error: `点击发送图片失败: ${sendRes?.error}`, isPreTrigger: true };
       }
 
       // 5. 严格回读确认: 检查输入框清空
@@ -631,6 +692,7 @@ export class SendOps {
         return {
           success: false,
           error: '图片已触发发送但在指定超时内未能确认消息上屏',
+          isPreTrigger: false,
           verifyLatencyMs: latency,
         };
       }
@@ -647,7 +709,6 @@ export class SendOps {
       throw new SendError(`发送图片异常: ${errorMsg}`, err instanceof Error ? err : undefined);
     }
   }
-
   /**
    * 发送 Canvas 2D 视觉卡片（远程 CDP 渲染 -> 临时缓存 -> 图片发送上屏 -> 临时文件安全清理）
    *

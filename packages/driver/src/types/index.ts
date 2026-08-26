@@ -259,6 +259,8 @@ export interface SendResult {
   messageId?: string;
   recall?: () => Promise<boolean>;
   error?: string;
+  /** 标识失败是否可以证明发生在 KK 发送动作触发之前 (pre-trigger failure) */
+  isPreTrigger?: boolean;
   verifyLatencyMs?: number;
 }
 

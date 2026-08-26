@@ -147,6 +147,24 @@ CREATE INDEX IF NOT EXISTS idx_message_deliveries_status ON message_deliveries(s
 CREATE UNIQUE INDEX IF NOT EXISTS idx_message_deliveries_run_content ON message_deliveries(run_id, content_hash);
 `;
 
+export const MIGRATION_0004_DELIVERY_ADJUDICATIONS_AND_RETRIES_SQL = `
+-- 1. 为 message_deliveries 增加 retry_count 字段 (若不存在)
+ALTER TABLE message_deliveries ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;
+
+-- 2. 创建 delivery_adjudications 审计表
+CREATE TABLE IF NOT EXISTS delivery_adjudications (
+  id TEXT PRIMARY KEY,
+  delivery_id TEXT NOT NULL,
+  operator TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  evidence_summary TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (delivery_id) REFERENCES message_deliveries(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_adjudications_delivery_id ON delivery_adjudications(delivery_id);
+`;
+
 /**
  * KKBot 内部版本化迁移脚本定义列表
  * 注意：所有 SQL 均为纯 KKBot 业务表，对 Mastra 内部表（mastra_*）实行零 DDL、零 DML
@@ -166,6 +184,11 @@ export const KKBOT_MIGRATIONS: readonly Migration[] = [
     id: '0003_message_deliveries',
     name: 'Add message_deliveries table for delivery lifecycle and memory commit tracking',
     up: MIGRATION_0003_MESSAGE_DELIVERIES_SQL,
+  },
+  {
+    id: '0004_delivery_adjudications_and_retries',
+    name: 'Add retry_count column and delivery_adjudications audit table',
+    up: MIGRATION_0004_DELIVERY_ADJUDICATIONS_AND_RETRIES_SQL,
   },
 ];
 
@@ -209,15 +232,22 @@ export async function runKKBotMigrations(client: Client): Promise<MigrationResul
           { migrationId: migration.id, name: migration.name },
           '正在应用 KKBot 数据库迁移...'
         );
-
-        // 执行迁移 DDL 脚本
-        await client.executeMultiple(migration.up);
-
-        // 记录迁移完成事实
-        await client.execute({
-          sql: 'INSERT INTO _kkbot_migrations (id, name, applied_at) VALUES (?, ?, ?)',
-          args: [migration.id, migration.name, Date.now()],
-        });
+        const tx = await client.transaction('write');
+        try {
+          await tx.executeMultiple(migration.up);
+          await tx.execute({
+            sql: 'INSERT INTO _kkbot_migrations (id, name, applied_at) VALUES (?, ?, ?)',
+            args: [migration.id, migration.name, Date.now()],
+          });
+          await tx.commit();
+        } catch (mErr) {
+          try {
+            await tx.rollback();
+          } catch {
+            // 忽略回滚异常
+          }
+          throw mErr;
+        }
 
         newlyApplied.push(migration.id);
         log.info({ migrationId: migration.id }, 'KKBot 数据库迁移应用成功');

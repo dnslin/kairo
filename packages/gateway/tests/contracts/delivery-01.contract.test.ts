@@ -424,15 +424,13 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
       expect(deliveries[0].status).toBe('sent');
       expect(deliveries[0].content).toBe('交付内容测试');
       expect(deliveries[0].memoryCommittedAt).toBeGreaterThan(0);
-
       // 验证底层 Driver 发送仅调用 1 次
       expect(mockDriver.sendText).toHaveBeenCalledTimes(1);
     });
 
     it('Driver 发送失败时区分 pre-trigger failed 与 post-trigger unknown，且均不提交 assistant Memory', async () => {
       // 1. 测试 pre-trigger failure (如 selectSession 切换会话失败) -> Delivery 必须为 failed
-      mockDriver.selectSession.mockResolvedValueOnce(false);
-
+      mockDriver.selectSession.mockResolvedValue(false);
       const fakeModel = createFakeModel({
         responses: [
           { text: '前置失败内容', finishReason: 'stop' },
@@ -480,12 +478,12 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
       expect(preDeliveries[0].memoryCommittedAt).toBeNull();
 
       // 2. 测试 post-trigger failure (如 sendText 已调用但超时未收到回执) -> Delivery 必须为 unknown
-      mockDriver.selectSession.mockResolvedValueOnce(true);
-      mockDriver.sendText.mockResolvedValueOnce({
+      mockDriver.selectSession.mockResolvedValue(true);
+      mockDriver.sendText.mockResolvedValue({
         success: false,
         error: 'CDP network response timeout',
+        isPreTrigger: false,
       });
-
       const sessionPostFail = 'session_deliv_post_fail';
       await privCoordinator.handleInboundMessage({
         id: 'msg_post_fail',

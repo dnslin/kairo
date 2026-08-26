@@ -369,8 +369,7 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
 
   it('MEMORY-01.6: 发送未获明确成功时 (pre-trigger failed 或 post-trigger unknown)，绝不提交 assistant Memory', async () => {
     // 1. 测试 pre-trigger failure (如 selectSession 失败) -> status = 'failed'
-    mockDriver.selectSession.mockResolvedValueOnce(false);
-
+    mockDriver.selectSession.mockResolvedValue(false);
     const fakeModel = createFakeModel({
       responses: [
         { text: '未送达的回复 1', finishReason: 'stop' },
@@ -416,7 +415,6 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     expect(preDeliveries.length).toBe(1);
     expect(preDeliveries[0].status).toBe('failed');
     expect(preDeliveries[0].memoryCommittedAt).toBeNull();
-
     const { messages: preMessages } = await mastraMemory.recall({
       threadId: sessionPreFail,
       resourceId: senderPreFail,
@@ -424,12 +422,12 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     expect(preMessages.filter((m) => m.role === 'assistant').length).toBe(0);
 
     // 2. 测试 post-trigger failure (如 sendText 超时) -> status = 'unknown'
-    mockDriver.selectSession.mockResolvedValueOnce(true);
-    mockDriver.sendText.mockResolvedValueOnce({
+    mockDriver.selectSession.mockResolvedValue(true);
+    mockDriver.sendText.mockResolvedValue({
       success: false,
       error: 'CDP timeout',
+      isPreTrigger: false,
     });
-
     const sessionPostFail = 'session_post_fail_001';
     const senderPostFail = 'emp_post_fail';
     await coordinator.handleInboundMessage({

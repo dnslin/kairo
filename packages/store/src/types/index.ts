@@ -8,6 +8,8 @@
 export interface DatabaseOptions {
   /** 数据库文件路径，默认 `:memory:` 或指定路径如 `data/kkbot.db` */
   path?: string;
+  /** 数据库 URL (如 `file:/path/to/db.db`) */
+  url?: string;
   /** 是否开启 WAL (Write-Ahead Logging) 模式，默认 true (对内存库自动忽略) */
   wal?: boolean;
   /** 繁忙超时等待时间 (毫秒)，默认 5000 */
@@ -584,6 +586,8 @@ export interface Delivery {
   memoryCommittedAt: number | null;
   /** 错误代码 (当 status 为 failed 或 unknown 时) */
   errorCode: string | null;
+  /** 自动重试计数 (默认 0) */
+  retryCount: number;
   /** 创建时间戳 (毫秒) */
   createdAt: number;
   /** 更新时间戳 (毫秒) */
@@ -606,6 +610,7 @@ export interface CreateDeliveryInput {
   status?: DeliveryStatus;
   kkMessageId?: string | null;
   errorCode?: string | null;
+  retryCount?: number;
   createdAt?: number;
 }
 
@@ -615,5 +620,37 @@ export interface CreateDeliveryInput {
 export interface UpdateDeliveryStatusOptions {
   kkMessageId?: string | null;
   errorCode?: string | null;
+  isRetry?: boolean;
+  maxRetries?: number;
   updatedAt?: number;
+}
+
+/**
+ * Delivery 人工裁定结论联合类型
+ * - sent: 确认已送达 (流转为 sent 并补交 Memory)
+ * - not_sent: 确认未送达 (保持 unknown，本票不自动补发)
+ * - indeterminate: 仍不可判定 (证据不足，保持 unknown 门禁)
+ */
+export type DeliveryAdjudicationDecision = 'sent' | 'not_sent' | 'indeterminate';
+
+/**
+ * Delivery 人工裁定审计记录结构
+ */
+export interface DeliveryAdjudicationRecord {
+  id: string;
+  deliveryId: string;
+  operator: string;
+  decision: DeliveryAdjudicationDecision;
+  evidenceSummary: string;
+  createdAt: number;
+}
+
+/**
+ * Delivery 人工裁定输入参数
+ */
+export interface AdjudicateDeliveryInput {
+  operator: string;
+  decision: DeliveryAdjudicationDecision;
+  evidenceSummary: string;
+  timestamp?: number;
 }

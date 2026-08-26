@@ -9,6 +9,7 @@ import type {
   SendResult,
 } from '@kkbot/driver';
 import type {
+  DeliveryAdjudicationDecision,
   DeliveryStatus,
   KKBotStore,
   MessageDelivery,
@@ -40,6 +41,7 @@ import type {
   CoordinatorConfig,
   CoordinatorDispatchResult,
   CoordinatorEvents,
+  CoordinatorFaultHooks,
   DispatchReplyOptions,
   InFlightSession,
   PendingBucket,
@@ -47,6 +49,7 @@ import type {
 } from './types/index.js';
 import type { ProactiveScheduleManager } from './schedule/index.js';
 import { createChildLogger } from './utils/logger.js';
+import { DeliveryRecoveryScanner, type DeliveryRecoveryReport } from './recovery/delivery-recovery-scanner.js';
 
 const log = createChildLogger('session-coordinator');
 
@@ -139,6 +142,7 @@ export class SessionCoordinator extends EventEmitter {
   public readonly leaderRouter?: LeaderApprovalRouter;
   public readonly statefulMatcher?: StatefulApprovalMatcher;
   public readonly scheduleManager?: ProactiveScheduleManager;
+  public readonly hooks?: CoordinatorFaultHooks;
   public readonly config: Required<
     Omit<CoordinatorConfig, 'onConsolidatedMessage' | 'knowledgeRetriever'>
   > & {
@@ -195,10 +199,12 @@ export class SessionCoordinator extends EventEmitter {
     this.leaderRouter = options.leaderRouter;
     this.statefulMatcher = options.statefulMatcher;
     this.scheduleManager = options.scheduleManager;
+    this.hooks = options.hooks;
     this.config = {
       debounceMs: options.config?.debounceMs ?? DEFAULT_DEBOUNCE_MS,
       maxWaitMs: options.config?.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
       takeoverDurationMs: options.config?.takeoverDurationMs ?? DEFAULT_TAKEOVER_DURATION_MS,
+      maxRetries: options.config?.maxRetries ?? 2,
       autoMarkRead: options.config?.autoMarkRead ?? true,
       enableHitlRouter: options.config?.enableHitlRouter ?? true,
       onConsolidatedMessage: options.config?.onConsolidatedMessage,
@@ -276,16 +282,30 @@ export class SessionCoordinator extends EventEmitter {
   }
 
   /**
-   * 启动会话编排器，挂载底层 Driver 事件监听并启动主动推送调度器
+   * 启动会话编排器：先执行 Delivery 检查点恢复扫描，再挂载底层 Driver 事件监听并启动主动推送调度器
    */
   public async start(): Promise<void> {
     if (this.isRunning) {
       return;
     }
 
+    // 1. 【启动准入门槛：执行 Delivery 检查点恢复扫描】
+    // 在接收入站消息与开放调度前，恢复断线/强杀遗留的 sending (转为 unknown) 与 sent-but-uncommitted (补交 Memory)
+    try {
+      const recoveryReport = await this.runDeliveryRecoveryScan();
+      if (recoveryReport.errors.length > 0) {
+        const errDetails = recoveryReport.errors.map(e => `[${e.deliveryId}]: ${e.error}`).join('; ');
+        const errMsg = `SessionCoordinator 启动前恢复扫描发现错误，阻止系统启动 (Fail-Closed): ${errDetails}`;
+        log.error({ errors: recoveryReport.errors }, errMsg);
+        throw new Error(errMsg);
+      }
+    } catch (recErr) {
+      log.error({ err: recErr }, 'SessionCoordinator 启动前执行 Delivery 恢复扫描致命失败，阻止启动');
+      throw recErr;
+    }
+
     this.driver.on('message', this.boundHandleMessage);
     this.driver.on('recalled', this.boundHandleRecalled);
-
     if (this.scheduleManager) {
       try {
         await this.scheduleManager.start();
@@ -1346,7 +1366,10 @@ export class SessionCoordinator extends EventEmitter {
     const delivery = await this.createSendingDelivery(deliveryId, runId, sessionId, mastraMessageId, replyText);
     if (!delivery || signal.aborted) {
       if (signal.aborted && delivery) {
-        await this.store.deliveries.updateStatus(delivery.id, 'aborted');
+        await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
+          errorCode: 'ABORTED_BEFORE_SENDING_PIPELINE: 生成后发送前检测到取消信号',
+        });
+        await this.hooks?.afterAbortedPersist?.(delivery.id);
         this.emit('agent_aborted', sessionId);
       }
       return;
@@ -1354,22 +1377,109 @@ export class SessionCoordinator extends EventEmitter {
 
     // 检查人工接管或中断状态（不可逆发送边界前的最后一道安全门）
     if (await this.isTakeoverActive(sessionId)) {
-      await this.store.deliveries.updateStatus(delivery.id, 'aborted');
+      await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
+        errorCode: 'ABORTED_HUMAN_TAKEOVER: 会话已被人工接管',
+      });
+      await this.hooks?.afterAbortedPersist?.(delivery.id);
       this.emit('agent_aborted', sessionId);
       return;
     }
+    // 5. 【执行底层 KK 发送与有界自动重试】
+    const maxRetries = this.config.maxRetries ?? 2;
+    let currentSendResult: {
+      success: boolean;
+      messageId?: string;
+      error?: string;
+      isPreTrigger?: boolean;
+    } | null = null;
+    let retriesCount = 0;
 
-    // 5. 【执行底层 KK 发送】
-    const sendResult = await this.executeDriverOutbound(sessionId, replyText);
+    while (true) {
+      if (signal.aborted || (await this.isTakeoverActive(sessionId))) {
+        log.info({ sessionId, deliveryId: delivery.id }, '发送前检测到中止信号或人工接管，取消发送并安全中止 Delivery');
+        try {
+          await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
+            errorCode: 'ABORTED_BEFORE_SEND_TRIGGER: 发送前检测到中止信号或人工接管',
+          });
+          await this.hooks?.afterAbortedPersist?.(delivery.id);
+        } catch (abortErr) {
+          log.warn({ abortErr, deliveryId: delivery.id }, '更新 Delivery 为 aborted 失败');
+        }
+        this.emit('agent_aborted', sessionId);
+        return;
+      }
 
-    // 6. 【处理明确发送成功分支】
-    if (sendResult.success) {
-      await this.handleSendSuccess(sessionId, resourceId, delivery.id, mastraMessageId, replyText, sendResult.messageId, agentRes);
-      return;
+      await this.hooks?.afterSendingBeforeDriver?.(delivery.id, retriesCount);
+
+      currentSendResult = await this.executeDriverOutbound(sessionId, replyText);
+
+      await this.hooks?.afterDriverSendBeforeResultPersist?.(
+        delivery.id,
+        currentSendResult,
+        retriesCount
+      );
+      // 6. 【处理明确发送成功分支】
+      if (currentSendResult.success) {
+        await this.handleSendSuccess(
+          sessionId,
+          resourceId,
+          delivery.id,
+          mastraMessageId,
+          replyText,
+          currentSendResult.messageId,
+          agentRes
+        );
+        return;
+      }
+
+      // 仅当明确属于 pre-trigger failure 且重试次数未超限时允许自动重试
+      if (currentSendResult.isPreTrigger && retriesCount < maxRetries) {
+        try {
+          await this.store.deliveries.updateStatus(delivery.id, 'failed', {
+            errorCode: currentSendResult.error,
+          });
+          await this.hooks?.afterFailedPersistBeforeRetry?.(
+            delivery.id,
+            currentSendResult.error,
+            retriesCount
+          );
+
+          if (signal.aborted || (await this.isTakeoverActive(sessionId))) {
+            log.info({ sessionId, deliveryId: delivery.id }, '重试前检测到中止信号或人工接管，放弃重试并安全中止');
+            await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
+              errorCode: 'ABORTED_DURING_RETRY: 重试期间检测到中止信号或人工接管',
+            });
+            await this.hooks?.afterAbortedPersist?.(delivery.id);
+            this.emit('agent_aborted', sessionId);
+            return;
+          }
+
+          await this.hooks?.beforeRetrySendingPersist?.(delivery.id, retriesCount + 1);
+
+          await this.store.deliveries.updateStatus(delivery.id, 'sending', {
+            isRetry: true,
+            maxRetries,
+          });
+          retriesCount++;
+          log.info(
+            { sessionId, deliveryId: delivery.id, retryCount: retriesCount, maxRetries },
+            '检测到 pre-trigger 发送前失败，正在执行有界自动重试'
+          );
+          continue;
+        } catch (retryTransitionErr) {
+          log.error({ retryTransitionErr, deliveryId: delivery.id }, '重试状态流转失败，终止重试');
+          break;
+        }
+      }
+
+      // 非 pre-trigger (如 post-trigger 超时/断线) 或重试次数已耗尽
+      break;
     }
 
     // 7. 【处理发送失败分支 (区分 pre-trigger failed 与 post-trigger unknown)】
-    await this.handleSendFailure(sessionId, delivery.id, sendResult, agentRes);
+    if (currentSendResult) {
+      await this.handleSendFailure(sessionId, delivery.id, currentSendResult, agentRes);
+    }
   }
 
   /**
@@ -1476,6 +1586,7 @@ export class SessionCoordinator extends EventEmitter {
   ): Promise<MessageDelivery | null> {
     const contentHash = createHash('sha256').update(replyText).digest('hex');
     try {
+      await this.hooks?.afterAgentBeforeDeliveryCreate?.(sessionId, replyText);
       await this.store.deliveries.createDelivery({
         id: deliveryId,
         runId,
@@ -1485,6 +1596,7 @@ export class SessionCoordinator extends EventEmitter {
         contentHash,
         status: 'generated',
       });
+      await this.hooks?.afterDeliveryGeneratedBeforeSending?.(deliveryId);
       return await this.store.deliveries.updateStatus(deliveryId, 'sending');
     } catch (delivErr) {
       const error = delivErr instanceof Error ? delivErr : new Error(String(delivErr));
@@ -1531,7 +1643,7 @@ export class SessionCoordinator extends EventEmitter {
           success: res.success,
           messageId: res.messageId,
           error: res.error,
-          isPreTrigger: false,
+          isPreTrigger: res.isPreTrigger ?? false,
         };
       } catch (err) {
         return {
@@ -1587,8 +1699,7 @@ export class SessionCoordinator extends EventEmitter {
       isRecalled: false,
       createdAt: now,
     });
-
-    // 后置显式保存 assistant Memory
+    await this.hooks?.afterSentPersistBeforeMemorySave?.(deliveryId);
     if (this.mastraMemory) {
       try {
         await this.mastraMemory.saveMessages({
@@ -1603,7 +1714,9 @@ export class SessionCoordinator extends EventEmitter {
             }),
           ],
         });
+        await this.hooks?.afterMemorySaveBeforeMarkCommitted?.(deliveryId);
         await this.store.deliveries.markMemoryCommitted(deliveryId, Date.now());
+        await this.hooks?.afterMarkMemoryCommitted?.(deliveryId);
         log.debug({ sessionId, deliveryId, mastraMessageId }, 'assistant Memory 显式提交成功并标记 memory_committed_at');
       } catch (asstMemErr) {
         log.error(
@@ -1653,10 +1766,12 @@ export class SessionCoordinator extends EventEmitter {
       await this.store.deliveries.updateStatus(deliveryId, finalStatus, {
         errorCode: sendResult.error,
       });
+      if (finalStatus === 'failed') {
+        await this.hooks?.afterFailedPersistBeforeRetry?.(deliveryId, sendResult.error, undefined);
+      }
     } catch (failStatusErr) {
       log.error({ failStatusErr, deliveryId }, '更新 Delivery 状态失败');
     }
-
     const failResult: CoordinatorDispatchResult = {
       action: 'send_failed',
       success: false,
@@ -1668,6 +1783,76 @@ export class SessionCoordinator extends EventEmitter {
     this.emit('agent_completed', sessionId, agentRes);
   }
 
+  /**
+   * 人工裁定 Delivery (仅限对处于 unknown 状态的交付执行人工决议)
+   * 裁定为 sent 且尚未提交 Memory 时，先持久化 sent，再补交 assistant Memory
+   */
+  public async adjudicateDelivery(options: {
+    deliveryId: string;
+    operator: string;
+    decision: DeliveryAdjudicationDecision;
+    evidenceSummary: string;
+  }): Promise<{ success: boolean; delivery: MessageDelivery; memoryCommitted?: boolean }> {
+    const updated = await this.store.deliveries.adjudicateDelivery(options.deliveryId, {
+      operator: options.operator,
+      decision: options.decision,
+      evidenceSummary: options.evidenceSummary,
+    });
+
+    let memoryCommitted = false;
+    if (
+      options.decision === 'sent' &&
+      updated.status === 'sent' &&
+      !updated.memoryCommittedAt &&
+      this.mastraMemory
+    ) {
+      await this.hooks?.afterAdjudicationPersistBeforeMemorySave?.(options.deliveryId);
+      try {
+        const thread = await this.mastraMemory.getThreadById({ threadId: updated.sessionId });
+        const resourceId = thread?.resourceId;
+        if (!resourceId) {
+          log.error(
+            { deliveryId: options.deliveryId, sessionId: updated.sessionId },
+            '会话在 Mastra Memory 中不存在有效 Thread 或 resourceId，保留 sent-but-uncommitted 状态'
+          );
+          return { success: true, delivery: updated, memoryCommitted: false };
+        }
+
+        const mastraMessageId = updated.mastraMessageId;
+        const asstMsg = createMastraTextMessage({
+          id: mastraMessageId,
+          role: 'assistant',
+          content: updated.content,
+          threadId: updated.sessionId,
+          resourceId,
+          createdAt: new Date(updated.updatedAt || updated.createdAt),
+        });
+
+        await this.mastraMemory.saveMessages({ messages: [asstMsg] });
+        await this.store.deliveries.markMemoryCommitted(updated.id, Date.now());
+        memoryCommitted = true;
+        log.info(
+          { deliveryId: updated.id, mastraMessageId, resourceId },
+          '人工裁定为 sent 后已成功补交 assistant Memory 并标记 memory_committed_at'
+        );
+      } catch (err) {
+        log.error({ err, deliveryId: options.deliveryId }, '人工裁定后补交 assistant Memory 异常');
+      }
+    }
+
+    return { success: true, delivery: updated, memoryCommitted };
+  }
+
+  /**
+   * 执行 Delivery 检查点恢复扫描
+   */
+  public async runDeliveryRecoveryScan(): Promise<DeliveryRecoveryReport> {
+    const scanner = new DeliveryRecoveryScanner({
+      store: this.store,
+      mastraMemory: this.mastraMemory,
+    });
+    return await scanner.runRecoveryScan();
+  }
   /**
    * 记录 Bot 发送的消息 ID 并执行有限集合驱逐
    */

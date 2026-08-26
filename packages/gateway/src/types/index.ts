@@ -4,6 +4,7 @@ import type {
   KK9Message,
   KK9SessionType,
   SendOptions,
+  SendResult,
 } from '@kkbot/driver';
 import type { KKBotStore, SessionMessage, SessionMode } from '@kkbot/store';
 import type {
@@ -100,6 +101,8 @@ export interface CoordinatorConfig {
   takeoverDurationMs?: number;
   /** 自动回复成功后是否自动显式清除视觉红点，默认 true */
   autoMarkRead?: boolean;
+  /** 发送前失败自动重试最大次数，默认 2 次 (有界重试) */
+  maxRetries?: number;
   /** 是否启用主管 IM 私聊 HITL 跨会话审批拦截路由，默认 true */
   enableHitlRouter?: boolean;
   /** 聚合消息触发自定义回调处理函数 */
@@ -113,6 +116,40 @@ export interface CoordinatorConfig {
   ) => Promise<string[] | undefined> | string[] | undefined;
 }
 
+/**
+ * SessionCoordinator 精确故障与崩溃注入钩子 (测试与 Oracle 验证专用)
+ */
+export interface CoordinatorFaultHooks {
+  afterAgentBeforeDeliveryCreate?: (sessionId: string, replyText: string) => Promise<void> | void;
+  /** Delivery=generated 创建落库后，但在更新为 sending 前 */
+  afterDeliveryGeneratedBeforeSending?: (deliveryId: string) => Promise<void> | void;
+  /** 每次进入 sending 状态后、调用 Driver 发送前 (支持按 attempt 注入) */
+  afterSendingBeforeDriver?: (deliveryId: string, attempt?: number) => Promise<void> | void;
+  /** 每次 Driver 发送调用后、持久化任何发送结果前 (包含成功/失败/超时) */
+  afterDriverSendBeforeResultPersist?: (
+    deliveryId: string,
+    sendResult: SendResult,
+    attempt?: number
+  ) => Promise<void> | void;
+  /** pre-trigger 失败落库为 failed 后，但在发起下一次重试 sending 或退出前 */
+  afterFailedPersistBeforeRetry?: (
+    deliveryId: string,
+    errorCode?: string,
+    attempt?: number
+  ) => Promise<void> | void;
+  /** 重试前准备更新为 sending 状态前 */
+  beforeRetrySendingPersist?: (deliveryId: string, nextAttempt: number) => Promise<void> | void;
+  /** Delivery 进入 aborted 状态落库后 */
+  afterAbortedPersist?: (deliveryId: string) => Promise<void> | void;
+  /** Delivery=sent 落库后，但在 Mastra Memory.saveMessages 保存前 */
+  afterSentPersistBeforeMemorySave?: (deliveryId: string) => Promise<void> | void;
+  /** Mastra Memory 保存成功后，但在 markMemoryCommitted 提交标记落库前 */
+  afterMemorySaveBeforeMarkCommitted?: (deliveryId: string) => Promise<void> | void;
+  /** markMemoryCommitted 提交标记落库后 */
+  afterMarkMemoryCommitted?: (deliveryId: string) => Promise<void> | void;
+  /** 人工裁定 sent 落库后，但在 Mastra Memory 补交保存前 */
+  afterAdjudicationPersistBeforeMemorySave?: (deliveryId: string) => Promise<void> | void;
+}
 /**
  * SessionCoordinator 装配选项
  */
@@ -137,6 +174,8 @@ export interface SessionCoordinatorOptions {
   /** 主动定时推送调度管理器 (可选) */
   scheduleManager?: ProactiveScheduleManager;
   /** 会话编排器配置项 */
+  /** 故障与崩溃注入钩子 (测试与 Oracle 验证专用) */
+  hooks?: CoordinatorFaultHooks;
   config?: CoordinatorConfig;
 }
 
