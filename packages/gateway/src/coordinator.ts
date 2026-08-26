@@ -550,32 +550,31 @@ export class SessionCoordinator extends EventEmitter {
 
     const isOperator = msg.origin === 'operator' || msg.isMe;
 
-    // 1. 【0ms 瞬时同步中断在途 Run】：检测到真实新消息或操作员介入，立即切断在途请求
-    const inFlight = this.inFlightSessions.get(sessionId);
-    if (inFlight) {
-      inFlight.abortController.abort();
-      this.inFlightSessions.delete(sessionId);
-      const elapsedMs = Date.now() - inFlight.startedAt;
-      const abortReason = isOperator ? 'human_takeover' : 'new_inbound_message';
-      log.info(
-        { sessionId, elapsedMs, newMessageId: msg.id, reason: abortReason },
-        '检测到同一会话收到真实新消息/操作员介入，0ms 同步切断在途请求'
-      );
-      this.emit('in_flight_aborted', sessionId, elapsedMs, abortReason);
-    }
-
-    // 2. 处理人类操作员在客户端介入 (Human Takeover)
+    // 1. 处理人类操作员在客户端介入 (Human Takeover)
     if (isOperator) {
       const takeoverUntil = (msg.timestamp || Date.now()) + this.config.takeoverDurationMs;
 
-      // 2.1 写入 Raw Store 并检查墓碑门禁（阻止重放已撤回/合规删除的 operator 消息复活或错误触发接管）
+      // 1.1 写入 Raw Store 并检查墓碑门禁（阻止重放已撤回/合规删除的 operator 消息复活、误中断在途 Run 或错误触发接管）
       const saved = await this.persistInboundMessage(msg, takeoverUntil, true);
       if (saved.isTombstoned) {
         log.info(
           { sessionId, messageId: msg.id, tombstoneType: saved.tombstoneType },
-          'Operator 消息命中持久墓碑，静默抑制并拒绝触发接管与 Memory 写入'
+          'Operator 消息命中持久墓碑，静默抑制并拒绝触发接管、中断在途 Run 与 Memory 写入'
         );
         return;
+      }
+
+      // 1.2 确认非墓碑真实操作员消息后，0ms 瞬时同步中断在途 Run
+      const inFlight = this.inFlightSessions.get(sessionId);
+      if (inFlight) {
+        inFlight.abortController.abort();
+        this.inFlightSessions.delete(sessionId);
+        const elapsedMs = Date.now() - inFlight.startedAt;
+        log.info(
+          { sessionId, elapsedMs, newMessageId: msg.id, reason: 'human_takeover' },
+          '检测到同一会话收到真实操作员介入，0ms 同步切断在途请求'
+        );
+        this.emit('in_flight_aborted', sessionId, elapsedMs, 'human_takeover');
       }
 
       log.info(
@@ -651,8 +650,20 @@ export class SessionCoordinator extends EventEmitter {
 
       return;
     }
+    // 2. 【外部新消息 0ms 瞬时同步中断在途 Run】：在异步 Matcher / I/O 之前同步切断并保留快照供重聚
+    const inFlight = this.inFlightSessions.get(sessionId);
+    if (inFlight) {
+      inFlight.abortController.abort();
+      this.inFlightSessions.delete(sessionId);
+      const elapsedMs = Date.now() - inFlight.startedAt;
+      log.info(
+        { sessionId, elapsedMs, newMessageId: msg.id, reason: 'new_inbound_message' },
+        '检测到同一会话收到真实新消息，0ms 同步切断在途请求'
+      );
+      this.emit('in_flight_aborted', sessionId, elapsedMs, 'new_inbound_message');
+    }
 
-    // 2. 处理客户或外部成员发出的消息 (isMe: false)
+    // 3. 处理客户或外部成员发出的消息 (isMe: false)
     const now = msg.timestamp || Date.now();
 
     // 检查是否处于人工退避期（内存优先检测）
@@ -673,7 +684,7 @@ export class SessionCoordinator extends EventEmitter {
       return;
     }
 
-    // 3. 检查是否为直属主管在私聊窗口中回复 HITL 审批指令 (严格限制为 private 会话且具有可信 senderId，杜绝群聊越权与身份冒用)
+    // 4. 检查是否为直属主管在私聊窗口中回复 HITL 审批指令 (严格限制为 private 会话且具有可信 senderId，杜绝群聊越权与身份冒用)
     if (
       this.config.enableHitlRouter &&
       this.statefulMatcher &&
@@ -738,6 +749,8 @@ export class SessionCoordinator extends EventEmitter {
         return;
       }
     }
+
+    // 5. 异步持久化与同步入桶 (persistPromise 绑定)
     const persistPromise: Promise<boolean> = (async (): Promise<boolean> => {
       try {
         const saved = await this.persistInboundMessage(msg, now, false);
@@ -756,7 +769,7 @@ export class SessionCoordinator extends EventEmitter {
       }
     })();
 
-    // 5. 同步先放入防抖队列并绑定持久化 Promise（保证快照与即时撤回熔断有效）
+    // 6. 同步先放入防抖队列并绑定持久化 Promise（保证快照与即时撤回熔断有效）
     if (inFlight) {
       log.info(
         { sessionId, messageCount: inFlight.message.messages.length },

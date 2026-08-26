@@ -258,9 +258,16 @@ describe('HumanTakeover 人工操作员接管与 Bot 回显隔离', () => {
     expect(coordinator.hasInFlightSession(sessionId)).toBe(false);
   });
 
-  it('已墓碑化的 operator 消息重放时被静默抑制，不触发接管退避且不写入 Mastra Memory', async () => {
+  it('已墓碑化的 operator 消息重放时被静默抑制，不中断在途 Run，不触发接管退避且不写入 Mastra Memory', async () => {
+    const { promise: modelRunningPromise, resolve: resolveModelRunning } = Promise.withResolvers<void>();
+    const { promise: allowModelFinish, resolve: resolveModelFinish } = Promise.withResolvers<void>();
+
     const model = createFakeModel({
-      responses: [{ text: 'Bot 回复', finishReason: 'stop' }],
+      onGenerate: async () => {
+        resolveModelRunning();
+        await allowModelFinish;
+      },
+      responses: [{ text: '正常回复正常请求', finishReason: 'stop' }],
     });
     const agent = createTestAgent(model, mastraMemory);
     coordinator = new SessionCoordinator({
@@ -269,12 +276,12 @@ describe('HumanTakeover 人工操作员接管与 Bot 回显隔离', () => {
       agent,
       mastraMemory,
       mastraStorage: libSqlStore,
-      config: { debounceMs: 50, maxWaitMs: 200 },
+      config: { debounceMs: 20, maxWaitMs: 100 },
     });
     await coordinator.start();
 
-    const sessionId = 'session_operator_tombstone_01';
-    const tombstonedOpMsgId = 'msg_op_tomb_001';
+    const sessionId = 'session_operator_tombstone_active_run';
+    const tombstonedOpMsgId = 'msg_op_tomb_active_01';
 
     // 1. 预先将该 operator 消息记录合规删除墓碑
     await store.tombstones.recordTombstone({
@@ -286,11 +293,30 @@ describe('HumanTakeover 人工操作员接管与 Bot 回显隔离', () => {
     });
 
     let takeoverFired = false;
+    let inFlightAbortedFired = false;
     coordinator.on('takeover', () => {
       takeoverFired = true;
     });
+    coordinator.on('in_flight_aborted', () => {
+      inFlightAbortedFired = true;
+    });
 
-    // 2. 模拟网络重放已合规删除的 operator 消息
+    // 2. 正常用户发送消息启动在途 Run
+    mockDriver.emitMessage({
+      id: 'msg_user_active_01',
+      sessionId,
+      sender: '正常员工',
+      senderId: 'emp_user_active',
+      content: '请帮我查询天气',
+      sessionType: 'private',
+      isMe: false,
+    });
+
+    // 等待模型开始执行（进入在途状态）
+    await modelRunningPromise;
+    expect(coordinator.hasInFlightSession(sessionId)).toBe(true);
+
+    // 3. 在 Run 执行期间重放已墓碑化的 operator 消息
     await coordinator.handleInboundMessage({
       id: tombstonedOpMsgId,
       sessionId,
@@ -302,12 +328,22 @@ describe('HumanTakeover 人工操作员接管与 Bot 回显隔离', () => {
       isMe: true,
     });
 
-    // 验证 1: 绝不触发接管退避事件
+    // 关键核心验证 1: 墓碑门禁拦截，绝不中止正在运行的在途 Run
+    expect(coordinator.hasInFlightSession(sessionId)).toBe(true);
+    expect(inFlightAbortedFired).toBe(false);
+
+    // 关键核心验证 2: 绝不触发接管退避事件与人工退避状态
     expect(takeoverFired).toBe(false);
     expect(await coordinator.isTakeoverActive(sessionId)).toBe(false);
 
-    // 验证 2: 绝不将敏感正文写入 Mastra Thread Memory
-    const thread = await mastraMemory.getThreadById({ threadId: sessionId });
-    expect(thread).toBeNull();
+    // 4. 允许原在途模型执行完毕并完成正常交付
+    resolveModelFinish();
+    await new Promise(r => setTimeout(r, 200));
+
+    // 关键核心验证 3: 原始合法 Run 顺利交付，Mastra Thread 中包含合法回复，绝无敏感 operator 内容
+    const recall = await mastraMemory.recall({ threadId: sessionId, resourceId: 'emp_user_active' });
+    const messageTexts = recall.messages.map(m => extractMessageText(m.content));
+    expect(messageTexts).toContain('正常回复正常请求');
+    expect(messageTexts.some(t => t.includes('已删除的敏感客服发言'))).toBe(false);
   });
 });
