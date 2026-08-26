@@ -645,9 +645,10 @@ describe('DeliveryRepository & Delivery Lifecycle Persistence', () => {
           args: [delivId],
         });
         expect(mapRes.rows).toHaveLength(1);
-        expect(mapRes.rows[0].message_id).toBe(`msg_pure_conc_input_${i}`);
+        const mapRow = mapRes.rows[0];
+        expect(mapRow).toBeDefined();
+        expect(mapRow?.message_id).toBe(`msg_pure_conc_input_${i}`);
       }
-
       // 3. 并发更新状态为 sending -> sent
       const updatePromises = fulfilledDeliveries.map(async (d) => {
         const sending = await repo.updateStatus(d.id, 'sending');
