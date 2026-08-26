@@ -32,6 +32,26 @@ interface DeliveryRow {
   updated_at: number;
 }
 
+
+interface DeliveryAdjudicationRow {
+  id: string;
+  delivery_id: string;
+  operator: string;
+  decision: string;
+  evidence_summary: string;
+  created_at: number;
+}
+
+function mapRowToAdjudication(row: DeliveryAdjudicationRow): DeliveryAdjudicationRecord {
+  return {
+    id: String(row.id),
+    deliveryId: String(row.delivery_id),
+    operator: String(row.operator),
+    decision: row.decision as DeliveryAdjudicationDecision,
+    evidenceSummary: String(row.evidence_summary),
+    createdAt: Number(row.created_at),
+  };
+}
 function mapRowToDelivery(row: DeliveryRow): Delivery {
   return {
     id: String(row.id),
@@ -446,15 +466,7 @@ export class DeliveryRepository {
         sql: `SELECT * FROM delivery_adjudications WHERE delivery_id = ? ORDER BY created_at ASC`,
         args: [deliveryId],
       });
-
-      return res.rows.map(row => ({
-        id: String(row.id),
-        deliveryId: String(row.delivery_id),
-        operator: String(row.operator),
-        decision: row.decision as DeliveryAdjudicationDecision,
-        evidenceSummary: String(row.evidence_summary),
-        createdAt: Number(row.created_at),
-      }));
+      return res.rows.map(row => mapRowToAdjudication(row as unknown as DeliveryAdjudicationRow));
     } catch (err) {
       const cause = err instanceof Error ? err : new Error(String(err));
       log.error({ err, deliveryId }, '查询人工裁定审计记录异常');

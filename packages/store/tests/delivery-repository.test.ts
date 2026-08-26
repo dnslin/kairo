@@ -393,7 +393,7 @@ describe('DeliveryRepository & Delivery Lifecycle Persistence', () => {
         repo.updateStatus(d.id, 'sent', { kkMessageId: 'kk_cc_winner' }),
         repo.updateStatus(d.id, 'failed', { errorCode: 'LATE_FAILURE' }),
       ]);
-
+      expect(results).toHaveLength(2);
       // 至少有一个成功，且终态一致
       const finalRecord = await repo.getDeliveryById(d.id);
       expect(['sent', 'failed']).toContain(finalRecord?.status);

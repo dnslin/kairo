@@ -115,13 +115,13 @@ export class FakeKK9Driver extends EventEmitter {
     return true;
   }
 
-  public async getCurrentSession(): Promise<KK9Session | null> {
-    return this.currentSession;
+  public getCurrentSession(): Promise<KK9Session | null> {
+    return Promise.resolve(this.currentSession);
   }
 
-  public async markSessionRead(_sessionId: string): Promise<boolean> {
+  public markSessionRead(_sessionId: string): Promise<boolean> {
     this.markSessionReadCallsCount++;
-    return true;
+    return Promise.resolve(true);
   }
 
   public async preSendCheck(sessionId: string): Promise<PreSendCheckResult> {

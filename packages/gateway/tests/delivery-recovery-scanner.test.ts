@@ -11,7 +11,7 @@ import {
   ensureMastraThread,
 } from '@kkbot/agent';
 import { DeliveryRecoveryScanner } from '../src/recovery/delivery-recovery-scanner.js';
-import { FakeKK9Driver } from '@kkbot/driver';
+import { FakeKK9Driver, type KK9Driver } from '@kkbot/driver';
 
 
 function extractMessageText(content: unknown): string {
@@ -42,7 +42,7 @@ describe('DeliveryRecoveryScanner 交付恢复扫描器测试 (TDD Red -> Green)
     fakeDriver = new FakeKK9Driver();
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     if (store) {
       store.close();
     }
@@ -321,11 +321,7 @@ describe('DeliveryRecoveryScanner 交付恢复扫描器测试 (TDD Red -> Green)
   });
   it('SessionCoordinator 启动时若恢复扫描发现错误，严格阻止系统启动 (Fail-Closed)', async () => {
     const { SessionCoordinator } = await import('../src/coordinator.js');
-    const fakeDriver = {
-      on: () => {},
-      emit: () => {},
-      removeListener: () => {},
-    };
+    const fakeDriver = new FakeKK9Driver() as unknown as KK9Driver;
 
     const deliveryId = 'deliv_fail_closed_start';
     await store.deliveries.createDelivery({
@@ -347,7 +343,7 @@ describe('DeliveryRecoveryScanner 交付恢复扫描器测试 (TDD Red -> Green)
 
     try {
       const coordinator = new SessionCoordinator({
-        driver: fakeDriver as any,
+        driver: fakeDriver,
         store,
         mastraMemory,
       });

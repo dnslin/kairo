@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createKKBotStore, type KKBotStore } from '@kkbot/store';
@@ -26,6 +27,9 @@ function extractMessageText(content: unknown): string {
   }
   return '';
 }
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 describe('Delivery 跨独立进程强杀与重启恢复 Oracle 测试 (CONCURRENCY-01 / DELIVERY-01)', () => {
   let tempDir: string;
