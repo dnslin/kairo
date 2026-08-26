@@ -125,4 +125,56 @@ describe('KKBot Database Migrations', () => {
     );
     expect(deliveryTableRes.rows).toHaveLength(1);
   });
+
+  it('runKKBotMigrations 在后置版本记录失败时整步 DDL 原子回滚，且不残留列与表', async () => {
+    // 1. 先应用前 3 个迁移 (0001, 0002, 0003)
+    await client.execute(`
+      CREATE TABLE IF NOT EXISTS _kkbot_migrations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        applied_at INTEGER NOT NULL,
+        checksum TEXT
+      );
+    `);
+    for (const m of KKBOT_MIGRATIONS.slice(0, 3)) {
+      await client.executeMultiple(m.up);
+      await client.execute({
+        sql: 'INSERT INTO _kkbot_migrations (id, name, applied_at) VALUES (?, ?, ?)',
+        args: [m.id, m.name, Date.now()],
+      });
+    }
+
+    // 2. 注入 SQLite BEFORE INSERT 触发器：当尝试写入 0004 记录时抛出异常
+    await client.execute(`
+      CREATE TRIGGER fail_0004_migration
+      BEFORE INSERT ON _kkbot_migrations
+      WHEN NEW.id = '0004_delivery_adjudications_and_retries'
+      BEGIN
+        SELECT RAISE(ABORT, 'Simulated migration record insertion failure');
+      END;
+    `);
+
+    // 3. 调用真实的 runKKBotMigrations 运行迁移
+    await expect(runKKBotMigrations(client)).rejects.toThrow(
+      /Simulated migration record insertion failure/
+    );
+
+    // 4. 验证原子回滚生效：0004 的 DDL 全部回滚
+    // 4.1 delivery_adjudications 表绝对未被创建
+    const tableRes = await client.execute(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name = 'delivery_adjudications'"
+    );
+    expect(tableRes.rows).toHaveLength(0);
+
+    // 4.2 message_deliveries 表中的 retry_count 列绝对未残留
+    const colRes = await client.execute("PRAGMA table_info(message_deliveries)");
+    const columnNames = colRes.rows.map(r => r.name);
+    expect(columnNames).not.toContain('retry_count');
+
+    // 4.3 _kkbot_migrations 表中未记录 0004
+    const migRes = await client.execute(
+      "SELECT * FROM _kkbot_migrations WHERE id = '0004_delivery_adjudications_and_retries'"
+    );
+    expect(migRes.rows).toHaveLength(0);
+  });
 });

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { CdpClient } from '../src/cdp/client.js';
@@ -188,6 +189,55 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
       expect(res.success).toBe(false);
       expect(res.isPreTrigger).toBe(true);
       expect(res.error).toContain('文件不存在');
+    });
+  });
+  describe('bringToFront 激活窗口失败 (pre-trigger) 测试', () => {
+    const rejectingCdp = {
+      bringToFront: vi.fn().mockRejectedValue(new Error('CDP Target.bringToFront connection closed')),
+      evaluate: vi.fn(),
+    } as unknown as CdpClient;
+
+    it('sendRichText 在 bringToFront 失败时应返回 isPreTrigger: true', async () => {
+      const ops = new SendOps(rejectingCdp, DEFAULT_SELECTORS);
+      const res = await ops.sendRichText('测试富文本');
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(true);
+      expect(res.error).toContain('激活窗口失败');
+    });
+    it('sendReply 在 bringToFront 失败时应返回 isPreTrigger: true', async () => {
+      const ops = new SendOps(rejectingCdp, DEFAULT_SELECTORS);
+      const res = await ops.sendReply('msg_123', '回复内容');
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(true);
+      expect(res.error).toContain('激活回复窗口失败');
+    });
+
+    it('sendFile 在 bringToFront 失败时应返回 isPreTrigger: true', async () => {
+      const tempFilePath = path.join(os.tmpdir(), `kkbot_test_btf_${Date.now()}.txt`);
+      fs.writeFileSync(tempFilePath, '测试内容');
+      try {
+        const ops = new SendOps(rejectingCdp, DEFAULT_SELECTORS);
+        const res = await ops.sendFile(tempFilePath);
+        expect(res.success).toBe(false);
+        expect(res.isPreTrigger).toBe(true);
+        expect(res.error).toContain('激活文件发送窗口失败');
+      } finally {
+        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+      }
+    });
+
+    it('sendImage 在 bringToFront 失败时应返回 isPreTrigger: true', async () => {
+      const tempImgPath = path.join(os.tmpdir(), `kkbot_test_btf_${Date.now()}.png`);
+      fs.writeFileSync(tempImgPath, 'fake_png_data');
+      try {
+        const ops = new SendOps(rejectingCdp, DEFAULT_SELECTORS);
+        const res = await ops.sendImage(tempImgPath);
+        expect(res.success).toBe(false);
+        expect(res.isPreTrigger).toBe(true);
+        expect(res.error).toContain('激活图片发送窗口失败');
+      } finally {
+        if (fs.existsSync(tempImgPath)) fs.unlinkSync(tempImgPath);
+      }
     });
   });
 });

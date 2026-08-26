@@ -290,4 +290,71 @@ describe('DeliveryRecoveryScanner 交付恢复扫描器测试 (TDD Red -> Green)
     expect(recall2.messages.some((m) => m.id === deriveAssistantMessageId(d2))).toBe(true);
     expect(recall2.messages.some((m) => m.id === deriveAssistantMessageId(d1))).toBe(false);
   });
+  it('generated 恢复遇到异常时记录到 report.errors 且不吞错', async () => {
+    const deliveryId = 'deliv_gen_fail';
+    await store.deliveries.createDelivery({
+      id: deliveryId,
+      runId: 'run_gen_fail',
+      sessionId: 'session_gen_fail',
+      mastraMessageId: deriveAssistantMessageId(deliveryId),
+      content: '生成失败测试内容',
+      contentHash: 'hash_gen_fail',
+    });
+
+    // 模拟 updateStatus 抛出数据库异常
+    const origUpdate = store.deliveries.updateStatus.bind(store.deliveries);
+    store.deliveries.updateStatus = async (id, st, opt) => {
+      if (id === deliveryId && st === 'aborted') {
+        throw new Error('模拟底层数据库死锁或写入失败');
+      }
+      return origUpdate(id, st, opt);
+    };
+
+    try {
+      const scanner = new DeliveryRecoveryScanner({ store, mastraMemory });
+      const report = await scanner.runRecoveryScan();
+      expect(report.errors.length).toBeGreaterThanOrEqual(1);
+      expect(report.errors.some((e) => e.deliveryId === deliveryId && e.error.includes('模拟底层数据库死锁'))).toBe(true);
+    } finally {
+      store.deliveries.updateStatus = origUpdate;
+    }
+  });
+  it('SessionCoordinator 启动时若恢复扫描发现错误，严格阻止系统启动 (Fail-Closed)', async () => {
+    const { SessionCoordinator } = await import('../src/coordinator.js');
+    const fakeDriver = {
+      on: () => {},
+      emit: () => {},
+      removeListener: () => {},
+    };
+
+    const deliveryId = 'deliv_fail_closed_start';
+    await store.deliveries.createDelivery({
+      id: deliveryId,
+      runId: 'run_fail_closed_start',
+      sessionId: 'session_fail_closed_start',
+      mastraMessageId: deriveAssistantMessageId(deliveryId),
+      content: '阻断启动测试内容',
+      contentHash: 'hash_fail_closed_start',
+    });
+
+    const origUpdate = store.deliveries.updateStatus.bind(store.deliveries);
+    store.deliveries.updateStatus = async (id, st, opt) => {
+      if (id === deliveryId && st === 'aborted') {
+        throw new Error('模拟 generated 恢复写入死锁');
+      }
+      return origUpdate(id, st, opt);
+    };
+
+    try {
+      const coordinator = new SessionCoordinator({
+        driver: fakeDriver as any,
+        store,
+        mastraMemory,
+      });
+
+      await expect(coordinator.start()).rejects.toThrow(/阻止系统启动 \(Fail-Closed\)/);
+    } finally {
+      store.deliveries.updateStatus = origUpdate;
+    }
+  });
 });

@@ -272,6 +272,43 @@ describe('DeliveryRepository & Delivery Lifecycle Persistence', () => {
       // aborted -> sent 必须被拒绝
       await expect(repo.updateStatus(dAborted.id, 'sent')).rejects.toThrow();
     });
+    it('终态 (sent / aborted) 幂等重放时若携带不同交付证据字段则严禁改写并抛出异常', async () => {
+      const dSent = await repo.createDelivery({
+        id: 'deliv_term_replay_sent',
+        runId: 'run_term_replay_sent',
+        sessionId: 'session_term_replay',
+        mastraMessageId: 'asst_term_replay_sent',
+        content: '已终态发送内容',
+        contentHash: 'hash_term_replay_sent',
+      });
+      await repo.updateStatus(dSent.id, 'sending');
+      const sent = await repo.updateStatus(dSent.id, 'sent', { kkMessageId: 'kk_orig_msg_id' });
+      expect(sent.kkMessageId).toBe('kk_orig_msg_id');
+
+      // 完全一致的幂等重放应该成功返回
+      const sameReplay = await repo.updateStatus(dSent.id, 'sent', { kkMessageId: 'kk_orig_msg_id' });
+      expect(sameReplay.kkMessageId).toBe('kk_orig_msg_id');
+
+      // 携带不同 kkMessageId 的重放必须被拦截并抛出异常
+      await expect(
+        repo.updateStatus(dSent.id, 'sent', { kkMessageId: 'kk_tampered_msg_id' })
+      ).rejects.toThrow(/已处于终态/);
+
+      const dAborted = await repo.createDelivery({
+        id: 'deliv_term_replay_aborted',
+        runId: 'run_term_replay_aborted',
+        sessionId: 'session_term_replay_2',
+        mastraMessageId: 'asst_term_replay_aborted',
+        content: '已中止内容',
+        contentHash: 'hash_term_replay_aborted',
+      });
+      await repo.updateStatus(dAborted.id, 'aborted', { errorCode: 'USER_ABORT' });
+
+      // 携带不同 errorCode 的 aborted 重放必须被拦截
+      await expect(
+        repo.updateStatus(dAborted.id, 'aborted', { errorCode: 'TAMPERED_ABORT' })
+      ).rejects.toThrow(/已处于终态/);
+    });
 
     it('严禁未经人工裁定直接将 unknown 自动重试为 sending 或直接改写为 failed', async () => {
       const d = await repo.createDelivery({
