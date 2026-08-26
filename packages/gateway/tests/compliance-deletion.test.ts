@@ -295,12 +295,10 @@ describe('ComplianceDeletion 正式合规删除与防复活机制', () => {
       config: { debounceMs: 50, maxWaitMs: 200 },
       complianceAuthorizer: () => ({ authorized: true }),
     });
-    await coordinator.start();
-
     const sessionId = 'session_antiresurrect_comp_01';
     const tombstonedMsgId = 'msg_dead_comp_001';
 
-    // 1. 预先建立持久合规删除墓碑
+    // 1. 预先建立持久合规删除墓碑 (在启动前写入，测试跨重启启动预热)
     await store.tombstones.recordTombstone({
       sessionId,
       messageId: tombstonedMsgId,
@@ -309,6 +307,7 @@ describe('ComplianceDeletion 正式合规删除与防复活机制', () => {
       operator: 'dpo',
     });
 
+    await coordinator.start();
     let suppressedFired = false;
     coordinator.on('suppressed', (sid, reason) => {
       if (sid === sessionId && reason === 'tombstoned') {
@@ -417,5 +416,23 @@ describe('ComplianceDeletion 正式合规删除与防复活机制', () => {
     const auditRecord = await store.tombstones.getComplianceDeletion('cmd_thread_fail_001');
     expect(auditRecord?.status).toBe('failed');
     expect(auditRecord?.error).toContain('Mastra Thread 删除失败');
+  });
+
+  it('启动时若预热内存墓碑栅栏失败，SessionCoordinator 必须 Fail-Closed 阻止启动', async () => {
+    vi.spyOn(store.tombstones, 'getAllTombstoneKeys').mockRejectedValueOnce(
+      new Error('数据库死锁无法读取 message_tombstones')
+    );
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+    });
+
+    await expect(coordinator.start()).rejects.toThrow(
+      /数据库死锁无法读取 message_tombstones/
+    );
+    expect(coordinator.isRunningCoordinator).toBe(false);
   });
 });

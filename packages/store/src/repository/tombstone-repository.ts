@@ -200,6 +200,27 @@ export class TombstoneRepository {
   }
 
   /**
+   * 获取全量消息墓碑标识集合 (返回 sessionId:messageId 格式，供内存栅栏预热)
+   */
+  public async getAllTombstoneKeys(): Promise<Set<string>> {
+    const sql = 'SELECT session_id, message_id FROM message_tombstones';
+    try {
+      const rs = await this.client.execute({ sql, args: [] });
+      const set = new Set<string>();
+      for (const row of rs.rows as unknown as Array<{ session_id: string | null; message_id: string | null }>) {
+        if (typeof row.session_id === 'string' && typeof row.message_id === 'string') {
+          set.add(`${row.session_id}:${row.message_id}`);
+        }
+      }
+      return set;
+    } catch (err) {
+      const cause = err instanceof Error ? err : new Error(String(err));
+      log.error({ err: cause }, '查询全量墓碑标识集合异常');
+      throw new DatabaseError(`查询全量墓碑标识集合失败: ${cause.message}`, cause);
+    }
+  }
+
+  /**
    * 记录合规删除审计记录
    */
   public async recordComplianceDeletion(

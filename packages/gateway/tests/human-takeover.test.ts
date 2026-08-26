@@ -278,12 +278,10 @@ describe('HumanTakeover 人工操作员接管与 Bot 回显隔离', () => {
       mastraStorage: libSqlStore,
       config: { debounceMs: 20, maxWaitMs: 100 },
     });
-    await coordinator.start();
-
     const sessionId = 'session_operator_tombstone_active_run';
     const tombstonedOpMsgId = 'msg_op_tomb_active_01';
 
-    // 1. 预先将该 operator 消息记录合规删除墓碑
+    // 1. 预先将该 operator 消息持久化合规删除墓碑（在启动前写入，测试跨重启预热与 0ms 栅栏拦截）
     await store.tombstones.recordTombstone({
       sessionId,
       messageId: tombstonedOpMsgId,
@@ -292,6 +290,7 @@ describe('HumanTakeover 人工操作员接管与 Bot 回显隔离', () => {
       reason: '合规删除',
     });
 
+    await coordinator.start();
     let takeoverFired = false;
     let inFlightAbortedFired = false;
     coordinator.on('takeover', () => {
@@ -345,5 +344,84 @@ describe('HumanTakeover 人工操作员接管与 Bot 回显隔离', () => {
     const messageTexts = recall.messages.map(m => extractMessageText(m.content));
     expect(messageTexts).toContain('正常回复正常请求');
     expect(messageTexts.some(t => t.includes('已删除的敏感客服发言'))).toBe(false);
+  });
+
+  it('即使 Store 数据库写入存在阻塞延迟，Operator 介入仍同步 0ms 瞬时切断在途 Run', async () => {
+    const { promise: modelStarted, resolve: resolveModelStarted } = Promise.withResolvers<void>();
+    const model = createFakeModel({
+      onGenerate: async (_count, callOptions) => {
+        resolveModelStarted();
+        const { promise: abortWait, resolve: resolveAborted } = Promise.withResolvers<void>();
+        callOptions?.abortSignal?.addEventListener('abort', () => {
+          resolveAborted();
+        });
+        await abortWait;
+      },
+      responses: [{ text: '不应完成的回复', finishReason: 'stop' }],
+    });
+    const agent = createTestAgent(model, mastraMemory);
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+      config: { debounceMs: 20, maxWaitMs: 100 },
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_takeover_blocked_store';
+
+    // 模拟 Store 消息持久化存在慢延迟阻塞
+    let storeBlockedResolve: () => void;
+    const storeBlockedPromise = new Promise<void>(r => { storeBlockedResolve = r; });
+    const origSave = store.messages.saveMessage.bind(store.messages);
+    vi.spyOn(store.messages, 'saveMessage').mockImplementation(async (input) => {
+      if (input.origin === 'operator') {
+        await storeBlockedPromise;
+      }
+      return origSave(input);
+    });
+
+    let takeoverAbortFired = false;
+    coordinator.on('in_flight_aborted', (sid, _elapsed, reason) => {
+      if (sid === sessionId && reason === 'human_takeover') {
+        takeoverAbortFired = true;
+      }
+    });
+
+    // 1. 发送用户消息启动 Run
+    mockDriver.emitMessage({
+      id: 'msg_user_before_slow_op',
+      sessionId,
+      sender: '员工',
+      senderId: 'emp_usr',
+      content: '请帮我写代码',
+      sessionType: 'private',
+      isMe: false,
+    });
+
+    await modelStarted;
+    expect(coordinator.hasInFlightSession(sessionId)).toBe(true);
+
+    // 2. Operator 发送消息（不等待 handleInboundMessage 完成，立即同步断言）
+    const opMsgPromise = coordinator.handleInboundMessage({
+      id: 'msg_op_slow_takeover',
+      sessionId,
+      sender: '客服专员',
+      senderId: 'emp_op',
+      content: '人工接管中',
+      sessionType: 'private',
+      origin: 'operator',
+      isMe: true,
+    });
+
+    // 关键核心断言：即使底层的 Store 写入仍在被阻塞 (storeBlockedPromise 尚未 resolve)，在途 Run 已经同步 0ms 被切断！
+    expect(takeoverAbortFired).toBe(true);
+    expect(coordinator.hasInFlightSession(sessionId)).toBe(false);
+
+    // 释放 Store 阻塞并等待处理完成
+    storeBlockedResolve!();
+    await opMsgPromise;
   });
 });

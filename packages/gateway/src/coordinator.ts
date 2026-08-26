@@ -172,6 +172,8 @@ export class SessionCoordinator extends EventEmitter {
   private readonly botSentMessageIds = new Set<string>();
   /** 记录已被撤回的消息 ID 集合 (用于防止消息存储与撤回并发竞争) */
   private readonly recalledMessageIds = new Set<string>();
+  /** 记录已知已被墓碑化的消息集合 (sessionId:messageId -> 0ms 同步防复活与防误杀栅栏) */
+  private readonly tombstoneCache = new Set<string>();
   /** 记录各会话在内存中的人工退避截止时间 (sessionId -> timestamp) */
   private readonly takeoverUntilMap = new Map<string, number>();
   /** 记录各会话在内存中的工作模式缓存 (sessionId -> mode) */
@@ -315,6 +317,18 @@ export class SessionCoordinator extends EventEmitter {
       throw recErr;
     }
 
+    // 2. 【启动准入门槛：预热内存墓碑栅栏 (Fail-Closed)】
+    // 通过 TombstoneRepository 加载全量墓碑标识，0ms 瞬时同步拦截已撤回与已删除消息
+    try {
+      const tombKeys = await this.store.tombstones.getAllTombstoneKeys();
+      for (const key of tombKeys) {
+        this.tombstoneCache.add(key);
+        this.recalledMessageIds.add(key);
+      }
+    } catch (tombErr) {
+      log.error({ err: tombErr }, 'SessionCoordinator 启动前预热内存墓碑栅栏失败，阻止系统启动 (Fail-Closed)');
+      throw tombErr;
+    }
     this.driver.on('message', this.boundHandleMessage);
     this.driver.on('recalled', this.boundHandleRecalled);
     if (this.scheduleManager) {
@@ -379,6 +393,15 @@ export class SessionCoordinator extends EventEmitter {
     log.info('SessionCoordinator 已安全停止');
   }
 
+
+  /**
+   * 记录已知墓碑至内存同步栅栏 (用于 0ms 防复活与在途防误杀)
+   */
+  private recordTombstoneMemory(sessionId: string, messageId: string): void {
+    const key = `${sessionId}:${messageId}`;
+    this.tombstoneCache.add(key);
+    this.recalledMessageIds.add(key);
+  }
   /**
    * 当前处于待处理防抖状态的会话数量
    */
@@ -540,6 +563,8 @@ export class SessionCoordinator extends EventEmitter {
    */
   public async handlePrivateSessionMessage(msg: KK9Message): Promise<void> {
     const sessionId = msg.sessionId;
+    const messageId = msg.messageId || msg.id;
+    const tombstoneKey = `${sessionId}:${messageId}`;
 
     // 0. 【优先识别并过滤 Bot 回显】：严禁在过滤回显前 abort，避免回显误杀正在运行的 Run 或触发退避
     if (this.botSentMessageIds.has(msg.id) || msg.origin === 'bot_echo') {
@@ -548,35 +573,36 @@ export class SessionCoordinator extends EventEmitter {
       return;
     }
 
+    // 1. 【0ms 内存墓碑栅栏门禁】：若消息已知被墓碑化，0ms 瞬时静默抑制，严禁中断在途 Run，严禁触发退避与 Memory 写入
+    if (this.tombstoneCache.has(tombstoneKey)) {
+      log.info(
+        { sessionId, messageId: msg.id },
+        '消息命中内存墓碑栅栏，0ms 瞬时静默抑制，拒绝触发接管、中断在途 Run 与 Memory 写入'
+      );
+      this.emit('suppressed', sessionId, 'tombstoned', msg);
+      return;
+    }
+
     const isOperator = msg.origin === 'operator' || msg.isMe;
 
-    // 1. 处理人类操作员在客户端介入 (Human Takeover)
+    // 2. 【0ms 瞬时同步中断在途 Run】：确认非墓碑消息后，立即切断在途只读请求
+    const inFlight = this.inFlightSessions.get(sessionId);
+    if (inFlight) {
+      inFlight.abortController.abort();
+      this.inFlightSessions.delete(sessionId);
+      const elapsedMs = Date.now() - inFlight.startedAt;
+      const abortReason = isOperator ? 'human_takeover' : 'new_inbound_message';
+      log.info(
+        { sessionId, elapsedMs, newMessageId: msg.id, reason: abortReason },
+        '检测到同一会话收到真实新消息/操作员介入，0ms 同步切断在途请求'
+      );
+      this.emit('in_flight_aborted', sessionId, elapsedMs, abortReason);
+    }
+
+    const receivedAt = msg.timestamp || Date.now();
+
+    // 3. 处理人类操作员在客户端介入 (Human Takeover)
     if (isOperator) {
-      const takeoverUntil = (msg.timestamp || Date.now()) + this.config.takeoverDurationMs;
-
-      // 1.1 写入 Raw Store 并检查墓碑门禁（阻止重放已撤回/合规删除的 operator 消息复活、误中断在途 Run 或错误触发接管）
-      const saved = await this.persistInboundMessage(msg, takeoverUntil, true);
-      if (saved.isTombstoned) {
-        log.info(
-          { sessionId, messageId: msg.id, tombstoneType: saved.tombstoneType },
-          'Operator 消息命中持久墓碑，静默抑制并拒绝触发接管、中断在途 Run 与 Memory 写入'
-        );
-        return;
-      }
-
-      // 1.2 确认非墓碑真实操作员消息后，0ms 瞬时同步中断在途 Run
-      const inFlight = this.inFlightSessions.get(sessionId);
-      if (inFlight) {
-        inFlight.abortController.abort();
-        this.inFlightSessions.delete(sessionId);
-        const elapsedMs = Date.now() - inFlight.startedAt;
-        log.info(
-          { sessionId, elapsedMs, newMessageId: msg.id, reason: 'human_takeover' },
-          '检测到同一会话收到真实操作员介入，0ms 同步切断在途请求'
-        );
-        this.emit('in_flight_aborted', sessionId, elapsedMs, 'human_takeover');
-      }
-
       log.info(
         { sessionId, messageId: msg.id, sender: msg.sender, content: msg.content },
         '检测到人类操作员在客户端发送消息，触发人机协同退避'
@@ -585,7 +611,8 @@ export class SessionCoordinator extends EventEmitter {
       // 立即清空该会话的防抖队列，取消 Bot 待发出的自动回复
       this.clearPendingBucket(sessionId);
 
-      // 设置退避截止时间并在内存中同步生效
+      // 设置 10 分钟退避截止时间并在内存中同步生效
+      const takeoverUntil = receivedAt + this.config.takeoverDurationMs;
       this.takeoverUntilMap.set(sessionId, takeoverUntil);
       this.emit('takeover', sessionId, takeoverUntil, msg);
 
@@ -599,6 +626,17 @@ export class SessionCoordinator extends EventEmitter {
       } catch (err) {
         if (!this.isRunning) return;
         log.warn({ err, sessionId }, '更新人类介入会话状态异常');
+      }
+
+      // 写入 Raw Store (注意：传入真实接收时间 receivedAt，严禁传入未来的 takeoverUntil！)
+      const saved = await this.persistInboundMessage(msg, receivedAt, true);
+      if (saved.isTombstoned) {
+        this.recordTombstoneMemory(sessionId, messageId);
+        log.info(
+          { sessionId, messageId: msg.id, tombstoneType: saved.tombstoneType },
+          'Operator 消息持久化时检测到墓碑，终止后续 Memory 写入'
+        );
+        return;
       }
 
       // 将 operator 真实消息以自身稳定 ID 写入 Mastra Thread (表达真实历史，不伪装成 Bot 回复)
@@ -620,7 +658,7 @@ export class SessionCoordinator extends EventEmitter {
                   content: msg.content,
                   threadId: sessionId,
                   resourceId,
-                  createdAt: new Date(msg.timestamp || Date.now()),
+                  createdAt: new Date(receivedAt),
                 }),
               ],
             });
@@ -649,18 +687,6 @@ export class SessionCoordinator extends EventEmitter {
       }
 
       return;
-    }
-    // 2. 【外部新消息 0ms 瞬时同步中断在途 Run】：在异步 Matcher / I/O 之前同步切断并保留快照供重聚
-    const inFlight = this.inFlightSessions.get(sessionId);
-    if (inFlight) {
-      inFlight.abortController.abort();
-      this.inFlightSessions.delete(sessionId);
-      const elapsedMs = Date.now() - inFlight.startedAt;
-      log.info(
-        { sessionId, elapsedMs, newMessageId: msg.id, reason: 'new_inbound_message' },
-        '检测到同一会话收到真实新消息，0ms 同步切断在途请求'
-      );
-      this.emit('in_flight_aborted', sessionId, elapsedMs, 'new_inbound_message');
     }
 
     // 3. 处理客户或外部成员发出的消息 (isMe: false)
@@ -849,7 +875,7 @@ export class SessionCoordinator extends EventEmitter {
     const { sessionId, messageId } = event;
     log.info({ sessionId, messageId }, '收到消息撤回事件，执行即时熔断与活动上下文清理');
 
-    this.recalledMessageIds.add(`${sessionId}:${messageId}`);
+    this.recordTombstoneMemory(sessionId, messageId);
 
     // 0. 同步瞬时判定会话类型 (通过内存缓存 0ms 判定，无需等待 DB I/O)
     const cachedType = this.sessionTypeMap.get(sessionId);
@@ -2183,7 +2209,7 @@ export class SessionCoordinator extends EventEmitter {
       }
     }
 
-    // 3. 建立持久合规删除墓碑
+    this.recordTombstoneMemory(sessionId, messageId);
     await this.store.tombstones.recordTombstone({
       sessionId,
       messageId,
@@ -2257,6 +2283,7 @@ export class SessionCoordinator extends EventEmitter {
     const allMsgs = await this.store.messages.getSessionHistory(sessionId, { limit: 10000 });
     for (const m of allMsgs) {
       if (m.messageId) {
+        this.recordTombstoneMemory(sessionId, m.messageId);
         await this.store.tombstones.recordTombstone({
           sessionId,
           messageId: m.messageId,
