@@ -165,6 +165,58 @@ CREATE TABLE IF NOT EXISTS delivery_adjudications (
 CREATE INDEX IF NOT EXISTS idx_delivery_adjudications_delivery_id ON delivery_adjudications(delivery_id);
 `;
 
+export const MIGRATION_0005_TOMBSTONES_AND_COMPLIANCE_DELETION_SQL = `
+-- 1. 创建 message_tombstones 表 (持久记录撤回与合规删除墓碑)
+CREATE TABLE IF NOT EXISTS message_tombstones (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  tombstone_type TEXT NOT NULL,
+  operator TEXT,
+  reason TEXT,
+  created_at INTEGER NOT NULL,
+  UNIQUE (session_id, message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_tombstones_session_id ON message_tombstones(session_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_tombstones_session_msg ON message_tombstones(session_id, message_id);
+
+-- 2. 创建 compliance_deletions 审计记录表
+CREATE TABLE IF NOT EXISTS compliance_deletions (
+  id TEXT PRIMARY KEY,
+  command_id TEXT NOT NULL UNIQUE,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  session_id TEXT,
+  scope TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  operator TEXT NOT NULL,
+  status TEXT NOT NULL,
+  erased_messages_count INTEGER NOT NULL DEFAULT 0,
+  erased_deliveries_count INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_compliance_deletions_command_id ON compliance_deletions(command_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_deletions_target ON compliance_deletions(target_type, target_id);
+`;
+
+export const MIGRATION_0006_DELIVERY_INPUT_MESSAGES_SQL = `
+-- 创建 delivery_input_messages 映射表 (精确记录 Delivery 与输入原生消息映射，支持精准合规删除)
+CREATE TABLE IF NOT EXISTS delivery_input_messages (
+  delivery_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (delivery_id, message_id),
+  FOREIGN KEY (delivery_id) REFERENCES message_deliveries(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_input_messages_msg ON delivery_input_messages(session_id, message_id);
+`;
+
 /**
  * KKBot 内部版本化迁移脚本定义列表
  * 注意：所有 SQL 均为纯 KKBot 业务表，对 Mastra 内部表（mastra_*）实行零 DDL、零 DML
@@ -189,6 +241,16 @@ export const KKBOT_MIGRATIONS: readonly Migration[] = [
     id: '0004_delivery_adjudications_and_retries',
     name: 'Add retry_count column and delivery_adjudications audit table',
     up: MIGRATION_0004_DELIVERY_ADJUDICATIONS_AND_RETRIES_SQL,
+  },
+  {
+    id: '0005_tombstones_and_compliance_deletion',
+    name: 'Add message_tombstones and compliance_deletions audit tables',
+    up: MIGRATION_0005_TOMBSTONES_AND_COMPLIANCE_DELETION_SQL,
+  },
+  {
+    id: '0006_delivery_input_messages',
+    name: 'Add delivery_input_messages mapping table for causal delivery tracking',
+    up: MIGRATION_0006_DELIVERY_INPUT_MESSAGES_SQL,
   },
 ];
 

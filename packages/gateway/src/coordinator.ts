@@ -9,6 +9,9 @@ import type {
   SendResult,
 } from '@kkbot/driver';
 import type {
+  ComplianceDeletionCommand,
+  ComplianceDeletionRecord,
+  ComplianceDeletionScope,
   DeliveryAdjudicationDecision,
   DeliveryStatus,
   KKBotStore,
@@ -23,6 +26,8 @@ import {
   deriveAssistantMessageId,
   ensureMastraThread,
   createMastraTextMessage,
+  removeMastraMessage,
+  resetObservationalMemoryScope,
   createRegisterProactiveScheduleTool,
   type AgentMemoryManager,
   type ApprovalManager,
@@ -37,6 +42,8 @@ import {
   type UserProfilePreference,
 } from '@kkbot/agent';
 import type {
+  ComplianceAuthorizationResult,
+  ComplianceDeletionAuthorizer,
   ConsolidatedMessage,
   CoordinatorConfig,
   CoordinatorDispatchResult,
@@ -136,6 +143,8 @@ export class SessionCoordinator extends EventEmitter {
   public readonly store: KKBotStore;
   public readonly agent?: KKBotAgent;
   public readonly mastraMemory?: Memory;
+  public readonly mastraStorage?: unknown;
+  public readonly complianceAuthorizer?: ComplianceDeletionAuthorizer;
   public readonly agentRuntime?: KkbotAgentRuntime;
   public readonly memoryManager?: AgentMemoryManager;
   public readonly approvalManager?: ApprovalManager;
@@ -163,10 +172,14 @@ export class SessionCoordinator extends EventEmitter {
   private readonly botSentMessageIds = new Set<string>();
   /** 记录已被撤回的消息 ID 集合 (用于防止消息存储与撤回并发竞争) */
   private readonly recalledMessageIds = new Set<string>();
+  /** 记录已知已被墓碑化的消息集合 (sessionId:messageId -> 0ms 同步防复活与防误杀栅栏) */
+  private readonly tombstoneCache = new Set<string>();
   /** 记录各会话在内存中的人工退避截止时间 (sessionId -> timestamp) */
   private readonly takeoverUntilMap = new Map<string, number>();
   /** 记录各会话在内存中的工作模式缓存 (sessionId -> mode) */
   private readonly sessionModeMap = new Map<string, SessionMode>();
+  /** 记录各会话在内存中的类型缓存 (sessionId -> sessionType) */
+  private readonly sessionTypeMap = new Map<string, string>();
   /** 运行状态标记 */
   private isRunning = false;
   /**
@@ -188,11 +201,11 @@ export class SessionCoordinator extends EventEmitter {
     this.store = options.store;
     this.agent = options.agent;
     this.mastraMemory = options.mastraMemory;
-
+    this.mastraStorage = options.mastraStorage;
+    this.complianceAuthorizer = options.complianceAuthorizer;
     if (this.agent && !this.mastraMemory) {
       throw new Error('装配 Mastra-native Agent 时必须同时传入协同的 mastraMemory 实例');
     }
-
     this.agentRuntime = options.agentRuntime;
     this.memoryManager = options.memoryManager;
     this.approvalManager = options.approvalManager;
@@ -304,6 +317,18 @@ export class SessionCoordinator extends EventEmitter {
       throw recErr;
     }
 
+    // 2. 【启动准入门槛：预热内存墓碑栅栏 (Fail-Closed)】
+    // 通过 TombstoneRepository 加载全量墓碑标识，0ms 瞬时同步拦截已撤回与已删除消息
+    try {
+      const tombKeys = await this.store.tombstones.getAllTombstoneKeys();
+      for (const key of tombKeys) {
+        this.tombstoneCache.add(key);
+        this.recalledMessageIds.add(key);
+      }
+    } catch (tombErr) {
+      log.error({ err: tombErr }, 'SessionCoordinator 启动前预热内存墓碑栅栏失败，阻止系统启动 (Fail-Closed)');
+      throw tombErr;
+    }
     this.driver.on('message', this.boundHandleMessage);
     this.driver.on('recalled', this.boundHandleRecalled);
     if (this.scheduleManager) {
@@ -368,6 +393,15 @@ export class SessionCoordinator extends EventEmitter {
     log.info('SessionCoordinator 已安全停止');
   }
 
+
+  /**
+   * 记录已知墓碑至内存同步栅栏 (用于 0ms 防复活与在途防误杀)
+   */
+  private recordTombstoneMemory(sessionId: string, messageId: string): void {
+    const key = `${sessionId}:${messageId}`;
+    this.tombstoneCache.add(key);
+    this.recalledMessageIds.add(key);
+  }
   /**
    * 当前处于待处理防抖状态的会话数量
    */
@@ -472,6 +506,7 @@ export class SessionCoordinator extends EventEmitter {
   public async handleInboundMessage(msg: KK9Message): Promise<void> {
     const sessionId = msg.sessionId;
     const sessionType = msg.sessionType || 'private';
+    this.sessionTypeMap.set(sessionId, sessionType);
 
     // 0. 【GroupSession 强制短路分流】：进入 Agent 链 / 防抖 / 在途中断前的绝对边界
     if (sessionType === 'group') {
@@ -523,36 +558,51 @@ export class SessionCoordinator extends EventEmitter {
     // 1. PrivateSession 会话处理主流程
     await this.handlePrivateSessionMessage(msg);
   }
-
   /**
    * 一对一私聊消息处理主流程
    */
   public async handlePrivateSessionMessage(msg: KK9Message): Promise<void> {
     const sessionId = msg.sessionId;
+    const messageId = msg.messageId || msg.id;
+    const tombstoneKey = `${sessionId}:${messageId}`;
 
-    // 0. 【首要原则：0ms 瞬时同步中断】若当前会话存在大模型在途生成，立即同步切断
+    // 0. 【优先识别并过滤 Bot 回显】：严禁在过滤回显前 abort，避免回显误杀正在运行的 Run 或触发退避
+    if (this.botSentMessageIds.has(msg.id) || msg.origin === 'bot_echo') {
+      this.botSentMessageIds.delete(msg.id);
+      log.debug({ sessionId, messageId: msg.id }, '识别为 Bot 自身发出的消息回显，安全忽略且不触发中断');
+      return;
+    }
+
+    // 1. 【0ms 内存墓碑栅栏门禁】：若消息已知被墓碑化，0ms 瞬时静默抑制，严禁中断在途 Run，严禁触发退避与 Memory 写入
+    if (this.tombstoneCache.has(tombstoneKey)) {
+      log.info(
+        { sessionId, messageId: msg.id },
+        '消息命中内存墓碑栅栏，0ms 瞬时静默抑制，拒绝触发接管、中断在途 Run 与 Memory 写入'
+      );
+      this.emit('suppressed', sessionId, 'tombstoned', msg);
+      return;
+    }
+
+    const isOperator = msg.origin === 'operator' || msg.isMe;
+
+    // 2. 【0ms 瞬时同步中断在途 Run】：确认非墓碑消息后，立即切断在途只读请求
     const inFlight = this.inFlightSessions.get(sessionId);
     if (inFlight) {
       inFlight.abortController.abort();
       this.inFlightSessions.delete(sessionId);
       const elapsedMs = Date.now() - inFlight.startedAt;
+      const abortReason = isOperator ? 'human_takeover' : 'new_inbound_message';
       log.info(
-        { sessionId, elapsedMs, newMessageId: msg.id },
-        '大模型生成中检测到同一会话收到新消息，0ms 同步切断在途请求'
+        { sessionId, elapsedMs, newMessageId: msg.id, reason: abortReason },
+        '检测到同一会话收到真实新消息/操作员介入，0ms 同步切断在途请求'
       );
-      this.emit('in_flight_aborted', sessionId, elapsedMs, 'new_inbound_message');
+      this.emit('in_flight_aborted', sessionId, elapsedMs, abortReason);
     }
 
-    // 1. 处理人类或 Bot 自身发出的消息 (isMe: true)
-    if (msg.isMe) {
-      // 检查是否为 Bot 自身通过 coordinator 发出的消息回显
-      if (this.botSentMessageIds.has(msg.id) || msg.origin === 'bot_echo') {
-        this.botSentMessageIds.delete(msg.id);
-        log.debug({ sessionId, messageId: msg.id }, '识别为 Bot 自身发出的消息回显，安全忽略');
-        return;
-      }
+    const receivedAt = msg.timestamp || Date.now();
 
-      // 非 Bot 发送的 isMe 消息 -> 人类操作员在客户端打字介入 (Human Takeover)
+    // 3. 处理人类操作员在客户端介入 (Human Takeover)
+    if (isOperator) {
       log.info(
         { sessionId, messageId: msg.id, sender: msg.sender, content: msg.content },
         '检测到人类操作员在客户端发送消息，触发人机协同退避'
@@ -562,7 +612,7 @@ export class SessionCoordinator extends EventEmitter {
       this.clearPendingBucket(sessionId);
 
       // 设置 10 分钟退避截止时间并在内存中同步生效
-      const takeoverUntil = Date.now() + this.config.takeoverDurationMs;
+      const takeoverUntil = receivedAt + this.config.takeoverDurationMs;
       this.takeoverUntilMap.set(sessionId, takeoverUntil);
       this.emit('takeover', sessionId, takeoverUntil, msg);
 
@@ -577,11 +627,69 @@ export class SessionCoordinator extends EventEmitter {
         if (!this.isRunning) return;
         log.warn({ err, sessionId }, '更新人类介入会话状态异常');
       }
-      await this.persistInboundMessage(msg, takeoverUntil, true);
+
+      // 写入 Raw Store (注意：传入真实接收时间 receivedAt，严禁传入未来的 takeoverUntil！)
+      const saved = await this.persistInboundMessage(msg, receivedAt, true);
+      if (saved.isTombstoned) {
+        this.recordTombstoneMemory(sessionId, messageId);
+        log.info(
+          { sessionId, messageId: msg.id, tombstoneType: saved.tombstoneType },
+          'Operator 消息持久化时检测到墓碑，终止后续 Memory 写入'
+        );
+        return;
+      }
+
+      // 将 operator 真实消息以自身稳定 ID 写入 Mastra Thread (表达真实历史，不伪装成 Bot 回复)
+      if (this.mastraMemory) {
+        try {
+          const resourceId = await this.resolveSessionResourceId(sessionId, {
+            senderId: msg.senderId,
+            isFromSelf: true,
+            origin: 'operator',
+          });
+          if (resourceId) {
+            await ensureMastraThread(this.mastraMemory, sessionId, resourceId);
+            const opMsgId = deriveUserMessageId(sessionId, msg.messageId || msg.id);
+            await this.mastraMemory.saveMessages({
+              messages: [
+                createMastraTextMessage({
+                  id: opMsgId,
+                  role: 'assistant',
+                  content: msg.content,
+                  threadId: sessionId,
+                  resourceId,
+                  createdAt: new Date(receivedAt),
+                }),
+              ],
+            });
+            if (typeof this.mastraMemory.settled === 'function') {
+              await this.mastraMemory.settled();
+            }
+          }
+        } catch (opMemErr) {
+          log.error({ opMemErr, sessionId }, '保存 operator 消息至 Mastra Memory 异常');
+        }
+      }
+
+      // 将处于 generated 的未发送 Delivery 安全置为 aborted
+      try {
+        const deliveries = await this.store.deliveries.getDeliveriesBySession(sessionId);
+        for (const d of deliveries) {
+          if (d.status === 'generated') {
+            await this.store.deliveries.updateStatus(d.id, 'aborted', {
+              errorCode: 'ABORTED_HUMAN_TAKEOVER: 操作员介入接管会话',
+            });
+            await this.hooks?.afterAbortedPersist?.(d.id);
+          }
+        }
+      } catch (delivErr) {
+        log.debug({ delivErr, sessionId }, '更新未发送 Delivery 状态告警');
+      }
+
       return;
     }
 
-    // 2. 处理客户或外部成员发出的消息 (isMe: false)
+    // 3. 处理客户或外部成员发出的消息 (isMe: false)
     const now = msg.timestamp || Date.now();
 
     // 检查是否处于人工退避期（内存优先检测）
@@ -602,7 +710,7 @@ export class SessionCoordinator extends EventEmitter {
       return;
     }
 
-    // 3. 检查是否为直属主管在私聊窗口中回复 HITL 审批指令 (严格限制为 private 会话且具有可信 senderId，杜绝群聊越权与身份冒用)
+    // 4. 检查是否为直属主管在私聊窗口中回复 HITL 审批指令 (严格限制为 private 会话且具有可信 senderId，杜绝群聊越权与身份冒用)
     if (
       this.config.enableHitlRouter &&
       this.statefulMatcher &&
@@ -668,10 +776,13 @@ export class SessionCoordinator extends EventEmitter {
       }
     }
 
-    // 4. 构建并触发异步 Raw Store 写入 Promise（前置条件追踪）
+    // 5. 异步持久化与同步入桶 (persistPromise 绑定)
     const persistPromise: Promise<boolean> = (async (): Promise<boolean> => {
       try {
-        await this.persistInboundMessage(msg, now, false);
+        const saved = await this.persistInboundMessage(msg, now, false);
+        if (!saved || saved.isTombstoned) {
+          return false;
+        }
         return true;
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
@@ -684,7 +795,7 @@ export class SessionCoordinator extends EventEmitter {
       }
     })();
 
-    // 5. 同步先放入防抖队列并绑定持久化 Promise（保证快照与即时撤回熔断有效）
+    // 6. 同步先放入防抖队列并绑定持久化 Promise（保证快照与即时撤回熔断有效）
     if (inFlight) {
       log.info(
         { sessionId, messageCount: inFlight.message.messages.length },
@@ -719,7 +830,7 @@ export class SessionCoordinator extends EventEmitter {
       const replyTargetId =
         msg.replyTo?.replyToId ??
         (typeof msg.raw?.replyToId === 'string' ? msg.raw.replyToId : null);
-      return await this.store.messages.saveMessage({
+      const savedMsg = await this.store.messages.saveMessage({
         sessionId,
         messageId: msg.messageId || msg.id,
         origin: msg.origin || (isFromSelf ? 'operator' : 'external'),
@@ -733,6 +844,15 @@ export class SessionCoordinator extends EventEmitter {
         isRecalled: this.recalledMessageIds.has(`${sessionId}:${msg.messageId || msg.id}`),
         createdAt: msg.timestamp || now,
       });
+
+      if (savedMsg.isTombstoned) {
+        log.info(
+          { sessionId, messageId: msg.id, tombstoneType: savedMsg.tombstoneType },
+          '消息命中持久墓碑，静默抑制并不进入下游'
+        );
+        this.emit('suppressed', sessionId, 'tombstoned', msg);
+      }
+      return savedMsg;
     } catch (err) {
       log.error({ err, sessionId: msg.sessionId, messageId: msg.id }, '持久化入站消息异常');
       throw err;
@@ -740,70 +860,152 @@ export class SessionCoordinator extends EventEmitter {
   }
 
   /**
-   * 消息撤回事件处理 (Recall Fusion)
+   * 消息撤回事件处理 (MessageRecall)
+   * 1. 记录持久墓碑 (type: recall) 与 Raw Store 撤回事实
+   * 2. GroupSession: 仅更新 Raw Store 撤回事实，立即结束（不触碰 Memory / Agent）
+   * 3. PrivateSession:
+   *    - 防抖期：从 Pending Bucket 移除，不创建 user Memory
+   *    - Run 期间：0ms 中断正在使用该消息的只读 Run
+   *    - Mastra Thread：按稳定 message ID 从活动上下文安全移出 (deleteMessages)
+   *    - Observational Memory：执行保守的 Scope Reset (Fail-Closed)
+   *    - Delivery：可证明未发送时安全进入 aborted，unknown 保持人工门禁，已 sent 及其 Memory 严格保留
    * @param event 消息撤回事件元数据
    */
   public async handleRecalled(event: KK9RecalledEvent): Promise<void> {
     const { sessionId, messageId } = event;
-    log.info({ sessionId, messageId }, '收到消息撤回事件，执行即时熔断检查');
+    log.info({ sessionId, messageId }, '收到消息撤回事件，执行即时熔断与活动上下文清理');
 
-    this.recalledMessageIds.add(`${sessionId}:${messageId}`);
+    this.recordTombstoneMemory(sessionId, messageId);
 
-    // 若在途生成中包含被撤回消息，立即中断
-    const inFlight = this.inFlightSessions.get(sessionId);
-    if (inFlight) {
-      const containsRecalled = inFlight.message.messages.some(m => m.id === messageId);
-      if (containsRecalled) {
-        log.info({ sessionId, messageId }, '在途生成任务包含被撤回消息，立即 50ms 瞬时中断');
-        inFlight.abortController.abort();
-        this.inFlightSessions.delete(sessionId);
-        const elapsedMs = Date.now() - inFlight.startedAt;
-        this.emit('in_flight_aborted', sessionId, elapsedMs, 'message_recalled');
+    // 0. 同步瞬时判定会话类型 (通过内存缓存 0ms 判定，无需等待 DB I/O)
+    const cachedType = this.sessionTypeMap.get(sessionId);
+
+    // 1. 【0ms 瞬时同步中断 PrivateSession 在途 Run 与清空防抖队列】(在任何 DB I/O 前立即执行！)
+    if (cachedType !== 'group') {
+      // 1.1 若在途生成任务中包含被撤回消息，立即 0ms 瞬时同步中断
+      const inFlight = this.inFlightSessions.get(sessionId);
+      if (inFlight) {
+        const containsRecalled =
+          inFlight.inputMessageIds?.includes(messageId) ||
+          inFlight.message.messages.some(m => m.id === messageId || m.messageId === messageId);
+        if (containsRecalled) {
+          log.info({ sessionId, messageId }, '在途生成任务包含被撤回消息，立即 0ms 瞬时同步中断');
+          inFlight.abortController.abort();
+          this.inFlightSessions.delete(sessionId);
+          const elapsedMs = Date.now() - inFlight.startedAt;
+          this.emit('in_flight_aborted', sessionId, elapsedMs, 'message_recalled');
+        }
       }
-    }
 
-    // 1. 同步剔除防抖队列中的消息
-    const bucket = this.buckets.get(sessionId);
-    if (bucket) {
-      const originalCount = bucket.messages.length;
-      bucket.messages = bucket.messages.filter(m => {
-        const rawMsgId =
-          (m.raw?.['messageId'] as string | undefined) ||
-          (m.raw?.['msgID'] as string | undefined) ||
-          (m.raw?.['id'] as string | undefined);
-        return m.id !== messageId && rawMsgId !== messageId;
-      });
-
-      if (bucket.items) {
-        bucket.items = bucket.items.filter(item => {
+      // 1.2 同步瞬时剔除防抖队列中的消息
+      const bucket = this.buckets.get(sessionId);
+      if (bucket) {
+        const originalCount = bucket.messages.length;
+        bucket.messages = bucket.messages.filter(m => {
           const rawMsgId =
-            (item.message.raw?.['messageId'] as string | undefined) ||
-            (item.message.raw?.['msgID'] as string | undefined) ||
-            (item.message.raw?.['id'] as string | undefined);
-          return item.message.id !== messageId && rawMsgId !== messageId;
+            (m.raw?.['messageId'] as string | undefined) ||
+            (m.raw?.['msgID'] as string | undefined) ||
+            (m.raw?.['id'] as string | undefined);
+          return m.id !== messageId && m.messageId !== messageId && rawMsgId !== messageId;
         });
-      }
 
-      const remainingCount = bucket.messages.length;
+        if (bucket.items) {
+          bucket.items = bucket.items.filter(item => {
+            const rawMsgId =
+              (item.message.raw?.['messageId'] as string | undefined) ||
+              (item.message.raw?.['msgID'] as string | undefined) ||
+              (item.message.raw?.['id'] as string | undefined);
+            return (
+              item.message.id !== messageId &&
+              item.message.messageId !== messageId &&
+              rawMsgId !== messageId
+            );
+          });
+        }
 
-      if (remainingCount < originalCount) {
-        log.info(
-          { sessionId, messageId, originalCount, remainingCount },
-          '防抖队列中匹配到被撤回消息并完成即时剔除'
-        );
-        this.emit('recall_fused', sessionId, messageId, remainingCount);
+        const remainingCount = bucket.messages.length;
 
-        // 若队列中全部消息被撤回，执行静默熔断
-        if (remainingCount === 0) {
-          log.info({ sessionId }, '防抖队列消息已全部被撤回，执行静默熔断取消后续流程');
-          this.clearPendingBucket(sessionId);
-          this.emit('suppressed', sessionId, 'recalled');
+        if (remainingCount < originalCount) {
+          log.info(
+            { sessionId, messageId, originalCount, remainingCount },
+            '防抖队列中匹配到被撤回消息并完成即时剔除'
+          );
+          this.emit('recall_fused', sessionId, messageId, remainingCount);
+
+          // 若队列中全部消息被撤回，执行静默熔断
+          if (remainingCount === 0) {
+            log.info({ sessionId }, '防抖队列消息已全部被撤回，执行静默熔断取消后续流程');
+            this.clearPendingBucket(sessionId);
+            this.emit('suppressed', sessionId, 'recalled');
+          }
         }
       }
     }
 
-    // 2. 异步在 Store 中标记已撤回
+    // 2. 持久化撤回墓碑（Fail-Closed 保证阻止重放复活）
+    try {
+      await this.store.tombstones.recordTombstone({
+        sessionId,
+        messageId,
+        type: 'recall',
+        operator: 'user',
+        reason: 'MessageRecall',
+      });
+    } catch (tombErr) {
+      const errorMsg = tombErr instanceof Error ? tombErr.message : String(tombErr);
+      log.error({ err: tombErr, sessionId, messageId }, '记录撤回墓碑失败，终止撤回流程');
+      throw new Error(`记录撤回墓碑失败 (sessionId=${sessionId}, messageId=${messageId}): ${errorMsg}`, {
+        cause: tombErr,
+      });
+    }
+
+    // 3. 异步在 Store 中标记已撤回
     await this.store.messages.markMessageRecalled(sessionId, messageId);
+    // 4. 【GroupSession 强制短路】：若确定为群聊，持久化完成后立即结束，不执行后续 Memory / Delivery 处理
+    const sessionRecord = await this.store.sessions.getSession(sessionId);
+    const isGroup = cachedType === 'group' || sessionRecord?.type === 'group';
+    if (isGroup) {
+      log.debug({ sessionId, messageId }, 'GroupSession 撤回事件仅记录 Raw Store，立即结束');
+      return;
+    }
+
+    // 5. 【PrivateSession 显式 Memory 移出与 OM Scope Reset】
+    if (this.mastraMemory) {
+      try {
+        const userMsgId = deriveUserMessageId(sessionId, messageId);
+        await removeMastraMessage(this.mastraMemory, userMsgId);
+
+        // 5.1 重置受影响的 Observational Memory Scope (Fail-Closed)
+        if (this.mastraStorage) {
+          const resourceId =
+            (await this.resolveSessionResourceId(sessionId, { senderId: undefined } as ConsolidatedMessage)) ||
+            sessionId;
+          await resetObservationalMemoryScope({
+            memory: this.mastraMemory,
+            threadId: sessionId,
+            resourceId,
+            storage: this.mastraStorage,
+          });
+        }
+      } catch (memErr) {
+        log.error({ memErr, sessionId, messageId }, '撤回消息清理 Mastra Memory / OM Scope 异常');
+      }
+    }
+
+    // 4.5 将处于 generated 的未发送 Delivery 安全置为 aborted
+    try {
+      const deliveries = await this.store.deliveries.getDeliveriesBySession(sessionId);
+      for (const d of deliveries) {
+        if (d.status === 'generated') {
+          await this.store.deliveries.updateStatus(d.id, 'aborted', {
+            errorCode: 'ABORTED_MESSAGE_RECALLED: 关联消息已撤回',
+          });
+          await this.hooks?.afterAbortedPersist?.(d.id);
+        }
+      }
+    } catch (delivErr) {
+      log.debug({ delivErr, sessionId }, '更新未发送 Delivery 状态告警');
+    }
   }
 
   /**
@@ -1245,9 +1447,12 @@ export class SessionCoordinator extends EventEmitter {
 
     // 优先使用 Mastra-native KKBotAgent (Issue #174/#176)
     if (this.agent) {
+      const runId = randomUUID();
       const abortController = new AbortController();
       const inFlight: InFlightSession = {
         sessionId,
+        runId,
+        inputMessageIds: consolidated.messages.map(m => m.messageId || m.id),
         abortController,
         startedAt: Date.now(),
         message: consolidated,
@@ -1258,7 +1463,8 @@ export class SessionCoordinator extends EventEmitter {
       const execPromise = this.executeMastraAgentPipeline(
         sessionId,
         consolidated,
-        abortController.signal
+        abortController.signal,
+        runId
       );
       inFlight.promise = execPromise;
       try {
@@ -1319,7 +1525,8 @@ export class SessionCoordinator extends EventEmitter {
   private async executeMastraAgentPipeline(
     sessionId: string,
     consolidated: ConsolidatedMessage,
-    signal: AbortSignal
+    signal: AbortSignal,
+    runId: string = randomUUID()
   ): Promise<void> {
     if (signal.aborted) {
       this.emit('agent_aborted', sessionId);
@@ -1335,7 +1542,7 @@ export class SessionCoordinator extends EventEmitter {
     }
 
     // 2. 【User Memory 前置提交】：在 Agent 运行前，通过 Mastra Memory 显式提交本轮各条原始 user message
-    const precommitSuccess = await this.precommitUserMessages(sessionId, resourceId, consolidated.messages);
+    const precommitSuccess = await this.precommitUserMessages(sessionId, resourceId, consolidated.messages, signal);
     if (!precommitSuccess || signal.aborted) {
       if (signal.aborted) {
         this.emit('agent_aborted', sessionId);
@@ -1344,7 +1551,6 @@ export class SessionCoordinator extends EventEmitter {
     }
 
     // 3. 【调用 Mastra-native Agent】：注入确定性 RequestContext，以 readOnly=true 执行
-    const runId = randomUUID();
     const traceId = randomUUID();
     const agentRes = await this.executeMastraModel(sessionId, resourceId, consolidated.content, signal, traceId, runId);
     if (!agentRes || signal.aborted) {
@@ -1363,7 +1569,15 @@ export class SessionCoordinator extends EventEmitter {
     // 4. 【创建 Delivery (generated) 并更新为 sending】
     const deliveryId = `deliv_${runId}`;
     const mastraMessageId = deriveAssistantMessageId(deliveryId);
-    const delivery = await this.createSendingDelivery(deliveryId, runId, sessionId, mastraMessageId, replyText);
+    const inputMessageIds = consolidated.messages.map(m => m.messageId || m.id);
+    const delivery = await this.createSendingDelivery(
+      deliveryId,
+      runId,
+      sessionId,
+      mastraMessageId,
+      replyText,
+      inputMessageIds
+    );
     if (!delivery || signal.aborted) {
       if (signal.aborted && delivery) {
         await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
@@ -1418,6 +1632,7 @@ export class SessionCoordinator extends EventEmitter {
         currentSendResult,
         retriesCount
       );
+
       // 6. 【处理明确发送成功分支】
       if (currentSendResult.success) {
         await this.handleSendSuccess(
@@ -1483,15 +1698,30 @@ export class SessionCoordinator extends EventEmitter {
   }
 
   /**
-   * 解析会话人员身份标识 (resourceId，严格遵循 senderId -> session.employeeId，杜绝非唯一昵称兜底)
+   * 解析会话外部员工人员身份标识 (resourceId)
+   * 严格顺序：
+   * 1. 优先复用既有 Mastra Thread 的 resourceId (若已存在且不为 'operator'，保证身份稳定不篡改)
+   * 2. 其次使用 session.employeeId
+   * 3. 再次使用 sampleMsg.senderId (当且仅当非 operator / 非 isMe 外部消息时)
+   * 4. 再次查询 Raw Store 中该会话最近一条 external 消息的 senderId
    */
   private async resolveSessionResourceId(
     sessionId: string,
-    consolidated: ConsolidatedMessage
+    sampleMsg?: { senderId?: string; isFromSelf?: boolean; origin?: string }
   ): Promise<string | undefined> {
-    if (consolidated.senderId && consolidated.senderId.trim() !== '') {
-      return consolidated.senderId.trim();
+    // 1. 检查既有 Thread 的 resourceId
+    if (this.mastraMemory) {
+      try {
+        const thread = await this.mastraMemory.getThreadById({ threadId: sessionId });
+        if (thread?.resourceId && thread.resourceId.trim() !== '' && thread.resourceId !== 'operator') {
+          return thread.resourceId.trim();
+        }
+      } catch (err) {
+        log.debug({ err, sessionId }, '查询既有 Thread resourceId 告警');
+      }
     }
+
+    // 2. 检查会话档案的 employeeId
     try {
       const sessionRecord = await this.store.sessions.getSession(sessionId);
       if (sessionRecord?.employeeId && sessionRecord.employeeId.trim() !== '') {
@@ -1500,19 +1730,72 @@ export class SessionCoordinator extends EventEmitter {
     } catch (err) {
       log.debug({ err, sessionId }, '查询会话档案异常');
     }
+
+    // 3. 检查传入的外部消息 senderId (严禁使用 operator / isMe 作为 resourceId)
+    const isFromSelfOrOp = sampleMsg?.isFromSelf || sampleMsg?.origin === 'operator' || sampleMsg?.origin === 'bot_echo';
+    if (!isFromSelfOrOp && sampleMsg?.senderId && sampleMsg.senderId.trim() !== '') {
+      return sampleMsg.senderId.trim();
+    }
+
+    // 4. 查询 Raw Store 中该会话最近一条 external 消息的 senderId
+    try {
+      const history = await this.store.messages.getSessionHistory(sessionId, { limit: 20 });
+      const lastExternal = history.find(m => !m.isFromSelf && m.origin !== 'operator' && m.origin !== 'bot_echo' && m.senderId);
+      if (lastExternal?.senderId && lastExternal.senderId.trim() !== '') {
+        return lastExternal.senderId.trim();
+      }
+    } catch (err) {
+      log.debug({ err, sessionId }, '查询历史 external 消息 resourceId 告警');
+    }
+
     return undefined;
   }
-
   /**
    * 前置显式提交 user messages 至 Mastra Memory
    */
-  private async precommitUserMessages(sessionId: string, resourceId: string, messages: KK9Message[]): Promise<boolean> {
+  private async precommitUserMessages(
+    sessionId: string,
+    resourceId: string,
+    messages: KK9Message[],
+    signal?: AbortSignal
+  ): Promise<boolean> {
     if (!this.mastraMemory) {
       return true;
     }
     try {
+      if (signal?.aborted) {
+        return false;
+      }
+      // 1. 过滤已被墓碑化的消息（阻止复活进入 Memory）
+      const tombstoneSet = await this.store.tombstones.getTombstoneSet(sessionId);
+      const validMessages = messages.filter(m => {
+        const nativeMsgId = m.messageId || m.id;
+        return !tombstoneSet.has(nativeMsgId);
+      });
+
+      if (validMessages.length === 0 || signal?.aborted) {
+        log.info({ sessionId }, '本批次所有 user messages 均已被墓碑化或流程已中止，终止 Agent 流程');
+        return false;
+      }
+
       await ensureMastraThread(this.mastraMemory, sessionId, resourceId);
-      const userMessages = messages.map(m => {
+      if (signal?.aborted) {
+        return false;
+      }
+
+      // 2. 二次门禁：写入前复核墓碑，避免在 ensureMastraThread 间隙被并发撤回/删除
+      const freshTombstones = await this.store.tombstones.getTombstoneSet(sessionId);
+      const strictlyValidMessages = validMessages.filter(m => {
+        const nativeMsgId = m.messageId || m.id;
+        return !freshTombstones.has(nativeMsgId);
+      });
+
+      if (strictlyValidMessages.length === 0 || signal?.aborted) {
+        log.info({ sessionId }, '写入 Memory 前检测到消息已被墓碑化或流程已中止');
+        return false;
+      }
+
+      const userMessages = strictlyValidMessages.map(m => {
         const nativeMsgId = m.messageId || m.id;
         const stableId = deriveUserMessageId(sessionId, nativeMsgId);
         return createMastraTextMessage({
@@ -1526,6 +1809,9 @@ export class SessionCoordinator extends EventEmitter {
       });
 
       await this.mastraMemory.saveMessages({ messages: userMessages });
+      if (typeof this.mastraMemory.settled === 'function') {
+        await this.mastraMemory.settled();
+      }
       log.debug({ sessionId, count: userMessages.length }, 'Mastra user messages 显式提交成功');
       return true;
     } catch (memErr) {
@@ -1582,7 +1868,8 @@ export class SessionCoordinator extends EventEmitter {
     runId: string,
     sessionId: string,
     mastraMessageId: string,
-    replyText: string
+    replyText: string,
+    inputMessageIds?: string[]
   ): Promise<MessageDelivery | null> {
     const contentHash = createHash('sha256').update(replyText).digest('hex');
     try {
@@ -1594,6 +1881,7 @@ export class SessionCoordinator extends EventEmitter {
         mastraMessageId,
         content: replyText,
         contentHash,
+        inputMessageIds,
         status: 'generated',
       });
       await this.hooks?.afterDeliveryGeneratedBeforeSending?.(deliveryId);
@@ -1684,30 +1972,47 @@ export class SessionCoordinator extends EventEmitter {
       this.emitError(error);
       return;
     }
+    // 1. 检查 Delivery 是否在发送期间被合规删除或中止 (阻止复活)
+    const currentDelivery = await this.store.deliveries.getDeliveryById(deliveryId);
+    if (!currentDelivery || currentDelivery.content === '[COMPLIANCE_DELETED]' || currentDelivery.status === 'aborted') {
+      log.info({ sessionId, deliveryId }, 'Delivery 已被合规删除或中止，拒绝回写明文至 Raw Store 与 Mastra Memory');
+      return;
+    }
+    const finalContent = currentDelivery.content || replyText;
 
-    // 同步到 KK Raw Store 记录
+    // 2. 同步到 KK Raw Store 记录
     await this.store.sessions.upsertSession({ id: sessionId });
     await this.store.sessions.touchReplyTime(sessionId, now);
-    await this.store.messages.saveMessage({
+    const savedBotMsg = await this.store.messages.saveMessage({
       sessionId,
       messageId: sendMsgId,
       origin: 'bot_echo',
       sender: '自己',
-      content: replyText,
+      content: finalContent,
       messageType: 'text',
       isFromSelf: true,
       isRecalled: false,
       createdAt: now,
     });
+    if (savedBotMsg.isTombstoned || finalContent === '[COMPLIANCE_DELETED]') {
+      log.info({ sessionId, deliveryId }, 'Bot 回显消息已命中墓碑或内容已被合规擦除，跳过 Mastra Memory 写入');
+      return;
+    }
+
     await this.hooks?.afterSentPersistBeforeMemorySave?.(deliveryId);
     if (this.mastraMemory) {
       try {
+        const freshTombstones = await this.store.tombstones.getTombstoneSet(sessionId);
+        if (sendMsgId && freshTombstones.has(sendMsgId)) {
+          log.info({ sessionId, deliveryId, sendMsgId }, '回复消息已被墓碑化，放弃写入 Mastra assistant Memory');
+          return;
+        }
         await this.mastraMemory.saveMessages({
           messages: [
             createMastraTextMessage({
               id: mastraMessageId,
               role: 'assistant',
-              content: replyText,
+              content: finalContent,
               threadId: sessionId,
               resourceId,
               createdAt: new Date(now),
@@ -1852,6 +2157,329 @@ export class SessionCoordinator extends EventEmitter {
       mastraMemory: this.mastraMemory,
     });
     return await scanner.runRecoveryScan();
+  }
+  /**
+   * 执行正式合规删除命令 (ComplianceDeletion)
+   * 1. 幂等性检查：若该 commandId 已执行过，直接返回既有审计记录
+   * 2. 0ms 终止范围内仍在使用内容的在途 Run
+   * 3. 擦除 Raw Store 内的消息正文与载荷文件
+   * 4. 擦除显式 Mastra Thread Memory 正文 (removeMastraMessage / deleteThread)
+   * 5. 擦除 Delivery 正文与哈希 (保持真实交付状态如 sent/unknown/aborted 与审计身份)
+   * 6. 重置受影响的 Observational Memory Scope (clearObservationalMemory，Fail-Closed)
+   * 7. 写入持久合规删除墓碑 (type: compliance_deletion)
+   * 8. 记录 compliance_deletions 审计表
+   */
+  /**
+   * 执行针对单条消息的合规删除
+   */
+  private async executeMessageComplianceDeletion(
+    sessionId: string,
+    messageId: string,
+    operator: string,
+    reason: string,
+    scopeObj: ComplianceDeletionScope
+  ): Promise<{ erasedMessagesCount: number; erasedDeliveriesCount: number }> {
+    let erasedMessagesCount = 0;
+    let erasedDeliveriesCount = 0;
+
+    // 1. 0ms 中断正在使用该会话的在途 Run 并等待完成
+    const inFlight = this.inFlightSessions.get(sessionId);
+    if (inFlight) {
+      inFlight.abortController.abort();
+      this.inFlightSessions.delete(sessionId);
+      this.emit('in_flight_aborted', sessionId, Date.now() - inFlight.startedAt, 'compliance_deletion');
+      if (inFlight.promise) {
+        try {
+          await inFlight.promise;
+        } catch {
+          // 忽略中断产生的异常
+        }
+      }
+    }
+
+    // 2. 清理防抖桶中的该消息
+    const bucket = this.buckets.get(sessionId);
+    if (bucket) {
+      bucket.messages = bucket.messages.filter(m => (m.messageId || m.id) !== messageId);
+      if (bucket.items) {
+        bucket.items = bucket.items.filter(item => (item.message.messageId || item.message.id) !== messageId);
+      }
+      if (bucket.messages.length === 0) {
+        this.clearPendingBucket(sessionId);
+      }
+    }
+
+    this.recordTombstoneMemory(sessionId, messageId);
+    await this.store.tombstones.recordTombstone({
+      sessionId,
+      messageId,
+      type: 'compliance_deletion',
+      operator,
+      reason,
+    });
+
+    // 4. 按 scope 擦除 Raw Store 正文与载荷
+    if (scopeObj.rawStore !== false) {
+      erasedMessagesCount = await this.store.messages.eraseMessageContent(sessionId, messageId);
+    }
+
+    // 5. 按 scope 擦除由该输入消息产生的 Delivery (精准追踪与合规删除，非级联)
+    if (scopeObj.deliveries !== false) {
+      erasedDeliveriesCount = await this.store.deliveries.eraseDeliveriesByMessageId(sessionId, messageId);
+    }
+
+    // 6. 按 scope 移出 Mastra Thread Memory 并重置 OM Scope
+    if (scopeObj.explicitMemory !== false && this.mastraMemory) {
+      const userMsgId = deriveUserMessageId(sessionId, messageId);
+      await removeMastraMessage(this.mastraMemory, userMsgId);
+
+      if (this.mastraStorage) {
+        const resourceId =
+          (await this.resolveSessionResourceId(sessionId, { senderId: undefined } as ConsolidatedMessage)) ||
+          sessionId;
+        await resetObservationalMemoryScope({
+          memory: this.mastraMemory,
+          threadId: sessionId,
+          resourceId,
+          storage: this.mastraStorage,
+        });
+      }
+    }
+
+    return { erasedMessagesCount, erasedDeliveriesCount };
+  }
+
+  /**
+   * 执行针对整个会话的合规删除
+   */
+  private async executeSessionComplianceDeletion(
+    sessionId: string,
+    operator: string,
+    reason: string,
+    scopeObj: ComplianceDeletionScope
+  ): Promise<{ erasedMessagesCount: number; erasedDeliveriesCount: number }> {
+    let erasedMessagesCount = 0;
+    let erasedDeliveriesCount = 0;
+
+    // 1. 0ms 中断在途 Run 并等待完成
+    const inFlight = this.inFlightSessions.get(sessionId);
+    if (inFlight) {
+      inFlight.abortController.abort();
+      this.inFlightSessions.delete(sessionId);
+      this.emit('in_flight_aborted', sessionId, Date.now() - inFlight.startedAt, 'compliance_deletion');
+      if (inFlight.promise) {
+        try {
+          await inFlight.promise;
+        } catch {
+          // 忽略中断产生的异常
+        }
+      }
+    }
+
+    // 2. 清空防抖桶
+    this.clearPendingBucket(sessionId);
+
+    // 3. 获取会话内所有 messageId 并建立合规删除墓碑
+    const allMsgs = await this.store.messages.getSessionHistory(sessionId, { limit: 10000 });
+    for (const m of allMsgs) {
+      if (m.messageId) {
+        this.recordTombstoneMemory(sessionId, m.messageId);
+        await this.store.tombstones.recordTombstone({
+          sessionId,
+          messageId: m.messageId,
+          type: 'compliance_deletion',
+          operator,
+          reason,
+        });
+      }
+    }
+
+    // 4. 按 scope 擦除 Raw Store 与 Deliveries 正文
+    if (scopeObj.rawStore !== false) {
+      erasedMessagesCount = await this.store.messages.eraseSessionMessagesContent(sessionId);
+    }
+    if (scopeObj.deliveries !== false) {
+      erasedDeliveriesCount = await this.store.deliveries.eraseDeliveriesBySession(sessionId);
+    }
+
+    // 5. 按 scope 清理 Mastra Memory Thread 与 OM Scope (Fail-Closed: 失败必须向外传播)
+    if (scopeObj.explicitMemory !== false && this.mastraMemory) {
+      try {
+        await (this.mastraMemory as unknown as { deleteThread: (threadId: string) => Promise<void> }).deleteThread(sessionId);
+      } catch (delThreadErr) {
+        const errorMsg = delThreadErr instanceof Error ? delThreadErr.message : String(delThreadErr);
+        throw new Error(`Mastra Thread 删除失败 (sessionId=${sessionId}): ${errorMsg}`, {
+          cause: delThreadErr,
+        });
+      }
+
+      if (this.mastraStorage) {
+        const resourceId =
+          (await this.resolveSessionResourceId(sessionId, { senderId: undefined } as ConsolidatedMessage)) ||
+          sessionId;
+        await resetObservationalMemoryScope({
+          memory: this.mastraMemory,
+          threadId: sessionId,
+          resourceId,
+          storage: this.mastraStorage,
+        });
+      }
+    }
+
+    return { erasedMessagesCount, erasedDeliveriesCount };
+  }
+
+  /**
+   * 执行正式合规删除命令 (ComplianceDeletion)
+   * 1. 幂等性检查：若该 commandId 已执行过，直接返回既有审计记录
+   * 2. 0ms 终止范围内仍在使用内容的在途 Run 并等待完成
+   * 3. 擦除 Raw Store 内的消息正文与载荷文件
+   * 4. 擦除显式 Mastra Thread Memory 正文 (removeMastraMessage / deleteThread)
+   * 5. 擦除 Delivery 正文与哈希 (保持真实交付状态如 sent/unknown/aborted 与审计身份)
+   * 6. 重置受影响的 Observational Memory Scope (clearObservationalMemory，Fail-Closed)
+   * 7. 写入持久合规删除墓碑 (type: compliance_deletion)
+   * 8. 记录 compliance_deletions 审计表
+   */
+  public async executeComplianceDeletion(
+    command: ComplianceDeletionCommand
+  ): Promise<ComplianceDeletionRecord> {
+    // 1. 鉴权与参数完整性校验门禁 (Fail-Closed: 默认拒绝未授权命令)
+    if (!command.commandId || !command.operator || !command.reason || !command.targetId) {
+      throw new Error('执行合规删除失败: 必须提供完整的 commandId、operator、reason 与 targetId 明确授权');
+    }
+
+    let authResult: ComplianceAuthorizationResult = {
+      authorized: false,
+      reason: '未配置合规授权验证器 (默认拒绝)',
+    };
+    if (this.complianceAuthorizer) {
+      authResult = await this.complianceAuthorizer(command);
+    }
+
+    if (!authResult.authorized) {
+      const denyReason = authResult.reason || '合规删除命令未通过授权校验';
+      log.warn(
+        { commandId: command.commandId, operator: command.operator, denyReason },
+        '合规删除命令被授权门禁拦截拒绝'
+      );
+      throw new Error(`合规删除命令授权拒绝: ${denyReason}`);
+    }
+    // 2. 幂等性检查：已完成的命令直接返回既有审计记录
+    const existing = await this.store.tombstones.getComplianceDeletion(command.commandId);
+    if (existing && existing.status === 'completed') {
+      log.info({ commandId: command.commandId }, '合规删除命令已完成，幂等返回既有记录');
+      return existing;
+    }
+
+    const scopeStr = typeof command.scope === 'string' ? command.scope : JSON.stringify(command.scope ?? {});
+
+    try {
+      // 3. 规范化结构化 scope (严格校验，Fail-Closed 禁止非法 JSON 默认开启全部删除)
+      let scopeObj: ComplianceDeletionScope = {};
+      if (typeof command.scope === 'object' && command.scope !== null) {
+        scopeObj = command.scope;
+      } else if (typeof command.scope === 'string') {
+        const trimmed = command.scope.trim();
+        if (trimmed.length > 0) {
+          try {
+            const parsed: unknown = JSON.parse(trimmed);
+            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+              throw new Error('合规删除 scope JSON 必须为结构化对象');
+            }
+            scopeObj = parsed as ComplianceDeletionScope;
+          } catch (parseErr) {
+            const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+            throw new Error(`合规删除 scope 参数不是合法的 JSON 对象字符串: ${errMsg}`, {
+              cause: parseErr,
+            });
+          }
+        }
+      } else if (command.scope !== undefined && command.scope !== null) {
+        throw new Error('合规删除 scope 参数类型无效，必须为对象或有效 JSON 字符串');
+      }
+
+      log.info(
+        {
+          commandId: command.commandId,
+          targetType: command.targetType,
+          targetId: command.targetId,
+          operator: command.operator,
+        },
+        '开始执行正式合规删除命令'
+      );
+      await this.store.tombstones.recordComplianceDeletion({
+        commandId: command.commandId,
+        targetType: command.targetType,
+        targetId: command.targetId,
+        sessionId: command.sessionId ?? null,
+        scope: scopeStr,
+        reason: command.reason,
+        operator: command.operator,
+        status: 'pending',
+      });
+
+    let erasedMessagesCount = 0;
+    let erasedDeliveriesCount = 0;
+
+      if (command.targetType === 'message') {
+        const sessionId = command.sessionId;
+        const messageId = command.targetId;
+        if (!sessionId) {
+          throw new Error('删除 targetType=message 必须提供 sessionId');
+        }
+        const counts = await this.executeMessageComplianceDeletion(
+          sessionId,
+          messageId,
+          command.operator,
+          command.reason,
+          scopeObj
+        );
+        erasedMessagesCount = counts.erasedMessagesCount;
+        erasedDeliveriesCount = counts.erasedDeliveriesCount;
+      } else if (command.targetType === 'session') {
+        const sessionId = command.targetId;
+        const counts = await this.executeSessionComplianceDeletion(
+          sessionId,
+          command.operator,
+          command.reason,
+          scopeObj
+        );
+        erasedMessagesCount = counts.erasedMessagesCount;
+        erasedDeliveriesCount = counts.erasedDeliveriesCount;
+      } else {
+        throw new Error(`不支持的合规删除目标类型: ${String(command.targetType)}`);
+      }
+
+      // 6. 更新审计记录为 completed
+      const completedRecord = await this.store.tombstones.recordComplianceDeletion({
+        commandId: command.commandId,
+        targetType: command.targetType,
+        targetId: command.targetId,
+        sessionId: command.sessionId ?? null,
+        scope: scopeStr,
+        reason: command.reason,
+        operator: command.operator,
+        status: 'completed',
+        erasedMessagesCount,
+        erasedDeliveriesCount,
+      });
+
+      return completedRecord;
+    } catch (delErr) {
+      const errorMsg = delErr instanceof Error ? delErr.message : String(delErr);
+      await this.store.tombstones.recordComplianceDeletion({
+        commandId: command.commandId,
+        targetType: command.targetType,
+        targetId: command.targetId,
+        sessionId: command.sessionId ?? null,
+        scope: scopeStr,
+        reason: command.reason,
+        operator: command.operator,
+        status: 'failed',
+        error: errorMsg,
+      });
+      throw delErr;
+    }
   }
   /**
    * 记录 Bot 发送的消息 ID 并执行有限集合驱逐

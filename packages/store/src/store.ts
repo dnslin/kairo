@@ -4,6 +4,7 @@ import { MediaStorage } from './media/media-storage.js';
 import { MessageRepository } from './repository/message-repository.js';
 import { DeliveryRepository } from './repository/delivery-repository.js';
 import { OrgRepository } from './repository/org-repository.js';
+import { TombstoneRepository } from './repository/tombstone-repository.js';
 import { SessionRepository } from './repository/session-repository.js';
 import type { DatabaseOptions, ExportRosterOptions, StoreOptions } from './types/index.js';
 import { createChildLogger } from './utils/logger.js';
@@ -47,6 +48,8 @@ export class KKBotStore {
   public readonly media: MediaStorage;
   /** 交付生命周期仓储 */
   public readonly deliveries: DeliveryRepository;
+  /** 消息墓碑与合规删除仓储 */
+  public readonly tombstones: TombstoneRepository;
 
   constructor(client: Client, mediaOptions?: StoreOptions['media']) {
     this.db = client;
@@ -55,6 +58,7 @@ export class KKBotStore {
     this.sessions = new SessionRepository(this.db);
     this.messages = new MessageRepository(this.db);
     this.deliveries = new DeliveryRepository(this.db);
+    this.tombstones = new TombstoneRepository(this.db);
     log.debug('KKBotStore 存储中枢初始化完成');
   }
 

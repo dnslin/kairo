@@ -424,6 +424,10 @@ export interface SessionMessage {
   createdAt: number;
   /** 本次写入是否为全新插入 (false 表示唯一约束冲突命中既有记录) */
   isNewlyInserted?: boolean;
+  /** 消息是否处于持久墓碑状态 */
+  isTombstoned?: boolean;
+  /** 墓碑类型 ('recall' | 'compliance_deletion') */
+  tombstoneType?: TombstoneType;
 }
 /**
  * 保存消息输入参数
@@ -607,6 +611,7 @@ export interface CreateDeliveryInput {
   mastraMessageId: string;
   content: string;
   contentHash: string;
+  inputMessageIds?: string[];
   status?: DeliveryStatus;
   kkMessageId?: string | null;
   errorCode?: string | null;
@@ -653,4 +658,108 @@ export interface AdjudicateDeliveryInput {
   decision: DeliveryAdjudicationDecision;
   evidenceSummary: string;
   timestamp?: number;
+}
+
+/**
+ * Tombstone 墓碑类型联合类型
+ * - recall: 普通撤回墓碑
+ * - compliance_deletion: 正式合规删除墓碑
+ */
+export type TombstoneType = 'recall' | 'compliance_deletion';
+
+/**
+ * 消息墓碑实体（数据库持久化结构）
+ */
+export interface MessageTombstone {
+  id: string;
+  sessionId: string;
+  messageId: string;
+  tombstoneType: TombstoneType;
+  operator: string | null;
+  reason: string | null;
+  createdAt: number;
+}
+
+/**
+ * 记录墓碑输入参数
+ */
+export interface RecordTombstoneInput {
+  id?: string;
+  sessionId: string;
+  messageId: string;
+  type: TombstoneType;
+  operator?: string | null;
+  reason?: string | null;
+  createdAt?: number;
+}
+
+/**
+ * 合规删除目标对象类型联合类型
+ */
+export type ComplianceDeletionTargetType = 'message' | 'session';
+
+/**
+ * 结构化合规删除覆盖范围定义
+ */
+export interface ComplianceDeletionScope {
+  rawStore?: boolean;
+  explicitMemory?: boolean;
+  deliveries?: boolean;
+  messageIds?: string[];
+  sessionIds?: string[];
+}
+
+/**
+ * 合规删除正式命令
+ */
+export interface ComplianceDeletionCommand {
+  commandId: string;
+  targetType: ComplianceDeletionTargetType;
+  targetId: string;
+  sessionId?: string;
+  scope?: ComplianceDeletionScope | string;
+  reason: string;
+  operator: string;
+  authorizedBy?: string;
+  requestedAt?: number;
+}
+
+/**
+ * 合规删除审计记录实体
+ */
+export interface ComplianceDeletionRecord {
+  id: string;
+  commandId: string;
+  targetType: ComplianceDeletionTargetType;
+  targetId: string;
+  sessionId: string | null;
+  scope: string;
+  reason: string;
+  operator: string;
+  status: 'pending' | 'completed' | 'failed';
+  erasedMessagesCount: number;
+  erasedDeliveriesCount: number;
+  createdAt: number;
+  completedAt: number | null;
+  error?: string | null;
+}
+
+/**
+ * 记录合规删除输入参数
+ */
+export interface RecordComplianceDeletionInput {
+  id?: string;
+  commandId: string;
+  targetType: ComplianceDeletionTargetType;
+  targetId: string;
+  sessionId?: string | null;
+  scope: string;
+  reason: string;
+  operator: string;
+  status: 'pending' | 'completed' | 'failed';
+  erasedMessagesCount?: number;
+  erasedDeliveriesCount?: number;
+  createdAt?: number;
+  completedAt?: number | null;
+  error?: string | null;
 }

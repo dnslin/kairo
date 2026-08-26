@@ -24,7 +24,7 @@ export interface FakeModelOptions {
   modelId?: string;
   provider?: string;
   responses?: FakeModelStepResponse[];
-  onGenerate?: (callCount: number, options: FakeModelCallOptions) => void;
+  onGenerate?: (callCount: number, options: FakeModelCallOptions) => Promise<void> | void;
 }
 
 export type FakeModelContentPart =
@@ -78,10 +78,10 @@ export function createFakeModel(options: FakeModelOptions = {}): FakeLanguageMod
     get callCount(): number {
       return callCount;
     },
-    doGenerate: (callOptions: FakeModelCallOptions): Promise<FakeModelGenerateResult> => {
+    doGenerate: async (callOptions: FakeModelCallOptions): Promise<FakeModelGenerateResult> => {
       callCount++;
       if (options.onGenerate) {
-        options.onGenerate(callCount, callOptions);
+        await options.onGenerate(callCount, callOptions);
       }
 
       if (callOptions?.abortSignal?.aborted) {
