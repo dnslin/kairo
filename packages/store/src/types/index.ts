@@ -420,8 +420,9 @@ export interface SessionMessage {
   isRecalled: boolean;
   /** 消息创建/接收时间戳 (毫秒) */
   createdAt: number;
+  /** 本次写入是否为全新插入 (false 表示唯一约束冲突命中既有记录) */
+  isNewlyInserted?: boolean;
 }
-
 /**
  * 保存消息输入参数
  */
@@ -546,4 +547,73 @@ export interface MediaFileInfo {
 export interface StoreOptions extends DatabaseOptions {
   /** 媒体转存配置 */
   media?: MediaStorageOptions;
+}
+
+/**
+ * Delivery 交付状态枚举联合类型
+ */
+export type DeliveryStatus =
+  | 'generated'
+  | 'sending'
+  | 'sent'
+  | 'failed'
+  | 'unknown'
+  | 'aborted';
+
+/**
+ * Delivery 实体（数据库持久化与查询返回结构）
+ */
+export interface Delivery {
+  /** 交付唯一身份 ID (如 deliv_xxx) */
+  id: string;
+  /** 关联的 Agent Run ID */
+  runId: string;
+  /** 关联的会话 ID (threadId = KK sessionId) */
+  sessionId: string;
+  /** 稳定派生的 Mastra assistant message ID */
+  mastraMessageId: string;
+  /** KK 客户端明确返回的原生消息 ID */
+  kkMessageId: string | null;
+  /** 最终交付文本/内容 */
+  content: string;
+  /** 内容 SHA-256 哈希值 (用于幂等去重) */
+  contentHash: string;
+  /** 交付状态 */
+  status: DeliveryStatus;
+  /** assistant Memory 成功保存后的提交时间戳 (毫秒) */
+  memoryCommittedAt: number | null;
+  /** 错误代码 (当 status 为 failed 或 unknown 时) */
+  errorCode: string | null;
+  /** 创建时间戳 (毫秒) */
+  createdAt: number;
+  /** 更新时间戳 (毫秒) */
+  updatedAt: number;
+}
+
+/** 向后兼容别名 */
+export type MessageDelivery = Delivery;
+
+/**
+ * 创建 Delivery 输入参数
+ */
+export interface CreateDeliveryInput {
+  id: string;
+  runId: string;
+  sessionId: string;
+  mastraMessageId: string;
+  content: string;
+  contentHash: string;
+  status?: DeliveryStatus;
+  kkMessageId?: string | null;
+  errorCode?: string | null;
+  createdAt?: number;
+}
+
+/**
+ * 更新 Delivery 状态选项
+ */
+export interface UpdateDeliveryStatusOptions {
+  kkMessageId?: string | null;
+  errorCode?: string | null;
+  updatedAt?: number;
 }

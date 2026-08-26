@@ -2,10 +2,22 @@ import EventEmitter from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KK9Driver, KK9Message, KK9RecalledEvent, SendResult } from '@kkbot/driver';
 import { createKKBotStore, type KKBotStore } from '@kkbot/store';
-import type { AgentReplyResult, KkbotAgentRuntime } from '@kkbot/agent';
+import {
+  KKBotAgent,
+  MastraModelFactory,
+  createFakeModel,
+  Memory,
+  type AgentReplyResult,
+  type KkbotAgentRuntime,
+} from '@kkbot/agent';
+import { LibSQLStore } from '@mastra/libsql';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { SessionCoordinator } from '../../src/coordinator.js';
-
 class MockDriver extends EventEmitter {
+  public selectSession = vi.fn().mockResolvedValue(true);
+  public getCurrentSession = vi.fn().mockResolvedValue({ id: 'session_init' });
   public markSessionRead = vi.fn().mockResolvedValue(true);
   public sendText = vi.fn().mockResolvedValue({
     success: true,
@@ -15,7 +27,6 @@ class MockDriver extends EventEmitter {
     success: true,
     messageId: 'mock_bot_send_id',
   } as SendResult);
-
   public emitMessage(msg: KK9Message): void {
     this.emit('message', msg);
   }
@@ -321,6 +332,255 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
       resolveAgentRun({ content: '完成', finishReason: 'stop' });
       await flushPromise;
       await testCoordinator.stop();
+    });
+  });
+
+  describe('DELIVERY-01.5: PrivateSession 交付生命周期合同 (generated -> sending -> sent)', () => {
+    let tempDir: string;
+    let dbPath: string;
+    let fileUrl: string;
+    let privStore: KKBotStore;
+    let libSqlStore: LibSQLStore;
+    let mastraMemory: Memory;
+    let privCoordinator: SessionCoordinator;
+
+    beforeEach(async () => {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kkbot-deliv01-'));
+      dbPath = path.join(tempDir, 'test.db');
+      fileUrl = `file:${dbPath.replace(/\\/g, '/')}`;
+
+      privStore = await createKKBotStore({ url: fileUrl });
+      libSqlStore = new LibSQLStore({ id: 'mastra-store', url: fileUrl });
+      await libSqlStore.init();
+      mastraMemory = new Memory({ storage: libSqlStore });
+    });
+
+    afterEach(async () => {
+      if (privCoordinator) {
+        await privCoordinator.stop();
+      }
+      if (privStore) {
+        privStore.close();
+      }
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // 忽略清理异常
+      }
+    });
+
+    it('模型生成后立即创建 Delivery=generated，发送前进入 sending，发送成功后进入 sent', async () => {
+      const fakeModel = createFakeModel({
+        responses: [{ text: '交付内容测试', finishReason: 'stop' }],
+      });
+      const factory = new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model: fakeModel }] },
+          DEEP: { models: [{ model: fakeModel }] },
+          VISION: { models: [{ model: fakeModel }] },
+        },
+      });
+      const agent = new KKBotAgent({ modelFactory: factory, memory: mastraMemory });
+
+      const statusSequence: string[] = [];
+      const origUpdateStatus = privStore.deliveries.updateStatus.bind(privStore.deliveries);
+      vi.spyOn(privStore.deliveries, 'updateStatus').mockImplementation(async (id, status, opts) => {
+        statusSequence.push(status);
+        return origUpdateStatus(id, status, opts);
+      });
+
+      privCoordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store: privStore,
+        agent,
+        mastraMemory,
+        config: { debounceMs: 50, maxWaitMs: 150 },
+      });
+      await privCoordinator.start();
+
+      const sessionId = 'session_deliv_contract_1';
+      await privCoordinator.handleInboundMessage({
+        id: 'msg_deliv_1',
+        messageId: 'msg_deliv_1',
+        sessionId,
+        sessionName: '张三',
+        sessionType: 'private',
+        sender: '张三',
+        senderId: 'emp_zhangsan',
+        content: '查考勤',
+        messageType: 'text',
+        isMe: false,
+        timestamp: Date.now(),
+      });
+
+      await privCoordinator.flushSession(sessionId);
+
+      // 验证状态迁移顺序必须为 sending -> sent
+      expect(statusSequence).toEqual(['sending', 'sent']);
+
+      // 验证最终 Delivery 状态为 sent 且已打上 memoryCommittedAt
+      const deliveries = await privStore.deliveries.getDeliveriesBySession(sessionId);
+      expect(deliveries.length).toBe(1);
+      expect(deliveries[0].status).toBe('sent');
+      expect(deliveries[0].content).toBe('交付内容测试');
+      expect(deliveries[0].memoryCommittedAt).toBeGreaterThan(0);
+
+      // 验证底层 Driver 发送仅调用 1 次
+      expect(mockDriver.sendText).toHaveBeenCalledTimes(1);
+    });
+
+    it('Driver 发送失败时区分 pre-trigger failed 与 post-trigger unknown，且均不提交 assistant Memory', async () => {
+      // 1. 测试 pre-trigger failure (如 selectSession 切换会话失败) -> Delivery 必须为 failed
+      mockDriver.selectSession.mockResolvedValueOnce(false);
+
+      const fakeModel = createFakeModel({
+        responses: [
+          { text: '前置失败内容', finishReason: 'stop' },
+          { text: '后置超时内容', finishReason: 'stop' },
+        ],
+      });
+      const factory = new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model: fakeModel }] },
+          DEEP: { models: [{ model: fakeModel }] },
+          VISION: { models: [{ model: fakeModel }] },
+        },
+      });
+      const agent = new KKBotAgent({ modelFactory: factory, memory: mastraMemory });
+
+      privCoordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store: privStore,
+        agent,
+        mastraMemory,
+        config: { debounceMs: 50, maxWaitMs: 150 },
+      });
+      await privCoordinator.start();
+
+      const sessionPreFail = 'session_deliv_pre_fail';
+      await privCoordinator.handleInboundMessage({
+        id: 'msg_pre_fail',
+        messageId: 'msg_pre_fail',
+        sessionId: sessionPreFail,
+        sessionName: '李四',
+        sessionType: 'private',
+        sender: '李四',
+        senderId: 'emp_lisi',
+        content: '前置失败测试',
+        messageType: 'text',
+        isMe: false,
+        timestamp: Date.now(),
+      });
+
+      await privCoordinator.flushSession(sessionPreFail);
+
+      const preDeliveries = await privStore.deliveries.getDeliveriesBySession(sessionPreFail);
+      expect(preDeliveries.length).toBe(1);
+      expect(preDeliveries[0].status).toBe('failed');
+      expect(preDeliveries[0].memoryCommittedAt).toBeNull();
+
+      // 2. 测试 post-trigger failure (如 sendText 已调用但超时未收到回执) -> Delivery 必须为 unknown
+      mockDriver.selectSession.mockResolvedValueOnce(true);
+      mockDriver.sendText.mockResolvedValueOnce({
+        success: false,
+        error: 'CDP network response timeout',
+      });
+
+      const sessionPostFail = 'session_deliv_post_fail';
+      await privCoordinator.handleInboundMessage({
+        id: 'msg_post_fail',
+        messageId: 'msg_post_fail',
+        sessionId: sessionPostFail,
+        sessionName: '王五',
+        sessionType: 'private',
+        sender: '王五',
+        senderId: 'emp_wangwu',
+        content: '后置超时测试',
+        messageType: 'text',
+        isMe: false,
+        timestamp: Date.now(),
+      });
+
+      await privCoordinator.flushSession(sessionPostFail);
+
+      const postDeliveries = await privStore.deliveries.getDeliveriesBySession(sessionPostFail);
+      expect(postDeliveries.length).toBe(1);
+      expect(postDeliveries[0].status).toBe('unknown');
+      expect(postDeliveries[0].errorCode).toBe('CDP network response timeout');
+      expect(postDeliveries[0].memoryCommittedAt).toBeNull();
+    });
+    it('两个并发 PrivateSession 的 Delivery 和发送完全隔离不串线', async () => {
+      const fakeModel = createFakeModel({
+        responses: [
+          { text: '回复会话 101', finishReason: 'stop' },
+          { text: '回复会话 102', finishReason: 'stop' },
+        ],
+      });
+      const factory = new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model: fakeModel }] },
+          DEEP: { models: [{ model: fakeModel }] },
+          VISION: { models: [{ model: fakeModel }] },
+        },
+      });
+      const agent = new KKBotAgent({ modelFactory: factory, memory: mastraMemory });
+
+      privCoordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store: privStore,
+        agent,
+        mastraMemory,
+        config: { debounceMs: 50, maxWaitMs: 150 },
+      });
+      await privCoordinator.start();
+
+      const session1 = 'session_concurrent_101';
+      const session2 = 'session_concurrent_102';
+
+      await Promise.all([
+        privCoordinator.handleInboundMessage({
+          id: 'msg_conc_1',
+          messageId: 'msg_conc_1',
+          sessionId: session1,
+          sessionName: '会话1',
+          sessionType: 'private',
+          sender: '用户1',
+          senderId: 'emp_1',
+          content: '问题1',
+          messageType: 'text',
+          isMe: false,
+          timestamp: Date.now(),
+        }),
+        privCoordinator.handleInboundMessage({
+          id: 'msg_conc_2',
+          messageId: 'msg_conc_2',
+          sessionId: session2,
+          sessionName: '会话2',
+          sessionType: 'private',
+          sender: '用户2',
+          senderId: 'emp_2',
+          content: '问题2',
+          messageType: 'text',
+          isMe: false,
+          timestamp: Date.now(),
+        }),
+      ]);
+
+      await Promise.all([
+        privCoordinator.flushSession(session1),
+        privCoordinator.flushSession(session2),
+      ]);
+
+      const deliv1 = await privStore.deliveries.getDeliveriesBySession(session1);
+      const deliv2 = await privStore.deliveries.getDeliveriesBySession(session2);
+
+      expect(deliv1.length).toBe(1);
+      expect(deliv1[0].content).toBe('回复会话 101');
+      expect(deliv1[0].sessionId).toBe(session1);
+
+      expect(deliv2.length).toBe(1);
+      expect(deliv2[0].content).toBe('回复会话 102');
+      expect(deliv2[0].sessionId).toBe(session2);
     });
   });
 });

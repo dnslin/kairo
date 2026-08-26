@@ -1,4 +1,5 @@
 import { Agent, type ToolsInput } from '@mastra/core/agent';
+import type { Memory } from '@mastra/memory';
 import {
   RequestContext,
   MASTRA_THREAD_ID_KEY,
@@ -24,6 +25,7 @@ export interface KKBotAgentOptions {
   name?: string;
   instructions?: string;
   modelFactory: MastraModelFactory;
+  memory?: Memory;
   tools?: ToolsInput;
   /** 默认单轮推理最大 Step 数，默认 5 */
   maxSteps?: number;
@@ -85,6 +87,7 @@ export class KKBotAgent {
       name: options.name ?? 'KKBot Agent',
       instructions: options.instructions ?? '你是企业智能助手 KKBot。',
       model: options.modelFactory.createDynamicModelResolver(),
+      memory: options.memory,
       tools: options.tools,
       inputProcessors: options.inputProcessors,
       outputProcessors: options.outputProcessors,
@@ -152,4 +155,72 @@ export class KKBotAgent {
       rawOutput,
     };
   }
+}
+
+/**
+ * 确定性派生 user message ID
+ * 规则：基于 (sessionId, nativeMessageId) 生成稳定唯一 ID
+ */
+export function deriveUserMessageId(sessionId: string, nativeMessageId: string): string {
+  return `msg_user_${sessionId}_${nativeMessageId}`;
+}
+
+/**
+ * 确定性派生 assistant message ID
+ * 规则：基于 deliveryId 生成稳定唯一 ID
+ */
+export function deriveAssistantMessageId(deliveryId: string): string {
+  return `msg_asst_${deliveryId}`;
+}
+
+/**
+ * 确保 Mastra Thread 存在并归属于指定 resourceId
+ */
+export async function ensureMastraThread(
+  memory: Memory,
+  threadId: string,
+  resourceId: string
+): Promise<void> {
+  const existing = await memory.getThreadById({ threadId });
+  if (!existing) {
+    await memory.createThread({ threadId, resourceId });
+  }
+}
+
+export interface MastraTextMessageV2 {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: {
+    format: 2;
+    parts: Array<{ type: 'text'; text: string }>;
+    content: string;
+  };
+  threadId: string;
+  resourceId: string;
+  createdAt: Date;
+}
+
+/**
+ * 构造符合 Mastra V2 规范的文本消息实体 (MastraDBMessage)
+ */
+export function createMastraTextMessage(options: {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  threadId: string;
+  resourceId: string;
+  createdAt?: Date;
+}): MastraTextMessageV2 {
+  return {
+    id: options.id,
+    role: options.role,
+    content: {
+      format: 2,
+      parts: [{ type: 'text', text: options.content }],
+      content: options.content,
+    },
+    threadId: options.threadId,
+    resourceId: options.resourceId,
+    createdAt: options.createdAt ?? new Date(),
+  };
 }

@@ -139,12 +139,11 @@ export class MessageRepository {
           createdAt,
         ],
       });
-
-      // 若受影响行数为 0，说明唯一约束冲突（相同 session_id 与 message_id 已存在），幂等查出并返回既有记录
-      if (info.rowsAffected === 0 && messageId) {
+      const isNewlyInserted = info.rowsAffected > 0;
+      if (!isNewlyInserted && messageId) {
         const existing = await this.getMessageBySessionAndMessageId(input.sessionId, messageId);
         if (existing) {
-          return existing;
+          return { ...existing, isNewlyInserted: false };
         }
       }
 
@@ -164,10 +163,10 @@ export class MessageRepository {
         isFromSelf: Boolean(input.isFromSelf),
         isRecalled: Boolean(input.isRecalled),
         createdAt,
+        isNewlyInserted,
       };
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
-      log.error({ err, sessionId: input.sessionId, messageId, origin }, '持久化会话消息失败');
       throw new DatabaseError(`持久化会话消息失败: ${err.message}`, err);
     }
   }

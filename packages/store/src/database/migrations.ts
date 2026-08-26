@@ -123,6 +123,30 @@ DROP INDEX IF EXISTS idx_session_messages_session_message_id;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_session_messages_session_message_id ON session_messages(session_id, message_id);
 `;
 
+export const MIGRATION_0003_MESSAGE_DELIVERIES_SQL = `
+-- 1. 创建 message_deliveries 交付生命周期表
+CREATE TABLE IF NOT EXISTS message_deliveries (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  mastra_message_id TEXT NOT NULL,
+  kk_message_id TEXT,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  status TEXT NOT NULL,
+  memory_committed_at INTEGER,
+  error_code TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- 2. 创建索引
+CREATE INDEX IF NOT EXISTS idx_message_deliveries_session_id ON message_deliveries(session_id);
+CREATE INDEX IF NOT EXISTS idx_message_deliveries_run_id ON message_deliveries(run_id);
+CREATE INDEX IF NOT EXISTS idx_message_deliveries_status ON message_deliveries(status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_message_deliveries_run_content ON message_deliveries(run_id, content_hash);
+`;
+
 /**
  * KKBot 内部版本化迁移脚本定义列表
  * 注意：所有 SQL 均为纯 KKBot 业务表，对 Mastra 内部表（mastra_*）实行零 DDL、零 DML
@@ -137,6 +161,11 @@ export const KKBOT_MIGRATIONS: readonly Migration[] = [
     id: '0002_inbound_identity_and_groupsession_shortcircuit',
     name: 'Add message origin column and unique index for session_messages',
     up: MIGRATION_0002_INBOUND_IDENTITY_SQL,
+  },
+  {
+    id: '0003_message_deliveries',
+    name: 'Add message_deliveries table for delivery lifecycle and memory commit tracking',
+    up: MIGRATION_0003_MESSAGE_DELIVERIES_SQL,
   },
 ];
 
