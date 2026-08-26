@@ -213,10 +213,9 @@ describe('Delivery Abort & New Message Interruption', () => {
       sessionType: 'private',
       isMe: false,
     });
-
-    expect(abortEventFired).toBe(true);
+    // 等待在途请求被 AbortController.abort() 中断
     await waitAbortPromise;
-
+    expect(abortEventFired).toBe(true);
     // 等待第二轮生成与交付完成
     await new Promise(r => setTimeout(r, 200));
 
