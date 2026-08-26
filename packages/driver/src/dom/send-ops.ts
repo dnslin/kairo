@@ -135,6 +135,28 @@ export class SendOps {
     }
   }
   /**
+   * 确保前台窗口已激活 (触发前校验与前置准备)
+   */
+  private async ensureWindowActivated(
+    contextLabel = '窗口'
+  ): Promise<{ success: true } | { success: false; result: SendResult }> {
+    try {
+      await this.cdp.bringToFront();
+      return { success: true };
+    } catch (bringErr) {
+      const msg = bringErr instanceof Error ? bringErr.message : String(bringErr);
+      log.warn({ err: bringErr }, `bringToFront 激活${contextLabel}失败 (触发前失败)`);
+      return {
+        success: false,
+        result: {
+          success: false,
+          error: `激活${contextLabel}失败: ${msg}`,
+          isPreTrigger: true,
+        },
+      };
+    }
+  }
+  /**
    * 激活引用/回复目标
    */
   public async activateQuoteTarget(replyTo: string | KK9ReplyTarget): Promise<boolean> {
@@ -255,12 +277,9 @@ export class SendOps {
     `;
 
     const startTime = Date.now();
-    try {
-      await this.cdp.bringToFront();
-    } catch (bringErr) {
-      const msg = bringErr instanceof Error ? bringErr.message : String(bringErr);
-      log.warn({ err: bringErr }, 'bringToFront 激活窗口失败 (触发前失败)');
-      return { success: false, error: `激活窗口失败: ${msg}`, isPreTrigger: true };
+    const activated = await this.ensureWindowActivated('窗口');
+    if (!activated.success) {
+      return activated.result;
     }
 
     try {
@@ -393,12 +412,9 @@ export class SendOps {
     `;
 
     const startTime = Date.now();
-    try {
-      await this.cdp.bringToFront();
-    } catch (bringErr) {
-      const msg = bringErr instanceof Error ? bringErr.message : String(bringErr);
-      log.warn({ err: bringErr }, 'bringToFront 激活回复窗口失败 (触发前失败)');
-      return { success: false, error: `激活回复窗口失败: ${msg}`, isPreTrigger: true };
+    const activated = await this.ensureWindowActivated('回复窗口');
+    if (!activated.success) {
+      return activated.result;
     }
 
     try {
@@ -469,12 +485,9 @@ export class SendOps {
     const mimeType = mime.lookup(fullPath) || 'application/octet-stream';
     const startTime = Date.now();
 
-    try {
-      await this.cdp.bringToFront();
-    } catch (bringErr) {
-      const msg = bringErr instanceof Error ? bringErr.message : String(bringErr);
-      log.warn({ err: bringErr }, 'bringToFront 激活文件发送窗口失败 (触发前失败)');
-      return { success: false, error: `激活文件发送窗口失败: ${msg}`, isPreTrigger: true };
+    const activated = await this.ensureWindowActivated('文件发送窗口');
+    if (!activated.success) {
+      return activated.result;
     }
 
     try {
@@ -563,12 +576,9 @@ export class SendOps {
     const base64Data = fs.readFileSync(fullPath).toString('base64');
     const startTime = Date.now();
 
-    try {
-      await this.cdp.bringToFront();
-    } catch (bringErr) {
-      const msg = bringErr instanceof Error ? bringErr.message : String(bringErr);
-      log.warn({ err: bringErr }, 'bringToFront 激活图片发送窗口失败 (触发前失败)');
-      return { success: false, error: `激活图片发送窗口失败: ${msg}`, isPreTrigger: true };
+    const activated = await this.ensureWindowActivated('图片发送窗口');
+    if (!activated.success) {
+      return activated.result;
     }
 
     try {

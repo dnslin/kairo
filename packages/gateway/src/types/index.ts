@@ -131,10 +131,22 @@ export interface CoordinatorFaultHooks {
     sendResult: SendResult,
     attempt?: number
   ) => Promise<void> | void;
+  /** pre-trigger 失败落库为 failed 后，但在发起下一次重试 sending 或退出前 */
+  afterFailedPersistBeforeRetry?: (
+    deliveryId: string,
+    errorCode?: string,
+    attempt?: number
+  ) => Promise<void> | void;
+  /** 重试前准备更新为 sending 状态前 */
+  beforeRetrySendingPersist?: (deliveryId: string, nextAttempt: number) => Promise<void> | void;
+  /** Delivery 进入 aborted 状态落库后 */
+  afterAbortedPersist?: (deliveryId: string) => Promise<void> | void;
   /** Delivery=sent 落库后，但在 Mastra Memory.saveMessages 保存前 */
   afterSentPersistBeforeMemorySave?: (deliveryId: string) => Promise<void> | void;
   /** Mastra Memory 保存成功后，但在 markMemoryCommitted 提交标记落库前 */
   afterMemorySaveBeforeMarkCommitted?: (deliveryId: string) => Promise<void> | void;
+  /** markMemoryCommitted 提交标记落库后 */
+  afterMarkMemoryCommitted?: (deliveryId: string) => Promise<void> | void;
   /** 人工裁定 sent 落库后，但在 Mastra Memory 补交保存前 */
   afterAdjudicationPersistBeforeMemorySave?: (deliveryId: string) => Promise<void> | void;
 }

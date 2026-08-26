@@ -15,8 +15,6 @@ export interface DeliveryRecoveryReport {
   generatedRecovered: number;
   sentUncommittedCommitted: number;
   unknownSkipped: number;
-  abortedSkipped: number;
-  failedSkipped: number;
   errors: Array<{ deliveryId: string; error: string }>;
 }
 
@@ -52,8 +50,6 @@ export class DeliveryRecoveryScanner {
       generatedRecovered: 0,
       sentUncommittedCommitted: 0,
       unknownSkipped: 0,
-      abortedSkipped: 0,
-      failedSkipped: 0,
       errors: [],
     };
 
@@ -97,7 +93,7 @@ export class DeliveryRecoveryScanner {
     } catch (err) {
       const cause = err instanceof Error ? err : new Error(String(err));
       log.error({ err: cause.message }, '查询 in-flight sending 记录发生致命错误，阻断启动');
-      throw new Error(`Delivery 恢复扫描查询 in-flight sending 失败: ${cause.message}`);
+      throw new Error(`Delivery 恢复扫描查询 in-flight sending 失败: ${cause.message}`, { cause });
     }
 
     report.scannedCount += inFlightList.length;
@@ -131,7 +127,8 @@ export class DeliveryRecoveryScanner {
           '无法将处于 sending 的 Delivery 转换为安全状态，触发 Fail-Closed 阻断启动'
         );
         throw new Error(
-          `Delivery [${deliv.id}] 无法安全退出 sending 状态: ${cause.message}`
+          `Delivery [${deliv.id}] 无法安全退出 sending 状态: ${cause.message}`,
+          { cause }
         );
       }
     }
@@ -153,7 +150,6 @@ export class DeliveryRecoveryScanner {
             updatedAt: Date.now(),
           });
           report.generatedRecovered++;
-          report.abortedSkipped++;
           log.info(
             { deliveryId: deliv.id, sessionId: deliv.sessionId },
             '已将重启前未进入发送的 generated Delivery 安全转换为 aborted'
@@ -180,58 +176,70 @@ export class DeliveryRecoveryScanner {
    * 补交处于 sent 状态但尚未提交 Memory 的 Delivery
    */
   private async recoverSentUncommittedDeliveries(report: DeliveryRecoveryReport): Promise<void> {
-    if (!this.mastraMemory) {
-      log.debug('未配置 mastraMemory，跳过 sent-but-uncommitted 补交');
-      return;
-    }
+    let uncommittedList;
     try {
-      const uncommittedList = await this.store.deliveries.getSentUncommittedDeliveries();
-      report.scannedCount += uncommittedList.length;
-      for (const deliv of uncommittedList) {
-        try {
-          const thread = await this.mastraMemory.getThreadById({ threadId: deliv.sessionId });
-          const resourceId = thread?.resourceId;
-          if (!resourceId) {
-            const err = new Error(
-              `会话 [${deliv.sessionId}] 在 Mastra Memory 中未找到有效 Thread 或 resourceId，保留 sent-but-uncommitted 检查点`
-            );
-            log.error(
-              { err: err.message, deliveryId: deliv.id, sessionId: deliv.sessionId },
-              '无法解析权威 resourceId，阻断 Memory 补交'
-            );
-            report.errors.push({ deliveryId: deliv.id, error: err.message });
-            continue;
-          }
-
-          const mastraMessageId = deliv.mastraMessageId;
-          const asstMsg = createMastraTextMessage({
-            id: mastraMessageId,
-            role: 'assistant',
-            content: deliv.content,
-            threadId: deliv.sessionId,
-            resourceId,
-            createdAt: new Date(deliv.updatedAt || deliv.createdAt),
-          });
-
-          await this.mastraMemory.saveMessages({ messages: [asstMsg] });
-          const commitRes = await this.store.deliveries.markMemoryCommitted(deliv.id, Date.now());
-          if (commitRes.isNewlyCommitted) {
-            report.sentUncommittedCommitted++;
-          }
-          log.info(
-            { deliveryId: deliv.id, sessionId: deliv.sessionId, mastraMessageId, resourceId },
-            'sent-but-uncommitted 检查点已成功补交 assistant Memory'
-          );
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          log.error({ err, deliveryId: deliv.id }, '补交 sent-but-uncommitted Memory 异常');
-          report.errors.push({ deliveryId: deliv.id, error: errorMsg });
-        }
-      }
+      uncommittedList = await this.store.deliveries.getSentUncommittedDeliveries();
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error({ err }, '查询 sent-but-uncommitted 记录异常');
       report.errors.push({ deliveryId: 'global_sent_uncommitted', error: errorMsg });
+      return;
+    }
+
+    report.scannedCount += uncommittedList.length;
+
+    if (uncommittedList.length > 0 && !this.mastraMemory) {
+      const errorMsg = `发现 ${uncommittedList.length} 条待恢复的 sent-but-uncommitted 交付，但未配置 mastraMemory，阻断启动 (Fail-Closed)`;
+      log.error(errorMsg);
+      report.errors.push({ deliveryId: 'global_sent_uncommitted', error: errorMsg });
+      return;
+    }
+
+    if (!this.mastraMemory) {
+      log.debug('未配置 mastraMemory 且无待恢复的 sent-but-uncommitted 交付，跳过补交');
+      return;
+    }
+
+    for (const deliv of uncommittedList) {
+      try {
+        const thread = await this.mastraMemory.getThreadById({ threadId: deliv.sessionId });
+        const resourceId = thread?.resourceId;
+        if (!resourceId) {
+          const err = new Error(
+            `会话 [${deliv.sessionId}] 在 Mastra Memory 中未找到有效 Thread 或 resourceId，保留 sent-but-uncommitted 检查点`
+          );
+          log.error(
+            { err: err.message, deliveryId: deliv.id, sessionId: deliv.sessionId },
+            '无法解析权威 resourceId，阻断 Memory 补交'
+          );
+          report.errors.push({ deliveryId: deliv.id, error: err.message });
+          continue;
+        }
+
+        const mastraMessageId = deliv.mastraMessageId;
+        const asstMsg = createMastraTextMessage({
+          id: mastraMessageId,
+          role: 'assistant',
+          content: deliv.content,
+          threadId: deliv.sessionId,
+          resourceId,
+          createdAt: new Date(deliv.updatedAt || deliv.createdAt),
+        });
+
+        await this.mastraMemory.saveMessages({ messages: [asstMsg] });
+        const commitRes = await this.store.deliveries.markMemoryCommitted(deliv.id, Date.now());
+        if (commitRes.isNewlyCommitted) {
+          report.sentUncommittedCommitted++;
+        }
+        log.info(
+          { deliveryId: deliv.id, sessionId: deliv.sessionId, mastraMessageId, resourceId },
+          'sent-but-uncommitted 检查点已成功补交 assistant Memory'
+        );
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        log.error({ err, deliveryId: deliv.id }, '补交 sent-but-uncommitted Memory 异常');
+        report.errors.push({ deliveryId: deliv.id, error: errorMsg });
+      }
     }
   }
 

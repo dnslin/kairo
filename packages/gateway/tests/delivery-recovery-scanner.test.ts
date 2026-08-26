@@ -353,4 +353,37 @@ describe('DeliveryRecoveryScanner 交付恢复扫描器测试 (TDD Red -> Green)
       store.deliveries.updateStatus = origUpdate;
     }
   });
+
+  it('未注入 mastraMemory 但存在 sent-but-uncommitted 待恢复交付时，扫描器记录错误并阻断 Coordinator 启动 (Fail-Closed)', async () => {
+    const { SessionCoordinator } = await import('../src/coordinator.js');
+    const deliveryId = 'deliv_missing_mem_fail_closed';
+    const sessionId = 'session_missing_mem';
+    const mastraMessageId = deriveAssistantMessageId(deliveryId);
+
+    await store.sessions.upsertSession({ id: sessionId, employeeId: 'emp_missing_mem' });
+    await store.deliveries.createDelivery({
+      id: deliveryId,
+      runId: 'run_missing_mem',
+      sessionId,
+      mastraMessageId,
+      content: '需要补交记忆但缺少 Memory 实例的回复',
+      contentHash: 'hash_missing_mem',
+    });
+    await store.deliveries.updateStatus(deliveryId, 'sending');
+    await store.deliveries.updateStatus(deliveryId, 'sent', { kkMessageId: 'kk_missing_mem' });
+
+    // 1. 直接测试 DeliveryRecoveryScanner（无 mastraMemory）
+    const scannerWithoutMem = new DeliveryRecoveryScanner({ store });
+    const report = await scannerWithoutMem.runRecoveryScan();
+    expect(report.errors.length).toBeGreaterThanOrEqual(1);
+    expect(report.errors.some((e) => e.error.includes('未配置 mastraMemory，阻断启动 (Fail-Closed)'))).toBe(true);
+
+    // 2. 验证 SessionCoordinator.start() 同样被 Fail-Closed 阻断
+    const coordinator = new SessionCoordinator({
+      driver: fakeDriver as unknown as KK9Driver,
+      store,
+      // 不传 mastraMemory
+    });
+    await expect(coordinator.start()).rejects.toThrow(/阻止系统启动 \(Fail-Closed\)/);
+  });
 });

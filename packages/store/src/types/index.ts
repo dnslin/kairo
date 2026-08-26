@@ -623,7 +623,6 @@ export interface UpdateDeliveryStatusOptions {
   isRetry?: boolean;
   maxRetries?: number;
   updatedAt?: number;
-  forceFromSending?: boolean;
 }
 
 /**

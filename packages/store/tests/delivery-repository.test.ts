@@ -176,28 +176,28 @@ describe('DeliveryRepository & Delivery Lifecycle Persistence', () => {
         contentHash: 'hash_flow_01',
       });
 
-      // generated -> sending
+      // 从 generated 流转至 sending
       const s1 = await repo.updateStatus(d.id, 'sending');
       expect(s1.status).toBe('sending');
       expect(s1.retryCount).toBe(0);
 
-      // sending -> failed (pre-trigger)
+      // 从 sending 流转至 failed (发送前 pre-trigger 失败)
       const f1 = await repo.updateStatus(d.id, 'failed', { errorCode: 'PRE_TRIGGER_FAILED' });
       expect(f1.status).toBe('failed');
       expect(f1.errorCode).toBe('PRE_TRIGGER_FAILED');
 
-      // failed -> sending (有界重试 1)
+      // 从 failed 流转至 sending (发起第 1 次有界自动重试)
       const s2 = await repo.updateStatus(d.id, 'sending', { isRetry: true, maxRetries: 2 });
       expect(s2.status).toBe('sending');
       expect(s2.retryCount).toBe(1);
 
-      // sending -> sent
+      // 从 sending 流转至 sent (发送成功终态)
       const sent = await repo.updateStatus(d.id, 'sent', { kkMessageId: 'kk_sent_flow_01' });
       expect(sent.status).toBe('sent');
       expect(sent.kkMessageId).toBe('kk_sent_flow_01');
     });
 
-    it('generated -> aborted 与 generated -> failed 合法转换', async () => {
+    it('generated -> aborted、generated -> failed 与 failed -> aborted (重试期间中止) 合法转换', async () => {
       const d1 = await repo.createDelivery({
         id: 'deliv_abort_01',
         runId: 'run_abort_01',
@@ -219,6 +219,13 @@ describe('DeliveryRepository & Delivery Lifecycle Persistence', () => {
       });
       const failed = await repo.updateStatus(d2.id, 'failed', { errorCode: 'PREPARATION_FAILED' });
       expect(failed.status).toBe('failed');
+
+      // failed -> aborted (pre-trigger 失败重试期间主动中止)
+      const abortedFromFailed = await repo.updateStatus(d2.id, 'aborted', {
+        errorCode: 'ABORTED_DURING_RETRY',
+      });
+      expect(abortedFromFailed.status).toBe('aborted');
+      expect(abortedFromFailed.errorCode).toBe('ABORTED_DURING_RETRY');
     });
 
     it('sending -> unknown (post-trigger) 与 crash recovery scan 场景流转', async () => {

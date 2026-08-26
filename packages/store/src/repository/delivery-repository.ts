@@ -79,7 +79,7 @@ function mapRowToDelivery(row: DeliveryRow): Delivery {
  */
 const ALLOWED_FROM_STATUSES: Record<DeliveryStatus, readonly DeliveryStatus[]> = {
   sending: ['generated', 'failed'], // failed 仅在 isRetry 为 true 时允许
-  aborted: ['generated', 'sending'], // 仅限证明发送动作尚未触发前的主动中止
+  aborted: ['generated', 'sending', 'failed'], // 仅限证明发送动作尚未触发前的主动中止 (含 pre-trigger failed 重试期间主动中止)
   failed: ['generated', 'sending'],
   sent: ['sending'], // 正常流程仅允许 sending -> sent；unknown -> sent 必须经过 adjudicateDelivery 事务
   unknown: ['sending'],

@@ -1366,7 +1366,10 @@ export class SessionCoordinator extends EventEmitter {
     const delivery = await this.createSendingDelivery(deliveryId, runId, sessionId, mastraMessageId, replyText);
     if (!delivery || signal.aborted) {
       if (signal.aborted && delivery) {
-        await this.store.deliveries.updateStatus(delivery.id, 'aborted');
+        await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
+          errorCode: 'ABORTED_BEFORE_SENDING_PIPELINE: 生成后发送前检测到取消信号',
+        });
+        await this.hooks?.afterAbortedPersist?.(delivery.id);
         this.emit('agent_aborted', sessionId);
       }
       return;
@@ -1374,7 +1377,10 @@ export class SessionCoordinator extends EventEmitter {
 
     // 检查人工接管或中断状态（不可逆发送边界前的最后一道安全门）
     if (await this.isTakeoverActive(sessionId)) {
-      await this.store.deliveries.updateStatus(delivery.id, 'aborted');
+      await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
+        errorCode: 'ABORTED_HUMAN_TAKEOVER: 会话已被人工接管',
+      });
+      await this.hooks?.afterAbortedPersist?.(delivery.id);
       this.emit('agent_aborted', sessionId);
       return;
     }
@@ -1389,6 +1395,20 @@ export class SessionCoordinator extends EventEmitter {
     let retriesCount = 0;
 
     while (true) {
+      if (signal.aborted || (await this.isTakeoverActive(sessionId))) {
+        log.info({ sessionId, deliveryId: delivery.id }, '发送前检测到中止信号或人工接管，取消发送并安全中止 Delivery');
+        try {
+          await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
+            errorCode: 'ABORTED_BEFORE_SEND_TRIGGER: 发送前检测到中止信号或人工接管',
+          });
+          await this.hooks?.afterAbortedPersist?.(delivery.id);
+        } catch (abortErr) {
+          log.warn({ abortErr, deliveryId: delivery.id }, '更新 Delivery 为 aborted 失败');
+        }
+        this.emit('agent_aborted', sessionId);
+        return;
+      }
+
       await this.hooks?.afterSendingBeforeDriver?.(delivery.id, retriesCount);
 
       currentSendResult = await this.executeDriverOutbound(sessionId, replyText);
@@ -1413,11 +1433,29 @@ export class SessionCoordinator extends EventEmitter {
       }
 
       // 仅当明确属于 pre-trigger failure 且重试次数未超限时允许自动重试
-      if (currentSendResult.isPreTrigger && retriesCount < maxRetries && !signal.aborted) {
+      if (currentSendResult.isPreTrigger && retriesCount < maxRetries) {
         try {
           await this.store.deliveries.updateStatus(delivery.id, 'failed', {
             errorCode: currentSendResult.error,
           });
+          await this.hooks?.afterFailedPersistBeforeRetry?.(
+            delivery.id,
+            currentSendResult.error,
+            retriesCount
+          );
+
+          if (signal.aborted || (await this.isTakeoverActive(sessionId))) {
+            log.info({ sessionId, deliveryId: delivery.id }, '重试前检测到中止信号或人工接管，放弃重试并安全中止');
+            await this.store.deliveries.updateStatus(delivery.id, 'aborted', {
+              errorCode: 'ABORTED_DURING_RETRY: 重试期间检测到中止信号或人工接管',
+            });
+            await this.hooks?.afterAbortedPersist?.(delivery.id);
+            this.emit('agent_aborted', sessionId);
+            return;
+          }
+
+          await this.hooks?.beforeRetrySendingPersist?.(delivery.id, retriesCount + 1);
+
           await this.store.deliveries.updateStatus(delivery.id, 'sending', {
             isRetry: true,
             maxRetries,
@@ -1678,6 +1716,7 @@ export class SessionCoordinator extends EventEmitter {
         });
         await this.hooks?.afterMemorySaveBeforeMarkCommitted?.(deliveryId);
         await this.store.deliveries.markMemoryCommitted(deliveryId, Date.now());
+        await this.hooks?.afterMarkMemoryCommitted?.(deliveryId);
         log.debug({ sessionId, deliveryId, mastraMessageId }, 'assistant Memory 显式提交成功并标记 memory_committed_at');
       } catch (asstMemErr) {
         log.error(
@@ -1727,10 +1766,12 @@ export class SessionCoordinator extends EventEmitter {
       await this.store.deliveries.updateStatus(deliveryId, finalStatus, {
         errorCode: sendResult.error,
       });
+      if (finalStatus === 'failed') {
+        await this.hooks?.afterFailedPersistBeforeRetry?.(deliveryId, sendResult.error, undefined);
+      }
     } catch (failStatusErr) {
       log.error({ failStatusErr, deliveryId }, '更新 Delivery 状态失败');
     }
-
     const failResult: CoordinatorDispatchResult = {
       action: 'send_failed',
       success: false,

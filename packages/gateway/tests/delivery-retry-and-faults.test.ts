@@ -482,4 +482,144 @@ describe('Delivery 自动重试、Post-trigger Unknown、Aborted 与崩溃强杀
     expect(deliveries[0].status).not.toBe('aborted');
     expect(deliveries[0].memoryCommittedAt).toBeNull();
   });
+
+  it('重试期间检测到人工接管或 abort 信号时，立即放弃后续重试并将 Delivery 安全流转为 aborted', async () => {
+    const sessionId = 'session_retry_abort';
+    const senderId = 'emp_retry_abort';
+
+    // Driver 第 1 次返回 pre-trigger failure
+    fakeDriver.setSendBehavior({
+      mode: 'sequence',
+      behaviors: [
+        { mode: 'pre_trigger_failure', error: '首次发送前窗口激活失败' },
+        { mode: 'success', messageId: 'kk_msg_should_not_reach' },
+      ],
+    });
+
+    const fakeModel = createFakeModel({
+      responses: [{ text: '重试前将被人工接管中止的回复', finishReason: 'stop' }],
+    });
+    const factory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory: factory, memory: mastraMemory });
+
+    let hookTriggered = false;
+    coordinator = new SessionCoordinator({
+      driver: fakeDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 50, maxWaitMs: 150, maxRetries: 2 },
+      hooks: {
+        afterFailedPersistBeforeRetry: async () => {
+          // 模拟在 pre-trigger 失败落库后、下一次重试前触发人工接管
+          await coordinator.setTakeover(sessionId);
+          hookTriggered = true;
+        },
+      },
+    });
+    await coordinator.start();
+
+    await coordinator.handleInboundMessage({
+      id: 'msg_rab_1',
+      messageId: 'msg_rab_1',
+      sessionId,
+      sessionName: '用户',
+      sessionType: 'private',
+      sender: '用户',
+      senderId,
+      content: '测试重试期间中止',
+      messageType: 'text',
+      isMe: false,
+      timestamp: Date.now(),
+    });
+
+    await coordinator.flushSession(sessionId);
+
+    expect(hookTriggered).toBe(true);
+    // 验证 Driver 仅被调用了第 1 次，第 2 次重试被成功阻断
+    expect(fakeDriver.recordedCalls.length).toBe(1);
+
+    // 验证 Delivery 最终安全进入 aborted
+    const deliveries = await store.deliveries.getDeliveriesBySession(sessionId);
+    expect(deliveries.length).toBe(1);
+    expect(deliveries[0].status).toBe('aborted');
+    expect(deliveries[0].errorCode).toContain('ABORTED_DURING_RETRY');
+    expect(deliveries[0].memoryCommittedAt).toBeNull();
+
+    // 验证 Memory 中无 assistant 消息
+    const recalled = await mastraMemory.recall({ threadId: sessionId, resourceId: senderId });
+    expect(recalled.messages.filter((m) => m.role === 'assistant').length).toBe(0);
+  });
+
+  it('精确验证 Delivery 持久化扩展钩子 (afterFailedPersistBeforeRetry, beforeRetrySendingPersist, afterMarkMemoryCommitted, afterAbortedPersist)', async () => {
+    const sessionId = 'session_hooks_verify';
+    const senderId = 'emp_hooks_verify';
+
+    fakeDriver.setSendBehavior({
+      mode: 'sequence',
+      behaviors: [
+        { mode: 'pre_trigger_failure', error: '重试前失败测试' },
+        { mode: 'success', messageId: 'kk_hooks_success' },
+      ],
+    });
+
+    const fakeModel = createFakeModel({
+      responses: [{ text: '钩子覆盖测试回复', finishReason: 'stop' }],
+    });
+    const factory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory: factory, memory: mastraMemory });
+
+    const events: string[] = [];
+    coordinator = new SessionCoordinator({
+      driver: fakeDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 50, maxWaitMs: 150, maxRetries: 2 },
+      hooks: {
+        afterFailedPersistBeforeRetry: () => {
+          events.push('afterFailedPersistBeforeRetry');
+        },
+        beforeRetrySendingPersist: () => {
+          events.push('beforeRetrySendingPersist');
+        },
+        afterMarkMemoryCommitted: () => {
+          events.push('afterMarkMemoryCommitted');
+        },
+      },
+    });
+    await coordinator.start();
+
+    await coordinator.handleInboundMessage({
+      id: 'msg_hkv_1',
+      messageId: 'msg_hkv_1',
+      sessionId,
+      sessionName: '用户',
+      sessionType: 'private',
+      sender: '用户',
+      senderId,
+      content: '测试所有钩子',
+      messageType: 'text',
+      isMe: false,
+      timestamp: Date.now(),
+    });
+
+    await coordinator.flushSession(sessionId);
+
+    expect(events).toContain('afterFailedPersistBeforeRetry');
+    expect(events).toContain('beforeRetrySendingPersist');
+    expect(events).toContain('afterMarkMemoryCommitted');
+  });
 });
