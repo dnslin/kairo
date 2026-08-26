@@ -273,8 +273,59 @@ function loadMarkdownFilesFromDir(dirPath: string, baseRoot = dirPath): Knowledg
 }
 
 /**
- * 创建 query_knowledge_base 内置工具
- * 基于企业本地 Markdown 制度文档进行语义与切片检索匹配
+ * 执行 query_knowledge_base 核心知识库切片检索匹配逻辑
+ */
+export function executeQueryKnowledgeBaseCore(
+  options: QueryKnowledgeBaseOptions,
+  input: QueryKnowledgeBaseInput
+): QueryKnowledgeBaseOutput {
+  const cleanQuery = input.query.trim();
+  const topK = input.topK ?? 5;
+  const minScore = input.minScore ?? 0.3;
+  const targetCategory = input.category?.trim();
+
+  log.debug(
+    { query: cleanQuery, topK, minScore, category: targetCategory },
+    '执行知识库切片语义匹配检索'
+  );
+
+  const allDocs: KnowledgeDocSource[] = [...(options.docs ?? [])];
+  if (options.baseDir) {
+    allDocs.push(...loadMarkdownFilesFromDir(options.baseDir));
+  }
+
+  const allChunks: KnowledgeChunkResult[] = [];
+  for (const doc of allDocs) {
+    if (targetCategory && doc.category && doc.category !== targetCategory) {
+      continue;
+    }
+    const docChunks = chunkMarkdownDocument(doc);
+    for (const chunk of docChunks) {
+      if (targetCategory && chunk.category && chunk.category !== targetCategory) {
+        continue;
+      }
+      const score = calculateRelevance(cleanQuery, chunk.title, chunk.content);
+      if (score >= minScore) {
+        allChunks.push({
+          ...chunk,
+          score,
+        });
+      }
+    }
+  }
+
+  allChunks.sort((a, b) => b.score - a.score);
+  const topChunks = allChunks.slice(0, topK);
+
+  return {
+    success: true,
+    count: topChunks.length,
+    chunks: topChunks,
+  };
+}
+
+/**
+ * 创建 query_knowledge_base 内置工具 (旧 ToolRegistry 兼容)
  */
 export function createQueryKnowledgeBaseTool(
   options: QueryKnowledgeBaseOptions = {}
@@ -287,49 +338,7 @@ export function createQueryKnowledgeBaseTool(
     inputSchema: QueryKnowledgeBaseInputSchema,
     execute: async (input): Promise<QueryKnowledgeBaseOutput> => {
       await Promise.resolve();
-      const cleanQuery = input.query.trim();
-      const topK = input.topK ?? 5;
-      const minScore = input.minScore ?? 0.3;
-      const targetCategory = input.category?.trim();
-
-      log.debug(
-        { query: cleanQuery, topK, minScore, category: targetCategory },
-        '执行知识库切片语义匹配检索'
-      );
-
-      const allDocs: KnowledgeDocSource[] = [...(options.docs ?? [])];
-      if (options.baseDir) {
-        allDocs.push(...loadMarkdownFilesFromDir(options.baseDir));
-      }
-
-      const allChunks: KnowledgeChunkResult[] = [];
-      for (const doc of allDocs) {
-        if (targetCategory && doc.category && doc.category !== targetCategory) {
-          continue;
-        }
-        const docChunks = chunkMarkdownDocument(doc);
-        for (const chunk of docChunks) {
-          if (targetCategory && chunk.category && chunk.category !== targetCategory) {
-            continue;
-          }
-          const score = calculateRelevance(cleanQuery, chunk.title, chunk.content);
-          if (score >= minScore) {
-            allChunks.push({
-              ...chunk,
-              score,
-            });
-          }
-        }
-      }
-
-      allChunks.sort((a, b) => b.score - a.score);
-      const topChunks = allChunks.slice(0, topK);
-
-      return {
-        success: true,
-        count: topChunks.length,
-        chunks: topChunks,
-      };
+      return executeQueryKnowledgeBaseCore(options, input);
     },
     metadata: {
       category: 'knowledge',
@@ -353,44 +362,7 @@ export function createMastraQueryKnowledgeBaseTool(
     inputSchema: QueryKnowledgeBaseInputSchema,
     execute: async ({ context }) => {
       await Promise.resolve();
-      const cleanQuery = context.query.trim();
-      const topK = context.topK ?? 5;
-      const minScore = context.minScore ?? 0.3;
-      const targetCategory = context.category?.trim();
-
-      const allDocs: KnowledgeDocSource[] = [...(options.docs ?? [])];
-      if (options.baseDir) {
-        allDocs.push(...loadMarkdownFilesFromDir(options.baseDir));
-      }
-
-      const allChunks: KnowledgeChunkResult[] = [];
-      for (const doc of allDocs) {
-        if (targetCategory && doc.category && doc.category !== targetCategory) {
-          continue;
-        }
-        const docChunks = chunkMarkdownDocument(doc);
-        for (const chunk of docChunks) {
-          if (targetCategory && chunk.category && chunk.category !== targetCategory) {
-            continue;
-          }
-          const score = calculateRelevance(cleanQuery, chunk.title, chunk.content);
-          if (score >= minScore) {
-            allChunks.push({
-              ...chunk,
-              score,
-            });
-          }
-        }
-      }
-
-      allChunks.sort((a, b) => b.score - a.score);
-      const topChunks = allChunks.slice(0, topK);
-
-      return {
-        success: true,
-        count: topChunks.length,
-        chunks: topChunks,
-      };
+      return executeQueryKnowledgeBaseCore(options, context);
     },
   });
 }

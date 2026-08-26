@@ -85,6 +85,7 @@ export {
 export { Memory } from '@mastra/memory';
 export {
   KKBotAgent,
+  DEFAULT_KKBOT_INSTRUCTIONS,
   deriveUserMessageId,
   deriveAssistantMessageId,
   ensureMastraThread,

@@ -104,11 +104,16 @@ export function createFakeModel(options: FakeModelOptions = {}): FakeLanguageMod
         for (const tc of response.toolCalls) {
           const toolName = tc.name ?? tc.toolName ?? 'unknown_tool';
           const toolCallId = tc.id ?? tc.toolCallId ?? `call-${callCount}-${toolName}`;
+          const inputData =
+            tc.input ??
+            (tc as { arguments?: unknown }).arguments ??
+            (tc as { args?: unknown }).args ??
+            {};
           content.push({
             type: 'tool-call',
             toolCallId,
             toolName,
-            input: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? {}),
+            input: typeof inputData === 'string' ? inputData : JSON.stringify(inputData),
           });
         }
       }

@@ -347,11 +347,15 @@ describe('ToolRegistry 与内置企业工具集 (TDD Red -> Green)', () => {
         { 工号: 'E1002', 姓名: '李四', 部门: '研发部', 备注: '主管 "含双引号"' },
       ];
 
-      const result = await tool.execute({
-        fileType: 'csv',
-        fileName: 'roster_output.csv',
-        data: rowData,
-      });
+      const result = await tool.execute(
+        {
+          fileType: 'csv',
+          fileName: 'roster_output.csv',
+          data: rowData,
+          idempotencyKey: 'idemp_csv_1',
+        },
+        { threadId: 'session_reg_001', senderId: 'emp_reg_001' }
+      );
 
       expect(result.success).toBe(true);
       expect(result.format).toBe('csv');
@@ -374,11 +378,15 @@ describe('ToolRegistry 与内置企业工具集 (TDD Red -> Green)', () => {
       const tool = createGenerateFileDeliverableTool({ baseDir: testTempDir });
 
       const mdContent = `# 会议纪要\n\n- 参会人：张三、李四\n- 讨论事项：工具系统设计`;
-      const result = await tool.execute({
-        fileType: 'md',
-        fileName: 'meeting_notes.md',
-        content: mdContent,
-      });
+      const result = await tool.execute(
+        {
+          fileType: 'md',
+          fileName: 'meeting_notes.md',
+          content: mdContent,
+          idempotencyKey: 'idemp_md_1',
+        },
+        { threadId: 'session_reg_002', senderId: 'emp_reg_002' }
+      );
 
       expect(result.success).toBe(true);
       expect(result.format).toBe('md');
@@ -393,11 +401,27 @@ describe('ToolRegistry 与内置企业工具集 (TDD Red -> Green)', () => {
 
       // CSV 类型缺少 data 参数
       await expect(
-        tool.execute({
-          fileType: 'csv',
-          fileName: 'invalid.csv',
-        })
+        tool.execute(
+          {
+            fileType: 'csv',
+            fileName: 'invalid.csv',
+            idempotencyKey: 'idemp_invalid_1',
+          },
+          { threadId: 'session_reg_003', senderId: 'emp_reg_003' }
+        )
       ).rejects.toThrowError(/data 数组/);
+    });
+
+    it('缺少上下文身份时直接执行抛出错误', async () => {
+      const tool = createGenerateFileDeliverableTool({ baseDir: testTempDir });
+      await expect(
+        tool.execute({
+          fileType: 'md',
+          fileName: 'no_ctx.md',
+          content: 'test',
+          idempotencyKey: 'idemp_no_ctx',
+        })
+      ).rejects.toThrowError(/缺少权威 threadId 会话身份/);
     });
   });
 });

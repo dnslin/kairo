@@ -99,27 +99,29 @@ export function splitKKBotProcessors(options?: KKBotProcessorsOptions): {
   inputProcessors: InputProcessorOrWorkflow[];
   outputProcessors: OutputProcessorOrWorkflow[];
 } {
-  const normalizer = new UnicodeNormalizer();
-  const promptInjection = new PromptInjectionProcessor(options?.promptInjection);
-  const sensitiveInput = new SensitiveInputProcessor(options?.sensitiveInput);
-  const quotaAdmission = new QuotaAdmissionProcessor(options?.quotaAdmission);
+  const allProcessors = createKKBotProcessors(options);
+  const inputProcessors: InputProcessorOrWorkflow[] = [];
+  const outputProcessors: OutputProcessorOrWorkflow[] = [];
 
-  const toolResultSafety = new ToolResultSafetyProcessor(options?.toolResultSafety);
-  const quotaUsage = new QuotaUsageProcessor(options?.quotaUsage);
-  const thinkingTag = new ThinkingTagProcessor();
-  const knowledgeGrounding = new KnowledgeGroundingProcessor(options?.knowledgeGrounding);
-  const outputLength = new OutputLengthProcessor(options?.outputLength);
-  const sensitiveOutput = new SensitiveOutputProcessor(options?.sensitiveOutput);
+  for (const proc of allProcessors) {
+    if (
+      'processInput' in proc &&
+      typeof (proc as { processInput?: unknown }).processInput === 'function'
+    ) {
+      inputProcessors.push(proc as InputProcessorOrWorkflow);
+    }
+    if (
+      ('processOutputResult' in proc &&
+        typeof (proc as { processOutputResult?: unknown }).processOutputResult === 'function') ||
+      ('processToolResult' in proc &&
+        typeof (proc as { processToolResult?: unknown }).processToolResult === 'function')
+    ) {
+      outputProcessors.push(proc as OutputProcessorOrWorkflow);
+    }
+  }
 
   return {
-    inputProcessors: [normalizer, promptInjection, sensitiveInput, quotaAdmission],
-    outputProcessors: [
-      toolResultSafety,
-      quotaUsage,
-      thinkingTag,
-      knowledgeGrounding,
-      outputLength,
-      sensitiveOutput,
-    ],
+    inputProcessors,
+    outputProcessors,
   };
 }

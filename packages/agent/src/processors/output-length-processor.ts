@@ -34,7 +34,7 @@ export class OutputLengthProcessor implements Processor<'output-length'> {
       if (msg.role === 'assistant') {
         const text = extractTextFromMastraContent(msg.content);
         if (text.length > this.maxLength) {
-          // 提取来源块
+          // 提取正文末尾挂载的溯源引用，确保长度截断后来源依据块不丢失
           let sourceBlock = '';
           const sourceMatch = text.match(SOURCE_BLOCK_REGEX);
           if (sourceMatch) {

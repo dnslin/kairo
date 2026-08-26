@@ -18,7 +18,7 @@ import {
   type FakeLanguageModel,
 } from '@kkbot/agent';
 import { UnifiedBootstrapper } from '../../src/bootstrapper.js';
-import { createValidTestYaml } from '../fixtures.js';
+import { createValidTestYaml, STDIO_MCP_SERVER_SCRIPT } from '../fixtures.js';
 import { z } from 'zod';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -55,7 +55,7 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
     try {
       await fs.rm(tempDir, { recursive: true, force: true });
     } catch {
-      // ignore
+      // 测试临时目录清理失败不影响后续测试
     }
   });
 
@@ -229,6 +229,105 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
       } finally {
         await boot.shutdown();
         await sseFixture.close();
+      }
+    });
+
+    it('MCPPROC-01.5a: 未在主机白名单中的 MCP 服务 URL 在启动 Static Validation 时被坚决拒绝阻止启动', async () => {
+      await fs.writeFile(
+        configFile,
+        createValidTestYaml({
+          dbFilePath,
+          mcpCustomServers: `
+    untrusted_mcp:
+      url: "https://evil-untrusted-external-host.com/sse"
+      required: true
+      tools:
+        - name: echo
+          effect: read
+          risk: low`,
+        }),
+        'utf-8'
+      );
+
+      const boot = new UnifiedBootstrapper({ configPath: configFile });
+      await expect(boot.start()).rejects.toThrow(/不在允许的主机白名单中/);
+      expect(boot.getGate().isOpen()).toBe(false);
+    });
+
+    it('MCPPROC-01.5b: 未在环境变量白名单中的 MCP stdio 环境变量在启动 Static Validation 时被坚决拒绝阻止启动', async () => {
+      await fs.writeFile(
+        configFile,
+        createValidTestYaml({
+          dbFilePath,
+          mcpCustomServers: `
+    stdio_injected:
+      command: "${process.execPath.replace(/\\/g, '/')}"
+      args:
+        - "${STDIO_MCP_SERVER_SCRIPT.replace(/\\/g, '/')}"
+      env:
+        UNAUTHORIZED_INJECTED_ENV: "leaked_secret"
+      required: true
+      tools:
+        - name: echo
+          effect: read
+          risk: low`,
+        }),
+        'utf-8'
+      );
+
+      const boot = new UnifiedBootstrapper({ configPath: configFile });
+      await expect(boot.start()).rejects.toThrow(/不在允许的环境变量白名单中/);
+      expect(boot.getGate().isOpen()).toBe(false);
+    });
+
+    it('MCPPROC-01.5c: stdio MCP 服务关闭默认环境继承 (inheritDefaultEnv: false)，未显式配置的父进程变量严禁泄露至子进程', async () => {
+      process.env['UNCONFIGURED_PARENT_SECRET'] = 'secret_leak_attempt';
+      try {
+        await fs.writeFile(
+          configFile,
+          createValidTestYaml({
+            dbFilePath,
+            mcpCustomServers: `
+    stdio_isolated:
+      command: "${process.execPath.replace(/\\/g, '/')}"
+      args:
+        - "${STDIO_MCP_SERVER_SCRIPT.replace(/\\/g, '/')}"
+      env:
+        NODE_ENV: "isolated_test_env"
+      required: true
+      tools:
+        - name: get_env
+          effect: read
+          risk: low`,
+          }),
+          'utf-8'
+        );
+
+        const boot = new UnifiedBootstrapper({ configPath: configFile });
+        await boot.start();
+        try {
+          const staticTools = boot.getStaticTools();
+          const getEnvTool = staticTools['stdio_isolated_get_env'];
+          expect(getEnvTool).toBeDefined();
+
+          // 1. 显式配置的白名单环境变量正常传入
+          const configuredRes = (await getEnvTool.execute({ key: 'NODE_ENV' })) as {
+            content: Array<{ text: string }>;
+          };
+          expect(configuredRes.content[0]?.text).toBe('isolated_test_env');
+
+          // 2. 未在配置声明的环境变量被强制屏蔽，返回 __UNDEFINED__
+          const unconfiguredRes = (await getEnvTool.execute({
+            key: 'UNCONFIGURED_PARENT_SECRET',
+          })) as {
+            content: Array<{ text: string }>;
+          };
+          expect(unconfiguredRes.content[0]?.text).toBe('__UNDEFINED__');
+        } finally {
+          await boot.shutdown();
+        }
+      } finally {
+        delete process.env['UNCONFIGURED_PARENT_SECRET'];
       }
     });
   });

@@ -41,7 +41,7 @@ export class SensitiveOutputProcessor implements Processor<'sensitive-output'> {
       if (msg.role === 'assistant') {
         const text = extractTextFromMastraContent(msg.content);
         if (text.length > 0) {
-          // 1. 致命违规检测 (blockedPatterns -> abort fail-closed)
+          // 致命违规检测：命中不可脱敏模式时立即中断当前 Run，阻止敏感内容流向 Gateway
           for (const pattern of this.blockedPatterns) {
             pattern.lastIndex = 0;
             if (pattern.test(text)) {
@@ -51,7 +51,7 @@ export class SensitiveOutputProcessor implements Processor<'sensitive-output'> {
             }
           }
 
-          // 2. 普通敏感词脱敏替换
+          // 业务脱敏转换：对普通业务敏感词执行确定性掩码替换
           const filterRes = this.filter.filterOutbound(text);
           if (filterRes.filteredText !== text) {
             return {

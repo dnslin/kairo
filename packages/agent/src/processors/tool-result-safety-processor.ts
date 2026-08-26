@@ -41,14 +41,14 @@ export class ToolResultSafetyProcessor implements Processor<'tool-result-safety'
     }
 
     if (serializedResult.length > 0) {
-      // 1. 检查是否存在提示词注入与越狱
+      // 注入防御：检查工具返回值是否包含外部提示词注入与越狱指令
       const inboundCheck = this.filter.checkInbound(serializedResult);
       if (!inboundCheck.safe) {
         const reason = `Tool result 包含安全违规或提示词注入: ${inboundCheck.reason ?? '恶意指令拦截'}`;
         args.abort(reason, { retry: false });
       }
 
-      // 2. 检查是否存在未授权敏感外发
+      // 机密防御：检查工具返回值是否包含未授权的敏感数据外发
       const outboundCheck = this.filter.checkOutbound(serializedResult);
       if (!outboundCheck.safe) {
         const reason = `Tool result 包含敏感数据违规: ${outboundCheck.reason ?? '敏感词拦截'}`;

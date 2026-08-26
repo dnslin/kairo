@@ -77,6 +77,9 @@ export interface KKBotAgentRunResult {
  * 4. retry、fallback、Tool Calling Loop、AbortSignal 和 maxSteps 均由 Mastra 原生持有并执行。
  * 5. Token Usage 直接从 Mastra 权威结果读取，不使用旧 Runtime 估算。
  */
+export const DEFAULT_KKBOT_INSTRUCTIONS =
+  '你是企业智能助手 KKBot。请遵循安全与企业规范。当用户要求执行删除数据、修改权限、资金转账、全员群发或修改敏感数据等高风险操作时，由于系统未开放此类写操作工具，你只能提供建议、拟写内容或人工操作清单，并明确说明：KKBot 没有执行外部操作。';
+
 export class KKBotAgent {
   readonly mastraAgent: Agent;
   readonly modelFactory: MastraModelFactory;
@@ -91,7 +94,7 @@ export class KKBotAgent {
     this.mastraAgent = new Agent({
       id: options.id ?? 'kkbot-mastra-agent',
       name: options.name ?? 'KKBot Agent',
-      instructions: options.instructions ?? '你是企业智能助手 KKBot。',
+      instructions: options.instructions ?? DEFAULT_KKBOT_INSTRUCTIONS,
       model: options.modelFactory.createDynamicModelResolver(),
       memory: options.memory,
       tools: options.tools,

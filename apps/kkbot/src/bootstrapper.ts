@@ -10,7 +10,7 @@ import {
   createMastraGenerateFileDeliverableTool,
 } from '@kkbot/agent';
 import { createClient, type Client, runKKBotMigrations, KKBotStore } from '@kkbot/store';
-import { loadConfigFromYaml, type AppConfig } from './config.js';
+import { loadConfigFromYaml, type AppConfig, DEFAULT_ALLOWED_MCP_HOSTS } from './config.js';
 import { resolveDatabaseLocation, type DatabaseLocation } from './path-resolver.js';
 import { InstanceLock } from './instance-lock.js';
 import { WorkAdmissionGate } from './gate.js';
@@ -23,7 +23,6 @@ export interface BootstrapperHooks {
   beforeFinalizer?: (resourceId: string) => Promise<void> | void;
   afterFinalizer?: (resourceId: string) => Promise<void> | void;
 }
-
 export interface BootstrapperOptions {
   /** YAML 配置文件路径 */
   configPath: string;
@@ -212,17 +211,35 @@ export class UnifiedBootstrapper {
           const mcpServers: Record<string, MastraMCPServerDefinition> = {};
           for (const [name, serverConfig] of Object.entries(cfg.mcp.servers)) {
             if (serverConfig.url) {
+              const parsedUrl = new URL(serverConfig.url);
+              const allowedHostsList = serverConfig.allowedHosts
+                ? Array.from(
+                    new Set([
+                      ...serverConfig.allowedHosts,
+                      parsedUrl.host,
+                      parsedUrl.hostname,
+                    ])
+                  )
+                : Array.from(
+                    new Set([
+                      parsedUrl.host,
+                      parsedUrl.hostname,
+                      ...DEFAULT_ALLOWED_MCP_HOSTS,
+                    ])
+                  );
               mcpServers[name] = {
-                url: new URL(serverConfig.url),
+                url: parsedUrl,
                 timeout: serverConfig.timeout,
+                allowedHosts: allowedHostsList,
               };
             } else if (serverConfig.command) {
               mcpServers[name] = {
                 command: serverConfig.command,
                 args: serverConfig.args ?? [],
-                env: serverConfig.env,
+                env: serverConfig.env ?? {},
                 cwd: serverConfig.cwd,
                 timeout: serverConfig.timeout,
+                inheritDefaultEnv: false,
               };
             }
           }
@@ -360,23 +377,14 @@ export class UnifiedBootstrapper {
               }
             }
           } catch (mcpErr) {
-            if (
-              mcpErr instanceof Error &&
-              (mcpErr.message.includes('必需的 MCP Server') ||
-                mcpErr.message.includes('命名冲突') ||
-                mcpErr.message.includes('配置非法') ||
-                mcpErr.message.includes('缺少权威 serverName 归属'))
-            ) {
-              throw mcpErr;
-            }
-            const requiredServers = Object.entries(cfg.mcp.servers).filter(
-              ([, s]) => s.required !== false
+            const hasRequiredServers = Object.values(cfg.mcp.servers).some(
+              s => s.required !== false
             );
-            if (requiredServers.length > 0) {
-              const err = mcpErr instanceof Error ? mcpErr : new Error(String(mcpErr));
-              throw new Error(`必需的 MCP Server Tool discovery 失败，阻止开门: ${err.message}`, {
-                cause: err,
-              });
+            if (hasRequiredServers) {
+              if (mcpErr instanceof Error) {
+                throw mcpErr;
+              }
+              throw new Error(`必需的 MCP Server Tool discovery 失败，阻止开门: ${String(mcpErr)}`);
             }
             const errMsg = mcpErr instanceof Error ? mcpErr.message : String(mcpErr);
             for (const serverName of Object.keys(cfg.mcp.servers)) {

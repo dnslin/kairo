@@ -57,6 +57,23 @@ export const mcpToolPolicySchema = z
 
 export type McpToolPolicyConfig = z.infer<typeof mcpToolPolicySchema>;
 
+export const DEFAULT_ALLOWED_MCP_HOSTS = ['localhost', '127.0.0.1', '::1'];
+export const DEFAULT_ALLOWED_MCP_ENV_VARS = [
+  'NODE_ENV',
+  'PATH',
+  'TMP',
+  'TEMP',
+  'HOME',
+  'USERPROFILE',
+  'LANG',
+  'LC_ALL',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'APPDATA',
+  'LOCALAPPDATA',
+];
+
 const mcpServerItemSchema = z
   .object({
     required: z.boolean().default(true),
@@ -67,6 +84,8 @@ const mcpServerItemSchema = z
     cwd: z.string().optional(),
     timeout: z.number().int('必须为正整数').min(1, '超时时间必须大于 0').optional(),
     tools: z.array(mcpToolPolicySchema).default([]),
+    allowedHosts: z.array(z.string().min(1, '主机名不能为空')).optional(),
+    allowedEnvVars: z.array(z.string().min(1, '环境变量名不能为空')).optional(),
   })
   .strict()
   .superRefine((val, ctx) => {
@@ -101,6 +120,18 @@ const mcpServerItemSchema = z
             path: ['url'],
           });
         }
+
+        const allowedHosts = val.allowedHosts ?? DEFAULT_ALLOWED_MCP_HOSTS;
+        const isHostnameAllowed = allowedHosts.some(
+          allowed => allowed === parsed.hostname || allowed === parsed.host
+        );
+        if (!isHostnameAllowed) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `MCP 服务主机 '${parsed.hostname}' 不在允许的主机白名单中: [${allowedHosts.join(', ')}]`,
+            path: ['url'],
+          });
+        }
       } catch {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -109,12 +140,44 @@ const mcpServerItemSchema = z
         });
       }
 
-      if (val.args !== undefined || val.env !== undefined || val.cwd !== undefined) {
+      if (
+        val.args !== undefined ||
+        val.env !== undefined ||
+        val.cwd !== undefined ||
+        val.allowedEnvVars !== undefined
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'HTTP/SSE 类型的 MCP 服务不支持配置 stdio 专用的 args/env/cwd 字段',
+          message:
+            'HTTP/SSE 类型的 MCP 服务不支持配置 stdio 专用的 args/env/cwd/allowedEnvVars 字段',
           path: ['transport'],
         });
+      }
+    }
+
+    if (hasCommand) {
+      if (val.allowedHosts !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'stdio 类型的 MCP 服务不支持配置 allowedHosts 字段',
+          path: ['transport'],
+        });
+      }
+
+      if (val.env !== undefined) {
+        const allowedEnvSet = new Set([
+          ...DEFAULT_ALLOWED_MCP_ENV_VARS,
+          ...(val.allowedEnvVars ?? []),
+        ]);
+        for (const envKey of Object.keys(val.env)) {
+          if (!allowedEnvSet.has(envKey)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `MCP 环境变量 '${envKey}' 不在允许的环境变量白名单中`,
+              path: ['env', envKey],
+            });
+          }
+        }
       }
     }
   });

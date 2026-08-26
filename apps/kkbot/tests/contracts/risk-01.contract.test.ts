@@ -226,7 +226,7 @@ describe('RISK-01 Contract: 高风险意图无副作用与低风险 Tool 合同'
         inputSchema: z.object({
           fileName: z.string(),
           content: z.string(),
-          idempotencyKey: z.string().optional(),
+          idempotencyKey: z.string().min(1, 'idempotencyKey 不能为空'),
         }),
         outputSchema: z.object({
           fileUrl: z.string(),

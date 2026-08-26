@@ -23,8 +23,8 @@ export function createSseMcpServerFixture(
     version: '1.0.0',
   });
 
-  for (const t of options.tools ?? []) {
-    mcpServer.tool(t.name, t.description ?? 'Test tool', {}, () => {
+  for (const toolDefinition of options.tools ?? []) {
+    mcpServer.tool(toolDefinition.name, toolDefinition.description ?? 'Test tool', {}, () => {
       return Promise.resolve({
         content: [{ type: 'text', text: 'delayed tool result' }],
       });

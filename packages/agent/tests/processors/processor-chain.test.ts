@@ -241,8 +241,70 @@ describe('KKBot Processors Suite (TDD Red -> Green)', () => {
 
       expect(result).toBeDefined();
     });
-  });
+    it('父 AbortSignal 已中止时必须 fail-closed 抛出异常，严禁返回未验证消息', async () => {
+      const processor = new KnowledgeGroundingProcessor({ requireGrounding: true });
+      const abortController = new AbortController();
+      abortController.abort();
 
+      const asstMessage = createMastraTextMessage({
+        id: 'msg_asst',
+        threadId: 'thread_1',
+        role: 'assistant',
+        content: '未经验证的内容',
+      });
+
+      await expect(
+        processor.processOutputResult({
+          messages: [asstMessage as unknown as MastraDBMessage],
+          messageList: {} as unknown as MessageList,
+          result: {
+            text: '未经验证的内容',
+            usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+            finishReason: 'stop',
+            steps: [],
+          },
+          retryCount: 0,
+          state: {},
+          abortSignal: abortController.signal,
+          abort: vi.fn() as unknown as (reason?: string, options?: unknown) => never,
+        })
+      ).rejects.toThrow(/KnowledgeGroundingProcessor.*中止/);
+    });
+
+    it('运行中收到父 AbortSignal 时必须 fail-closed 抛出异常', async () => {
+      const abortController = new AbortController();
+      const processor = new KnowledgeGroundingProcessor({
+        groundingHook: () => {
+          abortController.abort();
+          return true;
+        },
+      });
+
+      const asstMessage = createMastraTextMessage({
+        id: 'msg_asst',
+        threadId: 'thread_1',
+        role: 'assistant',
+        content: '未经验证的内容',
+      });
+
+      await expect(
+        processor.processOutputResult({
+          messages: [asstMessage as unknown as MastraDBMessage],
+          messageList: {} as unknown as MessageList,
+          result: {
+            text: '未经验证的内容',
+            usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+            finishReason: 'stop',
+            steps: [],
+          },
+          retryCount: 0,
+          state: {},
+          abortSignal: abortController.signal,
+          abort: vi.fn() as unknown as (reason?: string, options?: unknown) => never,
+        })
+      ).rejects.toThrow(/KnowledgeGroundingProcessor.*中止/);
+    });
+  });
   describe('OutputLengthProcessor', () => {
     it('截断长文本并保留 [来源: ...] 引用块', async () => {
       const processor = new OutputLengthProcessor({ maxLength: 50 });

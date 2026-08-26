@@ -44,10 +44,54 @@ rl.on('line', (line) => {
                 required: ['message'],
               },
             },
+            {
+              name: 'get_env',
+              description: 'Get environment variable from child process',
+              inputSchema: {
+                type: 'object',
+                properties: {
+                  key: { type: 'string' },
+                },
+                required: ['key'],
+              },
+            },
           ],
         },
       };
       process.stdout.write(`${JSON.stringify(response)}\n`);
+    } else if (msg.method === 'tools/call') {
+      const toolName = msg.params?.name;
+      if (toolName === 'get_env') {
+        const key = msg.params?.arguments?.key;
+        const value = key ? process.env[key] : JSON.stringify(process.env);
+        const response = {
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: value === undefined ? '__UNDEFINED__' : String(value),
+              },
+            ],
+          },
+        };
+        process.stdout.write(`${JSON.stringify(response)}\n`);
+      } else {
+        const response = {
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: `echo: ${msg.params?.arguments?.message ?? ''}`,
+              },
+            ],
+          },
+        };
+        process.stdout.write(`${JSON.stringify(response)}\n`);
+      }
     } else if (msg.id !== undefined) {
       const response = {
         jsonrpc: '2.0',

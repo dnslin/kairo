@@ -45,9 +45,8 @@ export class KnowledgeGroundingProcessor implements Processor<'knowledge-groundi
         : undefined);
 
     if (parentSignal?.aborted) {
-      return args.messages;
+      throw new Error('KnowledgeGroundingProcessor 校验前已被信号中止');
     }
-
     if (this.groundingHook) {
       const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
       const combinedSignal = parentSignal
@@ -56,7 +55,7 @@ export class KnowledgeGroundingProcessor implements Processor<'knowledge-groundi
 
       if (combinedSignal.aborted) {
         if (parentSignal?.aborted) {
-          return args.messages;
+          throw new Error('KnowledgeGroundingProcessor 被父 AbortSignal 中止');
         }
         throw new Error(`KnowledgeGroundingProcessor 校验超时 (超过 ${this.timeoutMs}ms)`);
       }
@@ -83,7 +82,9 @@ export class KnowledgeGroundingProcessor implements Processor<'knowledge-groundi
       );
 
       const hookResult = await Promise.race([hookPromise, abortPromise]);
-
+      if (parentSignal?.aborted) {
+        throw new Error('KnowledgeGroundingProcessor 运行中被父 AbortSignal 中止');
+      }
       if (typeof hookResult === 'boolean') {
         if (!hookResult) {
           return this.replaceAssistantContent(args.messages, DEFAULT_NO_GROUNDING_TEXT);
