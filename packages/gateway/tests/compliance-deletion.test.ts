@@ -341,4 +341,81 @@ describe('ComplianceDeletion 正式合规删除与防复活机制', () => {
     const raw = await store.messages.getMessageBySessionAndMessageId(sessionId, tombstonedMsgId);
     expect(raw).toBeNull();
   });
+
+  it('非法的 JSON scope 参数必须 Fail-Closed 抛出异常且记录 failed 审计，绝不默认擦除数据', async () => {
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+      complianceAuthorizer: () => ({ authorized: true }),
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_malformed_scope_01';
+    await store.messages.saveMessage({
+      sessionId,
+      messageId: 'msg_malformed_1',
+      sender: '员工',
+      content: '受保护的重要业务数据',
+    });
+
+    const invalidCmd: ComplianceDeletionCommand = {
+      commandId: 'cmd_malformed_scope_001',
+      targetType: 'message',
+      targetId: 'msg_malformed_1',
+      sessionId,
+      scope: '{ invalid json format :::',
+      reason: '错误格式命令',
+      operator: 'admin',
+    };
+
+    await expect(coordinator.executeComplianceDeletion(invalidCmd)).rejects.toThrow(
+      /合规删除 scope 参数不是合法的 JSON/
+    );
+
+    // 验证数据未被错误擦除
+    const rawMsg = await store.messages.getMessageBySessionAndMessageId(sessionId, 'msg_malformed_1');
+    expect(rawMsg?.content).toBe('受保护的重要业务数据');
+
+    // 验证审计记录为 failed
+    const auditRecord = await store.tombstones.getComplianceDeletion('cmd_malformed_scope_001');
+    expect(auditRecord?.status).toBe('failed');
+  });
+
+  it('Session 删除时若 Memory deleteThread 失败，必须抛出带 cause 的异常且审计记录为 failed', async () => {
+    const failingMemory = new Memory({
+      storage: libSqlStore,
+    });
+    (failingMemory as unknown as { deleteThread: () => Promise<void> }).deleteThread = vi
+      .fn()
+      .mockRejectedValue(new Error('Mastra Storage 驱动硬件故障'));
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      mastraMemory: failingMemory,
+      mastraStorage: libSqlStore,
+      complianceAuthorizer: () => ({ authorized: true }),
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_delete_thread_fail_01';
+    const failCmd: ComplianceDeletionCommand = {
+      commandId: 'cmd_thread_fail_001',
+      targetType: 'session',
+      targetId: sessionId,
+      reason: '销毁数据',
+      operator: 'compliance_officer',
+    };
+
+    await expect(coordinator.executeComplianceDeletion(failCmd)).rejects.toThrow(
+      /Mastra Thread 删除失败/
+    );
+
+    // 验证审计状态记录为 failed，严禁虚标 completed
+    const auditRecord = await store.tombstones.getComplianceDeletion('cmd_thread_fail_001');
+    expect(auditRecord?.status).toBe('failed');
+    expect(auditRecord?.error).toContain('Mastra Thread 删除失败');
+  });
 });

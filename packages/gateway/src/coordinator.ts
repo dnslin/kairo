@@ -566,6 +566,18 @@ export class SessionCoordinator extends EventEmitter {
 
     // 2. 处理人类操作员在客户端介入 (Human Takeover)
     if (isOperator) {
+      const takeoverUntil = (msg.timestamp || Date.now()) + this.config.takeoverDurationMs;
+
+      // 2.1 写入 Raw Store 并检查墓碑门禁（阻止重放已撤回/合规删除的 operator 消息复活或错误触发接管）
+      const saved = await this.persistInboundMessage(msg, takeoverUntil, true);
+      if (saved.isTombstoned) {
+        log.info(
+          { sessionId, messageId: msg.id, tombstoneType: saved.tombstoneType },
+          'Operator 消息命中持久墓碑，静默抑制并拒绝触发接管与 Memory 写入'
+        );
+        return;
+      }
+
       log.info(
         { sessionId, messageId: msg.id, sender: msg.sender, content: msg.content },
         '检测到人类操作员在客户端发送消息，触发人机协同退避'
@@ -574,8 +586,7 @@ export class SessionCoordinator extends EventEmitter {
       // 立即清空该会话的防抖队列，取消 Bot 待发出的自动回复
       this.clearPendingBucket(sessionId);
 
-      // 设置 10 分钟退避截止时间并在内存中同步生效
-      const takeoverUntil = Date.now() + this.config.takeoverDurationMs;
+      // 设置退避截止时间并在内存中同步生效
       this.takeoverUntilMap.set(sessionId, takeoverUntil);
       this.emit('takeover', sessionId, takeoverUntil, msg);
 
@@ -590,9 +601,6 @@ export class SessionCoordinator extends EventEmitter {
         if (!this.isRunning) return;
         log.warn({ err, sessionId }, '更新人类介入会话状态异常');
       }
-
-      // 写入 Raw Store (以 operator 来源)
-      await this.persistInboundMessage(msg, takeoverUntil, true);
 
       // 将 operator 真实消息以自身稳定 ID 写入 Mastra Thread (表达真实历史，不伪装成 Bot 回复)
       if (this.mastraMemory) {
@@ -895,7 +903,7 @@ export class SessionCoordinator extends EventEmitter {
       }
     }
 
-    // 2. 异步持久化撤回墓碑（阻止重放复活）
+    // 2. 持久化撤回墓碑（Fail-Closed 保证阻止重放复活）
     try {
       await this.store.tombstones.recordTombstone({
         sessionId,
@@ -905,7 +913,11 @@ export class SessionCoordinator extends EventEmitter {
         reason: 'MessageRecall',
       });
     } catch (tombErr) {
-      log.warn({ tombErr, sessionId, messageId }, '记录撤回墓碑告警');
+      const errorMsg = tombErr instanceof Error ? tombErr.message : String(tombErr);
+      log.error({ err: tombErr, sessionId, messageId }, '记录撤回墓碑失败，终止撤回流程');
+      throw new Error(`记录撤回墓碑失败 (sessionId=${sessionId}, messageId=${messageId}): ${errorMsg}`, {
+        cause: tombErr,
+      });
     }
 
     // 3. 异步在 Store 中标记已撤回
@@ -1491,7 +1503,7 @@ export class SessionCoordinator extends EventEmitter {
     }
 
     // 2. 【User Memory 前置提交】：在 Agent 运行前，通过 Mastra Memory 显式提交本轮各条原始 user message
-    const precommitSuccess = await this.precommitUserMessages(sessionId, resourceId, consolidated.messages);
+    const precommitSuccess = await this.precommitUserMessages(sessionId, resourceId, consolidated.messages, signal);
     if (!precommitSuccess || signal.aborted) {
       if (signal.aborted) {
         this.emit('agent_aborted', sessionId);
@@ -1702,25 +1714,49 @@ export class SessionCoordinator extends EventEmitter {
   /**
    * 前置显式提交 user messages 至 Mastra Memory
    */
-  private async precommitUserMessages(sessionId: string, resourceId: string, messages: KK9Message[]): Promise<boolean> {
+  private async precommitUserMessages(
+    sessionId: string,
+    resourceId: string,
+    messages: KK9Message[],
+    signal?: AbortSignal
+  ): Promise<boolean> {
     if (!this.mastraMemory) {
       return true;
     }
     try {
-      // 过滤已被墓碑化的消息（阻止复活进入 Memory）
+      if (signal?.aborted) {
+        return false;
+      }
+      // 1. 过滤已被墓碑化的消息（阻止复活进入 Memory）
       const tombstoneSet = await this.store.tombstones.getTombstoneSet(sessionId);
       const validMessages = messages.filter(m => {
         const nativeMsgId = m.messageId || m.id;
         return !tombstoneSet.has(nativeMsgId);
       });
 
-      if (validMessages.length === 0) {
-        log.info({ sessionId }, '本批次所有 user messages 均已被墓碑化，终止 Agent 流程');
+      if (validMessages.length === 0 || signal?.aborted) {
+        log.info({ sessionId }, '本批次所有 user messages 均已被墓碑化或流程已中止，终止 Agent 流程');
         return false;
       }
 
       await ensureMastraThread(this.mastraMemory, sessionId, resourceId);
-      const userMessages = validMessages.map(m => {
+      if (signal?.aborted) {
+        return false;
+      }
+
+      // 2. 二次门禁：写入前复核墓碑，避免在 ensureMastraThread 间隙被并发撤回/删除
+      const freshTombstones = await this.store.tombstones.getTombstoneSet(sessionId);
+      const strictlyValidMessages = validMessages.filter(m => {
+        const nativeMsgId = m.messageId || m.id;
+        return !freshTombstones.has(nativeMsgId);
+      });
+
+      if (strictlyValidMessages.length === 0 || signal?.aborted) {
+        log.info({ sessionId }, '写入 Memory 前检测到消息已被墓碑化或流程已中止');
+        return false;
+      }
+
+      const userMessages = strictlyValidMessages.map(m => {
         const nativeMsgId = m.messageId || m.id;
         const stableId = deriveUserMessageId(sessionId, nativeMsgId);
         return createMastraTextMessage({
@@ -1897,30 +1933,47 @@ export class SessionCoordinator extends EventEmitter {
       this.emitError(error);
       return;
     }
+    // 1. 检查 Delivery 是否在发送期间被合规删除或中止 (阻止复活)
+    const currentDelivery = await this.store.deliveries.getDeliveryById(deliveryId);
+    if (!currentDelivery || currentDelivery.content === '[COMPLIANCE_DELETED]' || currentDelivery.status === 'aborted') {
+      log.info({ sessionId, deliveryId }, 'Delivery 已被合规删除或中止，拒绝回写明文至 Raw Store 与 Mastra Memory');
+      return;
+    }
+    const finalContent = currentDelivery.content || replyText;
 
-    // 同步到 KK Raw Store 记录
+    // 2. 同步到 KK Raw Store 记录
     await this.store.sessions.upsertSession({ id: sessionId });
     await this.store.sessions.touchReplyTime(sessionId, now);
-    await this.store.messages.saveMessage({
+    const savedBotMsg = await this.store.messages.saveMessage({
       sessionId,
       messageId: sendMsgId,
       origin: 'bot_echo',
       sender: '自己',
-      content: replyText,
+      content: finalContent,
       messageType: 'text',
       isFromSelf: true,
       isRecalled: false,
       createdAt: now,
     });
+    if (savedBotMsg.isTombstoned || finalContent === '[COMPLIANCE_DELETED]') {
+      log.info({ sessionId, deliveryId }, 'Bot 回显消息已命中墓碑或内容已被合规擦除，跳过 Mastra Memory 写入');
+      return;
+    }
+
     await this.hooks?.afterSentPersistBeforeMemorySave?.(deliveryId);
     if (this.mastraMemory) {
       try {
+        const freshTombstones = await this.store.tombstones.getTombstoneSet(sessionId);
+        if (sendMsgId && freshTombstones.has(sendMsgId)) {
+          log.info({ sessionId, deliveryId, sendMsgId }, '回复消息已被墓碑化，放弃写入 Mastra assistant Memory');
+          return;
+        }
         await this.mastraMemory.saveMessages({
           messages: [
             createMastraTextMessage({
               id: mastraMessageId,
               role: 'assistant',
-              content: replyText,
+              content: finalContent,
               threadId: sessionId,
               resourceId,
               createdAt: new Date(now),
@@ -2077,6 +2130,176 @@ export class SessionCoordinator extends EventEmitter {
    * 7. 写入持久合规删除墓碑 (type: compliance_deletion)
    * 8. 记录 compliance_deletions 审计表
    */
+  /**
+   * 执行针对单条消息的合规删除
+   */
+  private async executeMessageComplianceDeletion(
+    sessionId: string,
+    messageId: string,
+    operator: string,
+    reason: string,
+    scopeObj: ComplianceDeletionScope
+  ): Promise<{ erasedMessagesCount: number; erasedDeliveriesCount: number }> {
+    let erasedMessagesCount = 0;
+    let erasedDeliveriesCount = 0;
+
+    // 1. 0ms 中断正在使用该会话的在途 Run 并等待完成
+    const inFlight = this.inFlightSessions.get(sessionId);
+    if (inFlight) {
+      inFlight.abortController.abort();
+      this.inFlightSessions.delete(sessionId);
+      this.emit('in_flight_aborted', sessionId, Date.now() - inFlight.startedAt, 'compliance_deletion');
+      if (inFlight.promise) {
+        try {
+          await inFlight.promise;
+        } catch {
+          // 忽略中断产生的异常
+        }
+      }
+    }
+
+    // 2. 清理防抖桶中的该消息
+    const bucket = this.buckets.get(sessionId);
+    if (bucket) {
+      bucket.messages = bucket.messages.filter(m => (m.messageId || m.id) !== messageId);
+      if (bucket.items) {
+        bucket.items = bucket.items.filter(item => (item.message.messageId || item.message.id) !== messageId);
+      }
+      if (bucket.messages.length === 0) {
+        this.clearPendingBucket(sessionId);
+      }
+    }
+
+    // 3. 建立持久合规删除墓碑
+    await this.store.tombstones.recordTombstone({
+      sessionId,
+      messageId,
+      type: 'compliance_deletion',
+      operator,
+      reason,
+    });
+
+    // 4. 按 scope 擦除 Raw Store 正文与载荷
+    if (scopeObj.rawStore !== false) {
+      erasedMessagesCount = await this.store.messages.eraseMessageContent(sessionId, messageId);
+    }
+
+    // 5. 按 scope 擦除由该输入消息产生的 Delivery (精准追踪与合规删除，非级联)
+    if (scopeObj.deliveries !== false) {
+      erasedDeliveriesCount = await this.store.deliveries.eraseDeliveriesByMessageId(sessionId, messageId);
+    }
+
+    // 6. 按 scope 移出 Mastra Thread Memory 并重置 OM Scope
+    if (scopeObj.explicitMemory !== false && this.mastraMemory) {
+      const userMsgId = deriveUserMessageId(sessionId, messageId);
+      await removeMastraMessage(this.mastraMemory, userMsgId);
+
+      if (this.mastraStorage) {
+        const resourceId =
+          (await this.resolveSessionResourceId(sessionId, { senderId: undefined } as ConsolidatedMessage)) ||
+          sessionId;
+        await resetObservationalMemoryScope({
+          memory: this.mastraMemory,
+          threadId: sessionId,
+          resourceId,
+          storage: this.mastraStorage,
+        });
+      }
+    }
+
+    return { erasedMessagesCount, erasedDeliveriesCount };
+  }
+
+  /**
+   * 执行针对整个会话的合规删除
+   */
+  private async executeSessionComplianceDeletion(
+    sessionId: string,
+    operator: string,
+    reason: string,
+    scopeObj: ComplianceDeletionScope
+  ): Promise<{ erasedMessagesCount: number; erasedDeliveriesCount: number }> {
+    let erasedMessagesCount = 0;
+    let erasedDeliveriesCount = 0;
+
+    // 1. 0ms 中断在途 Run 并等待完成
+    const inFlight = this.inFlightSessions.get(sessionId);
+    if (inFlight) {
+      inFlight.abortController.abort();
+      this.inFlightSessions.delete(sessionId);
+      this.emit('in_flight_aborted', sessionId, Date.now() - inFlight.startedAt, 'compliance_deletion');
+      if (inFlight.promise) {
+        try {
+          await inFlight.promise;
+        } catch {
+          // 忽略中断产生的异常
+        }
+      }
+    }
+
+    // 2. 清空防抖桶
+    this.clearPendingBucket(sessionId);
+
+    // 3. 获取会话内所有 messageId 并建立合规删除墓碑
+    const allMsgs = await this.store.messages.getSessionHistory(sessionId, { limit: 10000 });
+    for (const m of allMsgs) {
+      if (m.messageId) {
+        await this.store.tombstones.recordTombstone({
+          sessionId,
+          messageId: m.messageId,
+          type: 'compliance_deletion',
+          operator,
+          reason,
+        });
+      }
+    }
+
+    // 4. 按 scope 擦除 Raw Store 与 Deliveries 正文
+    if (scopeObj.rawStore !== false) {
+      erasedMessagesCount = await this.store.messages.eraseSessionMessagesContent(sessionId);
+    }
+    if (scopeObj.deliveries !== false) {
+      erasedDeliveriesCount = await this.store.deliveries.eraseDeliveriesBySession(sessionId);
+    }
+
+    // 5. 按 scope 清理 Mastra Memory Thread 与 OM Scope (Fail-Closed: 失败必须向外传播)
+    if (scopeObj.explicitMemory !== false && this.mastraMemory) {
+      try {
+        await (this.mastraMemory as unknown as { deleteThread: (threadId: string) => Promise<void> }).deleteThread(sessionId);
+      } catch (delThreadErr) {
+        const errorMsg = delThreadErr instanceof Error ? delThreadErr.message : String(delThreadErr);
+        throw new Error(`Mastra Thread 删除失败 (sessionId=${sessionId}): ${errorMsg}`, {
+          cause: delThreadErr,
+        });
+      }
+
+      if (this.mastraStorage) {
+        const resourceId =
+          (await this.resolveSessionResourceId(sessionId, { senderId: undefined } as ConsolidatedMessage)) ||
+          sessionId;
+        await resetObservationalMemoryScope({
+          memory: this.mastraMemory,
+          threadId: sessionId,
+          resourceId,
+          storage: this.mastraStorage,
+        });
+      }
+    }
+
+    return { erasedMessagesCount, erasedDeliveriesCount };
+  }
+
+  /**
+   * 执行正式合规删除命令 (ComplianceDeletion)
+   * 1. 幂等性检查：若该 commandId 已执行过，直接返回既有审计记录
+   * 2. 0ms 终止范围内仍在使用内容的在途 Run 并等待完成
+   * 3. 擦除 Raw Store 内的消息正文与载荷文件
+   * 4. 擦除显式 Mastra Thread Memory 正文 (removeMastraMessage / deleteThread)
+   * 5. 擦除 Delivery 正文与哈希 (保持真实交付状态如 sent/unknown/aborted 与审计身份)
+   * 6. 重置受影响的 Observational Memory Scope (clearObservationalMemory，Fail-Closed)
+   * 7. 写入持久合规删除墓碑 (type: compliance_deletion)
+   * 8. 记录 compliance_deletions 审计表
+   */
   public async executeComplianceDeletion(
     command: ComplianceDeletionCommand
   ): Promise<ComplianceDeletionRecord> {
@@ -2101,187 +2324,90 @@ export class SessionCoordinator extends EventEmitter {
       );
       throw new Error(`合规删除命令授权拒绝: ${denyReason}`);
     }
-
-    // 2. 规范化结构化 scope
-    let scopeObj: ComplianceDeletionScope = {};
-    if (typeof command.scope === 'object' && command.scope !== null) {
-      scopeObj = command.scope;
-    } else if (typeof command.scope === 'string') {
-      try {
-        scopeObj = JSON.parse(command.scope) as ComplianceDeletionScope;
-      } catch {
-        scopeObj = {};
-      }
-    }
-    const scopeStr = typeof command.scope === 'string' ? command.scope : JSON.stringify(scopeObj);
-
-    // 3. 幂等性检查：已完成的命令直接返回既有审计记录
+    // 2. 幂等性检查：已完成的命令直接返回既有审计记录
     const existing = await this.store.tombstones.getComplianceDeletion(command.commandId);
     if (existing && existing.status === 'completed') {
       log.info({ commandId: command.commandId }, '合规删除命令已完成，幂等返回既有记录');
       return existing;
     }
 
-    log.info(
-      {
+    const scopeStr = typeof command.scope === 'string' ? command.scope : JSON.stringify(command.scope ?? {});
+
+    try {
+      // 3. 规范化结构化 scope (严格校验，Fail-Closed 禁止非法 JSON 默认开启全部删除)
+      let scopeObj: ComplianceDeletionScope = {};
+      if (typeof command.scope === 'object' && command.scope !== null) {
+        scopeObj = command.scope;
+      } else if (typeof command.scope === 'string') {
+        const trimmed = command.scope.trim();
+        if (trimmed.length > 0) {
+          try {
+            const parsed: unknown = JSON.parse(trimmed);
+            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+              throw new Error('合规删除 scope JSON 必须为结构化对象');
+            }
+            scopeObj = parsed as ComplianceDeletionScope;
+          } catch (parseErr) {
+            const errMsg = parseErr instanceof Error ? parseErr.message : String(parseErr);
+            throw new Error(`合规删除 scope 参数不是合法的 JSON 对象字符串: ${errMsg}`, {
+              cause: parseErr,
+            });
+          }
+        }
+      } else if (command.scope !== undefined && command.scope !== null) {
+        throw new Error('合规删除 scope 参数类型无效，必须为对象或有效 JSON 字符串');
+      }
+
+      log.info(
+        {
+          commandId: command.commandId,
+          targetType: command.targetType,
+          targetId: command.targetId,
+          operator: command.operator,
+        },
+        '开始执行正式合规删除命令'
+      );
+      await this.store.tombstones.recordComplianceDeletion({
         commandId: command.commandId,
         targetType: command.targetType,
         targetId: command.targetId,
+        sessionId: command.sessionId ?? null,
+        scope: scopeStr,
+        reason: command.reason,
         operator: command.operator,
-      },
-      '开始执行正式合规删除命令'
-    );
-    await this.store.tombstones.recordComplianceDeletion({
-      commandId: command.commandId,
-      targetType: command.targetType,
-      targetId: command.targetId,
-      sessionId: command.sessionId ?? null,
-      scope: scopeStr,
-      reason: command.reason,
-      operator: command.operator,
-      status: 'pending',
-    });
+        status: 'pending',
+      });
 
     let erasedMessagesCount = 0;
     let erasedDeliveriesCount = 0;
 
-    try {
       if (command.targetType === 'message') {
         const sessionId = command.sessionId;
         const messageId = command.targetId;
         if (!sessionId) {
           throw new Error('删除 targetType=message 必须提供 sessionId');
         }
-
-        // 1. 0ms 中断正在使用该会话的在途 Run
-        const inFlight = this.inFlightSessions.get(sessionId);
-        if (inFlight) {
-          inFlight.abortController.abort();
-          this.inFlightSessions.delete(sessionId);
-          this.emit('in_flight_aborted', sessionId, Date.now() - inFlight.startedAt, 'compliance_deletion');
-        }
-
-        // 2. 清理防抖桶中的该消息
-        const bucket = this.buckets.get(sessionId);
-        if (bucket) {
-          bucket.messages = bucket.messages.filter(m => (m.messageId || m.id) !== messageId);
-          if (bucket.items) {
-            bucket.items = bucket.items.filter(item => (item.message.messageId || item.message.id) !== messageId);
-          }
-          if (bucket.messages.length === 0) {
-            this.clearPendingBucket(sessionId);
-          }
-        }
-
-        // 3. 建立持久合规删除墓碑
-        await this.store.tombstones.recordTombstone({
+        const counts = await this.executeMessageComplianceDeletion(
           sessionId,
           messageId,
-          type: 'compliance_deletion',
-          operator: command.operator,
-          reason: command.reason,
-        });
-
-        // 4. 按 scope 擦除 Raw Store 正文与载荷
-        if (scopeObj.rawStore !== false) {
-          erasedMessagesCount = await this.store.messages.eraseMessageContent(sessionId, messageId);
-        }
-
-        // 5. 按 scope 擦除由该输入消息产生的 Delivery (精准追踪与合规删除，非级联)
-        if (scopeObj.deliveries !== false) {
-          erasedDeliveriesCount = await this.store.deliveries.eraseDeliveriesByMessageId(sessionId, messageId);
-        }
-
-        // 6. 按 scope 移出 Mastra Thread Memory 并重置 OM Scope
-        if (scopeObj.explicitMemory !== false && this.mastraMemory) {
-          const userMsgId = deriveUserMessageId(sessionId, messageId);
-          await removeMastraMessage(this.mastraMemory, userMsgId);
-
-          if (this.mastraStorage) {
-            const resourceId =
-              (await this.resolveSessionResourceId(sessionId, { senderId: undefined } as ConsolidatedMessage)) ||
-              sessionId;
-            await resetObservationalMemoryScope({
-              memory: this.mastraMemory,
-              threadId: sessionId,
-              resourceId,
-              storage: this.mastraStorage,
-            });
-          }
-        }
+          command.operator,
+          command.reason,
+          scopeObj
+        );
+        erasedMessagesCount = counts.erasedMessagesCount;
+        erasedDeliveriesCount = counts.erasedDeliveriesCount;
       } else if (command.targetType === 'session') {
         const sessionId = command.targetId;
-
-        // 1. 0ms 中断在途 Run
-        const inFlight = this.inFlightSessions.get(sessionId);
-        if (inFlight) {
-          inFlight.abortController.abort();
-          this.inFlightSessions.delete(sessionId);
-          this.emit('in_flight_aborted', sessionId, Date.now() - inFlight.startedAt, 'compliance_deletion');
-        }
-
-        // 2. 清空防抖桶
-        this.clearPendingBucket(sessionId);
-
-        // 3. 获取会话内所有 messageId 并建立合规删除墓碑
-        const allMsgs = await this.store.messages.getSessionHistory(sessionId, { limit: 10000 });
-        for (const m of allMsgs) {
-          if (m.messageId) {
-            await this.store.tombstones.recordTombstone({
-              sessionId,
-              messageId: m.messageId,
-              type: 'compliance_deletion',
-              operator: command.operator,
-              reason: command.reason,
-            });
-          }
-        }
-
-        // 4. 按 scope 擦除 Raw Store 与 Deliveries 正文
-        if (scopeObj.rawStore !== false) {
-          erasedMessagesCount = await this.store.messages.eraseSessionMessagesContent(sessionId);
-        }
-        if (scopeObj.deliveries !== false) {
-          erasedDeliveriesCount = await this.store.deliveries.eraseDeliveriesBySession(sessionId);
-        }
-
-        // 5. 按 scope 清理 Mastra Memory Thread 与 OM Scope
-        if (scopeObj.explicitMemory !== false && this.mastraMemory) {
-          try {
-            await (this.mastraMemory as unknown as { deleteThread: (id: string | { threadId: string }) => Promise<void> }).deleteThread(sessionId);
-          } catch {
-            try {
-              await (this.mastraMemory as unknown as { deleteThread: (id: string | { threadId: string }) => Promise<void> }).deleteThread({ threadId: sessionId });
-            } catch {
-              // ignore
-            }
-          }
-
-          if (this.mastraStorage) {
-            const resourceId =
-              (await this.resolveSessionResourceId(sessionId, { senderId: undefined } as ConsolidatedMessage)) ||
-              sessionId;
-            await resetObservationalMemoryScope({
-              memory: this.mastraMemory,
-              threadId: sessionId,
-              resourceId,
-              storage: this.mastraStorage,
-            });
-          }
-        }
-      } else if (command.targetType === 'employee') {
-        const employeeId = command.targetId;
-        if (scopeObj.rawStore !== false) {
-          erasedMessagesCount = await this.store.messages.eraseEmployeeMessagesContent(employeeId);
-        }
-        if (scopeObj.explicitMemory !== false && this.mastraStorage && this.mastraMemory) {
-          await resetObservationalMemoryScope({
-            memory: this.mastraMemory,
-            threadId: '',
-            resourceId: employeeId,
-            storage: this.mastraStorage,
-          });
-        }
+        const counts = await this.executeSessionComplianceDeletion(
+          sessionId,
+          command.operator,
+          command.reason,
+          scopeObj
+        );
+        erasedMessagesCount = counts.erasedMessagesCount;
+        erasedDeliveriesCount = counts.erasedDeliveriesCount;
+      } else {
+        throw new Error(`不支持的合规删除目标类型: ${String(command.targetType)}`);
       }
 
       // 6. 更新审计记录为 completed

@@ -234,13 +234,12 @@ export async function removeMastraMessage(
   messageId: string
 ): Promise<void> {
   try {
-    await (memory as unknown as { deleteMessages: (ids: string[] | { messageIds: string[] }) => Promise<void> }).deleteMessages([messageId]);
+    await (memory as unknown as { deleteMessages: (ids: string[] | { id: string }[]) => Promise<void> }).deleteMessages([messageId]);
   } catch (err) {
-    try {
-      await (memory as unknown as { deleteMessages: (ids: string[] | { messageIds: string[] }) => Promise<void> }).deleteMessages({ messageIds: [messageId] });
-    } catch {
-      throw err instanceof Error ? err : new Error(String(err));
-    }
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    throw new Error(`Mastra Thread 消息删除失败 (messageId=${messageId}): ${errorMsg}`, {
+      cause: err,
+    });
   }
 
   // 等待内存后台任务排空
@@ -285,8 +284,11 @@ export async function resetObservationalMemoryScope(options: {
       await memDomain.clearObservationalMemory(null, resourceId);
     }
   } catch (omErr) {
-    // Fail-Closed: OM scope 清理失败直接抛出异常
-    throw new Error(`Observational Memory scope 清理失败: ${omErr instanceof Error ? omErr.message : String(omErr)}`);
+    // Fail-Closed: OM scope 清理失败直接抛出异常，保留底层原始诊断链
+    throw new Error(
+      `Observational Memory scope 清理失败: ${omErr instanceof Error ? omErr.message : String(omErr)}`,
+      { cause: omErr }
+    );
   }
 
   // 等待内存后台任务排空

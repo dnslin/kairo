@@ -343,4 +343,29 @@ describe('MessageRecall 消息撤回与活动上下文移除', () => {
     storeBlockedResolve!();
     await recallPromise;
   });
+
+  it('若持久化撤回墓碑失败，handleRecalled 必须 Fail-Closed 抛出异常', async () => {
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_recall_tomb_fail';
+    const msgId = 'msg_tomb_fail_01';
+
+    vi.spyOn(store.tombstones, 'recordTombstone').mockRejectedValueOnce(
+      new Error('SQLite 磁盘已满')
+    );
+
+    await expect(
+      coordinator.handleRecalled({
+        sessionId,
+        messageId: msgId,
+        sender: '员工',
+      })
+    ).rejects.toThrow(/记录撤回墓碑失败/);
+  });
 });

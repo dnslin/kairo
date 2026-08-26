@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Memory } from '@mastra/memory';
 import { LibSQLStore } from '@mastra/libsql';
 import {
@@ -377,5 +377,43 @@ describe('Mastra Memory & LibSQLStore API Verification', () => {
     // @ts-expect-error call clearObservationalMemory
     await memDomain?.clearObservationalMemory(null, resourceId);
     await memory.settled();
+  });
+
+  it('removeMastraMessage propagates deletion errors with cause', async () => {
+    const failingMemory = new Memory({ storage: libSqlStore });
+    const rootErr = new Error('底层 Storage 写入失败');
+    // @ts-expect-error mock deleteMessages failure
+    failingMemory.deleteMessages = vi.fn().mockRejectedValue(rootErr);
+
+    try {
+      await removeMastraMessage(failingMemory, 'msg_fail_01');
+      expect.unreachable('应当抛出异常');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain('Mastra Thread 消息删除失败');
+      expect((err as Error).cause).toBe(rootErr);
+    }
+  });
+
+  it('resetObservationalMemoryScope preserves original error cause on failure', async () => {
+    const rootErr = new Error('Storage Memory Domain 异常');
+    const failingStorage = {
+      getStore: vi.fn().mockResolvedValue({
+        clearObservationalMemory: vi.fn().mockRejectedValue(rootErr),
+      }),
+    };
+
+    try {
+      await resetObservationalMemoryScope({
+        memory,
+        threadId: 'thread_fail_01',
+        storage: failingStorage,
+      });
+      expect.unreachable('应当抛出异常');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toContain('Observational Memory scope 清理失败');
+      expect((err as Error).cause).toBe(rootErr);
+    }
   });
 });

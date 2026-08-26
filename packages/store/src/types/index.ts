@@ -696,20 +696,17 @@ export interface RecordTombstoneInput {
 /**
  * 合规删除目标对象类型联合类型
  */
-export type ComplianceDeletionTargetType = 'message' | 'session' | 'employee';
+export type ComplianceDeletionTargetType = 'message' | 'session';
 
 /**
  * 结构化合规删除覆盖范围定义
  */
 export interface ComplianceDeletionScope {
   rawStore?: boolean;
-  mediaAttachments?: boolean;
   explicitMemory?: boolean;
   deliveries?: boolean;
-  toolTraces?: boolean;
   messageIds?: string[];
   sessionIds?: string[];
-  employeeIds?: string[];
 }
 
 /**

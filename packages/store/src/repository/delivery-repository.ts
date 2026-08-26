@@ -259,7 +259,7 @@ export class DeliveryRepository {
         try {
           await tx.rollback();
         } catch {
-          // ignore rollback error
+          // 忽略回滚异常，保留原始抛出的真实错误
         }
         if (err instanceof MessageTombstonedError) {
           throw err;

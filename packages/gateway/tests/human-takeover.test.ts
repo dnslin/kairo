@@ -257,4 +257,57 @@ describe('HumanTakeover 人工操作员接管与 Bot 回显隔离', () => {
     expect(takeoverAbortFired).toBe(true);
     expect(coordinator.hasInFlightSession(sessionId)).toBe(false);
   });
+
+  it('已墓碑化的 operator 消息重放时被静默抑制，不触发接管退避且不写入 Mastra Memory', async () => {
+    const model = createFakeModel({
+      responses: [{ text: 'Bot 回复', finishReason: 'stop' }],
+    });
+    const agent = createTestAgent(model, mastraMemory);
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      mastraStorage: libSqlStore,
+      config: { debounceMs: 50, maxWaitMs: 200 },
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_operator_tombstone_01';
+    const tombstonedOpMsgId = 'msg_op_tomb_001';
+
+    // 1. 预先将该 operator 消息记录合规删除墓碑
+    await store.tombstones.recordTombstone({
+      sessionId,
+      messageId: tombstonedOpMsgId,
+      type: 'compliance_deletion',
+      operator: 'dpo',
+      reason: '合规删除',
+    });
+
+    let takeoverFired = false;
+    coordinator.on('takeover', () => {
+      takeoverFired = true;
+    });
+
+    // 2. 模拟网络重放已合规删除的 operator 消息
+    await coordinator.handleInboundMessage({
+      id: tombstonedOpMsgId,
+      sessionId,
+      sender: '客服专员',
+      senderId: 'emp_op_001',
+      content: '已删除的敏感客服发言',
+      sessionType: 'private',
+      origin: 'operator',
+      isMe: true,
+    });
+
+    // 验证 1: 绝不触发接管退避事件
+    expect(takeoverFired).toBe(false);
+    expect(await coordinator.isTakeoverActive(sessionId)).toBe(false);
+
+    // 验证 2: 绝不将敏感正文写入 Mastra Thread Memory
+    const thread = await mastraMemory.getThreadById({ threadId: sessionId });
+    expect(thread).toBeNull();
+  });
 });
