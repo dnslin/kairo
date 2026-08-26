@@ -24,6 +24,7 @@ const tempDbFiles = new WeakMap<Client, string>();
  */
 export const DEFAULT_DATABASE_OPTIONS: Required<DatabaseOptions> = {
   path: ':memory:',
+  url: '',
   wal: true,
   busyTimeout: 5000,
   foreignKeys: true,
@@ -112,9 +113,9 @@ export async function createDatabaseClient(options?: DatabaseOptions): Promise<C
     ...DEFAULT_DATABASE_OPTIONS,
     ...options,
   };
-
-  const { path, wal, busyTimeout, foreignKeys, synchronous, cacheSize } = mergedOptions;
-  const { url, isMemory, tempFile } = resolveDatabaseUrl(path);
+  const { wal, busyTimeout, foreignKeys, synchronous, cacheSize } = mergedOptions;
+  const rawPath = options?.url || options?.path || DEFAULT_DATABASE_OPTIONS.path;
+  const { url, isMemory, tempFile } = resolveDatabaseUrl(rawPath);
 
   try {
     if (!isMemory && url.startsWith('file:')) {
@@ -126,7 +127,7 @@ export async function createDatabaseClient(options?: DatabaseOptions): Promise<C
       }
     }
 
-    log.info({ path, url, isMemory, wal }, '正在建立 LibSQL 数据库连接...');
+    log.info({ path: rawPath, url, isMemory, wal }, '正在建立 LibSQL 数据库连接...');
 
     const client = createClient({
       url,
@@ -164,12 +165,11 @@ export async function createDatabaseClient(options?: DatabaseOptions): Promise<C
     // 异步初始化表结构与索引 DDL
     await initSchema(client);
 
-    log.info({ path, url }, 'LibSQL 数据库连接与结构初始化成功');
+    log.info({ path: rawPath, url }, 'LibSQL 数据库连接与结构初始化成功');
     return client;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    log.error({ err, path, url }, '创建 LibSQL 数据库连接失败');
-    throw new DatabaseConnectionError(`连接数据库失败 [${path}]: ${err.message}`, err);
+    throw new DatabaseConnectionError(`连接数据库失败 [${rawPath}]: ${err.message}`, err);
   }
 }
 

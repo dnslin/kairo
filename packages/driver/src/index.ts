@@ -4,6 +4,7 @@
  */
 
 export { KK9Driver } from './driver.js';
+export { FakeKK9Driver, type FakeSendBehavior, type RecordedSendCall } from './fake-driver.js';
 export { KK9EventBridge } from './bridge/event-bridge.js';
 export {
   generateMessageFingerprint,

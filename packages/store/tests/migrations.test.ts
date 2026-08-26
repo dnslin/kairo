@@ -41,7 +41,7 @@ describe('KKBot Database Migrations', () => {
 
     // Verify KKBot tables exist
     const tablesRes = await client.execute(
-      "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'org_%' OR name IN ('sessions', 'session_messages', 'message_deliveries'))"
+      "SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'org_%' OR name IN ('sessions', 'session_messages', 'message_deliveries', 'delivery_adjudications'))"
     );
     const tableNames = tablesRes.rows.map(r => r.name);
     expect(tableNames).toContain('org_departments');
@@ -50,6 +50,7 @@ describe('KKBot Database Migrations', () => {
     expect(tableNames).toContain('sessions');
     expect(tableNames).toContain('session_messages');
     expect(tableNames).toContain('message_deliveries');
+    expect(tableNames).toContain('delivery_adjudications');
   });
 
   it('should be idempotent and skip already-applied migrations on subsequent runs', async () => {
@@ -95,12 +96,12 @@ describe('KKBot Database Migrations', () => {
             VALUES ('old_ses_1', 'old_msg_1', '老员工', '旧数据消息', 'text', ?)`,
       args: [Date.now()],
     });
-
     // 2. 执行版本化迁移
     const migrationResult = await runKKBotMigrations(client);
     expect(migrationResult.applied).toEqual([
       '0002_inbound_identity_and_groupsession_shortcircuit',
       '0003_message_deliveries',
+      '0004_delivery_adjudications_and_retries',
     ]);
     expect(migrationResult.total).toBe(KKBOT_MIGRATIONS.length);
     // 3. 验证 session_messages 已拥有 origin 列且旧数据默认为 'external'

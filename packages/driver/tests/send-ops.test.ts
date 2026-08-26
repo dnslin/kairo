@@ -13,6 +13,7 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
 
       const res = await ops.sendText('   ');
       expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(true);
       expect(res.error).toContain('不能为空');
       expect(mockCdp.evaluate).not.toHaveBeenCalled();
     });
@@ -29,7 +30,24 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
       const res = await ops.sendText('你好', { targetSessionId: 'expected_id' });
 
       expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(true);
       expect(res.error).toContain('发送前检查未通过');
+    });
+
+    it('sendText 在前置校验脚本执行异常时应 Fail-Closed 拦截并标记 isPreTrigger = true', async () => {
+      const mockCdp = {
+        evaluate: vi.fn().mockRejectedValue(new Error('CDP evaluate connection lost')),
+        bringToFront: vi.fn(),
+      } as unknown as CdpClient;
+
+      const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
+      const res = await ops.sendText('你好', { targetSessionId: 'expected_id' });
+
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(true);
+      expect(res.error).toContain('发送前检查未通过');
+      expect(res.error).toContain('Fail-Closed');
+      expect(mockCdp.bringToFront).not.toHaveBeenCalled();
     });
 
     it('sendText 携带 replyTo 时应调用 sendReply 并完成发送', async () => {
@@ -102,8 +120,9 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
       const mockCdp = { evaluate: vi.fn() } as unknown as CdpClient;
       const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
 
-      const res = await ops.sendFile('./non_existent_file_xyz.pdf');
+      const res = await ops.sendFile('./non_existent_file_12345.txt');
       expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(true);
       expect(res.error).toContain('文件不存在');
     });
 
@@ -152,6 +171,7 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
         const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
         const res = await ops.sendFile(tempFilePath, { verifyTimeoutMs: 50 });
         expect(res.success).toBe(false);
+        expect(res.isPreTrigger).toBe(false);
         expect(res.error).toContain('未能确认文件卡片上屏');
       } finally {
         if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
@@ -166,6 +186,7 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
 
       const res = await ops.sendImage('./non_existent_image_12345.png');
       expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(true);
       expect(res.error).toContain('文件不存在');
     });
   });

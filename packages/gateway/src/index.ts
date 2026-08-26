@@ -8,3 +8,4 @@ export * from './utils/errors.js';
 export * from './utils/logger.js';
 export * from './coordinator.js';
 export * from './schedule/index.js';
+export * from './recovery/delivery-recovery-scanner.js';
