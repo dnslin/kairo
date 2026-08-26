@@ -1,4 +1,4 @@
-import { Agent, type ToolsInput } from '@mastra/core/agent';
+import { Agent, TripWire, type ToolsInput } from '@mastra/core/agent';
 import type { Memory } from '@mastra/memory';
 import {
   RequestContext,
@@ -17,6 +17,8 @@ import {
   type NormalizedModelTierInput,
 } from './routing/tier-policy.js';
 import type { MastraModelFactory, KKBotRequestContextValues } from './models/factory.js';
+import { splitKKBotProcessors } from './processors/chain.js';
+import { extractTextFromMastraContent } from './processors/content-utils.js';
 
 export type AgentGenerateRawOutput = FullOutput<unknown>;
 
@@ -82,6 +84,10 @@ export class KKBotAgent {
   constructor(options: KKBotAgentOptions) {
     this.modelFactory = options.modelFactory;
 
+    const defaultProcessors = splitKKBotProcessors();
+    const inputProcessors = options.inputProcessors ?? defaultProcessors.inputProcessors;
+    const outputProcessors = options.outputProcessors ?? defaultProcessors.outputProcessors;
+
     this.mastraAgent = new Agent({
       id: options.id ?? 'kkbot-mastra-agent',
       name: options.name ?? 'KKBot Agent',
@@ -89,8 +95,8 @@ export class KKBotAgent {
       model: options.modelFactory.createDynamicModelResolver(),
       memory: options.memory,
       tools: options.tools,
-      inputProcessors: options.inputProcessors,
-      outputProcessors: options.outputProcessors,
+      inputProcessors,
+      outputProcessors,
       errorProcessors: options.errorProcessors,
       defaultOptions: {
         maxSteps: options.maxSteps ?? 5,
@@ -118,6 +124,13 @@ export class KKBotAgent {
     if (options.senderId) {
       reqCtx.setRaw(MASTRA_RESOURCE_ID_KEY, options.senderId);
     }
+    if (options.abortSignal) {
+      reqCtx.setRaw('abortSignal', options.abortSignal);
+    }
+    if (options.abortSignal?.aborted) {
+      throw new Error('Agent execution was aborted by AbortSignal');
+    }
+
     const rawOutput = await this.mastraAgent.generate(normalizedInput.text, {
       requestContext: reqCtx,
       abortSignal: options.abortSignal,
@@ -134,6 +147,33 @@ export class KKBotAgent {
         : undefined,
     });
 
+    if (options.abortSignal?.aborted) {
+      throw new Error('Agent execution was aborted by AbortSignal');
+    }
+    if (rawOutput.error) {
+      const err =
+        rawOutput.error instanceof Error
+          ? rawOutput.error
+          : typeof rawOutput.error === 'object' &&
+              rawOutput.error !== null &&
+              'message' in rawOutput.error
+            ? new Error(String((rawOutput.error as { message?: unknown }).message), {
+                cause: rawOutput.error,
+              })
+            : new Error(String(rawOutput.error), { cause: rawOutput.error });
+      throw err;
+    }
+
+    if (rawOutput.tripwire) {
+      throw new TripWire(
+        rawOutput.tripwire.reason,
+        {
+          retry: rawOutput.tripwire.retry,
+          metadata: rawOutput.tripwire.metadata,
+        },
+        rawOutput.tripwire.processorId
+      );
+    }
     const usageSource = rawOutput.totalUsage ?? rawOutput.usage;
     const rawUsage =
       usageSource?.raw && typeof usageSource.raw === 'object'
@@ -147,8 +187,22 @@ export class KKBotAgent {
       raw: rawUsage,
     };
 
+    let finalText = rawOutput.text ?? '';
+    if (rawOutput.messages && Array.isArray(rawOutput.messages)) {
+      for (let i = rawOutput.messages.length - 1; i >= 0; i--) {
+        const msg = rawOutput.messages[i];
+        if (msg && msg.role === 'assistant') {
+          const extracted = extractTextFromMastraContent(msg.content);
+          if (extracted.length > 0) {
+            finalText = extracted;
+            break;
+          }
+        }
+      }
+    }
+
     return {
-      text: rawOutput.text ?? '',
+      text: finalText,
       finishReason: rawOutput.finishReason,
       tier,
       usage,
@@ -229,12 +283,11 @@ export function createMastraTextMessage(options: {
  * 从 Mastra Thread Memory 中安全删除指定 Message ID
  * 删除完成后自动等待 memory.settled() 排空向量清理与后台任务
  */
-export async function removeMastraMessage(
-  memory: Memory,
-  messageId: string
-): Promise<void> {
+export async function removeMastraMessage(memory: Memory, messageId: string): Promise<void> {
   try {
-    await (memory as unknown as { deleteMessages: (ids: string[] | { id: string }[]) => Promise<void> }).deleteMessages([messageId]);
+    await (
+      memory as unknown as { deleteMessages: (ids: string[] | { id: string }[]) => Promise<void> }
+    ).deleteMessages([messageId]);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     throw new Error(`Mastra Thread 消息删除失败 (messageId=${messageId}): ${errorMsg}`, {
@@ -264,15 +317,24 @@ export async function resetObservationalMemoryScope(options: {
 
   const storage =
     explicitStorage ??
-    (memory as unknown as { storage?: { getStore?: (domain: string) => Promise<unknown> } }).storage;
+    (memory as unknown as { storage?: { getStore?: (domain: string) => Promise<unknown> } })
+      .storage;
 
-  if (!storage || typeof (storage as { getStore?: (domain: string) => Promise<unknown> }).getStore !== 'function') {
+  if (
+    !storage ||
+    typeof (storage as { getStore?: (domain: string) => Promise<unknown> }).getStore !== 'function'
+  ) {
     throw new Error('执行 Observational Memory Scope Reset 必须提供有效的 Storage 实例');
   }
 
   try {
-    const memDomain = (await (storage as { getStore: (domain: string) => Promise<unknown> }).getStore('memory')) as {
-      clearObservationalMemory?: (threadId: string | null, resourceId?: string | null) => Promise<void>;
+    const memDomain = (await (
+      storage as { getStore: (domain: string) => Promise<unknown> }
+    ).getStore('memory')) as {
+      clearObservationalMemory?: (
+        threadId: string | null,
+        resourceId?: string | null
+      ) => Promise<void>;
     } | null;
 
     if (!memDomain || typeof memDomain.clearObservationalMemory !== 'function') {

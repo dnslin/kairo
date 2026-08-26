@@ -42,6 +42,21 @@ const mastraConfigSchema = z
   })
   .strict();
 
+export const mcpToolPolicySchema = z
+  .object({
+    name: z.string().min(1, 'Tool 名称不能为空'),
+    effect: z.enum(['read', 'write']).default('read'),
+    risk: z
+      .literal('low', {
+        message: 'MCP Tool risk 必须为 low，禁止注册高风险写工具',
+      })
+      .default('low'),
+    requiredPermission: z.string().optional(),
+  })
+  .strict();
+
+export type McpToolPolicyConfig = z.infer<typeof mcpToolPolicySchema>;
+
 const mcpServerItemSchema = z
   .object({
     required: z.boolean().default(true),
@@ -51,6 +66,7 @@ const mcpServerItemSchema = z
     env: z.record(z.string(), z.string()).optional(),
     cwd: z.string().optional(),
     timeout: z.number().int('必须为正整数').min(1, '超时时间必须大于 0').optional(),
+    tools: z.array(mcpToolPolicySchema).default([]),
   })
   .strict()
   .superRefine((val, ctx) => {

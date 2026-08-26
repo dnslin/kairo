@@ -1,5 +1,6 @@
 export {
   createSearchOrganizationTool,
+  createMastraSearchOrganizationTool,
   SearchOrganizationInputSchema,
   type SearchOrganizationInput,
   type SearchOrganizationOutput,
@@ -8,6 +9,7 @@ export {
 
 export {
   createQueryKnowledgeBaseTool,
+  createMastraQueryKnowledgeBaseTool,
   QueryKnowledgeBaseInputSchema,
   type QueryKnowledgeBaseInput,
   type QueryKnowledgeBaseOutput,
@@ -17,6 +19,7 @@ export {
 
 export {
   createGenerateFileDeliverableTool,
+  createMastraGenerateFileDeliverableTool,
   GenerateFileDeliverableInputSchema,
   type GenerateFileDeliverableInput,
   type GenerateFileDeliverableOutput,

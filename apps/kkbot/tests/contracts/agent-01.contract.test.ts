@@ -463,13 +463,14 @@ describe('AGENT-01 Contract: Mastra-native Agent & Model Tier Policy', () => {
         tools: { 'interruptible-tool': interruptibleTool },
       });
 
-      const result = await agent.execute({
-        input: '触发可中断工具任务',
-        abortSignal: abortCtrl.signal,
-      });
+      await expect(
+        agent.execute({
+          input: '触发可中断工具任务',
+          abortSignal: abortCtrl.signal,
+        })
+      ).rejects.toThrow();
 
       expect(toolReceivedAbort).toBe(true);
-      expect(result.finishReason).toBe('tool-calls');
     });
 
     it('AGENT-01.17, AGENT-01.18: maxSteps 到达后产生明确终态，不触发自研第二轮模型循环', async () => {

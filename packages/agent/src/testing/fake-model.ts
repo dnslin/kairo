@@ -2,8 +2,10 @@ export interface FakeModelStepResponse {
   text?: string;
   toolCalls?: Array<{
     id?: string;
-    name: string;
-    input: Record<string, unknown> | string;
+    name?: string;
+    input?: unknown;
+    toolCallId?: string;
+    toolName?: string;
   }>;
   finishReason?: 'stop' | 'tool-calls' | 'length' | 'error' | 'other';
   usage?: {
@@ -38,43 +40,41 @@ export type FakeModelContentPart =
       type: 'text';
       text: string;
     };
+
 export interface FakeModelGenerateResult {
   content: FakeModelContentPart[];
   finishReason: 'stop' | 'tool-calls' | 'length' | 'error' | 'other';
   usage: {
-    inputTokens?: number;
-    outputTokens?: number;
-    totalTokens?: number;
+    inputTokens: number | undefined;
+    outputTokens: number | undefined;
+    totalTokens: number | undefined;
   };
   warnings: unknown[];
   rawCall: { rawPrompt: null; rawSettings: Record<string, unknown> };
 }
 
 export interface FakeLanguageModel {
-  readonly specificationVersion: 'v2';
-  readonly provider: string;
   readonly modelId: string;
-  readonly supportedUrls: Record<string, unknown>;
+  readonly provider: string;
+  readonly specificationVersion: 'v2';
   readonly callCount: number;
-  doGenerate(callOptions: FakeModelCallOptions): Promise<FakeModelGenerateResult>;
-  doStream(): Promise<never>;
+  doGenerate(options: FakeModelCallOptions): Promise<FakeModelGenerateResult>;
 }
-
 
 /**
  * 创建用于测试的 LanguageModelV2 (AI SDK v5+ 兼容) 虚拟模型夹具
  */
 export function createFakeModel(options: FakeModelOptions = {}): FakeLanguageModel {
-  const modelId = options.modelId ?? 'fake-model-1';
+  const modelId = options.modelId ?? 'fake-model-001';
   const provider = options.provider ?? 'fake-provider';
-  let callCount = 0;
-  const responses = options.responses ? [...options.responses] : [];
+  const responses = [...(options.responses ?? [])];
 
-  const fakeModel: FakeLanguageModel = {
-    specificationVersion: 'v2' as const,
-    provider,
+  let callCount = 0;
+
+  return {
+    specificationVersion: 'v2',
     modelId,
-    supportedUrls: {},
+    provider,
     get callCount(): number {
       return callCount;
     },
@@ -102,11 +102,13 @@ export function createFakeModel(options: FakeModelOptions = {}): FakeLanguageMod
 
       if (response.toolCalls && response.toolCalls.length > 0) {
         for (const tc of response.toolCalls) {
+          const toolName = tc.name ?? tc.toolName ?? 'unknown_tool';
+          const toolCallId = tc.id ?? tc.toolCallId ?? `call-${callCount}-${toolName}`;
           content.push({
             type: 'tool-call',
-            toolCallId: tc.id ?? `call-${callCount}-${tc.name}`,
-            toolName: tc.name,
-            input: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input),
+            toolCallId,
+            toolName,
+            input: typeof tc.input === 'string' ? tc.input : JSON.stringify(tc.input ?? {}),
           });
         }
       }
@@ -127,9 +129,13 @@ export function createFakeModel(options: FakeModelOptions = {}): FakeLanguageMod
             ? inputTokens + outputTokens
             : undefined;
 
-      return Promise.resolve({
+      const finishReason =
+        response.finishReason ??
+        (response.toolCalls && response.toolCalls.length > 0 ? 'tool-calls' : 'stop');
+
+      return {
         content,
-        finishReason: response.finishReason ?? (response.toolCalls?.length ? 'tool-calls' : 'stop'),
+        finishReason,
         usage: {
           inputTokens,
           outputTokens,
@@ -137,12 +143,7 @@ export function createFakeModel(options: FakeModelOptions = {}): FakeLanguageMod
         },
         warnings: [],
         rawCall: { rawPrompt: null, rawSettings: {} },
-      });
-    },
-    doStream: (): Promise<never> => {
-      return Promise.reject(new Error('虚拟模型尚未实现 doStream（请使用 doGenerate）'));
+      };
     },
   };
-
-  return fakeModel;
 }

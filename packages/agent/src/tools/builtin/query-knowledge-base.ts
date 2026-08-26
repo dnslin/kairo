@@ -3,8 +3,8 @@ import { extname, join, relative } from 'node:path';
 import { z } from 'zod';
 import { createAgentTool } from '../registry.js';
 import type { AgentTool, KnowledgeChunkResult } from '../types.js';
+import { createKkTool, type KkMastraTool } from '../create-tool.js';
 import { createChildLogger } from '../../utils/logger.js';
-
 const log = createChildLogger('tool-knowledge-base');
 
 /**
@@ -334,6 +334,63 @@ export function createQueryKnowledgeBaseTool(
     metadata: {
       category: 'knowledge',
       builtin: true,
+    },
+  });
+}
+
+/**
+ * 创建 Mastra-native query_knowledge_base 工具
+ */
+export function createMastraQueryKnowledgeBaseTool(
+  options: QueryKnowledgeBaseOptions = {}
+): KkMastraTool<typeof QueryKnowledgeBaseInputSchema> {
+  return createKkTool({
+    id: 'query_knowledge_base',
+    description:
+      '在企业本地 Markdown 知识库中进行切片语义与关键词检索，获取制度文档、规范指引或业务知识。只读查询。',
+    effect: 'read',
+    risk: 'low',
+    inputSchema: QueryKnowledgeBaseInputSchema,
+    execute: async ({ context }) => {
+      await Promise.resolve();
+      const cleanQuery = context.query.trim();
+      const topK = context.topK ?? 5;
+      const minScore = context.minScore ?? 0.3;
+      const targetCategory = context.category?.trim();
+
+      const allDocs: KnowledgeDocSource[] = [...(options.docs ?? [])];
+      if (options.baseDir) {
+        allDocs.push(...loadMarkdownFilesFromDir(options.baseDir));
+      }
+
+      const allChunks: KnowledgeChunkResult[] = [];
+      for (const doc of allDocs) {
+        if (targetCategory && doc.category && doc.category !== targetCategory) {
+          continue;
+        }
+        const docChunks = chunkMarkdownDocument(doc);
+        for (const chunk of docChunks) {
+          if (targetCategory && chunk.category && chunk.category !== targetCategory) {
+            continue;
+          }
+          const score = calculateRelevance(cleanQuery, chunk.title, chunk.content);
+          if (score >= minScore) {
+            allChunks.push({
+              ...chunk,
+              score,
+            });
+          }
+        }
+      }
+
+      allChunks.sort((a, b) => b.score - a.score);
+      const topChunks = allChunks.slice(0, topK);
+
+      return {
+        success: true,
+        count: topChunks.length,
+        chunks: topChunks,
+      };
     },
   });
 }

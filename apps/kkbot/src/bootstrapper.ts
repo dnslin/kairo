@@ -3,21 +3,18 @@ import path from 'node:path';
 import { Mastra } from '@mastra/core';
 import { LibSQLStore } from '@mastra/libsql';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
+import type { Tool } from '@mastra/core/tools';
 import {
-  createClient,
-  type Client,
-  runKKBotMigrations,
-  KKBotStore,
-} from '@kkbot/store';
+  createMastraSearchOrganizationTool,
+  createMastraQueryKnowledgeBaseTool,
+  createMastraGenerateFileDeliverableTool,
+} from '@kkbot/agent';
+import { createClient, type Client, runKKBotMigrations, KKBotStore } from '@kkbot/store';
 import { loadConfigFromYaml, type AppConfig } from './config.js';
 import { resolveDatabaseLocation, type DatabaseLocation } from './path-resolver.js';
 import { InstanceLock } from './instance-lock.js';
 import { WorkAdmissionGate } from './gate.js';
-import {
-  AcquisitionLedger,
-  executeReverseShutdown,
-  type ShutdownResult,
-} from './ledger.js';
+import { AcquisitionLedger, executeReverseShutdown, type ShutdownResult } from './ledger.js';
 import { ConfigValidationError } from './errors.js';
 
 export interface BootstrapperHooks {
@@ -74,6 +71,9 @@ export class UnifiedBootstrapper {
   private libSqlStore: LibSQLStore | null = null;
   private mastra: Mastra | null = null;
   private mcpClient: MCPClient | null = null;
+  private degradedMcpServers: Record<string, string> = {};
+  private staticTools: Readonly<Record<string, Tool<unknown, unknown, unknown, unknown>>> =
+    Object.freeze({});
 
   private shutdownPromise: Promise<ShutdownResult> | null = null;
 
@@ -205,9 +205,10 @@ export class UnifiedBootstrapper {
         });
       });
 
-      // 8. 创建唯一进程级 MCPClient（若配置）
+      // 8. 创建唯一进程级 MCPClient 并执行一次性有界 Discovery
+      const discoveredMcpTools: Record<string, Tool<unknown, unknown, unknown, unknown>> = {};
       if (cfg.mcp?.servers && Object.keys(cfg.mcp.servers).length > 0) {
-        await this.acquireStage('MCPClient', () => {
+        await this.acquireStage('MCPClient', async () => {
           const mcpServers: Record<string, MastraMCPServerDefinition> = {};
           for (const [name, serverConfig] of Object.entries(cfg.mcp.servers)) {
             if (serverConfig.url) {
@@ -243,8 +244,159 @@ export class UnifiedBootstrapper {
               });
             },
           });
+
+          // 执行启动期一次性有界 Discovery
+          try {
+            const { tools, errors } = await this.mcpClient.listToolsWithErrors({
+              perServerTimeoutMs: cfg.mcp.perServerTimeoutMs,
+            });
+
+            // 检查每台 Server 的错误归属
+            const errorEntries = Object.entries(errors ?? {});
+            for (const [serverName, errorMsg] of errorEntries) {
+              const serverConfig = cfg.mcp.servers[serverName];
+              const isRequired = serverConfig?.required !== false;
+              if (isRequired) {
+                throw new Error(
+                  `必需的 MCP Server '${serverName}' Tool discovery 失败，阻止开门: ${errorMsg}`
+                );
+              } else {
+                this.degradedMcpServers[serverName] = errorMsg;
+              }
+            }
+
+            // 2. 严格校验全部已发现 Tool 的权威 serverName 归属 (Fail-Closed)
+            if (tools && typeof tools === 'object') {
+              for (const [toolName, toolImpl] of Object.entries(tools)) {
+                const toolWithMeta = toolImpl as { mcpMetadata?: { serverName?: string } };
+                const actualServerName = toolWithMeta.mcpMetadata?.serverName;
+                if (!actualServerName || !cfg.mcp.servers[actualServerName]) {
+                  throw new Error(
+                    `MCP Tool [${toolName}] 缺少权威 serverName 归属或归属于未知 Server: ${String(actualServerName)}`
+                  );
+                }
+              }
+
+              // 3. 按 Server 进行事务性候选收集与校验 (Transactional Per-Server Collection)
+              for (const [serverName, serverConfig] of Object.entries(cfg.mcp.servers)) {
+                // 如果 Server 已处于 degraded，直接跳过该 Server 的全部工具
+                if (this.degradedMcpServers[serverName]) {
+                  continue;
+                }
+                const serverCandidateTools: Record<
+                  string,
+                  Tool<unknown, unknown, unknown, unknown>
+                > = {};
+                try {
+                  for (const [toolName, toolImpl] of Object.entries(tools)) {
+                    const toolWithMeta = toolImpl as { mcpMetadata?: { serverName?: string } };
+                    const actualServerName = toolWithMeta.mcpMetadata?.serverName;
+
+                    // 属于当前处理的 Server
+                    if (actualServerName === serverName) {
+                      // 默认拒绝：仅放行配置中明确列入白名单的低风险 Tool
+                      if (
+                        serverConfig.tools &&
+                        Array.isArray(serverConfig.tools) &&
+                        serverConfig.tools.length > 0
+                      ) {
+                        const prefix = `${serverName}_`;
+                        const rawToolName = toolName.startsWith(prefix)
+                          ? toolName.slice(prefix.length)
+                          : toolName;
+                        const matchingPolicy = serverConfig.tools.find(
+                          p => p.name === rawToolName || p.name === toolName
+                        );
+
+                        if (!matchingPolicy) {
+                          continue;
+                        }
+
+                        if (matchingPolicy.risk !== 'low') {
+                          throw new Error(`MCP Tool [${toolName}] 配置非法: 风险等级必须为 'low'`);
+                        }
+
+                        const toolPolicy = Object.freeze({
+                          effect: matchingPolicy.effect ?? 'read',
+                          risk: matchingPolicy.risk ?? 'low',
+                          requiredPermission: matchingPolicy.requiredPermission,
+                          serialKey:
+                            matchingPolicy.effect === 'write' ? ('entity' as const) : undefined,
+                          idempotencyField:
+                            matchingPolicy.effect === 'write' ? 'idempotencyKey' : undefined,
+                        });
+
+                        Object.defineProperty(toolImpl, 'policy', {
+                          value: toolPolicy,
+                          writable: false,
+                          enumerable: true,
+                          configurable: false,
+                        });
+
+                        if (discoveredMcpTools[toolName] || serverCandidateTools[toolName]) {
+                          throw new Error(`MCP Tool 命名冲突: 工具 '${toolName}' 重复定义`);
+                        }
+                        serverCandidateTools[toolName] = toolImpl as unknown as Tool<
+                          unknown,
+                          unknown,
+                          unknown,
+                          unknown
+                        >;
+                      }
+                    }
+                  }
+
+                  // 该 Server 所有候选工具校验通过，原子提交至 discoveredMcpTools
+                  Object.assign(discoveredMcpTools, serverCandidateTools);
+                } catch (serverErr) {
+                  const isRequired = serverConfig.required !== false;
+                  if (isRequired) {
+                    throw serverErr;
+                  }
+                  // optional Server 校验异常：丢弃该 Server 全部候选工具，记录 degraded
+                  const errMsg = serverErr instanceof Error ? serverErr.message : String(serverErr);
+                  this.degradedMcpServers[serverName] = errMsg;
+                }
+              }
+            }
+          } catch (mcpErr) {
+            if (
+              mcpErr instanceof Error &&
+              (mcpErr.message.includes('必需的 MCP Server') ||
+                mcpErr.message.includes('命名冲突') ||
+                mcpErr.message.includes('配置非法') ||
+                mcpErr.message.includes('缺少权威 serverName 归属'))
+            ) {
+              throw mcpErr;
+            }
+            const requiredServers = Object.entries(cfg.mcp.servers).filter(
+              ([, s]) => s.required !== false
+            );
+            if (requiredServers.length > 0) {
+              const err = mcpErr instanceof Error ? mcpErr : new Error(String(mcpErr));
+              throw new Error(`必需的 MCP Server Tool discovery 失败，阻止开门: ${err.message}`, {
+                cause: err,
+              });
+            }
+            const errMsg = mcpErr instanceof Error ? mcpErr.message : String(mcpErr);
+            for (const serverName of Object.keys(cfg.mcp.servers)) {
+              this.degradedMcpServers[serverName] = errMsg;
+            }
+          }
         });
       }
+
+      // 9. 构造并冻结静态 Tool 表面快照
+      const localTools = this.buildLocalTools();
+      for (const localName of Object.keys(localTools)) {
+        if (discoveredMcpTools[localName]) {
+          throw new Error(`Tool 命名冲突: 本地工具与 MCP 工具同名 '${localName}'`);
+        }
+      }
+      this.staticTools = Object.freeze({
+        ...localTools,
+        ...discoveredMcpTools,
+      });
 
       // 9. 执行无业务事实副作用的真实 Preflight
       await this.acquireStage('Preflight', async () => {
@@ -259,7 +411,7 @@ export class UnifiedBootstrapper {
       if (shutdownRes?.errors && shutdownRes.errors.length > 0) {
         const initialErr = error instanceof Error ? error : new Error(String(error));
         throw new AggregateError(
-          [initialErr, ...shutdownRes.errors.map((e) => e.error)],
+          [initialErr, ...shutdownRes.errors.map(e => e.error)],
           `启动失败且逆拓扑回滚清理中产生 ${shutdownRes.errors.length} 处错误: ${initialErr.message}`
         );
       }
@@ -283,51 +435,17 @@ export class UnifiedBootstrapper {
     const dbConnectivity = dbPing.rows.length > 0;
 
     // 探针 2：验证 migration 事实已提交
-    const migCheck = await this.kkbotClient.execute('SELECT COUNT(*) as count FROM _kkbot_migrations');
+    const migCheck = await this.kkbotClient.execute(
+      'SELECT COUNT(*) as count FROM _kkbot_migrations'
+    );
     const rawCount = migCheck.rows[0]?.count;
     const migrationsApplied =
       typeof rawCount === 'number' || typeof rawCount === 'bigint' ? Number(rawCount) > 0 : false;
 
     // 探针 3：验证 Storage 可用（不产生业务事实）
     const storageReady = Boolean(this.libSqlStore);
-    // 探针 4：验证 MCPClient 可用性与 discovery 探测（若配置）
-    let mcpClientReady = true;
-    if (this.config?.mcp?.servers && this.mcpClient) {
-      try {
-        const { errors } = await this.mcpClient.listToolsWithErrors({
-          perServerTimeoutMs: this.config.mcp.perServerTimeoutMs,
-        });
-
-        const errorEntries = Object.entries(errors);
-        if (errorEntries.length > 0) {
-          for (const [serverName, errorMsg] of errorEntries) {
-            const serverConfig = this.config.mcp.servers[serverName];
-            const isRequired = serverConfig?.required !== false;
-            if (isRequired) {
-              throw new Error(
-                `必需的 MCP Server '${serverName}' Tool discovery 失败，阻止开门: ${errorMsg}`
-              );
-            }
-          }
-          mcpClientReady = false;
-        }
-      } catch (mcpErr) {
-        if (mcpErr instanceof Error && mcpErr.message.includes('必需的 MCP Server')) {
-          throw mcpErr;
-        }
-        const requiredServers = Object.entries(this.config.mcp.servers).filter(
-          ([, s]) => s.required !== false
-        );
-        if (requiredServers.length > 0) {
-          const err = mcpErr instanceof Error ? mcpErr : new Error(String(mcpErr));
-          throw new Error(`必需的 MCP Server Tool discovery 失败，阻止开门: ${err.message}`, {
-            cause: err,
-          });
-        }
-        mcpClientReady = false;
-      }
-    }
-
+    // 探针 4：验证 MCPClient 可用性（只读已完成的 discovery 状态，不重复发起 discovery）
+    const mcpClientReady = Object.keys(this.degradedMcpServers).length === 0;
     return {
       startupGenerationId: this.startupGenerationId,
       dbConnectivity,
@@ -434,6 +552,37 @@ export class UnifiedBootstrapper {
 
   getMCPClient(): MCPClient | null {
     return this.mcpClient;
+  }
+
+  getDegradedMcpServers(): Record<string, string> {
+    return { ...this.degradedMcpServers };
+  }
+
+  getStaticTools(): Readonly<Record<string, Tool<unknown, unknown, unknown, unknown>>> {
+    return this.staticTools;
+  }
+
+  private buildLocalTools(): Record<string, Tool<unknown, unknown, unknown, unknown>> {
+    const tools: Record<string, Tool<unknown, unknown, unknown, unknown>> = {};
+    if (this.kkbotStore) {
+      tools['search_organization'] = createMastraSearchOrganizationTool({
+        orgRepo: this.kkbotStore.org,
+      }) as unknown as Tool<unknown, unknown, unknown, unknown>;
+    }
+    tools['query_knowledge_base'] = createMastraQueryKnowledgeBaseTool() as unknown as Tool<
+      unknown,
+      unknown,
+      unknown,
+      unknown
+    >;
+    tools['generate_file_deliverable'] =
+      createMastraGenerateFileDeliverableTool() as unknown as Tool<
+        unknown,
+        unknown,
+        unknown,
+        unknown
+      >;
+    return tools;
   }
 }
 

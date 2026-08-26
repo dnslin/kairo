@@ -65,6 +65,7 @@ export { createChildLogger, logger } from './utils/logger.js';
 export * from './tools/index.js';
 export * from './hitl/index.js';
 
+export * from './processors/index.js';
 // ============================================================================
 // Mastra-Native Agent 架构 (Issue #174)
 // ============================================================================
@@ -105,3 +106,8 @@ export {
   type FakeModelOptions,
   type FakeModelContentPart,
 } from './testing/fake-model.js';
+export {
+  createSseMcpServerFixture,
+  type SseMcpServerFixtureOptions,
+  type SseMcpServerFixture,
+} from './testing/sse-mcp-fixture.js';

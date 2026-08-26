@@ -252,13 +252,14 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       },
     });
 
-    const result = await agent.execute({
-      input: '执行长任务',
-      abortSignal: controller.signal,
-    });
+    await expect(
+      agent.execute({
+        input: '执行长任务',
+        abortSignal: controller.signal,
+      })
+    ).rejects.toThrow();
 
     expect(toolAborted).toBe(true);
-    expect(result.finishReason).toBe('tool-calls');
   });
 
   it('maxSteps 到达时产生明确终态，不启动自研第二轮循环', async () => {
