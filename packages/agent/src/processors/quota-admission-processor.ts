@@ -1,4 +1,8 @@
 import type { ProcessInputArgs, ProcessInputResult, Processor } from '@mastra/core/processors';
+import {
+  getProcessorParentSignal,
+  runBoundedProcessorExecution,
+} from './processor-utils.js';
 
 export interface QuotaAdmissionProcessorOptions {
   timeoutMs?: number;
@@ -29,50 +33,20 @@ export class QuotaAdmissionProcessor implements Processor<'quota-admission'> {
   }
 
   async processInput(args: ProcessInputArgs): Promise<ProcessInputResult> {
-    const parentSignal =
-      args.abortSignal ??
-      (args.requestContext && typeof args.requestContext.get === 'function'
-        ? args.requestContext.get('abortSignal')
-        : undefined);
+    const parentSignal = getProcessorParentSignal(args);
     if (parentSignal?.aborted) {
       throw new Error('QuotaAdmissionProcessor 执行前已被信号中止');
     }
 
-    if (this.admissionHook) {
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combinedSignal = parentSignal
-        ? AbortSignal.any([parentSignal, timeoutSignal])
-        : timeoutSignal;
-
-      if (combinedSignal.aborted) {
-        if (parentSignal?.aborted) {
-          throw new Error('QuotaAdmissionProcessor 被父 AbortSignal 中止');
-        }
-        throw new Error(`QuotaAdmissionProcessor 准入执行超时 (超过 ${this.timeoutMs}ms)`);
-      }
-
-      const abortPromise = new Promise<never>((_, reject) => {
-        combinedSignal.addEventListener(
-          'abort',
-          () => {
-            if (parentSignal?.aborted) {
-              reject(new Error('QuotaAdmissionProcessor 运行中被父 AbortSignal 中止'));
-            } else {
-              reject(new Error(`QuotaAdmissionProcessor 准入执行超时 (超过 ${this.timeoutMs}ms)`));
-            }
-          },
-          { once: true }
-        );
+    const admissionHook = this.admissionHook;
+    if (admissionHook) {
+      const allowed = await runBoundedProcessorExecution({
+        parentSignal,
+        timeoutMs: this.timeoutMs,
+        timeoutMessage: `QuotaAdmissionProcessor 准入执行超时 (超过 ${this.timeoutMs}ms)`,
+        parentAbortMessage: 'QuotaAdmissionProcessor 运行中被父 AbortSignal 中止',
+        execute: signal => admissionHook({ ...args, signal }),
       });
-
-      const hookPromise = Promise.resolve(
-        this.admissionHook({
-          ...args,
-          signal: combinedSignal,
-        })
-      );
-
-      const allowed = await Promise.race([hookPromise, abortPromise]);
 
       if (!allowed) {
         args.abort('当前请求已超出每日 Token 配额上限或准入被拒绝', { retry: false });

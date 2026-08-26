@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { createTool } from '@mastra/core/tools';
 import { RequestContext } from '@mastra/core/request-context';
-import type { InputProcessor, OutputProcessor } from '@mastra/core/processors';
 import {
   KKBotAgent,
   MastraModelFactory,
@@ -655,68 +654,5 @@ describe('AGENT-01 Contract: Mastra-native Agent & Model Tier Policy', () => {
       expect(fatalCallCount).toBe(1);
     });
 
-    it('AGENT-01.23: 静态 Processors 固定顺序执行且对 Tool Result 进行安全检查', async () => {
-      const phaseRecords: string[] = [];
-
-      const inputProc: InputProcessor = {
-        id: 'input-proc-1',
-        processInput: ({ messages }) => {
-          phaseRecords.push('input:phase');
-          return Promise.resolve(messages);
-        },
-      };
-
-      const toolResultProc: OutputProcessor = {
-        id: 'tool-result-proc-1',
-        processToolResult: ({ toolName, result }) => {
-          phaseRecords.push(`tool-result:${toolName}`);
-          return Promise.resolve(result);
-        },
-      };
-
-      const echoTool = createTool({
-        id: 'echo-tool',
-        description: 'echo',
-        inputSchema: z.object({ msg: z.string() }),
-        execute: input => Promise.resolve({ reply: input.msg }),
-      });
-
-      const procModel = createFakeModel({
-        modelId: 'proc-contract-model',
-        responses: [
-          {
-            toolCalls: [{ id: 'tc-echo', name: 'echo-tool', input: { msg: 'ping' } }],
-            finishReason: 'tool-calls',
-          },
-          {
-            text: '处理器验证完成',
-            finishReason: 'stop',
-          },
-        ],
-      });
-
-      const factory = new MastraModelFactory({
-        tiers: {
-          FAST: { models: [{ model: procModel }] },
-          DEEP: { models: [{ model: procModel }] },
-          VISION: { models: [{ model: procModel }] },
-        },
-      });
-
-      const agent = new KKBotAgent({
-        id: 'proc-contract-agent',
-        modelFactory: factory,
-        tools: { 'echo-tool': echoTool },
-        inputProcessors: [inputProc],
-        outputProcessors: [toolResultProc],
-      });
-
-      const result = await agent.execute({
-        input: '测试处理器',
-      });
-
-      expect(result.text).toBe('处理器验证完成');
-      expect(phaseRecords).toEqual(['input:phase', 'tool-result:echo-tool']);
-    });
   });
 });

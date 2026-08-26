@@ -1,18 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import {
   createKKBotProcessors,
-  PromptInjectionProcessor,
-  SensitiveInputProcessor,
-  SensitiveOutputProcessor,
-  ToolResultSafetyProcessor,
-  ThinkingTagProcessor,
-  KnowledgeGroundingProcessor,
-  OutputLengthProcessor,
-  QuotaAdmissionProcessor,
-  QuotaUsageProcessor,
   createFakeModel,
   createKkTool,
   createSseMcpServerFixture,
+  getAvailableMcpFixturePort,
   KKBotAgent,
   MastraModelFactory,
   type FakeLanguageModel,
@@ -104,6 +96,10 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
           expect(toolWithPolicy.policy?.risk).toBe('low');
           expect(['read', 'write']).toContain(toolWithPolicy.policy?.effect);
         }
+        const mcpPolicy = (staticTools['local_echo'] as unknown as {
+          policy?: { timeoutMs?: number };
+        }).policy;
+        expect(mcpPolicy?.timeoutMs).toBe(5000);
       } finally {
         await boot.shutdown();
       }
@@ -176,7 +172,7 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
     });
 
     it('MCPPROC-01.4: optional Server 运行中恢复后不热加 Tool，Tool 集合在当前进程生命周期内保持严格静态快照', async () => {
-      const port = 59995;
+      const port = await getAvailableMcpFixturePort();
       const sseFixture = createSseMcpServerFixture({
         port,
         tools: [{ name: 'delayed_tool', description: '恢复后暴露的测试工具' }],
@@ -362,8 +358,6 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        inputProcessors: [new PromptInjectionProcessor(), new SensitiveInputProcessor()],
-        outputProcessors: [new ThinkingTagProcessor(), new SensitiveOutputProcessor()],
       });
 
       const [res1, res2] = await Promise.all([
@@ -427,7 +421,6 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
       const agent = new KKBotAgent({
         modelFactory,
         tools: { test_leak_tool: maliciousTool },
-        outputProcessors: [new ToolResultSafetyProcessor()],
       });
 
       // 执行应触发 TripWire 确定性阻断 (fail-closed)
@@ -460,7 +453,6 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        inputProcessors: [new PromptInjectionProcessor()],
       });
 
       await expect(
@@ -484,11 +476,9 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        inputProcessors: [
-          new SensitiveInputProcessor({
-            sensitiveKeywords: ['绝密军工项目代码'],
-          }),
-        ],
+        processorOptions: {
+          sensitiveInput: { sensitiveKeywords: ['绝密军工项目代码'] },
+        },
       });
 
       await expect(
@@ -510,7 +500,7 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        outputProcessors: [new KnowledgeGroundingProcessor({ requireGrounding: true })],
+        processorOptions: { knowledgeGrounding: { requireGrounding: true } },
       });
 
       const result = await agent.execute({
@@ -535,7 +525,7 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        outputProcessors: [new OutputLengthProcessor({ maxLength: 100 })],
+        processorOptions: { outputLength: { maxLength: 100 } },
       });
 
       const result = await agent.execute({
@@ -558,11 +548,9 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        outputProcessors: [
-          new SensitiveOutputProcessor({
-            blockedPatterns: [/SECRET_KEY_ROOT_LEAK/],
-          }),
-        ],
+        processorOptions: {
+          sensitiveOutput: { blockedPatterns: [/SECRET_KEY_ROOT_LEAK/] },
+        },
       });
 
       await expect(
@@ -584,13 +572,9 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        inputProcessors: [
-          new QuotaAdmissionProcessor({
-            admissionHook: () => {
-              throw new Error('Quota DB Busy / 死锁');
-            },
-          }),
-        ],
+        processorOptions: {
+          quotaAdmission: { admissionHook: () => { throw new Error('Quota DB Busy / 死锁'); } },
+        },
       });
 
       await expect(
@@ -612,13 +596,9 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        outputProcessors: [
-          new QuotaUsageProcessor({
-            usageHook: () => {
-              throw new Error('Quota 结算失败');
-            },
-          }),
-        ],
+        processorOptions: {
+          quotaUsage: { usageHook: () => { throw new Error('Quota 结算失败'); } },
+        },
       });
 
       await expect(
@@ -640,15 +620,15 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        inputProcessors: [
-          new QuotaAdmissionProcessor({
+        processorOptions: {
+          quotaAdmission: {
             timeoutMs: 10,
             admissionHook: async () => {
               await new Promise(resolve => setTimeout(resolve, 50));
               return true;
             },
-          }),
-        ],
+          },
+        },
       });
 
       await expect(
@@ -670,15 +650,15 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        outputProcessors: [
-          new QuotaUsageProcessor({
+        processorOptions: {
+          quotaUsage: {
             timeoutMs: 10,
             usageHook: async () => {
               await new Promise(resolve => setTimeout(resolve, 50));
               return true;
             },
-          }),
-        ],
+          },
+        },
       });
 
       await expect(
@@ -700,15 +680,15 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        outputProcessors: [
-          new KnowledgeGroundingProcessor({
+        processorOptions: {
+          knowledgeGrounding: {
             timeoutMs: 10,
             groundingHook: async () => {
               await new Promise(resolve => setTimeout(resolve, 50));
               return true;
             },
-          }),
-        ],
+          },
+        },
       });
 
       await expect(
@@ -734,7 +714,6 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
 
       const agent = new KKBotAgent({
         modelFactory,
-        inputProcessors: createKKBotProcessors().slice(0, 3),
       });
 
       await expect(
@@ -759,8 +738,8 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
       let hookReceivedSignal: AbortSignal | undefined;
       const agent = new KKBotAgent({
         modelFactory,
-        inputProcessors: [
-          new QuotaAdmissionProcessor({
+        processorOptions: {
+          quotaAdmission: {
             timeoutMs: 5000,
             admissionHook: async ({ signal }) => {
               hookReceivedSignal = signal;
@@ -768,8 +747,8 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
               await new Promise(resolve => setTimeout(resolve, 200));
               return true;
             },
-          }),
-        ],
+          },
+        },
       });
 
       await expect(
@@ -798,8 +777,8 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
       let hookReceivedSignal: AbortSignal | undefined;
       const agent = new KKBotAgent({
         modelFactory,
-        outputProcessors: [
-          new QuotaUsageProcessor({
+        processorOptions: {
+          quotaUsage: {
             timeoutMs: 5000,
             usageHook: async ({ signal }) => {
               hookReceivedSignal = signal;
@@ -807,8 +786,8 @@ describe('MCPPROC-01 Contract: 唯一 MCPClient、有界 Discovery、固定 Proc
               await new Promise(resolve => setTimeout(resolve, 200));
               return true;
             },
-          }),
-        ],
+          },
+        },
       });
 
       await expect(

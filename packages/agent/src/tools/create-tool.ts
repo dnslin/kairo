@@ -41,6 +41,109 @@ export interface CreateKkToolOptions<
   }) => Promise<z.infer<TOutput>>;
 }
 
+export interface DecorateKkToolOptions {
+  id: string;
+  effect: ToolEffect;
+  risk: ToolRisk;
+  requiredPermission?: string;
+  serialKey?: 'session' | 'employee' | 'entity';
+  idempotencyField?: string;
+  timeoutMs?: number;
+}
+
+function createKkToolPolicy(options: DecorateKkToolOptions): Readonly<KkToolPolicy> {
+  if (options.risk !== 'low') {
+    throw new Error(
+      `创建 Tool [${options.id}] 失败: risk 必须为 'low'，当前不允许注册高风险写工具`
+    );
+  }
+
+  if (options.effect !== 'read' && options.effect !== 'write') {
+    throw new Error(`创建 Tool [${options.id}] 失败: effect 必须为 'read' 或 'write'`);
+  }
+
+  return Object.freeze({
+    effect: options.effect,
+    risk: options.risk,
+    requiredPermission: options.requiredPermission,
+    serialKey: options.serialKey ?? (options.effect === 'write' ? 'entity' : undefined),
+    idempotencyField:
+      options.idempotencyField ?? (options.effect === 'write' ? 'idempotencyKey' : undefined),
+    timeoutMs: options.timeoutMs,
+  });
+}
+
+function assertWriteIdempotency(
+  inputData: unknown,
+  policy: Readonly<KkToolPolicy>,
+  toolId: string
+): void {
+  if (policy.effect !== 'write') return;
+  const field = policy.idempotencyField ?? 'idempotencyKey';
+  const inputRecord =
+    typeof inputData === 'object' && inputData !== null
+      ? (inputData as Record<string, unknown>)
+      : undefined;
+  const idempotencyValue = inputRecord?.[field];
+  if (typeof idempotencyValue !== 'string' || idempotencyValue.trim().length === 0) {
+    throw new Error(`Tool [${toolId}] 低风险写操作必须提供有效幂等键 '${field}'`);
+  }
+}
+
+export function decorateKkTool(
+  tool: Tool<unknown, unknown, unknown, unknown>,
+  options: DecorateKkToolOptions
+): KkMastraTool {
+  const policy = createKkToolPolicy(options);
+  const originalExecute = tool.execute;
+  if (typeof originalExecute !== 'function') {
+    throw new Error(`Tool [${options.id}] 缺少可执行的 execute 实现`);
+  }
+  const boundExecute = originalExecute.bind(tool) as unknown as (
+    inputData: unknown,
+    context?: unknown
+  ) => Promise<unknown>;
+  const wrappedExecute = async (inputData: unknown, context?: unknown): Promise<unknown> => {
+    assertWriteIdempotency(inputData, policy, options.id);
+    const invoke = (): Promise<unknown> => Promise.resolve(boundExecute(inputData, context));
+    if (!options.timeoutMs || options.timeoutMs <= 0) return invoke();
+
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`Tool [${options.id}] 执行超时 (超过 ${options.timeoutMs}ms)`));
+        }, options.timeoutMs);
+      });
+      return await Promise.race([invoke(), timeoutPromise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const executeDescriptor = Object.getOwnPropertyDescriptor(tool, 'execute');
+  if (
+    executeDescriptor &&
+    executeDescriptor.configurable === false &&
+    (!('value' in executeDescriptor) || executeDescriptor.writable !== true)
+  ) {
+    throw new Error(`Tool [${options.id}] 的 execute 属性不可安全装饰`);
+  }
+
+  Object.defineProperty(tool, 'execute', {
+    value: wrappedExecute,
+    writable: executeDescriptor?.writable ?? true,
+    enumerable: executeDescriptor?.enumerable ?? true,
+    configurable: executeDescriptor?.configurable ?? true,
+  });
+  Object.defineProperty(tool, 'policy', {
+    value: policy,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
+  return tool as KkMastraTool;
+}
 /**
  * createKkTool: KKBot 统一 Mastra Tool 工厂函数
  *
@@ -55,27 +158,7 @@ export function createKkTool<
   TInput extends z.ZodTypeAny,
   TOutput extends z.ZodTypeAny = z.ZodTypeAny,
 >(options: CreateKkToolOptions<TInput, TOutput>): KkMastraTool<TInput, TOutput> {
-  if (options.risk !== 'low') {
-    throw new Error(
-      `创建 Tool [${options.id}] 失败: risk 必须为 'low'，当前不允许注册高风险写工具`
-    );
-  }
-
-  if (options.effect !== 'read' && options.effect !== 'write') {
-    throw new Error(`创建 Tool [${options.id}] 失败: effect 必须为 'read' 或 'write'`);
-  }
-
-  const policy: KkToolPolicy = Object.freeze({
-    effect: options.effect,
-    risk: options.risk,
-    requiredPermission: options.requiredPermission,
-    serialKey: options.serialKey ?? (options.effect === 'write' ? 'entity' : undefined),
-    idempotencyField:
-      options.idempotencyField ?? (options.effect === 'write' ? 'idempotencyKey' : undefined),
-    timeoutMs: options.timeoutMs,
-  });
-
-  const toolOpts = {
+  const baseTool = createTool({
     id: options.id,
     description: options.description,
     inputSchema: options.inputSchema,
@@ -83,47 +166,16 @@ export function createKkTool<
     execute: async (inputData: unknown, context?: unknown): Promise<z.infer<TOutput>> => {
       const parsedInput = inputData as z.infer<TInput>;
       const ctx = context as { abortSignal?: AbortSignal; requestContext?: unknown } | undefined;
-
-      // 执行超时保护（若指定）
-      if (options.timeoutMs && options.timeoutMs > 0) {
-        let timer: NodeJS.Timeout | undefined;
-        try {
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            timer = setTimeout(() => {
-              reject(new Error(`Tool [${options.id}] 执行超时 (超过 ${options.timeoutMs}ms)`));
-            }, options.timeoutMs);
-          });
-
-          const result = await Promise.race([
-            options.execute({
-              context: parsedInput,
-              abortSignal: ctx?.abortSignal,
-              requestContext: ctx?.requestContext,
-            }),
-            timeoutPromise,
-          ]);
-          return result;
-        } finally {
-          clearTimeout(timer);
-        }
-      }
-
-      return await options.execute({
+      return options.execute({
         context: parsedInput,
         abortSignal: ctx?.abortSignal,
         requestContext: ctx?.requestContext,
       });
     },
-  };
+  } as unknown as Parameters<typeof createTool>[0]);
 
-  const baseTool = createTool(toolOpts as unknown as Parameters<typeof createTool>[0]);
-
-  Object.defineProperty(baseTool, 'policy', {
-    value: policy,
-    writable: false,
-    enumerable: true,
-    configurable: false,
-  });
-
-  return baseTool as unknown as KkMastraTool<TInput, TOutput>;
+  return decorateKkTool(baseTool as unknown as Tool<unknown, unknown, unknown, unknown>, options) as unknown as KkMastraTool<
+    TInput,
+    TOutput
+  >;
 }

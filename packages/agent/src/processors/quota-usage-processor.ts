@@ -1,4 +1,8 @@
 import type { ProcessOutputResultArgs, Processor } from '@mastra/core/processors';
+import {
+  getProcessorParentSignal,
+  runBoundedProcessorExecution,
+} from './processor-utils.js';
 import type { MastraDBMessage } from '@mastra/core/agent';
 
 export interface QuotaUsageProcessorOptions {
@@ -33,51 +37,20 @@ export class QuotaUsageProcessor implements Processor<'quota-usage'> {
   }
 
   async processOutputResult(args: ProcessOutputResultArgs): Promise<MastraDBMessage[]> {
-    const parentSignal =
-      args.abortSignal ??
-      (args.requestContext && typeof args.requestContext.get === 'function'
-        ? args.requestContext.get('abortSignal')
-        : undefined);
-
+    const parentSignal = getProcessorParentSignal(args);
     if (parentSignal?.aborted) {
       throw new Error('QuotaUsageProcessor 结算前已被信号中止');
     }
 
-    if (this.usageHook) {
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combinedSignal = parentSignal
-        ? AbortSignal.any([parentSignal, timeoutSignal])
-        : timeoutSignal;
-
-      if (combinedSignal.aborted) {
-        if (parentSignal?.aborted) {
-          throw new Error('QuotaUsageProcessor 结算前已被信号中止');
-        }
-        throw new Error(`QuotaUsageProcessor 结算执行超时 (超过 ${this.timeoutMs}ms)`);
-      }
-
-      const abortPromise = new Promise<never>((_, reject) => {
-        combinedSignal.addEventListener(
-          'abort',
-          () => {
-            if (parentSignal?.aborted) {
-              reject(new Error('QuotaUsageProcessor 运行中被父 AbortSignal 中止'));
-            } else {
-              reject(new Error(`QuotaUsageProcessor 结算执行超时 (超过 ${this.timeoutMs}ms)`));
-            }
-          },
-          { once: true }
-        );
+    const usageHook = this.usageHook;
+    if (usageHook) {
+      const settled = await runBoundedProcessorExecution({
+        parentSignal,
+        timeoutMs: this.timeoutMs,
+        timeoutMessage: `QuotaUsageProcessor 结算执行超时 (超过 ${this.timeoutMs}ms)`,
+        parentAbortMessage: 'QuotaUsageProcessor 运行中被父 AbortSignal 中止',
+        execute: signal => usageHook({ ...args, signal }),
       });
-
-      const hookPromise = Promise.resolve(
-        this.usageHook({
-          ...args,
-          signal: combinedSignal,
-        })
-      );
-
-      const settled = await Promise.race([hookPromise, abortPromise]);
 
       if (settled === false) {
         args.abort('Token Usage 权威结算失败，为防止越界已中止交付', { retry: false });

@@ -1,8 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
-import { createChildLogger } from '../../utils/logger.js';
-
-const log = createChildLogger('generate-file-deliverable');
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { createAgentTool } from '../registry.js';
@@ -63,6 +60,123 @@ export interface GenerateFileDeliverableExecutionContext {
 export interface GenerateFileDeliverableOptions {
   /** 本地文件存储根目录，默认 'data/media' */
   baseDir?: string;
+}
+
+interface GenerateFileIdempotencyRecord {
+  status: 'writing' | 'committed';
+  sessionId: string;
+  operatorId: string;
+  idempotencyKey: string;
+  fileName: string;
+  filePath: string;
+  relativePath: string;
+  sizeBytes: number;
+  format: 'csv' | 'md';
+  lineCount: number;
+  contentHash: string;
+}
+
+function getIdempotencyRecordPath(baseDir: string, sessionId: string, idempotencyKey: string): string {
+  const sessionHash = createHash('sha256').update(sessionId).digest('hex');
+  const keyHash = createHash('sha256').update(idempotencyKey).digest('hex');
+  return resolve(baseDir, '.kkbot-idempotency', sessionHash, `${keyHash}.json`);
+}
+
+function readIdempotencyRecord(recordPath: string): GenerateFileIdempotencyRecord | undefined {
+  if (!existsSync(recordPath)) return undefined;
+
+  try {
+    const parsed = JSON.parse(readFileSync(recordPath, 'utf8')) as Partial<GenerateFileIdempotencyRecord>;
+    if (
+      (parsed.status !== 'writing' && parsed.status !== 'committed') ||
+      typeof parsed.sessionId !== 'string' ||
+      typeof parsed.operatorId !== 'string' ||
+      typeof parsed.idempotencyKey !== 'string' ||
+      typeof parsed.fileName !== 'string' ||
+      typeof parsed.filePath !== 'string' ||
+      typeof parsed.relativePath !== 'string' ||
+      typeof parsed.sizeBytes !== 'number' ||
+      (parsed.format !== 'csv' && parsed.format !== 'md') ||
+      typeof parsed.lineCount !== 'number' ||
+      typeof parsed.contentHash !== 'string'
+    ) {
+      throw new Error('幂等记录字段不完整');
+    }
+    return parsed as GenerateFileIdempotencyRecord;
+  } catch (error) {
+    throw new Error(`读取幂等记录失败: ${recordPath}`, { cause: error });
+  }
+}
+
+function reserveIdempotencyRecord(recordPath: string, record: GenerateFileIdempotencyRecord): boolean {
+  mkdirSync(dirname(recordPath), { recursive: true });
+  try {
+    writeFileSync(recordPath, JSON.stringify(record), { encoding: 'utf8', flag: 'wx' });
+    return true;
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'EEXIST'
+    ) {
+      return false;
+    }
+    throw new Error(`创建幂等记录失败: ${recordPath}`, { cause: error });
+  }
+}
+
+function commitIdempotencyRecord(recordPath: string, record: GenerateFileIdempotencyRecord): void {
+  try {
+    writeFileSync(recordPath, JSON.stringify({ ...record, status: 'committed' }), 'utf8');
+  } catch (error) {
+    throw new Error(`提交幂等记录失败: ${recordPath}`, { cause: error });
+  }
+}
+
+function replayIdempotencyRecord(
+  record: GenerateFileIdempotencyRecord,
+  expectedFilePath: string,
+  normalizedBaseDir: string
+): GenerateFileDeliverableOutput {
+  if (record.filePath !== expectedFilePath) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      `幂等键 '${record.idempotencyKey}' 已绑定当前会话中的其他文件，拒绝产生第二次写入副作用`
+    );
+  }
+
+  const relativeRecordPath = relative(normalizedBaseDir, record.filePath);
+  if (relativeRecordPath.startsWith('..') || isAbsolute(relativeRecordPath)) {
+    throw new ToolValidationError('generate_file_deliverable', '幂等记录中的文件路径越界，拒绝继续执行');
+  }
+  if (!existsSync(record.filePath)) {
+    throw new Error(`幂等记录对应的文件不存在，拒绝重复写入: ${record.filePath}`);
+  }
+
+  let actualHash: string;
+  try {
+    actualHash = createHash('sha256').update(readFileSync(record.filePath)).digest('hex');
+  } catch (error) {
+    throw new Error(`读取幂等记录对应文件失败: ${record.filePath}`, { cause: error });
+  }
+  if (actualHash !== record.contentHash) {
+    throw new Error(`幂等记录对应文件内容已变化，拒绝猜测写入状态: ${record.filePath}`);
+  }
+
+  return {
+    success: true,
+    fileName: record.fileName,
+    filePath: record.filePath,
+    relativePath: record.relativePath,
+    sizeBytes: record.sizeBytes,
+    format: record.format,
+    lineCount: record.lineCount,
+    idempotencyKey: record.idempotencyKey,
+    sessionId: record.sessionId,
+    operatorId: record.operatorId,
+    alreadyExisted: true,
+  };
 }
 
 function escapeCsvCell(val: unknown): string {
@@ -152,6 +266,7 @@ export function executeGenerateFileDeliverableCore(
       '低风险写操作缺少明确的 operatorId 操作者身份'
     );
   }
+
   const normalizedBaseDir = resolve(baseDir);
   const targetDir = resolve(normalizedBaseDir, subDir, effectiveSessionId.trim());
   const relTargetDir = relative(normalizedBaseDir, targetDir);
@@ -179,7 +294,6 @@ export function executeGenerateFileDeliverableCore(
 
   let fileBuffer: Buffer;
   let lineCount = 0;
-
   if (normalizedFormat === 'csv') {
     if (!data || !Array.isArray(data)) {
       throw new ToolValidationError(
@@ -201,58 +315,85 @@ export function executeGenerateFileDeliverableCore(
     lineCount = content.split('\n').length;
   }
 
-  mkdirSync(targetDir, { recursive: true });
-
-  const relPath = relative(normalizedBaseDir, fullFilePath).replace(/\\/g, '/');
-
-  // 2. 单会话作用域幂等防重检查
-  const idempotencyScopeKey = `${effectiveSessionId}:${idempotencyKey.trim()}`;
+  const trimmedIdempotencyKey = idempotencyKey.trim();
+  const idempotencyScopeKey = `${effectiveSessionId}:${trimmedIdempotencyKey}`;
   const contentHash = createHash('sha256').update(fileBuffer).digest('hex');
-  const isKeyReplay = Boolean(
-    seenIdempotencyKeys && seenIdempotencyKeys[idempotencyScopeKey] === fullFilePath
+  const seenPath = seenIdempotencyKeys?.[idempotencyScopeKey];
+  if (seenPath && seenPath !== fullFilePath) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      `幂等键 '${trimmedIdempotencyKey}' 已绑定当前会话中的其他文件，拒绝产生第二次写入副作用`
+    );
+  }
+
+  const recordPath = getIdempotencyRecordPath(
+    normalizedBaseDir,
+    effectiveSessionId.trim(),
+    trimmedIdempotencyKey
   );
-
-  if (existsSync(fullFilePath)) {
-    try {
-      const existingBuffer = readFileSync(fullFilePath);
-      const existingHash = createHash('sha256').update(existingBuffer).digest('hex');
-      if (existingHash === contentHash || isKeyReplay) {
-        return {
-          success: true,
-          fileName: cleanFileName,
-          filePath: fullFilePath,
-          relativePath: relPath,
-          sizeBytes: fileBuffer.length,
-          format: normalizedFormat,
-          lineCount,
-          idempotencyKey: idempotencyKey.trim(),
-          sessionId: effectiveSessionId,
-          operatorId: effectiveOperatorId,
-          alreadyExisted: true,
-        };
-      }
-    } catch (readErr) {
-      log.warn({ err: readErr, fullFilePath }, '读取既有文件哈希失败，将重新写入文件');
+  const existingRecord = readIdempotencyRecord(recordPath);
+  if (existingRecord) {
+    const replay = replayIdempotencyRecord(existingRecord, fullFilePath, normalizedBaseDir);
+    if (existingRecord.status === 'writing') {
+      commitIdempotencyRecord(recordPath, existingRecord);
     }
+    if (seenIdempotencyKeys) seenIdempotencyKeys[idempotencyScopeKey] = fullFilePath;
+    return replay;
   }
 
-  writeFileSync(fullFilePath, fileBuffer);
-  if (seenIdempotencyKeys) {
-    seenIdempotencyKeys[idempotencyScopeKey] = fullFilePath;
+  mkdirSync(targetDir, { recursive: true });
+  const pendingRecord: GenerateFileIdempotencyRecord = {
+    status: 'writing',
+    sessionId: effectiveSessionId.trim(),
+    operatorId: effectiveOperatorId.trim(),
+    idempotencyKey: trimmedIdempotencyKey,
+    fileName: cleanFileName,
+    filePath: fullFilePath,
+    relativePath: relFilePath.replace(/\\/g, '/'),
+    sizeBytes: fileBuffer.length,
+    format: normalizedFormat,
+    lineCount,
+    contentHash,
+  };
+
+  if (!reserveIdempotencyRecord(recordPath, pendingRecord)) {
+    const concurrentRecord = readIdempotencyRecord(recordPath);
+    if (!concurrentRecord) {
+      throw new Error(`幂等记录竞争状态未知，拒绝继续写入: ${recordPath}`);
+    }
+    return replayIdempotencyRecord(concurrentRecord, fullFilePath, normalizedBaseDir);
   }
 
+  let alreadyExisted = false;
+  try {
+    if (existsSync(fullFilePath)) {
+      const existingHash = createHash('sha256').update(readFileSync(fullFilePath)).digest('hex');
+      if (existingHash === contentHash) {
+        alreadyExisted = true;
+      } else {
+        writeFileSync(fullFilePath, fileBuffer);
+      }
+    } else {
+      writeFileSync(fullFilePath, fileBuffer);
+    }
+    commitIdempotencyRecord(recordPath, pendingRecord);
+  } catch (error) {
+    throw new Error(`生成文件或提交幂等事实失败: ${fullFilePath}`, { cause: error });
+  }
+
+  if (seenIdempotencyKeys) seenIdempotencyKeys[idempotencyScopeKey] = fullFilePath;
   return {
     success: true,
     fileName: cleanFileName,
     filePath: fullFilePath,
-    relativePath: relPath,
+    relativePath: relFilePath.replace(/\\/g, '/'),
     sizeBytes: fileBuffer.length,
     format: normalizedFormat,
     lineCount,
-    idempotencyKey: idempotencyKey.trim(),
-    sessionId: effectiveSessionId,
-    operatorId: effectiveOperatorId,
-    alreadyExisted: false,
+    idempotencyKey: trimmedIdempotencyKey,
+    sessionId: effectiveSessionId.trim(),
+    operatorId: effectiveOperatorId.trim(),
+    alreadyExisted,
   };
 }
 

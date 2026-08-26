@@ -5,11 +5,7 @@ import {
   MASTRA_THREAD_ID_KEY,
   MASTRA_RESOURCE_ID_KEY,
 } from '@mastra/core/request-context';
-import type {
-  InputProcessorOrWorkflow,
-  OutputProcessorOrWorkflow,
-  ErrorProcessorOrWorkflow,
-} from '@mastra/core/processors';
+import type { ErrorProcessorOrWorkflow } from '@mastra/core/processors';
 import type { FullOutput } from '@mastra/core/stream';
 import {
   resolveModelTier,
@@ -17,7 +13,7 @@ import {
   type NormalizedModelTierInput,
 } from './routing/tier-policy.js';
 import type { MastraModelFactory, KKBotRequestContextValues } from './models/factory.js';
-import { splitKKBotProcessors } from './processors/chain.js';
+import { splitKKBotProcessors, type KKBotProcessorsOptions } from './processors/chain.js';
 import { extractTextFromMastraContent } from './processors/content-utils.js';
 
 export type AgentGenerateRawOutput = FullOutput<unknown>;
@@ -31,10 +27,8 @@ export interface KKBotAgentOptions {
   tools?: ToolsInput;
   /** 默认单轮推理最大 Step 数，默认 5 */
   maxSteps?: number;
-  /** 构造期静态绑定的输入处理器管道（按固定数组顺序执行） */
-  inputProcessors?: InputProcessorOrWorkflow[];
-  /** 构造期静态绑定的输出处理器管道（按固定数组顺序执行） */
-  outputProcessors?: OutputProcessorOrWorkflow[];
+  /** 只能配置固定 Processor 链的规则、hook 与阈值，不可替换或注入 Processor 实例 */
+  processorOptions?: KKBotProcessorsOptions;
   /** 构造期静态绑定的错误处理器管道（按固定数组顺序执行） */
   errorProcessors?: ErrorProcessorOrWorkflow[];
 }
@@ -87,9 +81,9 @@ export class KKBotAgent {
   constructor(options: KKBotAgentOptions) {
     this.modelFactory = options.modelFactory;
 
-    const defaultProcessors = splitKKBotProcessors();
-    const inputProcessors = options.inputProcessors ?? defaultProcessors.inputProcessors;
-    const outputProcessors = options.outputProcessors ?? defaultProcessors.outputProcessors;
+    const defaultProcessors = splitKKBotProcessors(options.processorOptions);
+    const inputProcessors = defaultProcessors.inputProcessors;
+    const outputProcessors = defaultProcessors.outputProcessors;
 
     this.mastraAgent = new Agent({
       id: options.id ?? 'kkbot-mastra-agent',
@@ -131,7 +125,7 @@ export class KKBotAgent {
       reqCtx.setRaw('abortSignal', options.abortSignal);
     }
     if (options.abortSignal?.aborted) {
-      throw new Error('Agent execution was aborted by AbortSignal');
+      throw new Error('Agent 执行已被 AbortSignal 中止');
     }
 
     const rawOutput = await this.mastraAgent.generate(normalizedInput.text, {
@@ -151,7 +145,7 @@ export class KKBotAgent {
     });
 
     if (options.abortSignal?.aborted) {
-      throw new Error('Agent execution was aborted by AbortSignal');
+      throw new Error('Agent 执行已被 AbortSignal 中止');
     }
     if (rawOutput.error) {
       const err =

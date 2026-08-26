@@ -8,6 +8,7 @@ import {
   createMastraSearchOrganizationTool,
   createMastraQueryKnowledgeBaseTool,
   createMastraGenerateFileDeliverableTool,
+  decorateKkTool,
 } from '@kkbot/agent';
 import { createClient, type Client, runKKBotMigrations, KKBotStore } from '@kkbot/store';
 import { loadConfigFromYaml, type AppConfig, DEFAULT_ALLOWED_MCP_HOSTS } from './config.js';
@@ -333,27 +334,25 @@ export class UnifiedBootstrapper {
                           throw new Error(`MCP Tool [${toolName}] 配置非法: 风险等级必须为 'low'`);
                         }
 
-                        const toolPolicy = Object.freeze({
-                          effect: matchingPolicy.effect ?? 'read',
-                          risk: matchingPolicy.risk ?? 'low',
-                          requiredPermission: matchingPolicy.requiredPermission,
-                          serialKey:
-                            matchingPolicy.effect === 'write' ? ('entity' as const) : undefined,
-                          idempotencyField:
-                            matchingPolicy.effect === 'write' ? 'idempotencyKey' : undefined,
-                        });
-
-                        Object.defineProperty(toolImpl, 'policy', {
-                          value: toolPolicy,
-                          writable: false,
-                          enumerable: true,
-                          configurable: false,
-                        });
+                        const decoratedTool = decorateKkTool(
+                          toolImpl as unknown as Tool<unknown, unknown, unknown, unknown>,
+                          {
+                            id: toolName,
+                            effect: matchingPolicy.effect ?? 'read',
+                            risk: matchingPolicy.risk ?? 'low',
+                            requiredPermission: matchingPolicy.requiredPermission,
+                            serialKey:
+                              matchingPolicy.effect === 'write' ? ('entity' as const) : undefined,
+                            idempotencyField:
+                              matchingPolicy.effect === 'write' ? 'idempotencyKey' : undefined,
+                            timeoutMs: serverConfig.timeout ?? cfg.mcp.perServerTimeoutMs,
+                          }
+                        );
 
                         if (discoveredMcpTools[toolName] || serverCandidateTools[toolName]) {
                           throw new Error(`MCP Tool 命名冲突: 工具 '${toolName}' 重复定义`);
                         }
-                        serverCandidateTools[toolName] = toolImpl as unknown as Tool<
+                        serverCandidateTools[toolName] = decoratedTool as unknown as Tool<
                           unknown,
                           unknown,
                           unknown,

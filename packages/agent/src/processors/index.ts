@@ -1,4 +1,4 @@
-export * from './unicode-normalizer.js';
+export { UnicodeNormalizer } from '@mastra/core/processors';
 export * from './prompt-injection-processor.js';
 export * from './sensitive-input-processor.js';
 export * from './quota-admission-processor.js';

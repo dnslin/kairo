@@ -1,4 +1,5 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 
@@ -10,6 +11,20 @@ export interface SseMcpServerFixtureOptions {
 export interface SseMcpServerFixture {
   start(): Promise<void>;
   close(): Promise<void>;
+}
+
+export async function getAvailableMcpFixturePort(): Promise<number> {
+  const probe = createNetServer();
+  await new Promise<void>((resolveProbe, rejectProbe) => {
+    probe.once('error', rejectProbe);
+    probe.listen(0, '127.0.0.1', () => resolveProbe());
+  });
+  const address = probe.address();
+  await new Promise<void>(resolveClose => probe.close(() => resolveClose()));
+  if (!address || typeof address === 'string') {
+    throw new Error('无法取得动态 MCP Fixture 端口');
+  }
+  return address.port;
 }
 
 /**

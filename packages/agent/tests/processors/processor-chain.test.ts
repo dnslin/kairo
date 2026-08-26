@@ -149,6 +149,40 @@ describe('KKBot Processors Suite (TDD Red -> Green)', () => {
       expect(result).toBeUndefined();
     });
 
+    it('工具返回值序列化失败时保留原始错误作为 cause 并阻断', () => {
+      const processor = new ToolResultSafetyProcessor();
+      const serializationError = new Error('固定的工具结果序列化错误');
+      // 模拟工具返回值在 JSON 序列化期间发生的固定异常。
+      const toolResult = {
+        toJSON() {
+          throw serializationError;
+        },
+      };
+      let thrown: unknown;
+
+      try {
+        processor.processToolResult({
+          stepNumber: 0,
+          toolName: 'broken_tool',
+          toolCallId: 'call_broken',
+          args: {},
+          result: toolResult,
+          systemMessages: [],
+          messages: [],
+          steps: [],
+          messageList: {} as unknown as MessageList,
+          retryCount: 0,
+          state: {},
+          abort: vi.fn() as unknown as (reason?: string, options?: unknown) => never,
+        });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).cause).toBe(serializationError);
+    });
+
     it('工具返回值中包含恶意注入指令时调用 abort({ retry: false }) 抛出 TripWire', () => {
       const processor = new ToolResultSafetyProcessor();
       const abort = vi.fn((reason?: string, opts?: unknown) => {
@@ -179,7 +213,74 @@ describe('KKBot Processors Suite (TDD Red -> Green)', () => {
         );
       }
     });
+    it('大 Tool result 只通过 MessageList 更新为摘要和引用', () => {
+      const processor = new ToolResultSafetyProcessor({ maxResultChars: 64 });
+      const updateToolInvocation = vi.fn().mockReturnValue(true);
+
+      processor.processToolResult({
+        stepNumber: 0,
+        toolName: 'external_fetch',
+        toolCallId: 'call_large',
+        args: {},
+        result: { rows: ['x'.repeat(200)] },
+        systemMessages: [],
+        messages: [],
+        steps: [],
+        messageList: { updateToolInvocation } as unknown as MessageList,
+        retryCount: 0,
+        state: {},
+        abort: vi.fn() as unknown as (reason?: string, options?: unknown) => never,
+      });
+
+      expect(updateToolInvocation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'tool-invocation',
+          toolInvocation: expect.objectContaining({
+            state: 'result',
+            toolCallId: 'call_large',
+            toolName: 'external_fetch',
+            result: expect.objectContaining({
+              truncated: true,
+              reference: 'tool:external_fetch:call_large',
+              summary: expect.any(String),
+            }),
+          }),
+        })
+      );
+
+      const invocation = updateToolInvocation.mock.calls[0]?.[0] as unknown as {
+        toolInvocation?: { result?: { summary?: string } };
+      };
+      expect(invocation.toolInvocation?.result?.summary?.length).toBeLessThanOrEqual(64);
+    });
+
+    it('超长工具结果写回失败时拒绝继续执行', () => {
+      const processor = new ToolResultSafetyProcessor({ maxResultChars: 64 });
+      // 模拟消息列表未能替换超长工具结果，必须拒绝继续执行。
+      const updateToolInvocation = vi.fn().mockReturnValue(false);
+
+      expect(() =>
+        processor.processToolResult({
+          stepNumber: 0,
+          toolName: 'external_fetch',
+          toolCallId: 'call_large_update_failed',
+          args: {},
+          result: { rows: ['x'.repeat(200)] },
+          systemMessages: [],
+          messages: [],
+          steps: [],
+          messageList: { updateToolInvocation } as unknown as MessageList,
+          retryCount: 0,
+          state: {},
+          abort: vi.fn() as unknown as (reason?: string, options?: unknown) => never,
+        })
+      ).toThrow('Tool result 过大但 MessageList 写回失败，拒绝继续执行');
+
+      expect(updateToolInvocation).toHaveBeenCalledOnce();
+    });
+
   });
+
 
   describe('ThinkingTagProcessor', () => {
     it('正确剥离模型输出中的 <think>...</think> 思考链内容', async () => {
@@ -240,6 +341,37 @@ describe('KKBot Processors Suite (TDD Red -> Green)', () => {
       });
 
       expect(result).toBeDefined();
+    });
+    it('仅有 Knowledge Tool 调用名但没有成功结果时仍替换为未找到依据', async () => {
+      const processor = new KnowledgeGroundingProcessor({ requireGrounding: true });
+      const asstMessage = createMastraTextMessage({
+        id: 'msg_asst_name_only',
+        threadId: 'thread_1',
+        role: 'assistant',
+        content: '模型未经来源验证的回答',
+      });
+
+      const result = await processor.processOutputResult({
+        messages: [asstMessage as unknown as MastraDBMessage],
+        messageList: {} as unknown as MessageList,
+        result: {
+          text: '模型未经来源验证的回答',
+          usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+          finishReason: 'stop',
+          steps: [
+            {
+              toolCalls: [{ toolName: 'query_knowledge_base' }],
+              toolResults: [],
+            },
+          ],
+        } as never,
+        retryCount: 0,
+        state: {},
+        abort: vi.fn() as unknown as (reason?: string, options?: unknown) => never,
+      });
+
+      const content = result[0]?.content as { parts?: Array<{ text?: string }> };
+      expect(content.parts?.[0]?.text).toContain('未找到企业依据');
     });
     it('父 AbortSignal 已中止时必须 fail-closed 抛出异常，严禁返回未验证消息', async () => {
       const processor = new KnowledgeGroundingProcessor({ requireGrounding: true });

@@ -109,6 +109,7 @@ export {
 } from './testing/fake-model.js';
 export {
   createSseMcpServerFixture,
+  getAvailableMcpFixturePort,
   type SseMcpServerFixtureOptions,
   type SseMcpServerFixture,
 } from './testing/sse-mcp-fixture.js';

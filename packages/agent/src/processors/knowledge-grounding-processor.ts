@@ -1,4 +1,5 @@
 import type { ProcessOutputResultArgs, Processor } from '@mastra/core/processors';
+import { getProcessorParentSignal, runBoundedProcessorExecution } from './processor-utils.js';
 import type { MastraDBMessage } from '@mastra/core/agent';
 import { replaceMastraContentText } from './content-utils.js';
 
@@ -38,53 +39,18 @@ export class KnowledgeGroundingProcessor implements Processor<'knowledge-groundi
   }
 
   async processOutputResult(args: ProcessOutputResultArgs): Promise<MastraDBMessage[]> {
-    const parentSignal =
-      args.abortSignal ??
-      (args.requestContext && typeof args.requestContext.get === 'function'
-        ? args.requestContext.get('abortSignal')
-        : undefined);
-
+    const parentSignal = getProcessorParentSignal(args);
     if (parentSignal?.aborted) {
       throw new Error('KnowledgeGroundingProcessor 校验前已被信号中止');
     }
     if (this.groundingHook) {
-      const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
-      const combinedSignal = parentSignal
-        ? AbortSignal.any([parentSignal, timeoutSignal])
-        : timeoutSignal;
-
-      if (combinedSignal.aborted) {
-        if (parentSignal?.aborted) {
-          throw new Error('KnowledgeGroundingProcessor 被父 AbortSignal 中止');
-        }
-        throw new Error(`KnowledgeGroundingProcessor 校验超时 (超过 ${this.timeoutMs}ms)`);
-      }
-
-      const abortPromise = new Promise<never>((_, reject) => {
-        combinedSignal.addEventListener(
-          'abort',
-          () => {
-            if (parentSignal?.aborted) {
-              reject(new Error('KnowledgeGroundingProcessor 运行中被父 AbortSignal 中止'));
-            } else {
-              reject(new Error(`KnowledgeGroundingProcessor 校验超时 (超过 ${this.timeoutMs}ms)`));
-            }
-          },
-          { once: true }
-        );
+      const hookResult = await runBoundedProcessorExecution({
+        parentSignal,
+        timeoutMs: this.timeoutMs,
+        timeoutMessage: `KnowledgeGroundingProcessor 校验超时 (超过 ${this.timeoutMs}ms)`,
+        parentAbortMessage: 'KnowledgeGroundingProcessor 运行中被父 AbortSignal 中止',
+        execute: signal => this.groundingHook!({ ...args, signal }),
       });
-
-      const hookPromise = Promise.resolve(
-        this.groundingHook({
-          ...args,
-          signal: combinedSignal,
-        })
-      );
-
-      const hookResult = await Promise.race([hookPromise, abortPromise]);
-      if (parentSignal?.aborted) {
-        throw new Error('KnowledgeGroundingProcessor 运行中被父 AbortSignal 中止');
-      }
       if (typeof hookResult === 'boolean') {
         if (!hookResult) {
           return this.replaceAssistantContent(args.messages, DEFAULT_NO_GROUNDING_TEXT);
@@ -92,24 +58,79 @@ export class KnowledgeGroundingProcessor implements Processor<'knowledge-groundi
       } else if (typeof hookResult === 'string') {
         return this.replaceAssistantContent(args.messages, hookResult);
       }
-    } else if (this.requireGrounding) {
-      // 检查 steps 中是否有知识来源调用 (toolCalls)
-      const hasKnowledgeSource = args.result.steps.some(step => {
-        if (!step.toolCalls || !Array.isArray(step.toolCalls)) return false;
-        return step.toolCalls.some(tc => {
-          const rawTc = tc as unknown as Record<string, unknown>;
-          const name = typeof rawTc.toolName === 'string' ? rawTc.toolName : '';
-          return name.includes('knowledge') || name.includes('kb');
-        });
-      });
-
-      if (!hasKnowledgeSource) {
-        return this.replaceAssistantContent(args.messages, DEFAULT_NO_GROUNDING_TEXT);
-      }
+    } else if (this.requireGrounding && !this.hasGroundingSource(args.result.steps)) {
+      return this.replaceAssistantContent(args.messages, DEFAULT_NO_GROUNDING_TEXT);
     }
 
     return args.messages;
   }
+
+  private hasGroundingSource(steps: unknown[]): boolean {
+    for (const rawStep of steps) {
+      if (!rawStep || typeof rawStep !== 'object') continue;
+      const step = rawStep as Record<string, unknown>;
+      const toolCalls = Array.isArray(step.toolCalls) ? step.toolCalls : [];
+      const knowledgeCallIds = new Set<string>();
+
+      for (const rawCall of toolCalls) {
+        if (!rawCall || typeof rawCall !== 'object') continue;
+        const call = rawCall as Record<string, unknown>;
+        const toolName =
+          typeof call.toolName === 'string'
+            ? call.toolName
+            : typeof call.name === 'string'
+              ? call.name
+              : '';
+        const callId =
+          typeof call.toolCallId === 'string'
+            ? call.toolCallId
+            : typeof call.id === 'string'
+              ? call.id
+              : '';
+        if (toolName.includes('knowledge') || toolName.includes('kb')) {
+          if (callId) knowledgeCallIds.add(callId);
+        }
+      }
+
+      const toolResults = Array.isArray(step.toolResults) ? step.toolResults : [];
+      for (const rawResult of toolResults) {
+        if (!rawResult || typeof rawResult !== 'object') continue;
+        const toolResult = rawResult as Record<string, unknown>;
+        const toolName = typeof toolResult.toolName === 'string' ? toolResult.toolName : '';
+        const callId =
+          typeof toolResult.toolCallId === 'string'
+            ? toolResult.toolCallId
+            : typeof toolResult.id === 'string'
+              ? toolResult.id
+              : '';
+        if (
+          !(toolName.includes('knowledge') || toolName.includes('kb') || knowledgeCallIds.has(callId))
+        ) {
+          continue;
+        }
+        const value = toolResult.result ?? toolResult.output ?? toolResult.content;
+        if (this.hasGroundingEvidence(value)) return true;
+      }
+    }
+    return false;
+  }
+
+  private hasGroundingEvidence(value: unknown): boolean {
+    if (typeof value === 'string') return value.trim().length > 0;
+    if (Array.isArray(value)) return value.length > 0;
+    if (!value || typeof value !== 'object') return false;
+
+    const record = value as Record<string, unknown>;
+    if (record.success === false) return false;
+    if (typeof record.count === 'number') return record.count > 0;
+    for (const key of ['chunks', 'sources', 'citations', 'results', 'content']) {
+      const candidate = record[key];
+      if (Array.isArray(candidate) && candidate.length > 0) return true;
+      if (typeof candidate === 'string' && candidate.trim().length > 0) return true;
+    }
+    return false;
+  }
+
 
   private replaceAssistantContent(messages: MastraDBMessage[], newText: string): MastraDBMessage[] {
     return messages.map(msg => {

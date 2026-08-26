@@ -3,7 +3,7 @@ import type {
   OutputProcessorOrWorkflow,
   Processor,
 } from '@mastra/core/processors';
-import { UnicodeNormalizer } from './unicode-normalizer.js';
+import { UnicodeNormalizer } from '@mastra/core/processors';
 import {
   PromptInjectionProcessor,
   type PromptInjectionProcessorOptions,
