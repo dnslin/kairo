@@ -44,7 +44,7 @@ describe('AcquisitionLedger & Reverse Topological Shutdown', () => {
     });
 
     // Before transfer, reverse topological order should close Mastra first, then Storage/DB, then Lock
-    const order = ledger.getReverseTopologicalOrder().map((e) => e.id);
+    const order = ledger.getReverseTopologicalOrder().map(e => e.id);
     expect(order[0]).toBe('Mastra');
     expect(order[order.length - 1]).toBe('InstanceLock');
   });
@@ -131,5 +131,19 @@ describe('AcquisitionLedger & Reverse Topological Shutdown', () => {
     expect(result.errors.length).toBe(1);
     expect(result.errors[0].resourceId).toBe('Mastra');
     expect(result.errors[0].error.message).toBe('Mastra shutdown crashed');
+  });
+  it('两个阻塞 Finalizer 共享同一 Shutdown deadline，不按资源倍增', async () => {
+    const ledger = new AcquisitionLedger('gen-deadline');
+    const gate = new WorkAdmissionGate('gen-deadline');
+    const blockingFinalizer = () => new Promise<void>(() => {});
+    ledger.record({ id: 'resource-a', owner: 'test', finalizer: blockingFinalizer });
+    ledger.record({ id: 'resource-b', owner: 'test', finalizer: blockingFinalizer });
+
+    const startedAt = Date.now();
+    const result = await executeReverseShutdown({ ledger, gate, deadlineMs: 80 });
+
+    expect(Date.now() - startedAt).toBeLessThan(300);
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors.some(error => error.error.message.includes('deadline 已耗尽'))).toBe(true);
   });
 });

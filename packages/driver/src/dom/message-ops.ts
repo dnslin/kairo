@@ -1,12 +1,11 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import type { CdpClient } from '../cdp/client.js';
-import { toSafeString } from '../bridge/converter.js';
+import { normalizeNativeMessage } from '../bridge/converter.js';
 import type {
   KK9FileInfo,
   KK9ImageInfo,
   KK9Message,
-  KK9MessageOrigin,
   KK9MessageType,
   KK9MentionInfo,
   KK9ReplyInfo,
@@ -47,6 +46,7 @@ interface RawMessageData {
   time: string;
   content: string;
   isMe: boolean;
+  timestamp?: number;
   messageType?: KK9MessageType;
   atMe?: boolean;
   atAll?: boolean;
@@ -158,6 +158,14 @@ export class MessageOps {
           let detectedType = undefined;
           const quoteEl = item.querySelector('.rcd-quote, .quote-content, .refer-content, .refer-msg, .reply-content, [class*="refer"], [class*="quote"]');
           const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
+          const nativeTimestampValue =
+            vueMsg?.timestamp ?? vueMsg?.sendTime ?? vueMsg?.sendTimeStamp ?? vueMsg?.timeStamp;
+          const nativeTimestamp =
+            typeof nativeTimestampValue === 'number'
+              ? nativeTimestampValue < 10000000000
+                ? nativeTimestampValue * 1000
+                : nativeTimestampValue
+              : 0;
           if (vueMsg && vueMsg.contentType === 13 && vueMsg.content?.replyedName) {
             const replyToSender = vueMsg.content.replyedName;
             const rawReplyContent = vueMsg.content.replyedContent;
@@ -277,6 +285,7 @@ export class MessageOps {
               time,
               content: content || (images.length > 0 ? '[图片]' : ''),
               isMe,
+              timestamp: nativeTimestamp,
               messageType: detectedType,
               atMe,
               atAll,
@@ -296,58 +305,20 @@ export class MessageOps {
       const rawMessages = await this.cdp.evaluate<RawMessageData[]>(script);
       if (!Array.isArray(rawMessages)) return [];
 
-      const now = Date.now();
-      return rawMessages.map(raw => {
-        const fp = MessageOps.generateFingerprint(
-          currentSessionId,
-          raw.sender,
-          raw.time,
-          raw.content
-        );
-        const rawId = raw.raw?.msgID ?? raw.raw?.msgId ?? raw.raw?.messageId ?? raw.raw?.id ?? fp;
-        const msgIdStr = toSafeString(rawId, fp);
-        const isBotEcho = Boolean(
-          knownBotSentIds && (knownBotSentIds.has(fp) || knownBotSentIds.has(msgIdStr))
-        );
-        const isMe = Boolean(
-          raw.isMe ||
-          (currentUserId !== undefined &&
-            (raw.senderId === toSafeString(currentUserId) ||
-              raw.sender === toSafeString(currentUserId)))
-        );
-        const origin: KK9MessageOrigin =
-          raw.messageType === 'system'
-            ? 'system'
-            : isMe
-              ? isBotEcho
-                ? 'bot_echo'
-                : 'operator'
-              : 'external';
-        const finalMessageId = msgIdStr || fp;
-        const finalId = finalMessageId || fp;
-        return {
-          id: finalId,
-          messageId: finalMessageId,
-          sessionId: currentSessionId,
-          sessionName: currentSessionName,
-          sessionType: currentSessionType,
-          origin,
-          sender: raw.sender,
-          senderId: raw.senderId,
-          content: raw.content,
-          time: raw.time,
-          isMe,
-          timestamp: now,
-          messageType: raw.messageType,
-          atMe: raw.atMe,
-          atAll: raw.atAll,
-          mentions: raw.mentions,
-          replyTo: raw.replyTo,
-          fileInfo: raw.fileInfo,
-          images: raw.images,
-          raw: raw.raw,
-        };
-      });
+      return normalizeNativeMessage(
+        {
+          messages: rawMessages,
+          session: {
+            id: currentSessionId,
+            name: currentSessionName,
+            type: currentSessionType,
+          },
+        },
+        {
+          currentUserId,
+          knownBotSentIds,
+        }
+      );
     } catch (err) {
       log.error({ err: String(err) }, '获取消息列表失败');
       throw new DomError(

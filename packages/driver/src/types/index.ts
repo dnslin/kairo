@@ -3,16 +3,51 @@ import type { RenderCanvasOptions } from './card.js';
 /**
  * @kkbot/driver 强类型定义
  */
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
+
+export type DriverHealthKind =
+  | 'cdp_invalidated'
+  | 'event_bridge_invalidated'
+  | 'connection_identity_mismatch';
+
+export interface CdpConnectionIdentity {
+  startupGenerationId: string;
+  connectionId: string;
+  targetId: string;
+  webSocketDebuggerUrl: string;
+  connectedAt: number;
+}
+
+export interface CdpConnectionLostEvent {
+  startupGenerationId: string;
+  connectionIdentity: CdpConnectionIdentity | null;
+  observedAt: number;
+  cause: Error;
+}
+
+export interface DriverHealthEvent {
+  kind: DriverHealthKind;
+  startupGenerationId: string;
+  connectionIdentity: CdpConnectionIdentity | null;
+  expectedConnectionIdentity?: CdpConnectionIdentity | null;
+  observedAt: number;
+  cause: Error;
+}
+
+export interface DriverHealthSnapshot {
+  startupGenerationId: string;
+  cdpStatus: ConnectionStatus;
+  cdpConnectionIdentity: CdpConnectionIdentity | null;
+  eventBridgeAttached: boolean;
+  eventBridgeConnectionIdentity: CdpConnectionIdentity | null;
+}
 
 export type KK9SessionType = 'private' | 'group';
 
 export type KK9MessageType = 'text' | 'image' | 'file' | 'quote' | 'rich-text' | 'system';
 
-/**
- * 消息来源身份：外部成员 (external)、操作员 (operator)、机器人回显 (bot_echo)、系统消息 (system)
- */
-export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system';
+/** 消息来源身份；unknown 表示当前可观察事实不足以安全分类。 */
+export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system' | 'unknown';
 export type InboundMessageOrigin = KK9MessageOrigin;
 
 /**
@@ -218,9 +253,6 @@ export interface CdpConfig {
   pageMatch: string;
   timeoutMs?: number;
   heartbeatIntervalMs?: number;
-  maxReconnectRetries?: number;
-  reconnectBaseDelayMs?: number;
-  reconnectMaxDelayMs?: number;
 }
 
 export interface PollingConfig {
@@ -231,15 +263,27 @@ export interface PollingConfig {
   /** 是否允许轮询自动在未读会话间切换（设为 false 时仅在当前激活会话监听） */
   autoSwitchSession?: boolean;
 }
+export interface CompensationScanOptions {
+  fromTimestamp: number;
+  toTimestamp?: number;
+  sessionIds?: readonly string[];
+  maxMessagesPerSession?: number;
+  switchDelayMs?: number;
+}
 
 export interface DriverConfig {
   cdp: CdpConfig;
   currentUserId?: string | number;
   selectors?: Partial<SelectorsConfig>;
   polling?: Partial<PollingConfig>;
+  /** Composition Root 分配的唯一启动代次。 */
+  startupGenerationId?: string;
 }
+
 export interface EventBridgeConfig {
   cdp: CdpConfig;
+  /** Composition Root 分配的唯一启动代次。 */
+  startupGenerationId?: string;
   /** 自定义 CDP 绑定名称 (默认 '__kkbot_native_bridge') */
   bindingName?: string;
   /** 去重指纹最大缓存数量 (默认 10000) */
@@ -314,7 +358,9 @@ export interface DriverEvents {
   recalled: (event: KK9RecalledEvent) => void;
   error: (error: Error) => void;
   heartbeat: (uptimeMs: number) => void;
+  health: (event: DriverHealthEvent) => void;
 }
+
 /**
  * 原生事件桥事件契约（与 DriverEvents 100% 同构）
  */

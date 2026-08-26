@@ -176,4 +176,30 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
 
     await client.disconnect();
   });
+  it('意外 WebSocket 断线不应在当前进程自动重连', async () => {
+    const client = new CdpClient({
+      url: `http://127.0.0.1:${port}`,
+      pageMatch: 'renderer.html',
+      heartbeatIntervalMs: 100_000,
+    });
+    const statusList: string[] = [];
+    const disconnected = Promise.withResolvers<void>();
+    client.on('status', status => {
+      statusList.push(status);
+      if (status === 'disconnected') {
+        disconnected.resolve();
+      }
+    });
+
+    await client.connect();
+    const serverSocket = [...wss.clients][0];
+    expect(serverSocket).toBeDefined();
+    serverSocket?.terminate();
+    await disconnected.promise;
+
+    expect(statusList).toContain('disconnected');
+    expect(statusList).not.toContain('reconnecting');
+    expect(client.getStatus()).toBe('disconnected');
+    await client.disconnect();
+  });
 });

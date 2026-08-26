@@ -189,21 +189,27 @@ export class InstanceLock {
 
     try {
       if (this.guardTx) {
+        const transaction = this.guardTx;
         try {
-          await this.guardTx.rollback();
+          await transaction.rollback();
         } catch (txErr: unknown) {
           cleanupErrors.push(txErr instanceof Error ? txErr : new Error(String(txErr)));
+        } finally {
+          try {
+            const closable = transaction as Transaction & { close?: () => void };
+            closable.close?.();
+          } catch (closeErr: unknown) {
+            cleanupErrors.push(closeErr instanceof Error ? closeErr : new Error(String(closeErr)));
+          }
+          this.guardTx = null;
         }
-        this.guardTx = null;
       }
 
       if (this.guardClient) {
         try {
           this.guardClient.close();
         } catch (clientErr: unknown) {
-          cleanupErrors.push(
-            clientErr instanceof Error ? clientErr : new Error(String(clientErr))
-          );
+          cleanupErrors.push(clientErr instanceof Error ? clientErr : new Error(String(clientErr)));
         }
         this.guardClient = null;
       }
@@ -216,9 +222,7 @@ export class InstanceLock {
             ? unlinkErr.code
             : undefined;
         if (code !== 'ENOENT') {
-          cleanupErrors.push(
-            unlinkErr instanceof Error ? unlinkErr : new Error(String(unlinkErr))
-          );
+          cleanupErrors.push(unlinkErr instanceof Error ? unlinkErr : new Error(String(unlinkErr)));
         }
       }
     } finally {

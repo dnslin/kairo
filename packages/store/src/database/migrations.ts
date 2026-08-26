@@ -216,6 +216,12 @@ CREATE TABLE IF NOT EXISTS delivery_input_messages (
 
 CREATE INDEX IF NOT EXISTS idx_delivery_input_messages_msg ON delivery_input_messages(session_id, message_id);
 `;
+export const MIGRATION_0007_MESSAGE_PROCESSING_SQL = `
+ALTER TABLE session_messages ADD COLUMN processing_state TEXT NOT NULL DEFAULT 'raw_only';
+ALTER TABLE session_messages ADD COLUMN processing_run_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_session_messages_processing_state
+  ON session_messages(session_id, message_id, processing_state);
+`;
 
 /**
  * KKBot 内部版本化迁移脚本定义列表
@@ -251,6 +257,11 @@ export const KKBOT_MIGRATIONS: readonly Migration[] = [
     id: '0006_delivery_input_messages',
     name: 'Add delivery_input_messages mapping table for causal delivery tracking',
     up: MIGRATION_0006_DELIVERY_INPUT_MESSAGES_SQL,
+  },
+  {
+    id: '0007_message_processing_state',
+    name: 'Add persistent inbound processing state for compensation recovery',
+    up: MIGRATION_0007_MESSAGE_PROCESSING_SQL,
   },
 ];
 

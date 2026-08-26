@@ -6,7 +6,12 @@ import type {
   SendOptions,
   SendResult,
 } from '@kkbot/driver';
-import type { KKBotStore, SessionMessage, SessionMode, ComplianceDeletionCommand } from '@kkbot/store';
+import type {
+  KKBotStore,
+  SessionMessage,
+  SessionMode,
+  ComplianceDeletionCommand,
+} from '@kkbot/store';
 import type {
   AgentMemoryManager,
   AgentReplyResult,
@@ -120,6 +125,11 @@ export interface CoordinatorConfig {
   ) => Promise<string[] | undefined> | string[] | undefined;
 }
 
+export interface WorkAdmission {
+  readonly startupGenerationId: string;
+  isOpen(): boolean;
+  assertOpen(): void;
+}
 /**
  * SessionCoordinator 精确故障与崩溃注入钩子 (测试与 Oracle 验证专用)
  */
@@ -176,6 +186,8 @@ export type ComplianceDeletionAuthorizer = (
 export interface SessionCoordinatorOptions {
   /** 底层事件驱动 CDP 驱动器 */
   driver: KK9Driver;
+  /** 唯一 Composition Root 的工作准入门。 */
+  admissionGate?: WorkAdmission;
   /** 统一持久化存储中枢 (注入单库 LibSQL 实例) */
   store: KKBotStore;
   /** Mastra-native Agent 核心执行入口 (Issue #174/#176) */
@@ -223,7 +235,7 @@ export interface CoordinatorEvents {
   recall_fused: (sessionId: string, recalledMessageId: string, remainingCount: number) => void;
   /** 人机协同退避触发事件 */
   takeover: (sessionId: string, takeoverUntil: number, message?: KK9Message) => void;
-  /** 消息被静默拦截抑制事件 (处于人工退避、会话禁用、空队列或被撤回) */
+  /** 消息被静默拦截抑制事件 (处于人工退避、会话禁用、空队列、未知来源或被撤回) */
   suppressed: (
     sessionId: string,
     reason:
@@ -232,7 +244,8 @@ export interface CoordinatorEvents {
       | 'empty_queue'
       | 'recalled'
       | 'tombstoned'
-      | 'in_flight_aborted',
+      | 'in_flight_aborted'
+      | 'unknown_source',
     message?: KK9Message
   ) => void;
   /** 在途请求被 50ms 瞬时中断切断事件 */
@@ -246,11 +259,7 @@ export interface CoordinatorEvents {
   /** Agent 认知微内核生成被打断事件 */
   agent_aborted: (sessionId: string) => void;
   /** Assistant Memory 显式提交失败事件 */
-  assistant_memory_save_failed: (
-    sessionId: string,
-    deliveryId: string,
-    error: unknown
-  ) => void;
+  assistant_memory_save_failed: (sessionId: string, deliveryId: string, error: unknown) => void;
   approval_suspended: (sessionId: string, task: ApprovalTask) => void;
   /** 主管审批决议已流转并恢复事件 */
   approval_resolved: (leaderId: string, task: ApprovalTask, approved: boolean) => void;

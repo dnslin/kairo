@@ -147,7 +147,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       expect(msg.origin).toBe('bot_echo');
       expect(msg.isMe).toBe(true);
     });
-    it('反例：isMe=true, botEcho=true/isBot=true 但 ID 不在已登记集合时仍必须严格判定为 operator', () => {
+    it('反例：isMe=true 且消息 ID 不在 Bot 发出集合时仍判定为 operator', () => {
       const payload = {
         id: 'unregistered_msg_999',
         sessionId: 'session_user_003',

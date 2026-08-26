@@ -1,9 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import EventEmitter from 'node:events';
 import { CdpClient } from '../cdp/client.js';
 import type {
   CdpConfig,
+  CdpConnectionIdentity,
+  CdpConnectionLostEvent,
   ConnectionStatus,
   DriverConfig,
+  DriverHealthEvent,
   EventBridgeConfig,
   EventBridgeEvents,
   KK9Message,
@@ -36,27 +40,33 @@ export declare interface KK9EventBridge {
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare
 export class KK9EventBridge extends EventEmitter {
   private readonly cdp: CdpClient;
+  private readonly startupGenerationId: string;
   private readonly bindingName: string;
   private readonly maxFingerprints: number;
   private readonly currentUserId?: string | number;
   private readonly enableRecallHook: boolean;
   private attached = false;
   private isConnecting = false;
+  private lastAttachError: Error | null = null;
+  private injectionIdentity: CdpConnectionIdentity | null = null;
   private readonly knownFingerprints = new Set<string>();
   private readonly knownRecalledIds = new Set<string>();
-  private readonly knownBotSentIds = new Set<string>();
+  private readonly knownBotSentIds: Set<string>;
   constructor(
     config: EventBridgeConfig | DriverConfig | { cdp: CdpConfig },
     cdpClient?: CdpClient
   ) {
     super();
     const bridgeConfig = config as EventBridgeConfig;
+    this.startupGenerationId = bridgeConfig.startupGenerationId ?? randomUUID();
     this.bindingName = bridgeConfig.bindingName || DEFAULT_BINDING_NAME;
     this.maxFingerprints = bridgeConfig.maxFingerprints || DEFAULT_MAX_FINGERPRINTS;
     this.currentUserId = bridgeConfig.currentUserId;
     this.enableRecallHook = bridgeConfig.enableRecallHook ?? true;
+    this.knownBotSentIds = bridgeConfig.knownBotSentIds ?? new Set<string>();
 
-    this.cdp = cdpClient || new CdpClient(config.cdp);
+    this.cdp =
+      cdpClient || new CdpClient(config.cdp, { startupGenerationId: this.startupGenerationId });
     this.wireCdpEvents();
   }
 
@@ -65,6 +75,13 @@ export class KK9EventBridge extends EventEmitter {
    */
   public getStatus(): ConnectionStatus {
     return this.cdp.getStatus();
+  }
+  public getStartupGenerationId(): string {
+    return this.startupGenerationId;
+  }
+
+  public getConnectionIdentity(): CdpConnectionIdentity | null {
+    return this.injectionIdentity;
   }
 
   /**
@@ -116,8 +133,17 @@ export class KK9EventBridge extends EventEmitter {
       if (this.getStatus() !== 'connected') {
         await this.cdp.connect();
       }
-      await this.reattach();
-      log.info({ binding: this.bindingName }, 'KK9 原生事件直连桥就绪');
+      const attached = await this.reattach();
+      if (!attached) {
+        const cause =
+          this.lastAttachError ??
+          new Error(`EventBridge 注入失败 (启动代次: ${this.startupGenerationId})`);
+        throw new Error(`EventBridge 注入失败 (启动代次: ${this.startupGenerationId})`, { cause });
+      }
+      log.info(
+        { binding: this.bindingName, startupGenerationId: this.startupGenerationId },
+        'KK9 原生事件直连桥就绪'
+      );
     } finally {
       this.isConnecting = false;
     }
@@ -128,28 +154,99 @@ export class KK9EventBridge extends EventEmitter {
    */
   public async disconnect(): Promise<void> {
     this.attached = false;
+    this.injectionIdentity = null;
     await this.cdp.disconnect();
-    log.info('KK9 原生事件直连桥已断开');
+    log.info({ startupGenerationId: this.startupGenerationId }, 'KK9 原生事件直连桥已断开');
   }
 
   /**
    * 重新注入 CDP Binding 与渲染进程 Hook 脚本
    */
   public async reattach(): Promise<boolean> {
-    try {
-      await this.cdp.sendCommand('Runtime.enable');
-      await this.cdp.sendCommand('Runtime.addBinding', { name: this.bindingName }).catch(() => {});
-
-      const hookScript = this.buildInBrowserHookScript();
-      await this.cdp.evaluate(hookScript);
-      this.attached = true;
-      log.debug({ binding: this.bindingName }, '原生事件桥 Hook 注入成功');
+    const connectionIdentity = this.getCdpConnectionIdentity();
+    if (this.attached && this.sameConnectionIdentity(this.injectionIdentity, connectionIdentity)) {
       return true;
-    } catch (err) {
-      log.warn({ err: String(err) }, '注入原生事件桥 Hook 失败');
-      this.attached = false;
+    }
+
+    if (connectionIdentity && connectionIdentity.startupGenerationId !== this.startupGenerationId) {
+      const cause = new Error(
+        `CDP 连接身份属于启动代次 ${connectionIdentity.startupGenerationId}，期望 ${this.startupGenerationId}`
+      );
+      this.lastAttachError = cause;
+      this.emitHealth('connection_identity_mismatch', cause, connectionIdentity);
       return false;
     }
+
+    try {
+      await this.cdp.sendCommand('Runtime.enable');
+      await this.cdp.sendCommand('Runtime.addBinding', { name: this.bindingName });
+
+      const hookScript = this.buildInBrowserHookScript(connectionIdentity);
+      const injectionResult = await this.cdp.evaluate<{
+        ok?: boolean;
+        busFound?: boolean;
+        sessionsHooked?: number;
+      }>(hookScript);
+      if (!injectionResult?.ok || injectionResult.busFound !== true) {
+        throw new Error(
+          `EventBridge 注入返回无效: ok=${String(injectionResult?.ok)}, busFound=${String(injectionResult?.busFound)}, sessionsHooked=${String(injectionResult?.sessionsHooked)}`
+        );
+      }
+      this.injectionIdentity = connectionIdentity;
+      this.lastAttachError = null;
+      this.attached = true;
+      log.debug(
+        { binding: this.bindingName, startupGenerationId: this.startupGenerationId },
+        '原生事件桥 Hook 注入成功'
+      );
+      return true;
+    } catch (err) {
+      const cause = err instanceof Error ? err : new Error(String(err));
+      this.lastAttachError = cause;
+      log.warn(
+        { err: cause.message, startupGenerationId: this.startupGenerationId },
+        '注入原生事件桥 Hook 失败'
+      );
+      this.attached = false;
+      this.injectionIdentity = null;
+      this.emitHealth('event_bridge_invalidated', cause, connectionIdentity);
+      return false;
+    }
+  }
+
+  private getCdpConnectionIdentity(): CdpConnectionIdentity | null {
+    const cdp = this.cdp as CdpClient & {
+      getConnectionIdentity?: () => CdpConnectionIdentity | null;
+    };
+    return typeof cdp.getConnectionIdentity === 'function' ? cdp.getConnectionIdentity() : null;
+  }
+  private sameConnectionIdentity(
+    left: CdpConnectionIdentity | null,
+    right: CdpConnectionIdentity | null
+  ): boolean {
+    if (left === null || right === null) {
+      return left === right;
+    }
+    return (
+      left.startupGenerationId === right.startupGenerationId &&
+      left.connectionId === right.connectionId
+    );
+  }
+
+  private emitHealth(
+    kind: DriverHealthEvent['kind'],
+    cause: Error,
+    connectionIdentity: CdpConnectionIdentity | null
+  ): void {
+    const event: DriverHealthEvent = {
+      kind,
+      startupGenerationId: this.startupGenerationId,
+      connectionIdentity,
+      expectedConnectionIdentity: this.injectionIdentity,
+      observedAt: Date.now(),
+      cause,
+    };
+    this.emit('health', event);
   }
 
   /**
@@ -167,15 +264,59 @@ export class KK9EventBridge extends EventEmitter {
    * 处理从 CDP Runtime.bindingCalled 接收到的事件数据
    */
   private handleBindingPayload(payloadStr: string): void {
-    let parsed: { type?: string; data?: unknown; event?: string } | null = null;
+    if (!this.attached) {
+      return;
+    }
+
+    let parsed: {
+      type?: string;
+      data?: unknown;
+      event?: string;
+      generationId?: string;
+      connectionId?: string;
+    } | null = null;
     try {
-      parsed = JSON.parse(payloadStr) as { type?: string; data?: unknown; event?: string };
+      parsed = JSON.parse(payloadStr) as {
+        type?: string;
+        data?: unknown;
+        event?: string;
+        generationId?: string;
+        connectionId?: string;
+      };
     } catch {
       log.warn({ payload: payloadStr.slice(0, 100) }, '收到非 JSON 格式的原生事件载荷');
       return;
     }
 
     if (!parsed || typeof parsed !== 'object') {
+      return;
+    }
+
+    if (parsed.generationId && parsed.generationId !== this.startupGenerationId) {
+      const cause = new Error(
+        `EventBridge 事件属于启动代次 ${parsed.generationId}，期望 ${this.startupGenerationId}`
+      );
+      this.emitHealth('connection_identity_mismatch', cause, this.getCdpConnectionIdentity());
+      return;
+    }
+
+    if (
+      parsed.connectionId &&
+      this.injectionIdentity?.connectionId &&
+      parsed.connectionId !== this.injectionIdentity.connectionId
+    ) {
+      const cause = new Error(
+        `EventBridge 事件连接身份 ${parsed.connectionId} 与当前注入身份不一致`
+      );
+      this.emitHealth('connection_identity_mismatch', cause, this.getCdpConnectionIdentity());
+      return;
+    }
+
+    const currentIdentity = this.getCdpConnectionIdentity();
+    if (!this.sameConnectionIdentity(this.injectionIdentity, currentIdentity)) {
+      const cause = new Error('EventBridge 注入身份与当前 CDP 连接身份不一致');
+      this.attached = false;
+      this.emitHealth('connection_identity_mismatch', cause, currentIdentity);
       return;
     }
 
@@ -336,10 +477,18 @@ export class KK9EventBridge extends EventEmitter {
   private wireCdpEvents(): void {
     this.cdp.on('status', (status: ConnectionStatus) => {
       this.emit('status', status);
-      if (status === 'connected') {
-        void this.reattach();
-      } else if (status === 'disconnected') {
+      if (status !== 'connected') {
         this.attached = false;
+        this.injectionIdentity = null;
+      }
+    });
+
+    this.cdp.on('connection_lost', (event: CdpConnectionLostEvent) => {
+      const wasAttached = this.attached;
+      this.attached = false;
+      this.injectionIdentity = null;
+      if (wasAttached) {
+        this.emitHealth('event_bridge_invalidated', event.cause, event.connectionIdentity);
       }
     });
 
@@ -348,7 +497,11 @@ export class KK9EventBridge extends EventEmitter {
 
     this.cdp.on('Runtime.bindingCalled', (rawParams: unknown) => {
       const params = rawParams as { name?: string; payload?: string };
-      if (params?.name === this.bindingName && typeof params.payload === 'string') {
+      if (
+        this.attached &&
+        params?.name === this.bindingName &&
+        typeof params.payload === 'string'
+      ) {
         this.handleBindingPayload(params.payload);
       }
     });
@@ -357,8 +510,10 @@ export class KK9EventBridge extends EventEmitter {
   /**
    * 构建渲染进程中的 JS Hook 注入脚本
    */
-  private buildInBrowserHookScript(): string {
+  private buildInBrowserHookScript(connectionIdentity: CdpConnectionIdentity | null): string {
     const binding = this.bindingName;
+    const generationId = JSON.stringify(this.startupGenerationId);
+    const connectionId = JSON.stringify(connectionIdentity?.connectionId ?? '');
     return `
       (() => {
         if (typeof window.__kkbot_bridge_cleanup === 'function') {
@@ -372,7 +527,7 @@ export class KK9EventBridge extends EventEmitter {
         function postEvent(type, data) {
           if (typeof window[${JSON.stringify(binding)}] === 'function') {
             try {
-              window[${JSON.stringify(binding)}](JSON.stringify({ type, data, timestamp: Date.now() }));
+              window[${JSON.stringify(binding)}](JSON.stringify({ generationId: ${generationId}, connectionId: ${connectionId}, type, data, timestamp: Date.now() }));
             } catch (e) {
               console.error('[KK9EventBridge] 无法派发事件到 CDP binding:', e);
             }
@@ -621,15 +776,19 @@ export class KK9EventBridge extends EventEmitter {
                   const el = node;
                   const text = el.textContent?.trim() || '';
                   if (
-                    (el.classList?.contains('system-msg') || el.classList?.contains('rcd-item') || el.classList?.contains('system-recall')) &&
+                    (el.classList?.contains('system-msg') ||
+                      el.classList?.contains('rcd-item') ||
+                      el.classList?.contains('system-recall')) &&
                     text.includes('撤回')
                   ) {
-                    const id = el.getAttribute('id') || el.getAttribute('data-id') || el.getAttribute('data-msgid');
-                    if (id) {
+                    const nativeId = el.getAttribute('data-msgid');
+                    const sessionId =
+                      el.getAttribute('data-session-id') || el.getAttribute('data-sessionid');
+                    if (nativeId && sessionId) {
                       postEvent('recalled', {
-                        messageId: String(id),
-                        sessionId: '',
-                        sender: text.replace(/撤回.*$/, '').trim() || '某人',
+                        messageId: nativeId,
+                        sessionId,
+                        sender: 'unknown',
                         time: new Date().toLocaleTimeString(),
                         timestamp: Date.now()
                       });

@@ -7,46 +7,19 @@ import type { KK9RecalledEvent, KK9Session } from '../src/types/index.js';
 
 describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
   describe('SendResult.recall 快捷链式撤回', () => {
-    it('发送成功后返回包含 messageId 与 recall() 快捷方法', async () => {
+    it('发送动作无权威 native ack 时不返回 messageId 或 recall()', async () => {
       const mockCdp = {
-        evaluate: vi
-          .fn()
-          .mockResolvedValueOnce({ success: true, method: 'vue_native_pictext' })
-          .mockResolvedValueOnce(true) // verifyTextSent
-          .mockResolvedValueOnce('msg_fingerprint_123'), // fetch last sent msg id/fp
+        evaluate: vi.fn().mockResolvedValue({ success: true, method: 'vue_native_pictext' }),
         bringToFront: vi.fn().mockResolvedValue(undefined),
       } as unknown as CdpClient;
 
       const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
       const res = await ops.sendText('测试发送并准备撤回');
 
-      expect(res.success).toBe(true);
-      expect(res.messageId).toBeDefined();
-      expect(typeof res.recall).toBe('function');
-    });
-
-    it('调用 res.recall() 应成功触发底层撤回并返回 true', async () => {
-      const mockCdp = {
-        evaluate: vi
-          .fn()
-          .mockResolvedValueOnce({ success: true, method: 'vue_native_pictext' })
-          .mockResolvedValueOnce(true)
-          .mockResolvedValueOnce('msg_fingerprint_123')
-          .mockResolvedValueOnce({
-            // getMessage / verify ownership & time
-            isMe: true,
-            timestamp: Date.now() - 5000,
-          })
-          .mockResolvedValueOnce({ success: true }), // native cancelMessage IPC
-        bringToFront: vi.fn().mockResolvedValue(undefined),
-      } as unknown as CdpClient;
-
-      const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
-      const res = await ops.sendText('测试撤回内容');
-      expect(res.recall).toBeDefined();
-
-      const recallSuccess = await res.recall!();
-      expect(recallSuccess).toBe(true);
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(false);
+      expect(res.messageId).toBeUndefined();
+      expect(res.recall).toBeUndefined();
     });
   });
 

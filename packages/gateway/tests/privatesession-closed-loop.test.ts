@@ -19,12 +19,14 @@ class MockDriver extends EventEmitter {
   public selectSession = vi.fn().mockResolvedValue(true);
   public getCurrentSession = vi.fn().mockResolvedValue({ id: 'session_init' });
   public markSessionRead = vi.fn().mockResolvedValue(true);
-  public sendText = vi.fn().mockImplementation((_text: string, _options?: { targetSessionId?: string }) => {
-    return Promise.resolve({
-      success: true,
-      messageId: `mock_sent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    } as SendResult);
-  });
+  public sendText = vi
+    .fn()
+    .mockImplementation((_text: string, _options?: { targetSessionId?: string }) => {
+      return Promise.resolve({
+        success: true,
+        messageId: `mock_sent_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      } as SendResult);
+    });
   public sendRichText = vi.fn().mockImplementation(() => {
     return Promise.resolve({
       success: true,
@@ -154,7 +156,7 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     // 3. 验证 Raw Store 持久化
     const rawMessages = await store.messages.getSessionHistory(sessionId);
     expect(rawMessages.length).toBe(2); // 1 条 inbound user 消息 + 1 条 sent bot_echo 消息
-    const userRaw = rawMessages.find((m) => !m.isFromSelf);
+    const userRaw = rawMessages.find(m => !m.isFromSelf);
     expect(userRaw).toBeDefined();
     expect(userRaw?.content).toBe('你好，请介绍一下你自己');
     expect(userRaw?.messageId).toBe(nativeMsgId);
@@ -191,7 +193,9 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     // 第二条为 sent 后显式保存的 assistant message
     expect(memoryMessages[1].role).toBe('assistant');
     expect(memoryMessages[1].id).toBe(deriveAssistantMessageId(delivery.id));
-    expect(extractMessageText(memoryMessages[1].content)).toBe('您好！我是企业助手 KKBot，已收到您的请求。');
+    expect(extractMessageText(memoryMessages[1].content)).toBe(
+      '您好！我是企业助手 KKBot，已收到您的请求。'
+    );
   });
 
   it('相同原始消息串行与并发重放均不创建第二条 user Memory', async () => {
@@ -264,7 +268,7 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
       resourceId: senderId,
     });
 
-    const userMessages = memoryMessages.filter((m) => m.role === 'user');
+    const userMessages = memoryMessages.filter(m => m.role === 'user');
     // 稳定 ID 派生使得两次保存命中同一主键，仅有 1 条 user message
     expect(userMessages.length).toBe(1);
     expect(userMessages[0].id).toBe(deriveUserMessageId(sessionId, nativeMsgId));
@@ -349,7 +353,7 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
       resourceId: senderId,
     });
 
-    const userMessages = memoryMessages.filter((m) => m.role === 'user');
+    const userMessages = memoryMessages.filter(m => m.role === 'user');
     expect(userMessages.length).toBe(2);
     expect(userMessages[0].id).toBe(deriveUserMessageId(sessionId, 'native_m1'));
     expect(extractMessageText(userMessages[0].content)).toBe('第一句话');
@@ -432,7 +436,7 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
       resourceId: senderId,
     });
 
-    const assistantMessages = memoryMessages.filter((m) => m.role === 'assistant');
+    const assistantMessages = memoryMessages.filter(m => m.role === 'assistant');
     expect(assistantMessages.length).toBe(0);
   });
 
@@ -501,6 +505,89 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     expect(agentSpy).toHaveBeenCalledTimes(0);
     // KK 发送严禁被调用
     expect(mockDriver.sendText).toHaveBeenCalledTimes(0);
+  });
+
+  it('混合 agent_claimed 与 pending 消息时 Delivery 只关联本轮新消息', async () => {
+    const fakeModel = createFakeModel({
+      responses: [{ text: '只回复本轮新消息', finishReason: 'stop' }],
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 200, maxWaitMs: 500 },
+    });
+    let startedMessageIds: string[] = [];
+    coordinator.on('agent_started', (_sessionId, consolidated) => {
+      startedMessageIds = consolidated.messageIds;
+    });
+    await coordinator.start();
+
+    mockDriver.emitMessage({
+      id: 'mastra-claim-old-001',
+      messageId: 'mastra-claim-old-001',
+      sessionId: 'session_mixed_claim_001',
+      sessionName: '混合 Claim 用户',
+      sessionType: 'private',
+      sender: '员工',
+      senderId: 'employee-mixed-001',
+      content: '上一轮已领取的消息',
+      messageType: 'text',
+      isMe: false,
+      timestamp: Date.now(),
+    });
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(
+      (
+        await store.messages.getMessageBySessionAndMessageId(
+          'session_mixed_claim_001',
+          'mastra-claim-old-001'
+        )
+      )?.processingState
+    ).toBe('pending');
+    expect(
+      await store.messages.claimMessagesForAgent(
+        'session_mixed_claim_001',
+        ['mastra-claim-old-001'],
+        'previous-run-mastra-001'
+      )
+    ).toEqual(['mastra-claim-old-001']);
+
+    const completed = new Promise<void>(resolve => {
+      coordinator!.once('agent_completed', () => resolve());
+    });
+    mockDriver.emitMessage({
+      id: 'mastra-claim-new-001',
+      messageId: 'mastra-claim-new-001',
+      sessionId: 'session_mixed_claim_001',
+      sessionName: '混合 Claim 用户',
+      sessionType: 'private',
+      sender: '员工',
+      senderId: 'employee-mixed-001',
+      content: '本轮新消息',
+      messageType: 'text',
+      isMe: false,
+      timestamp: Date.now(),
+    });
+    await completed;
+
+    expect(startedMessageIds).toEqual(['mastra-claim-new-001']);
+    const mappings = await store.db.execute(
+      'SELECT message_id FROM delivery_input_messages ORDER BY message_id'
+    );
+    expect(mappings.rows).toEqual([{ message_id: 'mastra-claim-new-001' }]);
+    expect(await store.deliveries.getDeliveriesBySession('session_mixed_claim_001')).toHaveLength(
+      1
+    );
   });
 
   it('两个 PrivateSession 并发处理时，Thread、Memory、Delivery 与发送目标完全隔离', async () => {
@@ -629,7 +716,9 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     });
 
     // 模拟 mastraMemory.saveMessages 失败
-    vi.spyOn(mastraMemory, 'saveMessages').mockRejectedValueOnce(new Error('LibSQL Storage connection failed'));
+    vi.spyOn(mastraMemory, 'saveMessages').mockRejectedValueOnce(
+      new Error('LibSQL Storage connection failed')
+    );
     const agentSpy = vi.spyOn(agent, 'execute');
 
     coordinator = new SessionCoordinator({
@@ -836,7 +925,7 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     // 允许第一次（user message）saveMessages 成功，但在第二次（assistant message）saveMessages 时抛出异常
     const origSaveMessages = mastraMemory.saveMessages.bind(mastraMemory);
     let saveCount = 0;
-    vi.spyOn(mastraMemory, 'saveMessages').mockImplementation(async (opts) => {
+    vi.spyOn(mastraMemory, 'saveMessages').mockImplementation(async opts => {
       saveCount++;
       if (saveCount === 2) {
         throw new Error('Mastra storage crashed on assistant commit');
@@ -880,7 +969,7 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     expect(deliveries[0].memoryCommittedAt).toBeNull();
 
     const uncommitted = await store.deliveries.getSentUncommittedDeliveries();
-    expect(uncommitted.some((d) => d.id === deliveries[0].id)).toBe(true);
+    expect(uncommitted.some(d => d.id === deliveries[0].id)).toBe(true);
   });
 
   it('GroupSession 消息绝不进入 user Memory、Agent、Delivery 或 KK 发送', async () => {
@@ -956,7 +1045,7 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     const { promise: delayPromise, resolve: unlockWrite } = Promise.withResolvers<void>();
     const origSaveMessage = store.messages.saveMessage.bind(store.messages);
     let writeCompleted = false;
-    vi.spyOn(store.messages, 'saveMessage').mockImplementation(async (input) => {
+    vi.spyOn(store.messages, 'saveMessage').mockImplementation(async input => {
       await delayPromise;
       writeCompleted = true;
       return origSaveMessage(input);
@@ -1005,5 +1094,139 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     expect(deliveries.length).toBe(1);
     expect(deliveries[0].status).toBe('sent');
     expect(deliveries[0].content).toBe('慢写成功后的回复');
+  });
+  it('Shutdown 期间慢 Raw Store 完成后不创建 Agent Run 且保留 pending', async () => {
+    const fakeModel = createFakeModel({
+      responses: [{ text: '不应发送的回复', finishReason: 'stop' }],
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+    const agentExecute = vi.spyOn(agent, 'execute');
+    const { promise: delayPromise, resolve: unlockWrite } = Promise.withResolvers<void>();
+    const originalSave = store.messages.saveMessage.bind(store.messages);
+    let saveStarted = false;
+    vi.spyOn(store.messages, 'saveMessage').mockImplementation(async input => {
+      saveStarted = true;
+      await delayPromise;
+      return originalSave(input);
+    });
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 10, maxWaitMs: 100 },
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_shutdown_slow_agent_001';
+    const inboundPromise = coordinator.handleInboundMessage({
+      id: 'msg_shutdown_slow_001',
+      messageId: 'msg_shutdown_slow_001',
+      sessionId,
+      sessionName: 'Shutdown 测试员',
+      sessionType: 'private',
+      sender: '测试员',
+      senderId: 'emp_shutdown_slow',
+      content: 'Shutdown 期间慢写消息',
+      messageType: 'text',
+      isMe: false,
+      timestamp: Date.now(),
+    });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(saveStarted).toBe(true);
+
+    let stopSettled = false;
+    const stopPromise = coordinator.stop().then(() => {
+      stopSettled = true;
+    });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(stopSettled).toBe(false);
+
+    unlockWrite();
+    await inboundPromise;
+    await stopPromise;
+
+    expect(agentExecute).not.toHaveBeenCalled();
+    expect(mockDriver.sendText).not.toHaveBeenCalled();
+    expect(
+      (await store.messages.getMessageBySessionAndMessageId(sessionId, 'msg_shutdown_slow_001'))
+        ?.processingState
+    ).toBe('pending');
+  });
+  it('claim 已提交后 Shutdown 必须回滚为 pending 并跳过 Agent', async () => {
+    const fakeModel = createFakeModel({
+      responses: [{ text: '不应生成的回复', finishReason: 'stop' }],
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fakeModel }] },
+        DEEP: { models: [{ model: fakeModel }] },
+        VISION: { models: [{ model: fakeModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+    const agentExecute = vi.spyOn(agent, 'execute');
+    const claimCommitted = Promise.withResolvers<void>();
+    const releaseClaim = Promise.withResolvers<void>();
+    const originalClaim = store.messages.claimMessagesForAgent.bind(store.messages);
+    vi.spyOn(store.messages, 'claimMessagesForAgent').mockImplementation(
+      async (sessionId, messageIds, runId) => {
+        const claimed = await originalClaim(sessionId, messageIds, runId);
+        claimCommitted.resolve();
+        await releaseClaim.promise;
+        return claimed;
+      }
+    );
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 10, maxWaitMs: 100 },
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_claim_shutdown_001';
+    const inboundPromise = coordinator.handleInboundMessage({
+      id: 'msg_claim_shutdown_001',
+      messageId: 'msg_claim_shutdown_001',
+      sessionId,
+      sessionName: 'Claim Shutdown 测试员',
+      sessionType: 'private',
+      sender: '测试员',
+      senderId: 'emp_claim_shutdown',
+      content: '已提交 claim 的消息',
+      messageType: 'text',
+      isMe: false,
+      timestamp: Date.now(),
+    });
+    await claimCommitted.promise;
+
+    let stopSettled = false;
+    const stopPromise = coordinator.stop().then(() => {
+      stopSettled = true;
+    });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(stopSettled).toBe(false);
+
+    releaseClaim.resolve();
+    await inboundPromise;
+    await stopPromise;
+
+    expect(agentExecute).not.toHaveBeenCalled();
+    expect(mockDriver.sendText).not.toHaveBeenCalled();
+    expect(
+      (await store.messages.getMessageBySessionAndMessageId(sessionId, 'msg_claim_shutdown_001'))
+        ?.processingState
+    ).toBe('pending');
   });
 });

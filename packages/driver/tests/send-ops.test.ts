@@ -65,7 +65,9 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
         replyTo: { messageId: 'msg-1001', sender: '张三', content: '开会通知' },
       });
 
-      expect(res.success).toBe(true);
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(false);
+      expect(res.messageId).toBeUndefined();
       expect(mockCdp.bringToFront).toHaveBeenCalled();
     });
   });
@@ -95,8 +97,25 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
         { text: '任务已完成', style: { color: '#52c41a' } },
       ]);
 
-      expect(res.success).toBe(true);
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(false);
+      expect(res.messageId).toBeUndefined();
       expect(mockCdp.bringToFront).toHaveBeenCalled();
+    });
+    it('发送动作触发后 CDP 响应丢失进入 unknown 且不回读 DOM', async () => {
+      const evaluate = vi.fn().mockRejectedValue(new Error('response lost'));
+      const mockCdp = {
+        evaluate,
+        bringToFront: vi.fn().mockResolvedValue(undefined),
+      } as unknown as CdpClient;
+      const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
+
+      const res = await ops.sendRichText('发送后连接断开');
+
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(false);
+      expect(res.messageId).toBeUndefined();
+      expect(evaluate).toHaveBeenCalledOnce();
     });
   });
 
@@ -112,7 +131,9 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
 
       const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
       const res = await ops.sendReply('原消息内容', '这是我的回复');
-      expect(res.success).toBe(true);
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(false);
+      expect(res.messageId).toBeUndefined();
     });
   });
 
@@ -151,7 +172,9 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
 
         const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
         const res = await ops.sendFile(tempFilePath);
-        expect(res.success).toBe(true);
+        expect(res.success).toBe(false);
+        expect(res.isPreTrigger).toBe(false);
+        expect(res.messageId).toBeUndefined();
       } finally {
         if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
       }
@@ -173,7 +196,8 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
         const res = await ops.sendFile(tempFilePath, { verifyTimeoutMs: 50 });
         expect(res.success).toBe(false);
         expect(res.isPreTrigger).toBe(false);
-        expect(res.error).toContain('未能确认文件卡片上屏');
+        expect(res.messageId).toBeUndefined();
+        expect(res.error).toContain('权威 native ack');
       } finally {
         if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
       }
@@ -193,7 +217,9 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
   });
   describe('bringToFront 激活窗口失败 (pre-trigger) 测试', () => {
     const rejectingCdp = {
-      bringToFront: vi.fn().mockRejectedValue(new Error('CDP Target.bringToFront connection closed')),
+      bringToFront: vi
+        .fn()
+        .mockRejectedValue(new Error('CDP Target.bringToFront connection closed')),
       evaluate: vi.fn(),
     } as unknown as CdpClient;
 

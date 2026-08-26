@@ -2,6 +2,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { KK9Driver } from '@kkbot/driver';
 import { UnifiedBootstrapper } from './bootstrapper.js';
 import { ConfigValidationError } from './errors.js';
 
@@ -89,7 +90,18 @@ export async function runCli(
     `[KKBot] 正在加载配置文件: ${resolvedConfigPath} (命令: ${command}${devMode ? ', 开发模式' : ''})`
   );
 
-  const bootstrapper = new UnifiedBootstrapper({ configPath: resolvedConfigPath });
+  const bootstrapper = new UnifiedBootstrapper({
+    configPath: resolvedConfigPath,
+    driverFactory: (config, startupGenerationId): KK9Driver =>
+      new KK9Driver({
+        startupGenerationId,
+        currentUserId: process.env['KK_CURRENT_USER_ID'],
+        cdp: {
+          url: config.kk.cdp.url,
+          pageMatch: process.env['PAGE_MATCH'] || 'renderer.html',
+        },
+      }),
+  });
 
   try {
     const config = await bootstrapper.staticValidate();
@@ -129,7 +141,13 @@ export async function runCli(
 
       await bootstrapper.start();
       io.log('[KKBot] ✅ Ready Barrier 全部通过，Work Admission Gate 已开放，KKBot 运行中。');
-      return 0;
+      const shutdownResult = await bootstrapper.waitForShutdown();
+      const reason = shutdownResult.triggerReason;
+      const isDriverFailure = typeof reason === 'object' && reason !== null && 'kind' in reason;
+      if (isDriverFailure) {
+        io.error('[KKBot] Driver 关键运行事实失效，当前 startup generation 已退出。');
+      }
+      return shutdownResult.successful && !isDriverFailure ? 0 : 1;
     }
 
     io.log('[KKBot] 运行基线与静态配置验证完成。');

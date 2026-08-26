@@ -85,9 +85,9 @@ describe('SendOps & KK9Driver Canvas 视觉卡片发送流水线测试', () => {
       const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
       const res = await ops.sendCard(validCard);
 
-      expect(res.success).toBe(true);
-      expect(res.messageId).toBeDefined();
-      expect(typeof res.recall).toBe('function');
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(false);
+      expect(res.messageId).toBeUndefined();
       expect(fileExistedDuringSend).toBe(true);
 
       // 发送完成后临时文件必须已被删除回收
@@ -132,11 +132,10 @@ describe('SendOps & KK9Driver Canvas 视觉卡片发送流水线测试', () => {
       const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
       const res = await ops.sendCard(validCard);
 
-      expect(res.success).toBe(true);
-      expect(res.recall).toBeDefined();
-
-      const recalled = await res.recall!();
-      expect(recalled).toBe(true);
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(false);
+      expect(res.messageId).toBeUndefined();
+      expect(res.recall).toBeUndefined();
     });
 
     it('CDP 渲染 Canvas 失败时应抛出 SendError 并且不残留临时文件', async () => {
@@ -234,7 +233,9 @@ describe('SendOps & KK9Driver Canvas 视觉卡片发送流水线测试', () => {
       };
 
       const res = await ops.sendCard(validCard, options);
-      expect(res.success).toBe(true);
+      expect(res.success).toBe(false);
+      expect(res.isPreTrigger).toBe(false);
+      expect(res.messageId).toBeUndefined();
       expect(capturedScript).toContain('"dpr":3');
       expect(capturedScript).toContain('"width":520');
       expect(capturedScript).toContain('"backgroundColor":"#F7F8FA"');

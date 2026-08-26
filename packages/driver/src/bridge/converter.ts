@@ -123,10 +123,10 @@ export function determineOrigin(
     currentUserId?: string | number;
     knownBotSentIds?: Set<string>;
     isBotEcho?: boolean;
+    sourceKnown?: boolean;
   },
   id?: string
 ): KK9MessageOrigin {
-  // 1. 系统消息判定
   if (
     messageType === 'system' ||
     raw['isSystem'] === true ||
@@ -140,23 +140,36 @@ export function determineOrigin(
     return 'system';
   }
 
-  // 2. 当前账号发出的消息
+  const explicitOrigin = raw['origin'] ?? raw['source'];
+  if (
+    explicitOrigin === 'external' ||
+    explicitOrigin === 'operator' ||
+    explicitOrigin === 'bot_echo' ||
+    explicitOrigin === 'system' ||
+    explicitOrigin === 'unknown'
+  ) {
+    return explicitOrigin;
+  }
+
+  const rawNativeId = raw['msgID'] ?? raw['msgId'] ?? raw['messageId'] ?? raw['id'];
+  const nativeIdStr = rawNativeId !== undefined ? toSafeString(rawNativeId) : undefined;
+  const isBot = Boolean(
+    context?.isBotEcho ||
+    (id && context?.knownBotSentIds?.has(id)) ||
+    (nativeIdStr && context?.knownBotSentIds?.has(nativeIdStr))
+  );
+  if (isBot) {
+    return 'bot_echo';
+  }
+
   if (isMe) {
-    const rawNativeId = raw['msgID'] ?? raw['msgId'] ?? raw['messageId'] ?? raw['id'];
-    const nativeIdStr = rawNativeId !== undefined ? toSafeString(rawNativeId) : undefined;
-    const isBot = Boolean(
-      context?.isBotEcho ||
-      (id && context?.knownBotSentIds?.has(id)) ||
-      (nativeIdStr && context?.knownBotSentIds?.has(nativeIdStr))
-    );
-    if (isBot) {
-      return 'bot_echo';
-    }
-    // 非 Bot 回显 -> 人类操作员在客户端打字/介入
     return 'operator';
   }
 
-  // 3. 外部普通成员
+  if (context?.sourceKnown === false) {
+    return 'unknown';
+  }
+
   return 'external';
 }
 
@@ -192,6 +205,7 @@ export function normalizeNativeMessage(
     currentUserId?: string | number;
     knownBotSentIds?: Set<string>;
     isBotEcho?: boolean;
+    sourceKnown?: boolean;
   }
 ): KK9Message[] {
   if (!payload || typeof payload !== 'object') {
@@ -273,12 +287,15 @@ export function normalizeNativeMessage(
       const rawTime = item['time'] ?? item['sendTime'];
       const time = toSafeString(rawTime, new Date(now).toLocaleTimeString());
 
-      const isMe = Boolean(
-        item['isMe'] === true ||
-        item['fromMe'] === true ||
-        (currentUserId && senderId && senderId === currentUserId) ||
-        (currentUserId && sender === currentUserId)
+      const matchesCurrentUser = Boolean(
+        currentUserId && ((senderId && senderId === currentUserId) || sender === currentUserId)
       );
+      const sourceKnown =
+        context?.sourceKnown ??
+        (typeof item['isMe'] === 'boolean' ||
+          typeof item['fromMe'] === 'boolean' ||
+          Boolean(currentUserId && senderId));
+      const isMe = Boolean(item['isMe'] === true || item['fromMe'] === true || matchesCurrentUser);
 
       // 时间戳处理（秒级转毫秒级兼容）
       let timestamp = now;
@@ -289,18 +306,41 @@ export function normalizeNativeMessage(
       }
 
       // @ 提及信息解析
+      const rawMentionsRecord =
+        item['mentions'] && typeof item['mentions'] === 'object'
+          ? (item['mentions'] as Record<string, unknown>)
+          : null;
+      const mentionedUsers = Array.isArray(rawMentionsRecord?.['mentionedUsers'])
+        ? rawMentionsRecord['mentionedUsers'].filter(
+            (user): user is string => typeof user === 'string'
+          )
+        : [];
+      const rawMentions: KK9MentionInfo | undefined = rawMentionsRecord
+        ? {
+            isAtMe: rawMentionsRecord['isAtMe'] === true,
+            isAtAll: rawMentionsRecord['isAtAll'] === true,
+            mentionedUsers,
+          }
+        : undefined;
       let atMe = Boolean(
-        item['atMe'] || item['isAtMe'] || item['atState'] === 1 || item['atState'] === 2
+        item['atMe'] ||
+        item['isAtMe'] ||
+        rawMentions?.isAtMe ||
+        item['atState'] === 1 ||
+        item['atState'] === 2
       );
       let atAll = Boolean(
         item['atAll'] ||
         item['isAtAll'] ||
+        rawMentions?.isAtAll ||
         item['atState'] === 3 ||
         content.includes('@全体') ||
         content.includes('@所有人')
       );
 
-      const atMemberList = Array.isArray(item['atMemberIDList']) ? item['atMemberIDList'] : [];
+      const atMemberList = Array.isArray(item['atMemberIDList'])
+        ? item['atMemberIDList']
+        : (rawMentions?.mentionedUsers ?? []);
       if (
         atMemberList.includes('all') ||
         atMemberList.includes(-1) ||
@@ -384,11 +424,23 @@ export function normalizeNativeMessage(
 
       // 指纹与原生 ID 解析（EventBridge 与 Polling 保证稳定一致）
       const fingerprint = generateMessageFingerprint(sessionId, sender, time, content);
-      const rawNativeId = item['msgID'] ?? item['msgId'] ?? item['messageId'] ?? item['id'];
+      const nestedRaw =
+        item['raw'] && typeof item['raw'] === 'object'
+          ? (item['raw'] as Record<string, unknown>)
+          : undefined;
+      const rawNativeId =
+        item['msgID'] ??
+        item['msgId'] ??
+        item['messageId'] ??
+        item['id'] ??
+        nestedRaw?.['msgID'] ??
+        nestedRaw?.['msgId'] ??
+        nestedRaw?.['messageId'] ??
+        nestedRaw?.['id'];
       const messageId = rawNativeId !== undefined ? toSafeString(rawNativeId) : fingerprint;
       const id = messageId || fingerprint;
 
-      const origin = determineOrigin(item, isMe, messageType, context, id);
+      const origin = determineOrigin(item, isMe, messageType, { ...context, sourceKnown }, id);
 
       return {
         id,
@@ -404,8 +456,8 @@ export function normalizeNativeMessage(
         isMe,
         timestamp,
         messageType,
-        atMe: atMe || undefined,
-        atAll: atAll || undefined,
+        atMe,
+        atAll,
         mentions,
         replyTo,
         fileInfo,

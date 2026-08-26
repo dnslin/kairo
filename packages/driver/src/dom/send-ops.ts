@@ -156,6 +156,14 @@ export class SendOps {
       };
     }
   }
+  private postTriggerUnknown(label: string, verifyLatencyMs?: number): SendResult {
+    return {
+      success: false,
+      error: `${label}发送动作已触发，但当前 Driver 没有权威 native ack，结果为 unknown`,
+      isPreTrigger: false,
+      verifyLatencyMs,
+    };
+  }
   /**
    * 激活引用/回复目标
    */
@@ -197,7 +205,7 @@ export class SendOps {
   }
 
   /**
-   * 发送纯文本消息（支持 @ 提及、引用/回复与 DOM 回读验证闭环）
+   * 发送纯文本消息（支持 @ 提及、引用/回复与明确的发送触发结果分类）
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
     return this.sendRichText(text, options);
@@ -288,36 +296,18 @@ export class SendOps {
         return { success: false, error: injectRes?.error || '注入富文本失败', isPreTrigger: true };
       }
 
-      const verifyTimeout = options.verifyTimeoutMs ?? 5000;
-      const verified = await this.verifyTextSent(parsed.plainText || '@', verifyTimeout);
-      const latency = Date.now() - startTime;
-
-      if (!verified) {
-        log.warn({ text: parsed.plainText, latency }, '富文本已发送但在回读超时内未能确认上屏');
-        return {
-          success: false,
-          error: '富文本已触发发送但在指定超时内未能确认消息上屏',
-          isPreTrigger: false,
-          verifyLatencyMs: latency,
-        };
-      }
-      const messageId =
-        (await this.fetchLastSentMessageId(parsed.plainText)) ||
-        (await this.fetchLastSentMessageId()) ||
-        `msg_${Date.now()}`;
-      return {
-        success: true,
-        messageId,
-        recall: () => this.recallMessage(messageId, options.targetSessionId),
-        verifyLatencyMs: latency,
-      };
+      return this.postTriggerUnknown('富文本', Date.now() - startTime);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送富文本异常');
-      throw new SendError(`发送富文本异常: ${errorMsg}`, err instanceof Error ? err : undefined);
+      log.error({ err: errorMsg }, '发送富文本后响应丢失，结果为 unknown');
+      return {
+        success: false,
+        error: `富文本发送动作响应丢失: ${errorMsg}`,
+        isPreTrigger: false,
+        verifyLatencyMs: Date.now() - startTime,
+      };
     }
   }
-
   /**
    * 发送回复/引用消息
    */
@@ -423,38 +413,21 @@ export class SendOps {
         return { success: false, error: sendRes?.error || '发送回复消息失败', isPreTrigger: true };
       }
 
-      const verifyTimeout = options.verifyTimeoutMs ?? 5000;
-      const verified = await this.verifyTextSent(parsed.plainText, verifyTimeout);
-      const latency = Date.now() - startTime;
-
-      if (!verified) {
-        log.warn({ text: parsed.plainText, latency }, '回复消息已发送但在回读超时内未能确认上屏');
-        return {
-          success: false,
-          error: '回复消息已触发发送但在指定超时内未能确认消息上屏',
-          isPreTrigger: false,
-          verifyLatencyMs: latency,
-        };
-      }
-      const messageId =
-        (await this.fetchLastSentMessageId(parsed.plainText)) ||
-        (await this.fetchLastSentMessageId()) ||
-        `msg_${Date.now()}`;
-      return {
-        success: true,
-        messageId,
-        recall: () => this.recallMessage(messageId, options.targetSessionId),
-        verifyLatencyMs: latency,
-      };
+      return this.postTriggerUnknown('回复消息', Date.now() - startTime);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送回复消息异常');
-      throw new SendError(`发送回复消息异常: ${errorMsg}`, err instanceof Error ? err : undefined);
+      log.error({ err: errorMsg }, '发送回复后响应丢失，结果为 unknown');
+      return {
+        success: false,
+        error: `回复发送动作响应丢失: ${errorMsg}`,
+        isPreTrigger: false,
+        verifyLatencyMs: Date.now() - startTime,
+      };
     }
   }
 
   /**
-   * 发送本地文件（通过 KK9 原生 File 协议分发并验证回读）
+   * 发送本地文件（通过 KK9 原生 File 协议触发发送并分类结果）
    */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(filePath);
@@ -514,33 +487,23 @@ export class SendOps {
 
       const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(injectScript);
       if (!injectRes?.success) {
-        return { success: false, error: injectRes?.error || '文件发送初始化失败', isPreTrigger: true };
-      }
-
-      const verifyTimeout = options.verifyTimeoutMs ?? 8000;
-      const verified = await this.verifyFileSent(fileName, verifyTimeout);
-      const latency = Date.now() - startTime;
-
-      if (!verified) {
-        log.warn({ fileName, latency }, '文件已发送但在指定时间内未能在聊天区域确认文件卡片');
         return {
           success: false,
-          error: '文件已触发发送但在指定超时内未能确认文件卡片上屏',
-          isPreTrigger: false,
-          verifyLatencyMs: latency,
+          error: injectRes?.error || '文件发送初始化失败',
+          isPreTrigger: true,
         };
       }
-      const messageId = (await this.fetchLastSentMessageId()) || `msg_${Date.now()}`;
-      return {
-        success: true,
-        messageId,
-        recall: () => this.recallMessage(messageId, options.targetSessionId),
-        verifyLatencyMs: latency,
-      };
+
+      return this.postTriggerUnknown('文件', Date.now() - startTime);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送文件异常');
-      throw new SendError(`发送文件异常: ${errorMsg}`, err instanceof Error ? err : undefined);
+      log.error({ err: errorMsg }, '发送文件后响应丢失，结果为 unknown');
+      return {
+        success: false,
+        error: `文件发送动作响应丢失: ${errorMsg}`,
+        isPreTrigger: false,
+        verifyLatencyMs: Date.now() - startTime,
+      };
     }
   }
   /**
@@ -682,31 +645,16 @@ export class SendOps {
         return { success: false, error: `点击发送图片失败: ${sendRes?.error}`, isPreTrigger: true };
       }
 
-      // 5. 严格回读确认: 检查输入框清空
-      const verifyTimeout = options.verifyTimeoutMs ?? 5000;
-      const verified = await this.verifyImageSent(verifyTimeout);
-      const latency = Date.now() - startTime;
-
-      if (!verified) {
-        log.warn({ latency }, '图片已点击发送但在回读超时内未能确认输入框清空与上屏');
-        return {
-          success: false,
-          error: '图片已触发发送但在指定超时内未能确认消息上屏',
-          isPreTrigger: false,
-          verifyLatencyMs: latency,
-        };
-      }
-      const messageId = (await this.fetchLastSentMessageId()) || `msg_${Date.now()}`;
-      return {
-        success: true,
-        messageId,
-        recall: () => this.recallMessage(messageId, options.targetSessionId),
-        verifyLatencyMs: latency,
-      };
+      return this.postTriggerUnknown('图片', Date.now() - startTime);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送图片异常');
-      throw new SendError(`发送图片异常: ${errorMsg}`, err instanceof Error ? err : undefined);
+      log.error({ err: errorMsg }, '发送图片后响应丢失，结果为 unknown');
+      return {
+        success: false,
+        error: `图片发送动作响应丢失: ${errorMsg}`,
+        isPreTrigger: false,
+        verifyLatencyMs: Date.now() - startTime,
+      };
     }
   }
   /**
@@ -714,7 +662,7 @@ export class SendOps {
    *
    * @param card 卡片结构化数据模型
    * @param options 发送与渲染配置选项
-   * @returns 发送结果实体 (含 messageId 与 recall 快捷撤回函数)
+   * @returns 发送结果；缺少权威 native ack 时为 unknown，不生成 messageId。
    */
   public async sendCard(card: CardData, options: SendCardOptions = {}): Promise<SendResult> {
     let tempFilePath: string | null = null;
@@ -761,122 +709,6 @@ export class SendOps {
     }
   }
 
-  private async verifyImageSent(timeoutMs: number): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const script = `
-        (() => {
-          const input = document.querySelector('.chat-sendArea');
-          const hasImgInInput = Boolean(input?.querySelector('img'));
-          return !hasImgInInput;
-        })()
-      `;
-
-      try {
-        const empty = await this.cdp.evaluate<boolean>(script);
-        if (empty) return true;
-      } catch {
-        // 忽略轮询临时错误
-      }
-
-      await sleep(200);
-    }
-    return false;
-  }
-
-  private async verifyFileSent(fileName: string, timeoutMs: number): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const script = `
-        (() => {
-          const targetName = ${JSON.stringify(fileName)};
-          const items = document.querySelectorAll('.file-detail-info, .file-name-text, .file-content, .msg-content');
-          const lastFew = Array.from(items).slice(-8);
-          return lastFew.some(item => {
-            return item.textContent && item.textContent.includes(targetName);
-          });
-        })()
-      `;
-
-      try {
-        const found = await this.cdp.evaluate<boolean>(script);
-        if (found) return true;
-      } catch {
-        // 忽略轮询临时错误
-      }
-
-      await sleep(300);
-    }
-    return false;
-  }
-
-  private async verifyTextSent(text: string, timeoutMs: number): Promise<boolean> {
-    const prefix = text.slice(0, 15);
-    const start = Date.now();
-
-    while (Date.now() - start < timeoutMs) {
-      const script = `
-        (() => {
-          const items = document.querySelectorAll('${this.selectors.messageItem}');
-          const lastFew = Array.from(items).slice(-6);
-          return lastFew.some(item => {
-            const isMe = item.matches('${this.selectors.messageIsMe}') ||
-              item.classList.contains('rcd-msg-right') ||
-              item.classList.contains('is-me') ||
-              item.querySelector('.rcd-msg-right') !== null;
-            const textContent = item.textContent || '';
-            const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
-            const rawContent = typeof vueMsg?.content === 'string' ? vueMsg.content : JSON.stringify(vueMsg?.content || '');
-            return isMe && (textContent.includes(${JSON.stringify(prefix)}) || rawContent.includes(${JSON.stringify(prefix)}));
-          });
-        })()
-      `;
-      try {
-        const verified = await this.cdp.evaluate<boolean>(script);
-        if (verified) return true;
-      } catch {
-        // 忽略轮询临时错误
-      }
-
-      await sleep(200);
-    }
-    return false;
-  }
-
-  /**
-   * 获取最后一条自己发送的消息 ID 或指纹
-   */
-  private async fetchLastSentMessageId(matchingText?: string): Promise<string | undefined> {
-    const script = `
-      (() => {
-        const targetText = ${JSON.stringify(matchingText ? matchingText.slice(0, 30) : '')};
-        const items = document.querySelectorAll('${this.selectors.messageItem}');
-        for (let i = items.length - 1; i >= 0; i--) {
-          const item = items[i];
-          const isMe = item.matches('${this.selectors.messageIsMe}') ||
-            item.classList.contains('rcd-msg-right') ||
-            item.classList.contains('rcd-msg-me') ||
-            item.classList.contains('is-me') ||
-            item.querySelector('${this.selectors.messageIsMe}') !== null;
-          if (isMe) {
-            const content = item.querySelector('${this.selectors.messageContent}')?.textContent || item.textContent || '';
-            if (!targetText || content.includes(targetText)) {
-              const vueMsg = item.__vue__?.msgitem || item.__vue__?.message;
-              const rawId = vueMsg?.id || vueMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id') || item.getAttribute('data-id');
-              if (rawId) return String(rawId).replace(/^msg-/, '');
-            }
-          }
-        }
-        return null;
-      })()
-    `;
-    try {
-      const rawId = await this.cdp.evaluate<string | null>(script);
-      return rawId || undefined;
-    } catch {
-      return undefined;
-    }
-  }
   /**
    * 消息撤回 (Recall / CancelMessage)
    * 包含所有权校验与 120 秒时效守卫

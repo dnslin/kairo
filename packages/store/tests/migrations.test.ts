@@ -104,6 +104,7 @@ describe('KKBot Database Migrations', () => {
       '0004_delivery_adjudications_and_retries',
       '0005_tombstones_and_compliance_deletion',
       '0006_delivery_input_messages',
+      '0007_message_processing_state',
     ]);
     expect(migrationResult.total).toBe(KKBOT_MIGRATIONS.length);
     // 3. 验证 session_messages 已拥有 origin 列且旧数据默认为 'external'
@@ -112,6 +113,7 @@ describe('KKBot Database Migrations', () => {
     );
     expect(oldMsgRes.rows).toHaveLength(1);
     expect(oldMsgRes.rows[0].origin).toBe('external');
+    expect(oldMsgRes.rows[0].processing_state).toBe('raw_only');
 
     // 4. 验证唯一索引生效：尝试插入重复 (session_id, message_id)
     const insertDuplicate = client.execute({
@@ -169,7 +171,7 @@ describe('KKBot Database Migrations', () => {
     expect(tableRes.rows).toHaveLength(0);
 
     // 4.2 message_deliveries 表中的 retry_count 列绝对未残留
-    const colRes = await client.execute("PRAGMA table_info(message_deliveries)");
+    const colRes = await client.execute('PRAGMA table_info(message_deliveries)');
     const columnNames = colRes.rows.map(r => r.name);
     expect(columnNames).not.toContain('retry_count');
 
@@ -180,7 +182,7 @@ describe('KKBot Database Migrations', () => {
     expect(migRes.rows).toHaveLength(0);
   });
 
-  it('数据库已记录 0001–0005 后升级仍能安全创建 0006 新表 delivery_input_messages', async () => {
+  it('数据库已记录 0001–0006 后升级将历史消息标为 raw_only', async () => {
     await client.execute(`
       CREATE TABLE IF NOT EXISTS _kkbot_migrations (
         id TEXT PRIMARY KEY,
@@ -189,8 +191,8 @@ describe('KKBot Database Migrations', () => {
         checksum TEXT
       );
     `);
-    // 应用前 5 个迁移
-    for (const m of KKBOT_MIGRATIONS.slice(0, 5)) {
+
+    for (const m of KKBOT_MIGRATIONS.slice(0, 6)) {
       await client.executeMultiple(m.up);
       await client.execute({
         sql: 'INSERT INTO _kkbot_migrations (id, name, applied_at) VALUES (?, ?, ?)',
@@ -198,20 +200,40 @@ describe('KKBot Database Migrations', () => {
       });
     }
 
-    // 确认此时无 delivery_input_messages 表
-    const before = await client.execute(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name = 'delivery_input_messages'"
-    );
+    await client.execute({
+      sql: `
+        INSERT INTO session_messages (
+          session_id, message_id, sender, sender_id, content,
+          message_type, origin, is_from_self, is_recalled, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      args: [
+        'legacy-session',
+        'legacy-message',
+        '员工',
+        'employee-1',
+        '历史消息',
+        'text',
+        'external',
+        0,
+        0,
+        1000,
+      ],
+    });
+
+    const before = await client.execute(`
+      SELECT name FROM pragma_table_info('session_messages')
+      WHERE name IN ('processing_state', 'processing_run_id')
+    `);
     expect(before.rows).toHaveLength(0);
 
-    // 执行升级
-    const res = await runKKBotMigrations(client);
-    expect(res.applied).toEqual(['0006_delivery_input_messages']);
+    const result = await runKKBotMigrations(client);
+    expect(result.applied).toEqual(['0007_message_processing_state']);
 
-    // 验证 delivery_input_messages 表与索引已成功建立
-    const after = await client.execute(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name = 'delivery_input_messages'"
-    );
-    expect(after.rows).toHaveLength(1);
+    const row = await client.execute({
+      sql: 'SELECT processing_state, processing_run_id FROM session_messages WHERE session_id = ? AND message_id = ?',
+      args: ['legacy-session', 'legacy-message'],
+    });
+    expect(row.rows).toEqual([{ processing_state: 'raw_only', processing_run_id: null }]);
   });
 });
