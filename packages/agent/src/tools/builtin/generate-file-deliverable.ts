@@ -1,13 +1,12 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { createAgentTool } from '../registry.js';
-import type { AgentTool } from '../types.js';
+import type { AgentTool, ToolExecutionContext } from '../types.js';
 import { ToolValidationError } from '../../utils/errors.js';
-import { createChildLogger } from '../../utils/logger.js';
-
-const log = createChildLogger('tool-file-deliverable');
-
+import { createKkTool, type KkMastraTool } from '../create-tool.js';
+import { MASTRA_THREAD_ID_KEY, MASTRA_RESOURCE_ID_KEY } from '@mastra/core/request-context';
 /**
  * 文件交付物生成工具入参 Schema
  */
@@ -25,29 +24,159 @@ export const GenerateFileDeliverableInputSchema = z.object({
     .optional()
     .describe('针对 csv 表格的行数据数组（对象数组，每个对象的 key 将自动提取为 CSV 表头）'),
   subDir: z.string().default('files').optional().describe('媒体受控存储子目录，默认 files'),
+  idempotencyKey: z
+    .string()
+    .min(1, '幂等键 idempotencyKey 不能为空')
+    .describe('稳定业务幂等键，防止单会话内重复产生文件写入副作用'),
 });
-
 export type GenerateFileDeliverableInput = z.infer<typeof GenerateFileDeliverableInputSchema>;
+
+export const GenerateFileDeliverableOutputSchema = z.object({
+  success: z.boolean(),
+  fileName: z.string(),
+  filePath: z.string(),
+  relativePath: z.string(),
+  sizeBytes: z.number(),
+  format: z.enum(['csv', 'md']),
+  lineCount: z.number(),
+  idempotencyKey: z.string(),
+  sessionId: z.string(),
+  operatorId: z.string(),
+  alreadyExisted: z.boolean().optional(),
+});
 
 /**
  * 文件交付物生成工具输出契约
  */
-export interface GenerateFileDeliverableOutput {
-  success: boolean;
-  fileName: string;
-  filePath: string;
-  relativePath: string;
-  sizeBytes: number;
-  format: 'csv' | 'md';
-  lineCount: number;
-}
+export type GenerateFileDeliverableOutput = z.infer<typeof GenerateFileDeliverableOutputSchema>;
 
+export interface GenerateFileDeliverableExecutionContext {
+  sessionId?: string;
+  operatorId?: string;
+}
 /**
  * 工具构造配置选项
  */
 export interface GenerateFileDeliverableOptions {
   /** 本地文件存储根目录，默认 'data/media' */
   baseDir?: string;
+}
+
+interface GenerateFileIdempotencyRecord {
+  status: 'writing' | 'committed';
+  sessionId: string;
+  operatorId: string;
+  idempotencyKey: string;
+  fileName: string;
+  filePath: string;
+  relativePath: string;
+  sizeBytes: number;
+  format: 'csv' | 'md';
+  lineCount: number;
+  contentHash: string;
+}
+
+function getIdempotencyRecordPath(baseDir: string, sessionId: string, idempotencyKey: string): string {
+  const sessionHash = createHash('sha256').update(sessionId).digest('hex');
+  const keyHash = createHash('sha256').update(idempotencyKey).digest('hex');
+  return resolve(baseDir, '.kkbot-idempotency', sessionHash, `${keyHash}.json`);
+}
+
+function readIdempotencyRecord(recordPath: string): GenerateFileIdempotencyRecord | undefined {
+  if (!existsSync(recordPath)) return undefined;
+
+  try {
+    const parsed = JSON.parse(readFileSync(recordPath, 'utf8')) as Partial<GenerateFileIdempotencyRecord>;
+    if (
+      (parsed.status !== 'writing' && parsed.status !== 'committed') ||
+      typeof parsed.sessionId !== 'string' ||
+      typeof parsed.operatorId !== 'string' ||
+      typeof parsed.idempotencyKey !== 'string' ||
+      typeof parsed.fileName !== 'string' ||
+      typeof parsed.filePath !== 'string' ||
+      typeof parsed.relativePath !== 'string' ||
+      typeof parsed.sizeBytes !== 'number' ||
+      (parsed.format !== 'csv' && parsed.format !== 'md') ||
+      typeof parsed.lineCount !== 'number' ||
+      typeof parsed.contentHash !== 'string'
+    ) {
+      throw new Error('幂等记录字段不完整');
+    }
+    return parsed as GenerateFileIdempotencyRecord;
+  } catch (error) {
+    throw new Error(`读取幂等记录失败: ${recordPath}`, { cause: error });
+  }
+}
+
+function reserveIdempotencyRecord(recordPath: string, record: GenerateFileIdempotencyRecord): boolean {
+  mkdirSync(dirname(recordPath), { recursive: true });
+  try {
+    writeFileSync(recordPath, JSON.stringify(record), { encoding: 'utf8', flag: 'wx' });
+    return true;
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: unknown }).code === 'EEXIST'
+    ) {
+      return false;
+    }
+    throw new Error(`创建幂等记录失败: ${recordPath}`, { cause: error });
+  }
+}
+
+function commitIdempotencyRecord(recordPath: string, record: GenerateFileIdempotencyRecord): void {
+  try {
+    writeFileSync(recordPath, JSON.stringify({ ...record, status: 'committed' }), 'utf8');
+  } catch (error) {
+    throw new Error(`提交幂等记录失败: ${recordPath}`, { cause: error });
+  }
+}
+
+function replayIdempotencyRecord(
+  record: GenerateFileIdempotencyRecord,
+  expectedFilePath: string,
+  normalizedBaseDir: string
+): GenerateFileDeliverableOutput {
+  if (record.filePath !== expectedFilePath) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      `幂等键 '${record.idempotencyKey}' 已绑定当前会话中的其他文件，拒绝产生第二次写入副作用`
+    );
+  }
+
+  const relativeRecordPath = relative(normalizedBaseDir, record.filePath);
+  if (relativeRecordPath.startsWith('..') || isAbsolute(relativeRecordPath)) {
+    throw new ToolValidationError('generate_file_deliverable', '幂等记录中的文件路径越界，拒绝继续执行');
+  }
+  if (!existsSync(record.filePath)) {
+    throw new Error(`幂等记录对应的文件不存在，拒绝重复写入: ${record.filePath}`);
+  }
+
+  let actualHash: string;
+  try {
+    actualHash = createHash('sha256').update(readFileSync(record.filePath)).digest('hex');
+  } catch (error) {
+    throw new Error(`读取幂等记录对应文件失败: ${record.filePath}`, { cause: error });
+  }
+  if (actualHash !== record.contentHash) {
+    throw new Error(`幂等记录对应文件内容已变化，拒绝猜测写入状态: ${record.filePath}`);
+  }
+
+  return {
+    success: true,
+    fileName: record.fileName,
+    filePath: record.filePath,
+    relativePath: record.relativePath,
+    sizeBytes: record.sizeBytes,
+    format: record.format,
+    lineCount: record.lineCount,
+    idempotencyKey: record.idempotencyKey,
+    sessionId: record.sessionId,
+    operatorId: record.operatorId,
+    alreadyExisted: true,
+  };
 }
 
 function escapeCsvCell(val: unknown): string {
@@ -65,6 +194,7 @@ function escapeCsvCell(val: unknown): string {
   }
   return str;
 }
+
 /**
  * 将结构化对象数组转换为带 UTF-8 BOM 的标准 CSV 字符串
  */
@@ -72,119 +202,310 @@ function convertToCsv(data: Array<Record<string, unknown>>): {
   csvText: string;
   lineCount: number;
 } {
-  if (!Array.isArray(data) || data.length === 0) {
+  if (data.length === 0) {
     return { csvText: '\uFEFF', lineCount: 0 };
   }
 
-  // 1. 提取所有行的并集表头，保持首行顺序
-  const headerSet = new Set<string>();
+  const headerKeys: string[] = [];
+  const keySet: Record<string, true> = {};
+
   for (const row of data) {
-    if (row && typeof row === 'object') {
-      for (const key of Object.keys(row)) {
-        headerSet.add(key);
+    for (const key of Object.keys(row)) {
+      if (!keySet[key]) {
+        keySet[key] = true;
+        headerKeys.push(key);
       }
     }
   }
-  const headers = Array.from(headerSet);
 
   const lines: string[] = [];
-  // 表头行
-  lines.push(headers.map(h => escapeCsvCell(h)).join(','));
+  lines.push(headerKeys.map(escapeCsvCell).join(','));
 
-  // 数据行
   for (const row of data) {
-    const rowCells = headers.map(header => escapeCsvCell(row?.[header]));
+    const rowCells = headerKeys.map(key => escapeCsvCell(row[key]));
     lines.push(rowCells.join(','));
   }
 
-  // UTF-8 BOM 确保 Windows Excel 打开不乱码
   const csvText = `\uFEFF${lines.join('\r\n')}`;
   return { csvText, lineCount: lines.length };
 }
 
 /**
- * 创建 generate_file_deliverable 内置工具
- * 将数据或文本整理生成为 .csv 花名册/表格或 .md Markdown 文档并持久化到本地受控媒体目录
+ * 执行 generate_file_deliverable 的核心文件生成逻辑
+ */
+export function executeGenerateFileDeliverableCore(
+  input: GenerateFileDeliverableInput,
+  baseDir: string,
+  seenIdempotencyKeys?: Record<string, string>,
+  execCtx?: GenerateFileDeliverableExecutionContext
+): GenerateFileDeliverableOutput {
+  const { fileType, fileName, content, data, subDir = 'files', idempotencyKey } = input;
+  const cleanFileName = fileName.trim();
+  const normalizedFormat: 'csv' | 'md' = fileType === 'csv' ? 'csv' : 'md';
+
+  if (!idempotencyKey || typeof idempotencyKey !== 'string' || idempotencyKey.trim().length === 0) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      '低风险写操作必须提供有效的 idempotencyKey 幂等键'
+    );
+  }
+
+  const effectiveSessionId = execCtx?.sessionId;
+  const effectiveOperatorId = execCtx?.operatorId;
+
+  if (!effectiveSessionId || effectiveSessionId.trim().length === 0) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      '低风险写操作缺少明确的 sessionId 会话边界'
+    );
+  }
+
+  if (!effectiveOperatorId || effectiveOperatorId.trim().length === 0) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      '低风险写操作缺少明确的 operatorId 操作者身份'
+    );
+  }
+
+  const normalizedBaseDir = resolve(baseDir);
+  const targetDir = resolve(normalizedBaseDir, subDir, effectiveSessionId.trim());
+  const relTargetDir = relative(normalizedBaseDir, targetDir);
+  if (relTargetDir.startsWith('..') || isAbsolute(relTargetDir)) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      `非法子目录路径: '${subDir}/${effectiveSessionId}' 试图逃逸出受管媒体根目录`
+    );
+  }
+  if (cleanFileName.includes('..') || cleanFileName.includes('/') || cleanFileName.includes('\\')) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      `非法文件名: '${cleanFileName}' 不能包含路径分隔符或父目录引用 (..)，试图逃逸出受管媒体根目录`
+    );
+  }
+
+  const fullFilePath = resolve(targetDir, cleanFileName);
+  const relFilePath = relative(normalizedBaseDir, fullFilePath);
+  if (relFilePath.startsWith('..') || isAbsolute(relFilePath)) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      `非法文件路径: '${cleanFileName}' 试图逃逸出受管媒体根目录`
+    );
+  }
+
+  let fileBuffer: Buffer;
+  let lineCount = 0;
+  if (normalizedFormat === 'csv') {
+    if (!data || !Array.isArray(data)) {
+      throw new ToolValidationError(
+        'generate_file_deliverable',
+        '生成 CSV 文件必须提供 data 数组（结构化行数据）'
+      );
+    }
+    const { csvText, lineCount: count } = convertToCsv(data);
+    fileBuffer = Buffer.from(csvText, 'utf-8');
+    lineCount = count;
+  } else {
+    if (content === undefined || content === null) {
+      throw new ToolValidationError(
+        'generate_file_deliverable',
+        '生成 Markdown 文件必须提供 content 文本内容'
+      );
+    }
+    fileBuffer = Buffer.from(content, 'utf-8');
+    lineCount = content.split('\n').length;
+  }
+
+  const trimmedIdempotencyKey = idempotencyKey.trim();
+  const idempotencyScopeKey = `${effectiveSessionId}:${trimmedIdempotencyKey}`;
+  const contentHash = createHash('sha256').update(fileBuffer).digest('hex');
+  const seenPath = seenIdempotencyKeys?.[idempotencyScopeKey];
+  if (seenPath && seenPath !== fullFilePath) {
+    throw new ToolValidationError(
+      'generate_file_deliverable',
+      `幂等键 '${trimmedIdempotencyKey}' 已绑定当前会话中的其他文件，拒绝产生第二次写入副作用`
+    );
+  }
+
+  const recordPath = getIdempotencyRecordPath(
+    normalizedBaseDir,
+    effectiveSessionId.trim(),
+    trimmedIdempotencyKey
+  );
+  const existingRecord = readIdempotencyRecord(recordPath);
+  if (existingRecord) {
+    const replay = replayIdempotencyRecord(existingRecord, fullFilePath, normalizedBaseDir);
+    if (existingRecord.status === 'writing') {
+      commitIdempotencyRecord(recordPath, existingRecord);
+    }
+    if (seenIdempotencyKeys) seenIdempotencyKeys[idempotencyScopeKey] = fullFilePath;
+    return replay;
+  }
+
+  mkdirSync(targetDir, { recursive: true });
+  const pendingRecord: GenerateFileIdempotencyRecord = {
+    status: 'writing',
+    sessionId: effectiveSessionId.trim(),
+    operatorId: effectiveOperatorId.trim(),
+    idempotencyKey: trimmedIdempotencyKey,
+    fileName: cleanFileName,
+    filePath: fullFilePath,
+    relativePath: relFilePath.replace(/\\/g, '/'),
+    sizeBytes: fileBuffer.length,
+    format: normalizedFormat,
+    lineCount,
+    contentHash,
+  };
+
+  if (!reserveIdempotencyRecord(recordPath, pendingRecord)) {
+    const concurrentRecord = readIdempotencyRecord(recordPath);
+    if (!concurrentRecord) {
+      throw new Error(`幂等记录竞争状态未知，拒绝继续写入: ${recordPath}`);
+    }
+    return replayIdempotencyRecord(concurrentRecord, fullFilePath, normalizedBaseDir);
+  }
+
+  let alreadyExisted = false;
+  try {
+    if (existsSync(fullFilePath)) {
+      const existingHash = createHash('sha256').update(readFileSync(fullFilePath)).digest('hex');
+      if (existingHash === contentHash) {
+        alreadyExisted = true;
+      } else {
+        writeFileSync(fullFilePath, fileBuffer);
+      }
+    } else {
+      writeFileSync(fullFilePath, fileBuffer);
+    }
+    commitIdempotencyRecord(recordPath, pendingRecord);
+  } catch (error) {
+    throw new Error(`生成文件或提交幂等事实失败: ${fullFilePath}`, { cause: error });
+  }
+
+  if (seenIdempotencyKeys) seenIdempotencyKeys[idempotencyScopeKey] = fullFilePath;
+  return {
+    success: true,
+    fileName: cleanFileName,
+    filePath: fullFilePath,
+    relativePath: relFilePath.replace(/\\/g, '/'),
+    sizeBytes: fileBuffer.length,
+    format: normalizedFormat,
+    lineCount,
+    idempotencyKey: trimmedIdempotencyKey,
+    sessionId: effectiveSessionId.trim(),
+    operatorId: effectiveOperatorId.trim(),
+    alreadyExisted,
+  };
+}
+
+/**
+ * 创建 generate_file_deliverable 内置工具 (旧 ToolRegistry 兼容)
  */
 export function createGenerateFileDeliverableTool(
   options: GenerateFileDeliverableOptions = {}
 ): AgentTool<GenerateFileDeliverableInput, GenerateFileDeliverableOutput> {
   const baseDir = resolve(options.baseDir ?? 'data/media');
+  const seenIdempotencyKeys: Record<string, string> = {};
 
   return createAgentTool<GenerateFileDeliverableInput, GenerateFileDeliverableOutput>({
     id: 'generate_file_deliverable',
     description:
       '将结构化数据或文本整理生成为 .csv 花名册/表格或 .md Markdown 文档，并持久化保存至本地受控媒体目录。写操作工具。',
-    readOnly: false, // 写操作工具
+    readOnly: false,
     inputSchema: GenerateFileDeliverableInputSchema,
-    execute: async (input): Promise<GenerateFileDeliverableOutput> => {
+    execute: async (
+      input,
+      context?: ToolExecutionContext
+    ): Promise<GenerateFileDeliverableOutput> => {
       await Promise.resolve();
-      const { fileType, fileName, content, data, subDir = 'files' } = input;
-      const cleanFileName = fileName.trim();
-      const normalizedFormat: 'csv' | 'md' = fileType === 'csv' ? 'csv' : 'md';
+      const sessionId = context?.threadId;
+      const operatorId = context?.senderId ?? context?.resourceId;
 
-      log.debug(
-        { fileType: normalizedFormat, fileName: cleanFileName, subDir },
-        '开始生成文件交付物'
-      );
-
-      let fileBuffer: Buffer;
-      let lineCount = 0;
-
-      if (normalizedFormat === 'csv') {
-        if (!data || !Array.isArray(data)) {
-          throw new ToolValidationError(
-            'generate_file_deliverable',
-            '生成 CSV 文件必须提供 data 数组（结构化行数据）'
-          );
-        }
-        const { csvText, lineCount: count } = convertToCsv(data);
-        fileBuffer = Buffer.from(csvText, 'utf-8');
-        lineCount = count;
-      } else {
-        if (content === undefined || content === null) {
-          throw new ToolValidationError(
-            'generate_file_deliverable',
-            '生成 Markdown 文件必须提供 content 文本内容'
-          );
-        }
-        fileBuffer = Buffer.from(content, 'utf-8');
-        lineCount = content.split('\n').length;
+      if (!sessionId || typeof sessionId !== 'string' || sessionId.trim().length === 0) {
+        throw new ToolValidationError(
+          'generate_file_deliverable',
+          '低风险写操作工具缺少权威 threadId 会话身份，已阻断执行以防安全逃逸'
+        );
       }
 
-      // 目标存储路径计算与目录确保
-      const targetDir = join(baseDir, subDir);
-      mkdirSync(targetDir, { recursive: true });
+      if (!operatorId || typeof operatorId !== 'string' || operatorId.trim().length === 0) {
+        throw new ToolValidationError(
+          'generate_file_deliverable',
+          '低风险写操作工具缺少权威 senderId/resourceId 操作者身份，已阻断执行以防安全逃逸'
+        );
+      }
 
-      const fullFilePath = join(targetDir, cleanFileName);
-      writeFileSync(fullFilePath, fileBuffer);
-
-      const relPath = relative(baseDir, fullFilePath).replace(/\\/g, '/');
-
-      log.info(
-        {
-          filePath: fullFilePath,
-          relativePath: relPath,
-          sizeBytes: fileBuffer.length,
-          format: normalizedFormat,
-          lineCount,
-        },
-        '文件交付物已成功持久化落盘'
-      );
-
-      return {
-        success: true,
-        fileName: cleanFileName,
-        filePath: fullFilePath,
-        relativePath: relPath,
-        sizeBytes: fileBuffer.length,
-        format: normalizedFormat,
-        lineCount,
-      };
+      return executeGenerateFileDeliverableCore(input, baseDir, seenIdempotencyKeys, {
+        sessionId: sessionId.trim(),
+        operatorId: operatorId.trim(),
+      });
     },
-    metadata: {
-      category: 'file',
-      builtin: true,
+  });
+}
+
+/**
+ * 创建 Mastra-native generate_file_deliverable 工具 (低风险写操作，具有幂等性与不可变 policy)
+ */
+export function createMastraGenerateFileDeliverableTool(
+  options: GenerateFileDeliverableOptions = {}
+): KkMastraTool<
+  typeof GenerateFileDeliverableInputSchema,
+  typeof GenerateFileDeliverableOutputSchema
+> {
+  const baseDir = resolve(options.baseDir ?? 'data/media');
+  const seenIdempotencyKeys: Record<string, string> = {};
+
+  return createKkTool({
+    id: 'generate_file_deliverable',
+    description:
+      '将结构化数据或文本整理生成为 .csv 花名册/表格或 .md Markdown 文档，并持久化保存至本地受控媒体目录。低风险写操作。',
+    effect: 'write',
+    risk: 'low',
+    serialKey: 'session',
+    idempotencyField: 'idempotencyKey',
+    inputSchema: GenerateFileDeliverableInputSchema,
+    outputSchema: GenerateFileDeliverableOutputSchema,
+    execute: async ({ context, requestContext }) => {
+      await Promise.resolve();
+      let reqSessionId: string | undefined;
+      let reqOperatorId: string | undefined;
+
+      if (requestContext && typeof (requestContext as { getRaw?: unknown }).getRaw === 'function') {
+        const rc = requestContext as {
+          getRaw: (k: string) => unknown;
+          get?: (k: string) => unknown;
+        };
+        reqSessionId = (rc.getRaw(MASTRA_THREAD_ID_KEY) ?? rc.getRaw('sessionId')) as
+          | string
+          | undefined;
+        reqOperatorId = (rc.getRaw(MASTRA_RESOURCE_ID_KEY) ?? rc.getRaw('operatorId')) as
+          | string
+          | undefined;
+      } else if (requestContext && typeof (requestContext as { get?: unknown }).get === 'function') {
+        const rc = requestContext as { get: (k: string) => unknown };
+        reqSessionId = (rc.get(MASTRA_THREAD_ID_KEY) ?? rc.get('sessionId')) as string | undefined;
+        reqOperatorId = (rc.get(MASTRA_RESOURCE_ID_KEY) ?? rc.get('operatorId')) as
+          | string
+          | undefined;
+      }
+
+      if (!reqSessionId || typeof reqSessionId !== 'string' || reqSessionId.trim().length === 0) {
+        throw new ToolValidationError(
+          'generate_file_deliverable',
+          '低风险写操作工具缺少权威 sessionId 会话身份，已阻断执行以防安全逃逸'
+        );
+      }
+
+      if (!reqOperatorId || typeof reqOperatorId !== 'string' || reqOperatorId.trim().length === 0) {
+        throw new ToolValidationError(
+          'generate_file_deliverable',
+          '低风险写操作工具缺少权威 operatorId 操作者身份，已阻断执行以防安全逃逸'
+        );
+      }
+
+      return executeGenerateFileDeliverableCore(context, baseDir, seenIdempotencyKeys, {
+        sessionId: reqSessionId.trim(),
+        operatorId: reqOperatorId.trim(),
+      });
     },
   });
 }

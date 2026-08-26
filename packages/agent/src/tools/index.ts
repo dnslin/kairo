@@ -3,6 +3,7 @@
  * 双轨工具调用系统与高并发读写分流调度器
  */
 
+export * from './create-tool.js';
 export * from './types.js';
 export * from './registry.js';
 export * from './executor.js';

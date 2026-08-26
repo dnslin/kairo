@@ -1,15 +1,11 @@
-import { Agent, type ToolsInput } from '@mastra/core/agent';
+import { Agent, TripWire, type ToolsInput } from '@mastra/core/agent';
 import type { Memory } from '@mastra/memory';
 import {
   RequestContext,
   MASTRA_THREAD_ID_KEY,
   MASTRA_RESOURCE_ID_KEY,
 } from '@mastra/core/request-context';
-import type {
-  InputProcessorOrWorkflow,
-  OutputProcessorOrWorkflow,
-  ErrorProcessorOrWorkflow,
-} from '@mastra/core/processors';
+import type { ErrorProcessorOrWorkflow } from '@mastra/core/processors';
 import type { FullOutput } from '@mastra/core/stream';
 import {
   resolveModelTier,
@@ -17,6 +13,8 @@ import {
   type NormalizedModelTierInput,
 } from './routing/tier-policy.js';
 import type { MastraModelFactory, KKBotRequestContextValues } from './models/factory.js';
+import { splitKKBotProcessors, type KKBotProcessorsOptions } from './processors/chain.js';
+import { extractTextFromMastraContent } from './processors/content-utils.js';
 
 export type AgentGenerateRawOutput = FullOutput<unknown>;
 
@@ -29,10 +27,8 @@ export interface KKBotAgentOptions {
   tools?: ToolsInput;
   /** 默认单轮推理最大 Step 数，默认 5 */
   maxSteps?: number;
-  /** 构造期静态绑定的输入处理器管道（按固定数组顺序执行） */
-  inputProcessors?: InputProcessorOrWorkflow[];
-  /** 构造期静态绑定的输出处理器管道（按固定数组顺序执行） */
-  outputProcessors?: OutputProcessorOrWorkflow[];
+  /** 只能配置固定 Processor 链的规则、hook 与阈值，不可替换或注入 Processor 实例 */
+  processorOptions?: KKBotProcessorsOptions;
   /** 构造期静态绑定的错误处理器管道（按固定数组顺序执行） */
   errorProcessors?: ErrorProcessorOrWorkflow[];
 }
@@ -75,6 +71,9 @@ export interface KKBotAgentRunResult {
  * 4. retry、fallback、Tool Calling Loop、AbortSignal 和 maxSteps 均由 Mastra 原生持有并执行。
  * 5. Token Usage 直接从 Mastra 权威结果读取，不使用旧 Runtime 估算。
  */
+export const DEFAULT_KKBOT_INSTRUCTIONS =
+  '你是企业智能助手 KKBot。请遵循安全与企业规范。当用户要求执行删除数据、修改权限、资金转账、全员群发或修改敏感数据等高风险操作时，由于系统未开放此类写操作工具，你只能提供建议、拟写内容或人工操作清单，并明确说明：KKBot 没有执行外部操作。';
+
 export class KKBotAgent {
   readonly mastraAgent: Agent;
   readonly modelFactory: MastraModelFactory;
@@ -82,15 +81,19 @@ export class KKBotAgent {
   constructor(options: KKBotAgentOptions) {
     this.modelFactory = options.modelFactory;
 
+    const defaultProcessors = splitKKBotProcessors(options.processorOptions);
+    const inputProcessors = defaultProcessors.inputProcessors;
+    const outputProcessors = defaultProcessors.outputProcessors;
+
     this.mastraAgent = new Agent({
       id: options.id ?? 'kkbot-mastra-agent',
       name: options.name ?? 'KKBot Agent',
-      instructions: options.instructions ?? '你是企业智能助手 KKBot。',
+      instructions: options.instructions ?? DEFAULT_KKBOT_INSTRUCTIONS,
       model: options.modelFactory.createDynamicModelResolver(),
       memory: options.memory,
       tools: options.tools,
-      inputProcessors: options.inputProcessors,
-      outputProcessors: options.outputProcessors,
+      inputProcessors,
+      outputProcessors,
       errorProcessors: options.errorProcessors,
       defaultOptions: {
         maxSteps: options.maxSteps ?? 5,
@@ -118,6 +121,13 @@ export class KKBotAgent {
     if (options.senderId) {
       reqCtx.setRaw(MASTRA_RESOURCE_ID_KEY, options.senderId);
     }
+    if (options.abortSignal) {
+      reqCtx.setRaw('abortSignal', options.abortSignal);
+    }
+    if (options.abortSignal?.aborted) {
+      throw new Error('Agent 执行已被 AbortSignal 中止');
+    }
+
     const rawOutput = await this.mastraAgent.generate(normalizedInput.text, {
       requestContext: reqCtx,
       abortSignal: options.abortSignal,
@@ -134,6 +144,33 @@ export class KKBotAgent {
         : undefined,
     });
 
+    if (options.abortSignal?.aborted) {
+      throw new Error('Agent 执行已被 AbortSignal 中止');
+    }
+    if (rawOutput.error) {
+      const err =
+        rawOutput.error instanceof Error
+          ? rawOutput.error
+          : typeof rawOutput.error === 'object' &&
+              rawOutput.error !== null &&
+              'message' in rawOutput.error
+            ? new Error(String((rawOutput.error as { message?: unknown }).message), {
+                cause: rawOutput.error,
+              })
+            : new Error(String(rawOutput.error), { cause: rawOutput.error });
+      throw err;
+    }
+
+    if (rawOutput.tripwire) {
+      throw new TripWire(
+        rawOutput.tripwire.reason,
+        {
+          retry: rawOutput.tripwire.retry,
+          metadata: rawOutput.tripwire.metadata,
+        },
+        rawOutput.tripwire.processorId
+      );
+    }
     const usageSource = rawOutput.totalUsage ?? rawOutput.usage;
     const rawUsage =
       usageSource?.raw && typeof usageSource.raw === 'object'
@@ -147,8 +184,22 @@ export class KKBotAgent {
       raw: rawUsage,
     };
 
+    let finalText = rawOutput.text ?? '';
+    if (rawOutput.messages && Array.isArray(rawOutput.messages)) {
+      for (let i = rawOutput.messages.length - 1; i >= 0; i--) {
+        const msg = rawOutput.messages[i];
+        if (msg && msg.role === 'assistant') {
+          const extracted = extractTextFromMastraContent(msg.content);
+          if (extracted.length > 0) {
+            finalText = extracted;
+            break;
+          }
+        }
+      }
+    }
+
     return {
-      text: rawOutput.text ?? '',
+      text: finalText,
       finishReason: rawOutput.finishReason,
       tier,
       usage,
@@ -229,12 +280,11 @@ export function createMastraTextMessage(options: {
  * 从 Mastra Thread Memory 中安全删除指定 Message ID
  * 删除完成后自动等待 memory.settled() 排空向量清理与后台任务
  */
-export async function removeMastraMessage(
-  memory: Memory,
-  messageId: string
-): Promise<void> {
+export async function removeMastraMessage(memory: Memory, messageId: string): Promise<void> {
   try {
-    await (memory as unknown as { deleteMessages: (ids: string[] | { id: string }[]) => Promise<void> }).deleteMessages([messageId]);
+    await (
+      memory as unknown as { deleteMessages: (ids: string[] | { id: string }[]) => Promise<void> }
+    ).deleteMessages([messageId]);
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     throw new Error(`Mastra Thread 消息删除失败 (messageId=${messageId}): ${errorMsg}`, {
@@ -264,15 +314,24 @@ export async function resetObservationalMemoryScope(options: {
 
   const storage =
     explicitStorage ??
-    (memory as unknown as { storage?: { getStore?: (domain: string) => Promise<unknown> } }).storage;
+    (memory as unknown as { storage?: { getStore?: (domain: string) => Promise<unknown> } })
+      .storage;
 
-  if (!storage || typeof (storage as { getStore?: (domain: string) => Promise<unknown> }).getStore !== 'function') {
+  if (
+    !storage ||
+    typeof (storage as { getStore?: (domain: string) => Promise<unknown> }).getStore !== 'function'
+  ) {
     throw new Error('执行 Observational Memory Scope Reset 必须提供有效的 Storage 实例');
   }
 
   try {
-    const memDomain = (await (storage as { getStore: (domain: string) => Promise<unknown> }).getStore('memory')) as {
-      clearObservationalMemory?: (threadId: string | null, resourceId?: string | null) => Promise<void>;
+    const memDomain = (await (
+      storage as { getStore: (domain: string) => Promise<unknown> }
+    ).getStore('memory')) as {
+      clearObservationalMemory?: (
+        threadId: string | null,
+        resourceId?: string | null
+      ) => Promise<void>;
     } | null;
 
     if (!memDomain || typeof memDomain.clearObservationalMemory !== 'function') {

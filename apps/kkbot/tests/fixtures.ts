@@ -43,9 +43,12 @@ export function createValidTestYaml(options: CreateTestConfigOptions): string {
       command: "${nodeExec}"
       args:
         - "${normalizedScript}"
-      required: ${mcpRequired}`;
+      required: ${mcpRequired}
+      tools:
+        - name: echo
+          effect: read
+          risk: low`;
   }
-
   const mcpSection = `
 mcp:
   perServerTimeoutMs: 5000

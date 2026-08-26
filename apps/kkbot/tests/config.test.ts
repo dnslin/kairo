@@ -337,7 +337,7 @@ retention:
     }
 
     expect(thrownError).toBeInstanceOf(ConfigValidationError);
-    const transError = thrownError?.errors.find((e) => e.path.includes('mcp.servers'));
+    const transError = thrownError?.errors.find(e => e.path.includes('mcp.servers'));
     expect(transError).toBeDefined();
     expect(transError?.reason).toMatch(/必须配置有效的 url .* 或 command .* 传输方式之一/);
   });
@@ -362,7 +362,7 @@ retention:
     }
 
     expect(thrownError).toBeInstanceOf(ConfigValidationError);
-    const transError = thrownError?.errors.find((e) => e.path.includes('mcp.servers'));
+    const transError = thrownError?.errors.find(e => e.path.includes('mcp.servers'));
     expect(transError).toBeDefined();
     expect(transError?.reason).toMatch(/不能同时配置 url 和 command/);
   });
@@ -387,7 +387,7 @@ retention:
     }
 
     expect(thrownError).toBeInstanceOf(ConfigValidationError);
-    const transError = thrownError?.errors.find((e) => e.path.includes('mcp.servers'));
+    const transError = thrownError?.errors.find(e => e.path.includes('mcp.servers'));
     expect(transError).toBeDefined();
     expect(transError?.reason).toMatch(/不支持配置 stdio 专用的 args\/env\/cwd/);
   });
@@ -409,5 +409,73 @@ retention:
     expect(srv?.command).toBe('node');
     expect(srv?.args).toEqual(['dist/server.js']);
     expect(srv?.cwd).toBe('./');
+  });
+
+  it('Spec §4.11: 静态校验拒绝不在 allowedHosts 白名单中的 MCP 服务 URL 主机', async () => {
+    const unallowedHostYaml = validYamlContent.replace(
+      'url: "http://127.0.0.1:8080/mcp"',
+      'url: "https://evil-untrusted-mcp.com/sse"'
+    );
+    const configPath = path.join(tempDir, 'kkbot-unallowed-host.yaml');
+    await fs.writeFile(configPath, unallowedHostYaml, 'utf-8');
+
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const hostError = thrownError?.errors.find(e => e.path.includes('mcp.servers.enterprise-search.url'));
+    expect(hostError).toBeDefined();
+    expect(hostError?.reason).toMatch(/不在允许的主机白名单中/);
+  });
+
+  it('Spec §4.11: 静态校验拒绝不在 allowedEnvVars 白名单中的 MCP stdio 环境变量', async () => {
+    const unallowedEnvYaml = validYamlContent.replace(
+      'url: "http://127.0.0.1:8080/mcp"',
+      'command: "node"\n      env:\n        UNAUTHORIZED_INJECTED_SECRET: "leak_val"'
+    );
+    const configPath = path.join(tempDir, 'kkbot-unallowed-env.yaml');
+    await fs.writeFile(configPath, unallowedEnvYaml, 'utf-8');
+
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    let thrownError: ConfigValidationError | null = null;
+    try {
+      await loadConfigFromYaml(configPath);
+    } catch (err) {
+      thrownError = err as ConfigValidationError;
+    }
+
+    expect(thrownError).toBeInstanceOf(ConfigValidationError);
+    const envError = thrownError?.errors.find(e => e.path.includes('UNAUTHORIZED_INJECTED_SECRET'));
+    expect(envError).toBeDefined();
+    expect(envError?.reason).toMatch(/不在允许的环境变量白名单中/);
+  });
+
+  it('Spec §4.11: 静态校验接受在显式 allowedHosts 和 allowedEnvVars 白名单中的配置', async () => {
+    const allowedCustomYaml = validYamlContent.replace(
+      'url: "http://127.0.0.1:8080/mcp"',
+      'url: "https://trusted-internal-mcp.com/sse"\n      allowedHosts:\n        - "trusted-internal-mcp.com"'
+    );
+    const configPath = path.join(tempDir, 'kkbot-allowed-custom.yaml');
+    await fs.writeFile(configPath, allowedCustomYaml, 'utf-8');
+
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_API_KEY = 'sk-valid-key';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+
+    const cfg = await loadConfigFromYaml(configPath);
+    const srv = cfg.mcp.servers['enterprise-search'];
+    expect(srv?.url).toBe('https://trusted-internal-mcp.com/sse');
+    expect(srv?.allowedHosts).toEqual(['trusted-internal-mcp.com']);
   });
 });
