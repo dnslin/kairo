@@ -340,7 +340,7 @@ export type MessageType =
   | 'rich-text'
   | 'system'
   | (string & {});
-export type SessionMessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system';
+export type SessionMessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system' | 'unknown';
 
 /**
  * 消息多模态与扩展载荷结构
@@ -392,6 +392,7 @@ export interface MessageRawPayload {
   [key: string]: unknown;
 }
 
+export type MessageProcessingState = 'pending' | 'agent_claimed' | 'raw_only';
 /**
  * 会话消息实体（数据库持久化与查询返回结构）
  */
@@ -422,6 +423,10 @@ export interface SessionMessage {
   isRecalled: boolean;
   /** 消息创建/接收时间戳 (毫秒) */
   createdAt: number;
+  /** 持久下游处理状态，用于补偿恢复区分 pending 与已进入 Agent。 */
+  processingState: MessageProcessingState;
+  /** 进入 Agent 时绑定的稳定 Run ID。 */
+  processingRunId: string | null;
   /** 本次写入是否为全新插入 (false 表示唯一约束冲突命中既有记录) */
   isNewlyInserted?: boolean;
   /** 消息是否处于持久墓碑状态 */
@@ -457,6 +462,8 @@ export interface SaveMessageInput {
   isRecalled?: boolean;
   /** 消息创建时间戳 (毫秒)，默认 Date.now() */
   createdAt?: number;
+  /** 初始下游处理状态，默认 pending；Bot echo/Group 可原子写为 raw_only。 */
+  processingState?: MessageProcessingState;
 }
 
 /**
@@ -558,13 +565,7 @@ export interface StoreOptions extends DatabaseOptions {
 /**
  * Delivery 交付状态枚举联合类型
  */
-export type DeliveryStatus =
-  | 'generated'
-  | 'sending'
-  | 'sent'
-  | 'failed'
-  | 'unknown'
-  | 'aborted';
+export type DeliveryStatus = 'generated' | 'sending' | 'sent' | 'failed' | 'unknown' | 'aborted';
 
 /**
  * Delivery 实体（数据库持久化与查询返回结构）

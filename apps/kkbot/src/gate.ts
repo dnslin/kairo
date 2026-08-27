@@ -15,7 +15,9 @@ export class WorkAdmissionGateClosedError extends Error {
  */
 export class WorkAdmissionGate {
   readonly startupGenerationId: string;
-  private openState: boolean = false;
+  private openState = false;
+  private openedOnce = false;
+  private permanentlyClosed = false;
 
   constructor(startupGenerationId: string) {
     this.startupGenerationId = startupGenerationId;
@@ -26,10 +28,17 @@ export class WorkAdmissionGate {
   }
 
   open(): void {
+    if (this.permanentlyClosed) {
+      return;
+    }
     this.openState = true;
+    this.openedOnce = true;
   }
 
   close(): void {
+    if (this.openedOnce) {
+      this.permanentlyClosed = true;
+    }
     this.openState = false;
   }
 

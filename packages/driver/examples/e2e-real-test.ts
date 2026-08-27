@@ -22,10 +22,14 @@ async function runRealDeviceE2ETest() {
     heartbeatCount++;
   });
 
-  const capturedMessages: string[] = [];
-  driver.on('message', (msg) => {
-    console.log(`  [实时事件] 捕获到新消息: [${msg.sender}] ${msg.content} (指纹: ${msg.id.slice(0, 12)}...)`);
-    capturedMessages.push(msg.content);
+  const capturedMessages: Array<{ origin: string; messageId: string }> = [];
+  driver.on('message', msg => {
+    const origin = msg.origin ?? 'unknown';
+    const messageId = msg.messageId || msg.id;
+    console.log(
+      `  [实时事件] 捕获到新消息: [${msg.sender}] ${msg.content} (origin: ${origin}, native message ID: ${messageId.slice(0, 12)}...)`
+    );
+    capturedMessages.push({ origin, messageId });
   });
 
   try {
@@ -38,9 +42,9 @@ async function runRealDeviceE2ETest() {
     console.log('Step 2: 穿透 Vue 虚拟滚动读取全量会话...');
     const sessions = await driver.getSessions();
     console.log(`  ✅ 成功读取到 ${sessions.length} 个会话`);
-    const unreadSessions = sessions.filter((s) => s.unread);
+    const unreadSessions = sessions.filter(s => s.unread);
     console.log(`  📊 未读会话数: ${unreadSessions.length} 个`);
-    const groupSessions = sessions.filter((s) => s.type === 'group');
+    const groupSessions = sessions.filter(s => s.type === 'group');
     console.log(`  👥 群聊会话数: ${groupSessions.length} 个\n`);
 
     // 3. 目标会话切换定位
@@ -50,7 +54,7 @@ async function runRealDeviceE2ETest() {
     if (!switched) {
       throw new Error(`切换到会话 ${targetSessionId} 失败`);
     }
-    await new Promise((r) => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 600));
     const current = await driver.getCurrentSession();
     console.log(`  ✅ 切换成功！当前激活会话: ${current?.name} (${current?.id})\n`);
 
@@ -59,14 +63,16 @@ async function runRealDeviceE2ETest() {
     const messages = await driver.getRecentMessages(6);
     console.log(`  ✅ 检索到 ${messages.length} 条消息:`);
     messages.forEach((m, idx) => {
-      console.log(`    [${idx + 1}] ${m.time} | ${m.isMe ? '我' : m.sender}: ${m.content.slice(0, 30)}`);
+      console.log(
+        `    [${idx + 1}] ${m.time} | ${m.isMe ? '我' : m.sender}: ${m.content.slice(0, 30)}`
+      );
     });
     console.log();
 
     // 5. 文本发送与回读测试
     const testText = `[真机集成测试] Driver v2 自动化验证 ${Date.now()}`;
     console.log(`Step 5: 测试发送文本: "${testText}" ...`);
-    const textSendRes = await driver.sendText(testText);
+    const textSendRes = await driver.sendText(testText, { targetSessionId });
     if (!textSendRes.success) {
       throw new Error(`文本发送失败: ${textSendRes.error}`);
     }
@@ -77,32 +83,44 @@ async function runRealDeviceE2ETest() {
     if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
     const testImgPath = path.resolve(tmpDir, 'test-pixel.png');
     // 写入一个合法的单像素 PNG 图片文件
-    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
     fs.writeFileSync(testImgPath, Buffer.from(pngBase64, 'base64'));
 
     console.log(`Step 6: 测试本地图片剪贴板注入与发送: ${testImgPath} ...`);
-    const imgSendRes = await driver.sendImage(testImgPath);
+    const imgSendRes = await driver.sendImage(testImgPath, { targetSessionId });
     if (!imgSendRes.success) {
       throw new Error(`图片发送失败: ${imgSendRes.error}`);
     }
     console.log(`  ✅ 图片发送成功！回读确认耗时: ${imgSendRes.verifyLatencyMs || 0}ms\n`);
 
-    // 7. 实时消息轮询与自消息过滤测试
-    console.log('Step 7: 启动智能轮询监听 (运行 4 秒)...');
+    // 7. 实时消息轮询与来源分类观测；Driver 会 emit bot_echo，Gateway 负责过滤
+    console.log('Step 7: 启动智能轮询来源分类观测 (运行 4 秒)...');
     driver.startPolling({ intervalMs: 1000 });
-    await new Promise((r) => setTimeout(r, 4000));
+    await new Promise(r => setTimeout(r, 4000));
     driver.stopPolling();
-    console.log(`  ✅ 轮询测试完成，期间捕获有效外部新消息: ${capturedMessages.length} 条\n`);
+    const externalCount = capturedMessages.filter(message => message.origin === 'external').length;
+    const botEchoCount = capturedMessages.filter(message => message.origin === 'bot_echo').length;
+    const unknownCount = capturedMessages.filter(message => message.origin === 'unknown').length;
+    const otherCount = capturedMessages.length - externalCount - botEchoCount - unknownCount;
+    console.log(`  external: ${externalCount} 条`);
+    console.log(`  bot_echo: ${botEchoCount} 条（Driver 会 emit，Gateway 才负责过滤）`);
+    console.log(`  unknown: ${unknownCount} 条`);
+    if (otherCount > 0) {
+      console.log(`  其他来源: ${otherCount} 条`);
+    }
+    console.log('  来源分类观测完成；本步骤不验证 Gateway 过滤行为。\n');
 
     console.log('====================================================');
-    console.log('🎉 所有真机端到端全链路测试 100% 成功通过！');
+    console.log('Driver 真机端到端发送与来源分类观测完成');
+    console.log('Gateway Bot 回显过滤不在本脚本验证范围内');
     console.log('====================================================');
   } finally {
     await driver.disconnect();
   }
 }
 
-void runRealDeviceE2ETest().catch((err) => {
+void runRealDeviceE2ETest().catch(err => {
   console.error('\n❌ 真机测试失败:', err);
   process.exit(1);
 });

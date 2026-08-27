@@ -285,6 +285,50 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       expect(messages[1]?.isFromSelf).toBe(true);
     });
 
+    it('混合 agent_claimed 与 pending 消息时仅对 claimed pending 子集执行一次 Agent', async () => {
+      mockLLMProvider.chat = vi.fn().mockResolvedValue({
+        content: '只处理新消息的回复',
+        finishReason: 'stop',
+      });
+      let startedMessageIds: string[] = [];
+      coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        agentRuntime,
+        memoryManager,
+        config: { debounceMs: 200, maxWaitMs: 500 },
+      });
+      coordinator.on('agent_started', (_sessionId, consolidated) => {
+        startedMessageIds = consolidated.messageIds;
+      });
+      await coordinator.start();
+
+      mockDriver.emitMessage(
+        createSampleMsg({ id: 'claim-old-001', content: '上一轮已领取的消息' })
+      );
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(
+        (await store.messages.getMessageBySessionAndMessageId('session_emp_001', 'claim-old-001'))
+          ?.processingState
+      ).toBe('pending');
+      expect(
+        await store.messages.claimMessagesForAgent(
+          'session_emp_001',
+          ['claim-old-001'],
+          'previous-run-001'
+        )
+      ).toEqual(['claim-old-001']);
+
+      const completed = new Promise<void>(resolve => {
+        coordinator!.once('agent_completed', () => resolve());
+      });
+      mockDriver.emitMessage(createSampleMsg({ id: 'claim-new-001', content: '本轮新消息' }));
+      await completed;
+
+      expect(startedMessageIds).toEqual(['claim-new-001']);
+      expect(mockDriver.sendText).toHaveBeenCalledTimes(1);
+    });
+
     it('多轮对话 3-Tier 记忆协同：首轮对话沉淀 L1 历史并作为标准 user/assistant 消息注入第二轮大模型输入', async () => {
       const chatMessagesList: Array<Array<{ role: string; content: unknown }>> = [];
       mockLLMProvider.chat = vi.fn().mockImplementation(messages => {
@@ -1197,6 +1241,7 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       // 1. 人类客服在客户端打字回复客户
       const humanMsg = createSampleMsg({
         id: 'msg_human_agent',
+        origin: 'operator',
         isMe: true,
         content: '您好，我是人工客服，请问有什么可以帮您？',
       });

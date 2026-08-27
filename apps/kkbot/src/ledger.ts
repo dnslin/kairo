@@ -1,4 +1,8 @@
 import type { WorkAdmissionGate } from './gate.js';
+import { createChildLogger } from '@kkbot/driver';
+const defaultShutdownLogger = createChildLogger('shutdown');
+
+export const DEFAULT_SHUTDOWN_DEADLINE_MS = 10_000;
 
 export type FinalizerFn = () => Promise<void> | void;
 
@@ -36,6 +40,10 @@ export interface ExecuteShutdownOptions {
   ledger: AcquisitionLedger;
   gate: WorkAdmissionGate;
   triggerReason?: unknown;
+  /** 整条逆拓扑 Shutdown 的统一 deadline，默认 10 秒。 */
+  /** 直接指定整条 Shutdown 的绝对截止时间；存在时优先于 deadlineMs。 */
+  deadlineAt?: number;
+  deadlineMs?: number;
   logger?: {
     info?: (obj: Record<string, unknown> | string, msg?: string) => void;
     error?: (obj: Record<string, unknown> | string, msg?: string) => void;
@@ -108,7 +116,7 @@ export class AcquisitionLedger {
    */
   getReverseTopologicalOrder(): LedgerEntry[] {
     const allEntries = Array.from(this.entries.values());
-    const idToEntry = new Map(allEntries.map((e) => [e.id, e]));
+    const idToEntry = new Map(allEntries.map(e => [e.id, e]));
 
     // 计算被依赖计数（若 A dependsOn B，则 B 必须等 A 关闭后才能关闭，即 B 的入度+1）
     const dependentsCount = new Map<string, number>();
@@ -135,7 +143,7 @@ export class AcquisitionLedger {
     // 辅助队列：使用逆取得顺序维持稳定性
     const getAvailable = (): LedgerEntry[] =>
       allEntries
-        .filter((e) => !visited.has(e.id) && (dependentsCount.get(e.id) ?? 0) === 0)
+        .filter(e => !visited.has(e.id) && (dependentsCount.get(e.id) ?? 0) === 0)
         .reverse();
 
     let available = getAvailable();
@@ -172,6 +180,39 @@ export class AcquisitionLedger {
   }
 }
 
+async function runFinalizerWithDeadline(
+  finalizer: FinalizerFn,
+  deadlineAt: number,
+  onLateError: (error: Error) => void
+): Promise<void> {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) {
+    throw new Error('资源 Finalizer 未执行：Shutdown deadline 已耗尽');
+  }
+
+  let timedOut = false;
+  const finalizerPromise = Promise.resolve().then(finalizer);
+  void finalizerPromise.catch(error => {
+    if (timedOut) {
+      onLateError(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
+  let timer: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`资源 Finalizer 超过 Shutdown deadline（剩余预算 ${remainingMs}ms）`));
+    }, remainingMs);
+  });
+  try {
+    await Promise.race([finalizerPromise, timeoutPromise]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 /**
  * 执行统一逆拓扑优雅关闭
  * 1. 立即关闭 Work Admission Gate
@@ -181,14 +222,26 @@ export class AcquisitionLedger {
 export async function executeReverseShutdown(
   options: ExecuteShutdownOptions
 ): Promise<ShutdownResult> {
-  const { ledger, gate, triggerReason, logger } = options;
+  const {
+    ledger,
+    gate,
+    triggerReason,
+    logger,
+    deadlineMs = DEFAULT_SHUTDOWN_DEADLINE_MS,
+    deadlineAt = Date.now() + Math.max(1, deadlineMs),
+  } = options;
+  const diagnosticLogger = logger ?? defaultShutdownLogger;
 
   // 1. 第一动作：坚决关闭准入门
   gate.close();
 
   const shutdownOrder = ledger.getReverseTopologicalOrder();
-  const executedResources: string[] = [];
-  const errors: FinalizerError[] = [];
+  const result: ShutdownResult = {
+    successful: true,
+    executedResources: [],
+    errors: [],
+    triggerReason,
+  };
 
   // 2. 逆拓扑执行所有 finalizer
   for (const entry of shutdownOrder) {
@@ -196,29 +249,28 @@ export async function executeReverseShutdown(
       continue;
     }
 
+    result.executedResources.push(entry.id);
     try {
-      executedResources.push(entry.id);
-      await entry.finalizer();
+      await runFinalizerWithDeadline(entry.finalizer, deadlineAt, error => {
+        diagnosticLogger.error?.(
+          { resourceId: entry.id, owner: entry.owner, err: error },
+          '资源 Finalizer 在 deadline 后失败，补充记录迟到诊断'
+        );
+      });
     } catch (err) {
       const errorObj = err instanceof Error ? err : new Error(String(err));
-      errors.push({
+      result.errors.push({
         resourceId: entry.id,
         owner: entry.owner,
         error: errorObj,
       });
-      if (logger?.error) {
-        logger.error(
-          { resourceId: entry.id, owner: entry.owner, err: errorObj },
-          '资源 Finalizer 执行异常，记录并继续释放其余资源'
-        );
-      }
+      result.successful = false;
+      diagnosticLogger.error?.(
+        { resourceId: entry.id, owner: entry.owner, err: errorObj },
+        '资源 Finalizer 执行异常或超时，记录并继续释放其余资源'
+      );
     }
   }
 
-  return {
-    successful: errors.length === 0,
-    executedResources,
-    errors,
-    triggerReason,
-  };
+  return result;
 }

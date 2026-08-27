@@ -3,6 +3,8 @@ import path from 'node:path';
 import { Mastra } from '@mastra/core';
 import { LibSQLStore } from '@mastra/libsql';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
+import type { KK9Driver, DriverHealthEvent } from '@kkbot/driver';
+import { SessionCoordinator, type SessionCoordinatorOptions } from '@kkbot/gateway';
 import type { Tool } from '@mastra/core/tools';
 import {
   createMastraSearchOrganizationTool,
@@ -15,7 +17,13 @@ import { loadConfigFromYaml, type AppConfig, DEFAULT_ALLOWED_MCP_HOSTS } from '.
 import { resolveDatabaseLocation, type DatabaseLocation } from './path-resolver.js';
 import { InstanceLock } from './instance-lock.js';
 import { WorkAdmissionGate } from './gate.js';
-import { AcquisitionLedger, executeReverseShutdown, type ShutdownResult } from './ledger.js';
+import {
+  AcquisitionLedger,
+  DEFAULT_SHUTDOWN_DEADLINE_MS,
+  executeReverseShutdown,
+  type ShutdownResult,
+} from './ledger.js';
+import { GenerationCheckpointStore, type GenerationCheckpoint } from './generation-checkpoint.js';
 import { ConfigValidationError } from './errors.js';
 
 export interface BootstrapperHooks {
@@ -24,11 +32,20 @@ export interface BootstrapperHooks {
   beforeFinalizer?: (resourceId: string) => Promise<void> | void;
   afterFinalizer?: (resourceId: string) => Promise<void> | void;
 }
+
+export type DriverFactory = (config: AppConfig, startupGenerationId: string) => KK9Driver;
+export type CoordinatorFactory = (options: SessionCoordinatorOptions) => SessionCoordinator;
 export interface BootstrapperOptions {
   /** YAML 配置文件路径 */
   configPath: string;
   /** 测试与故障注入钩子 */
   hooks?: BootstrapperHooks;
+  /** 正式运行时提供真实 KK9 Driver；省略时只运行基础设施合同。 */
+  driverFactory?: DriverFactory;
+  /** 可选 Gateway 工厂；省略时由 Composition Root 构造默认 Coordinator。 */
+  coordinatorFactory?: CoordinatorFactory;
+  /** 整条 Shutdown（含资源取得等待）的最大预算，默认 10 秒。 */
+  shutdownDeadlineMs?: number;
 }
 
 export interface PreflightReport {
@@ -37,6 +54,7 @@ export interface PreflightReport {
   migrationsApplied: boolean;
   storageReady: boolean;
   mcpClientReady: boolean;
+  driverReady: boolean;
 }
 
 /**
@@ -59,6 +77,9 @@ export class UnifiedBootstrapper {
   readonly startupGenerationId: string;
   private readonly configPath: string;
   private readonly hooks: BootstrapperHooks;
+  private readonly driverFactory?: DriverFactory;
+  private readonly coordinatorFactory?: CoordinatorFactory;
+  private readonly startedAt = Date.now();
 
   private config: AppConfig | null = null;
   private dbLocation: DatabaseLocation | null = null;
@@ -71,18 +92,46 @@ export class UnifiedBootstrapper {
   private libSqlStore: LibSQLStore | null = null;
   private mastra: Mastra | null = null;
   private mcpClient: MCPClient | null = null;
+  private driver: KK9Driver | null = null;
+  private coordinator: SessionCoordinator | null = null;
+  private checkpointStore: GenerationCheckpointStore | null = null;
+  private previousCheckpoint: GenerationCheckpoint | null = null;
   private degradedMcpServers: Record<string, string> = {};
   private staticTools: Readonly<Record<string, Tool<unknown, unknown, unknown, unknown>>> =
     Object.freeze({});
 
+  private readonly driverHealthHandler = (event: DriverHealthEvent): void => {
+    void this.shutdown(event);
+  };
+  private readonly driverErrorHandler = (error: Error): void => {
+    void this.shutdown({
+      kind: 'driver_error',
+      startupGenerationId: this.startupGenerationId,
+      observedAt: Date.now(),
+      cause: error,
+    });
+  };
+  private readonly shutdownWaitPromise: Promise<ShutdownResult>;
+  private resolveShutdownWait!: (result: ShutdownResult) => void;
   private shutdownPromise: Promise<ShutdownResult> | null = null;
+  private readonly shutdownDeadlineMs: number;
+  private readonly activeAcquisitions = new Set<Promise<void>>();
 
   constructor(options: BootstrapperOptions) {
     this.startupGenerationId = randomUUID();
     this.configPath = options.configPath;
     this.hooks = options.hooks ?? {};
+    this.driverFactory = options.driverFactory;
+    this.coordinatorFactory = options.coordinatorFactory;
     this.gate = new WorkAdmissionGate(this.startupGenerationId);
     this.ledger = new AcquisitionLedger(this.startupGenerationId);
+    this.shutdownDeadlineMs = Math.max(
+      1,
+      options.shutdownDeadlineMs ?? DEFAULT_SHUTDOWN_DEADLINE_MS
+    );
+    this.shutdownWaitPromise = new Promise<ShutdownResult>(resolve => {
+      this.resolveShutdownWait = resolve;
+    });
   }
 
   /**
@@ -119,6 +168,12 @@ export class UnifiedBootstrapper {
         });
 
         await this.instanceLock.acquire();
+        if (this.driverFactory) {
+          this.checkpointStore = new GenerationCheckpointStore(
+            path.join(lockDir, 'kkbot-generation.json')
+          );
+          this.previousCheckpoint = await this.checkpointStore.read();
+        }
 
         this.ledger.record({
           id: 'InstanceLock',
@@ -215,18 +270,10 @@ export class UnifiedBootstrapper {
               const parsedUrl = new URL(serverConfig.url);
               const allowedHostsList = serverConfig.allowedHosts
                 ? Array.from(
-                    new Set([
-                      ...serverConfig.allowedHosts,
-                      parsedUrl.host,
-                      parsedUrl.hostname,
-                    ])
+                    new Set([...serverConfig.allowedHosts, parsedUrl.host, parsedUrl.hostname])
                   )
                 : Array.from(
-                    new Set([
-                      parsedUrl.host,
-                      parsedUrl.hostname,
-                      ...DEFAULT_ALLOWED_MCP_HOSTS,
-                    ])
+                    new Set([parsedUrl.host, parsedUrl.hostname, ...DEFAULT_ALLOWED_MCP_HOSTS])
                   );
               mcpServers[name] = {
                 url: parsedUrl,
@@ -405,13 +452,117 @@ export class UnifiedBootstrapper {
         ...discoveredMcpTools,
       });
 
+      if (this.driverFactory) {
+        await this.acquireStage('Driver', async () => {
+          this.driver = this.driverFactory!(cfg, this.startupGenerationId);
+          this.driver.on('health', this.driverHealthHandler);
+          this.driver.on('error', this.driverErrorHandler);
+          this.ledger.record({
+            id: 'Driver',
+            owner: 'CompositionRoot',
+            dependencies: ['Mastra'],
+            finalizer: async () => {
+              await this.callFinalizerHook('Driver', async () => {
+                this.driver?.off('health', this.driverHealthHandler);
+                this.driver?.off('error', this.driverErrorHandler);
+                await this.driver?.disconnect();
+              });
+            },
+          });
+          await this.driver.connect();
+        });
+
+        await this.acquireStage('Coordinator', () => {
+          if (!this.driver || !this.kkbotStore) {
+            throw new Error('Coordinator 装配失败: Driver 或 KKBotStore 尚未取得');
+          }
+          const coordinatorOptions: SessionCoordinatorOptions = {
+            driver: this.driver,
+            store: this.kkbotStore,
+            admissionGate: this.gate,
+            config: {
+              debounceMs: cfg.kk.debounceMs,
+              maxWaitMs: cfg.kk.maxWaitMs,
+              takeoverDurationMs: cfg.kk.takeoverMinutes * 60 * 1000,
+            },
+          };
+          this.coordinator = this.coordinatorFactory
+            ? this.coordinatorFactory(coordinatorOptions)
+            : new SessionCoordinator(coordinatorOptions);
+          this.ledger.record({
+            id: 'Coordinator',
+            owner: 'CompositionRoot',
+            dependencies: ['Driver', 'Mastra', 'KKBotClient'],
+            finalizer: async () => {
+              await this.callFinalizerHook('Coordinator', () => this.coordinator?.stop());
+            },
+          });
+        });
+      }
+
       // 9. 执行无业务事实副作用的真实 Preflight
       await this.acquireStage('Preflight', async () => {
         await this.preflight();
       });
 
+      if (this.coordinator) {
+        await this.acquireStage('CoordinatorStart', async () => {
+          await this.coordinator?.start();
+        });
+      }
+
+      if (this.shutdownPromise) {
+        throw new Error('Ready Barrier 在 Shutdown 启动后失效，拒绝继续开门');
+      }
+      const readyAt = Date.now();
+      const compensationFrom =
+        this.previousCheckpoint === null
+          ? this.startedAt
+          : this.previousCheckpoint.compensationCompleted
+            ? this.previousCheckpoint.startedAt
+            : this.previousCheckpoint.compensationFrom;
+      if (this.checkpointStore) {
+        await this.checkpointStore.write({
+          startupGenerationId: this.startupGenerationId,
+          startedAt: this.startedAt,
+          readyAt,
+          compensationFrom,
+          compensationCompleted: false,
+        });
+      }
+
+      if (this.shutdownPromise) {
+        throw new Error('Ready Barrier 在 Shutdown 启动后失效，拒绝开放 Work Admission Gate');
+      }
       // 10. Ready Barrier 判定成功，唯一一次打开 Work Admission Gate
       this.gate.open();
+
+      if (this.driver && this.coordinator) {
+        const recoveredMessages = await this.driver.scanCompensationWindow({
+          fromTimestamp: compensationFrom,
+          toTimestamp: readyAt,
+          switchDelayMs: 0,
+        });
+        for (const message of recoveredMessages) {
+          await this.coordinator.handleCompensationMessage(message);
+        }
+        if (this.shutdownPromise) {
+          throw new Error('补偿完成后发现 Shutdown 已启动，拒绝推进 checkpoint');
+        }
+        if (this.checkpointStore) {
+          await this.checkpointStore.write({
+            startupGenerationId: this.startupGenerationId,
+            startedAt: this.startedAt,
+            readyAt,
+            compensationFrom: this.startedAt,
+            compensationCompleted: true,
+          });
+        }
+        if (this.shutdownPromise) {
+          throw new Error('补偿完成后发现 Shutdown 已启动，拒绝启动 Polling');
+        }
+        this.driver.startPolling();
+      }
     } catch (error) {
       this.gate.close();
       const shutdownRes = await this.shutdown(error);
@@ -453,12 +604,35 @@ export class UnifiedBootstrapper {
     const storageReady = Boolean(this.libSqlStore);
     // 探针 4：验证 MCPClient 可用性（只读已完成的 discovery 状态，不重复发起 discovery）
     const mcpClientReady = Object.keys(this.degradedMcpServers).length === 0;
+
+    let driverReady = true;
+    if (this.driverFactory) {
+      const snapshot = this.driver?.getHealthSnapshot();
+      const cdpIdentity = snapshot?.cdpConnectionIdentity;
+      const bridgeIdentity = snapshot?.eventBridgeConnectionIdentity;
+      driverReady = Boolean(
+        snapshot &&
+        snapshot.cdpStatus === 'connected' &&
+        snapshot.eventBridgeAttached &&
+        cdpIdentity &&
+        bridgeIdentity &&
+        cdpIdentity.startupGenerationId === this.startupGenerationId &&
+        bridgeIdentity.startupGenerationId === this.startupGenerationId &&
+        cdpIdentity.connectionId === bridgeIdentity.connectionId
+      );
+      if (!driverReady) {
+        throw new Error(
+          `Driver Preflight 失败: CDP/EventBridge 未在当前 startup generation ${this.startupGenerationId} 建立一致 Ready 身份`
+        );
+      }
+    }
     return {
       startupGenerationId: this.startupGenerationId,
       dbConnectivity,
       migrationsApplied,
       storageReady,
       mcpClientReady,
+      driverReady,
     };
   }
 
@@ -466,29 +640,79 @@ export class UnifiedBootstrapper {
    * 统一逆拓扑幂等优雅关闭
    */
   async shutdown(reason?: unknown): Promise<ShutdownResult> {
+    this.gate.close();
     if (this.shutdownPromise) {
       return this.shutdownPromise;
     }
 
-    this.shutdownPromise = executeReverseShutdown({
-      ledger: this.ledger,
-      gate: this.gate,
-      triggerReason: reason,
+    const deadlineAt = Date.now() + this.shutdownDeadlineMs;
+    this.shutdownPromise = (async (): Promise<ShutdownResult> => {
+      while (this.activeAcquisitions.size > 0) {
+        const remainingMs = deadlineAt - Date.now();
+        if (remainingMs <= 0) {
+          break;
+        }
+        const acquisitionPromise = Promise.all(Array.from(this.activeAcquisitions));
+        let timer: NodeJS.Timeout | undefined;
+        const deadlinePromise = new Promise<void>(resolve => {
+          timer = setTimeout(resolve, remainingMs);
+        });
+        try {
+          await Promise.race([acquisitionPromise, deadlinePromise]);
+        } finally {
+          if (timer) {
+            clearTimeout(timer);
+          }
+        }
+      }
+      return executeReverseShutdown({
+        ledger: this.ledger,
+        gate: this.gate,
+        triggerReason: reason,
+        deadlineAt,
+      });
+    })().then(result => {
+      this.resolveShutdownWait(result);
+      return result;
     });
 
     return this.shutdownPromise;
+  }
+
+  async waitForShutdown(): Promise<ShutdownResult> {
+    return this.shutdownWaitPromise;
   }
 
   /**
    * 阶段资源取得辅助函数（支持故障注入钩子）
    */
   private async acquireStage(stage: string, fn: () => Promise<void> | void): Promise<void> {
-    if (this.hooks.beforeAcquire) {
-      await this.hooks.beforeAcquire(stage);
+    if (this.shutdownPromise) {
+      throw new Error(`资源取得阶段 ${stage} 在 Shutdown 启动后被拒绝`);
     }
-    await fn();
-    if (this.hooks.afterAcquire) {
-      await this.hooks.afterAcquire(stage, this);
+
+    let completeAcquisition!: () => void;
+    const acquisition = new Promise<void>(resolve => {
+      completeAcquisition = resolve;
+    });
+    this.activeAcquisitions.add(acquisition);
+    try {
+      if (this.hooks.beforeAcquire) {
+        await this.hooks.beforeAcquire(stage);
+      }
+      await fn();
+      if (this.shutdownPromise) {
+        throw new Error(`资源取得阶段 ${stage} 在 Shutdown 启动后完成，拒绝继续启动`);
+      }
+      if (this.hooks.afterAcquire) {
+        await this.hooks.afterAcquire(stage, this);
+      }
+      if (this.shutdownPromise) {
+        throw new Error(`资源取得阶段 ${stage} 在 Shutdown 启动后登记，拒绝继续启动`);
+      }
+    } finally {
+      completeAcquisition();
+      this.activeAcquisitions.delete(acquisition);
     }
   }
 
@@ -555,6 +779,14 @@ export class UnifiedBootstrapper {
       throw new Error('Mastra 实例尚未取得或已释放');
     }
     return this.mastra;
+  }
+
+  getDriver(): KK9Driver | null {
+    return this.driver;
+  }
+
+  getCoordinator(): SessionCoordinator | null {
+    return this.coordinator;
   }
 
   getMCPClient(): MCPClient | null {

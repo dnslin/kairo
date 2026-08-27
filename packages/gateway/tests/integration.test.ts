@@ -160,6 +160,7 @@ describe('SessionCoordinator 集成与端到端协同测试', () => {
     await coordinator.handleInboundMessage(
       createMsg({
         id: 'human_001',
+        origin: 'operator',
         isMe: true,
         sender: '我',
         content: '您好，我是业务员小张，正在为您核实退款单号。',

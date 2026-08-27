@@ -1,6 +1,7 @@
 import type { Client, InValue } from '@libsql/client';
 import type {
   GetSessionHistoryOptions,
+  MessageProcessingState,
   MessageRawPayload,
   MessageType,
   QueryMessagesOptions,
@@ -31,6 +32,8 @@ interface MessageRow {
   is_from_self: number;
   is_recalled: number;
   created_at: number;
+  processing_state?: string | null;
+  processing_run_id?: string | null;
 }
 
 /**
@@ -88,6 +91,8 @@ function mapRowToMessage(row: MessageRow): SessionMessage {
     isFromSelf: Number(row.is_from_self) === 1,
     isRecalled: Number(row.is_recalled) === 1,
     createdAt: Number(row.created_at),
+    processingState: (row.processing_state || 'pending') as MessageProcessingState,
+    processingRunId: row.processing_run_id ? String(row.processing_run_id) : null,
   };
 }
 
@@ -118,7 +123,11 @@ async function resolveExistingOrTombstonedMessage(
       args: [input.sessionId, messageId],
     });
     const isTomb = tombRes.rows.length > 0;
-    const tombType = isTomb && tombRes.rows[0] ? ((tombRes.rows[0] as unknown as { tombstone_type: string }).tombstone_type as TombstoneType) : undefined;
+    const tombType =
+      isTomb && tombRes.rows[0]
+        ? ((tombRes.rows[0] as unknown as { tombstone_type: string })
+            .tombstone_type as TombstoneType)
+        : undefined;
     return {
       ...existingMsg,
       isNewlyInserted: false,
@@ -133,7 +142,8 @@ async function resolveExistingOrTombstonedMessage(
     args: [input.sessionId, messageId],
   });
   if (tombRes.rows.length > 0 && tombRes.rows[0]) {
-    const tombType = (tombRes.rows[0] as unknown as { tombstone_type: string }).tombstone_type as TombstoneType;
+    const tombType = (tombRes.rows[0] as unknown as { tombstone_type: string })
+      .tombstone_type as TombstoneType;
     return {
       id: 0,
       sessionId: input.sessionId,
@@ -148,6 +158,8 @@ async function resolveExistingOrTombstonedMessage(
       isFromSelf: Boolean(input.isFromSelf),
       isRecalled: true,
       createdAt: meta.createdAt,
+      processingState: 'raw_only',
+      processingRunId: null,
       isNewlyInserted: false,
       isTombstoned: true,
       tombstoneType: tombType,
@@ -157,15 +169,52 @@ async function resolveExistingOrTombstonedMessage(
   return null;
 }
 
+async function rollbackAndThrow(
+  transaction: { rollback: () => Promise<void> | void },
+  primaryError: unknown,
+  operation: string
+): Promise<never> {
+  const primary = primaryError instanceof Error ? primaryError : new Error(String(primaryError));
+  try {
+    await transaction.rollback();
+  } catch (rollbackError) {
+    const rollbackCause =
+      rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+    const aggregate = new AggregateError(
+      [primary, rollbackCause],
+      `${operation}失败且事务回滚失败`
+    );
+    throw new TransactionError(
+      `${operation}失败: ${primary.message}; 回滚失败: ${rollbackCause.message}`,
+      aggregate
+    );
+  }
+  throw new TransactionError(`${operation}失败: ${primary.message}`, primary);
+}
+
 /**
  * 消息仓储类
  * 负责会话消息持久化、原生 ID 100% 精确撤回、多模态载荷读写与历史上下文过滤
  */
 export class MessageRepository {
   private readonly client: Client;
+  private messageWriteQueue: Promise<void> = Promise.resolve();
 
   constructor(client: Client) {
     this.client = client;
+  }
+  private async withMessageWriteLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previousWrite = this.messageWriteQueue;
+    let releaseWrite!: () => void;
+    this.messageWriteQueue = new Promise<void>(resolve => {
+      releaseWrite = resolve;
+    });
+    await previousWrite;
+    try {
+      return await operation();
+    } finally {
+      releaseWrite();
+    }
   }
 
   /**
@@ -173,124 +222,32 @@ export class MessageRepository {
    * @param input 消息输入参数
    */
   public async saveMessage(input: SaveMessageInput): Promise<SessionMessage> {
-    const rawPayloadStr = serializePayload(input.rawPayload);
-    const createdAt = input.createdAt ?? Date.now();
-    const messageType = input.messageType || 'text';
-    const origin = input.origin || (input.isFromSelf ? 'operator' : 'external');
-    const isFromSelf = input.isFromSelf ? 1 : 0;
-    const isRecalled = input.isRecalled ? 1 : 0;
-    const messageId = input.messageId ?? null;
-    const senderId = input.senderId ?? null;
-    const replyTargetId = input.replyTargetId ?? null;
+    return this.withMessageWriteLock(async () => {
+      const rawPayloadStr = serializePayload(input.rawPayload);
+      const createdAt = input.createdAt ?? Date.now();
+      const messageType = input.messageType || 'text';
+      const origin = input.origin || (input.isFromSelf ? 'operator' : 'external');
+      const isFromSelf = input.isFromSelf ? 1 : 0;
+      const isRecalled = input.isRecalled ? 1 : 0;
+      const messageId = input.messageId ?? null;
+      const senderId = input.senderId ?? null;
+      const replyTargetId = input.replyTargetId ?? null;
+      const processingState = input.processingState ?? 'pending';
 
-    try {
-      // 原子插入：若 messageId 已存在于 message_tombstones，则 WHERE NOT EXISTS 阻止正文写入；ON CONFLICT 防止重复
-      const info = await this.client.execute({
-        sql: `INSERT INTO session_messages (
+      try {
+        // 原子插入：若 messageId 已存在于 message_tombstones，则 WHERE NOT EXISTS 阻止正文写入；ON CONFLICT 防止重复
+        const info = await this.client.execute({
+          sql: `INSERT INTO session_messages (
           session_id, message_id, sender, sender_id, content,
           message_type, origin, raw_payload, reply_target_id, is_from_self,
-          is_recalled, created_at
+          is_recalled, created_at, processing_state, processing_run_id
         )
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         WHERE NOT EXISTS (
           SELECT 1 FROM message_tombstones
           WHERE session_id = ? AND message_id IS NOT NULL AND message_id = ?
         )
         ON CONFLICT (session_id, message_id) DO NOTHING`,
-        args: [
-          input.sessionId,
-          messageId,
-          input.sender,
-          senderId,
-          input.content,
-          messageType,
-          origin,
-          rawPayloadStr,
-          replyTargetId,
-          isFromSelf,
-          isRecalled,
-          createdAt,
-          input.sessionId,
-          messageId ?? '',
-        ],
-      });
-
-      const isNewlyInserted = info.rowsAffected > 0;
-      if (!isNewlyInserted && messageId) {
-        const tombOrExisting = await resolveExistingOrTombstonedMessage(this.client, input, messageId, {
-          senderId,
-          messageType,
-          origin,
-          replyTargetId,
-          createdAt,
-        });
-        if (tombOrExisting) {
-          return tombOrExisting;
-        }
-      }
-
-      const insertedId = Number(info.lastInsertRowid);
-
-      return {
-        id: insertedId,
-        sessionId: input.sessionId,
-        messageId,
-        sender: input.sender,
-        senderId,
-        content: input.content,
-        messageType,
-        origin,
-        rawPayload: deserializePayload(rawPayloadStr),
-        replyTargetId,
-        isFromSelf: Boolean(input.isFromSelf),
-        isRecalled: Boolean(input.isRecalled),
-        createdAt,
-        isNewlyInserted,
-        isTombstoned: false,
-      };
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      throw new DatabaseError(`持久化会话消息失败: ${err.message}`, err);
-    }
-  }
-
-  /**
-   * 单事务原子批量保存多条消息
-   * @param inputs 消息输入列表
-   */
-  public async saveMessages(inputs: SaveMessageInput[]): Promise<SessionMessage[]> {
-    if (inputs.length === 0) {
-      return [];
-    }
-
-    const tx = await this.client.transaction('write');
-
-    try {
-      const results: SessionMessage[] = [];
-
-      for (const input of inputs) {
-        const rawPayloadStr = serializePayload(input.rawPayload);
-        const createdAt = input.createdAt ?? Date.now();
-        const messageType = input.messageType || 'text';
-        const origin = input.origin || (input.isFromSelf ? 'operator' : 'external');
-        const isFromSelf = input.isFromSelf ? 1 : 0;
-        const isRecalled = input.isRecalled ? 1 : 0;
-        const messageId = input.messageId ?? null;
-        const senderId = input.senderId ?? null;
-        const replyTargetId = input.replyTargetId ?? null;
-
-        const info = await tx.execute({
-          sql: `INSERT INTO session_messages (
-            session_id, message_id, sender, sender_id, content,
-            message_type, origin, raw_payload, reply_target_id, is_from_self,
-            is_recalled, created_at
-          )
-          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-          WHERE NOT EXISTS (
-            SELECT 1 FROM message_tombstones
-            WHERE session_id = ? AND message_id IS NOT NULL AND message_id = ?
-          )
-          ON CONFLICT (session_id, message_id) DO NOTHING`,
           args: [
             input.sessionId,
             messageId,
@@ -304,28 +261,36 @@ export class MessageRepository {
             isFromSelf,
             isRecalled,
             createdAt,
+            processingState,
+            null,
             input.sessionId,
             messageId ?? '',
           ],
         });
 
-        if (info.rowsAffected === 0 && messageId) {
-          const tombOrExisting = await resolveExistingOrTombstonedMessage(tx, input, messageId, {
-            senderId,
-            messageType,
-            origin,
-            replyTargetId,
-            createdAt,
-          });
+        const isNewlyInserted = info.rowsAffected > 0;
+        if (!isNewlyInserted && messageId) {
+          const tombOrExisting = await resolveExistingOrTombstonedMessage(
+            this.client,
+            input,
+            messageId,
+            {
+              senderId,
+              messageType,
+              origin,
+              replyTargetId,
+              createdAt,
+            }
+          );
           if (tombOrExisting) {
-            results.push(tombOrExisting);
-            continue;
+            return tombOrExisting;
           }
         }
 
-        const finalId = Number(info.lastInsertRowid);
-        results.push({
-          id: finalId,
+        const insertedId = Number(info.lastInsertRowid);
+
+        return {
+          id: insertedId,
           sessionId: input.sessionId,
           messageId,
           sender: input.sender,
@@ -338,17 +303,120 @@ export class MessageRepository {
           isFromSelf: Boolean(input.isFromSelf),
           isRecalled: Boolean(input.isRecalled),
           createdAt,
-          isNewlyInserted: info.rowsAffected > 0,
-        });
+          processingState,
+          processingRunId: null,
+          isNewlyInserted,
+          isTombstoned: false,
+        };
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        throw new DatabaseError(`持久化会话消息失败: ${err.message}`, err);
       }
+    });
+  }
 
-      await tx.commit();
-      return results;
-    } catch (error) {
-      await tx.rollback();
-      const err = error instanceof Error ? error : new Error(String(error));
-      throw new TransactionError(`批量保存会话消息失败: ${err.message}`, err);
+  /**
+   * 单事务原子批量保存多条消息
+   * @param inputs 消息输入列表
+   */
+  public async saveMessages(inputs: SaveMessageInput[]): Promise<SessionMessage[]> {
+    if (inputs.length === 0) {
+      return [];
     }
+
+    return this.withMessageWriteLock(async () => {
+      const tx = await this.client.transaction('write');
+
+      try {
+        const results: SessionMessage[] = [];
+
+        for (const input of inputs) {
+          const rawPayloadStr = serializePayload(input.rawPayload);
+          const createdAt = input.createdAt ?? Date.now();
+          const messageType = input.messageType || 'text';
+          const origin = input.origin || (input.isFromSelf ? 'operator' : 'external');
+          const isFromSelf = input.isFromSelf ? 1 : 0;
+          const isRecalled = input.isRecalled ? 1 : 0;
+          const messageId = input.messageId ?? null;
+          const senderId = input.senderId ?? null;
+          const replyTargetId = input.replyTargetId ?? null;
+          const processingState = input.processingState ?? 'pending';
+
+          const info = await tx.execute({
+            sql: `INSERT INTO session_messages (
+            session_id, message_id, sender, sender_id, content,
+            message_type, origin, raw_payload, reply_target_id, is_from_self,
+            is_recalled, created_at, processing_state, processing_run_id
+          )
+          SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE NOT EXISTS (
+            SELECT 1 FROM message_tombstones
+            WHERE session_id = ? AND message_id IS NOT NULL AND message_id = ?
+          )
+          ON CONFLICT (session_id, message_id) DO NOTHING`,
+            args: [
+              input.sessionId,
+              messageId,
+              input.sender,
+              senderId,
+              input.content,
+              messageType,
+              origin,
+              rawPayloadStr,
+              replyTargetId,
+              isFromSelf,
+              isRecalled,
+              createdAt,
+              processingState,
+              null,
+              input.sessionId,
+              messageId ?? '',
+            ],
+          });
+
+          if (info.rowsAffected === 0 && messageId) {
+            const tombOrExisting = await resolveExistingOrTombstonedMessage(tx, input, messageId, {
+              senderId,
+              messageType,
+              origin,
+              replyTargetId,
+              createdAt,
+            });
+            if (tombOrExisting) {
+              results.push(tombOrExisting);
+              continue;
+            }
+          }
+
+          const finalId = Number(info.lastInsertRowid);
+          results.push({
+            id: finalId,
+            sessionId: input.sessionId,
+            messageId,
+            sender: input.sender,
+            senderId,
+            content: input.content,
+            messageType,
+            origin,
+            rawPayload: deserializePayload(rawPayloadStr),
+            replyTargetId,
+            isFromSelf: Boolean(input.isFromSelf),
+            isRecalled: Boolean(input.isRecalled),
+            createdAt,
+            processingState,
+            processingRunId: null,
+            isNewlyInserted: info.rowsAffected > 0,
+          });
+        }
+
+        await tx.commit();
+        return results;
+      } catch (error) {
+        await tx.rollback();
+        const err = error instanceof Error ? error : new Error(String(error));
+        throw new TransactionError(`批量保存会话消息失败: ${err.message}`, err);
+      }
+    });
   }
 
   /**
@@ -640,6 +708,95 @@ export class MessageRepository {
       return null;
     }
     return mapRowToMessage(res.rows[0] as unknown as MessageRow);
+  }
+  /** 原子领取本轮仍 pending 的 Agent 输入子集，允许旧 claim 作为重聚上下文。 */
+  public async claimMessagesForAgent(
+    sessionId: string,
+    messageIds: readonly string[],
+    runId: string
+  ): Promise<string[]> {
+    const uniqueMessageIds = Array.from(new Set(messageIds.filter(Boolean)));
+    if (uniqueMessageIds.length === 0) {
+      return [];
+    }
+
+    return this.withMessageWriteLock(async () => {
+      const claimedMessageIds: string[] = [];
+      const tx = await this.client.transaction('write');
+      try {
+        for (const messageId of uniqueMessageIds) {
+          const result = await tx.execute({
+            sql: `UPDATE session_messages
+                  SET processing_state = 'agent_claimed', processing_run_id = ?
+                  WHERE session_id = ? AND message_id = ? AND processing_state = 'pending'`,
+            args: [runId, sessionId, messageId],
+          });
+          if (result.rowsAffected === 1) {
+            claimedMessageIds.push(messageId);
+          }
+        }
+        await tx.commit();
+        return claimedMessageIds;
+      } catch (error) {
+        return rollbackAndThrow(tx, error, '领取 Agent 输入消息');
+      }
+    });
+  }
+  /** Shutdown 或快照不一致时，按本次 run 精确释放 Agent claim，恢复补偿 pending。 */
+  public async releaseAgentClaims(
+    sessionId: string,
+    messageIds: readonly string[],
+    runId: string
+  ): Promise<void> {
+    const uniqueMessageIds = Array.from(new Set(messageIds.filter(Boolean)));
+    if (uniqueMessageIds.length === 0) {
+      return;
+    }
+
+    return this.withMessageWriteLock(async () => {
+      const tx = await this.client.transaction('write');
+      try {
+        for (const messageId of uniqueMessageIds) {
+          await tx.execute({
+            sql: `UPDATE session_messages
+                  SET processing_state = 'pending', processing_run_id = NULL
+                  WHERE session_id = ? AND message_id = ?
+                    AND processing_state = 'agent_claimed' AND processing_run_id = ?`,
+            args: [sessionId, messageId, runId],
+          });
+        }
+        await tx.commit();
+      } catch (error) {
+        return rollbackAndThrow(tx, error, '释放 Agent claim');
+      }
+    });
+  }
+
+  /** 将已完成 Raw-only/抑制路径的消息标记为不再进入 Agent。 */
+  public async markMessagesRawOnly(
+    sessionId: string,
+    messageIds: readonly string[]
+  ): Promise<void> {
+    const uniqueMessageIds = Array.from(new Set(messageIds.filter(Boolean)));
+    if (uniqueMessageIds.length === 0) {
+      return;
+    }
+    return this.withMessageWriteLock(async () => {
+      const tx = await this.client.transaction('write');
+      try {
+        for (const messageId of uniqueMessageIds) {
+          await tx.execute({
+            sql: `UPDATE session_messages
+                SET processing_state = 'raw_only'
+                WHERE session_id = ? AND message_id = ? AND processing_state = 'pending'`,
+            args: [sessionId, messageId],
+          });
+        }
+        await tx.commit();
+      } catch (error) {
+        return rollbackAndThrow(tx, error, '标记 Raw-only 消息');
+      }
+    });
   }
 
   /**

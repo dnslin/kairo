@@ -4,7 +4,10 @@
  */
 
 import { performance } from 'node:perf_hooks';
-import { generateMessageFingerprint, normalizeNativeMessage } from '../../packages/driver/src/index.js';
+import {
+  createMessageIdentityKey,
+  normalizeNativeMessage,
+} from '../../packages/driver/src/index.js';
 
 interface ConcurrencyResult {
   channels: number;
@@ -21,7 +24,7 @@ async function runSingleConcurrencyTest(
 ): Promise<ConcurrencyResult> {
   const totalMessages = channels * messagesPerChannel;
   let processedMessages = 0;
-  const knownFingerprints = new Set<string>();
+  const knownMessageKeys = new Set<string>();
 
   const startTime = performance.now();
 
@@ -44,9 +47,9 @@ async function runSingleConcurrencyTest(
 
       const normalized = normalizeNativeMessage(payload);
       for (const msg of normalized) {
-        const fp = msg.id || generateMessageFingerprint(msg.sessionId, msg.sender, msg.time, msg.content);
-        if (!knownFingerprints.has(fp)) {
-          knownFingerprints.add(fp);
+        const messageKey = createMessageIdentityKey(msg.sessionId, msg.messageId || msg.id);
+        if (!knownMessageKeys.has(messageKey)) {
+          knownMessageKeys.add(messageKey);
           processedMessages++;
         }
       }
@@ -57,7 +60,9 @@ async function runSingleConcurrencyTest(
   const durationMs = performance.now() - startTime;
   const qps = Math.round((processedMessages / durationMs) * 1000);
   const avgLatencyUs = Math.round((durationMs / processedMessages) * 1000);
-  const lossRatePercent = Number((((totalMessages - processedMessages) / totalMessages) * 100).toFixed(4));
+  const lossRatePercent = Number(
+    (((totalMessages - processedMessages) / totalMessages) * 100).toFixed(4)
+  );
 
   return {
     channels,
@@ -85,29 +90,39 @@ async function runThroughputBenchmark(): Promise<void> {
   const results: ConcurrencyResult[] = [];
 
   for (const config of concurrencyLevels) {
-    console.log(`⏳ 正在执行 ${config.channels} 个并发群聊通道压测 (每群 ${config.messagesPerChannel} 条)...`);
+    console.log(
+      `⏳ 正在执行 ${config.channels} 个并发群聊通道压测 (每群 ${config.messagesPerChannel} 条)...`
+    );
     const res = await runSingleConcurrencyTest(config.channels, config.messagesPerChannel);
     results.push(res);
   }
   console.log();
 
   // 格式化输出多并发梯度结果
-  console.log('-----------------------------------------------------------------------------------------');
-  console.log('| 并发群聊数 (Channels) | 总消息量 (Msgs) | 处理耗时 (ms) | 吞吐峰值 (QPS) | 单条处理 (μs) | 丢包率 (%) |');
-  console.log('-----------------------------------------------------------------------------------------');
+  console.log(
+    '-----------------------------------------------------------------------------------------'
+  );
+  console.log(
+    '| 并发群聊数 (Channels) | 总消息量 (Msgs) | 处理耗时 (ms) | 吞吐峰值 (QPS) | 单条处理 (μs) | 丢包率 (%) |'
+  );
+  console.log(
+    '-----------------------------------------------------------------------------------------'
+  );
   for (const r of results) {
     console.log(
       `| ${String(r.channels).padEnd(21)} | ${String(r.totalMessages).padStart(15)} | ${(r.durationMs.toFixed(1) + ' ms').padStart(13)} | ${(r.qps.toLocaleString() + ' msg/s').padStart(14)} | ${(r.avgLatencyUs + ' μs').padStart(13)} | ${(r.lossRatePercent.toFixed(2) + ' %').padStart(10)} |`
     );
   }
-  console.log('-----------------------------------------------------------------------------------------\n');
+  console.log(
+    '-----------------------------------------------------------------------------------------\n'
+  );
 
   const maxQps = Math.max(...results.map(r => r.qps));
-  console.log(`🏆 并发吞吐总结:`);
+  console.log('🏆 并发吞吐总结:');
   console.log(`  - 峰值吞吐速率: ${maxQps.toLocaleString()} msgs/sec`);
-  console.log(`  - 丢包率 (Loss Rate): 0.00% (全并发梯度 100% 精确捕获)`);
-  console.log(`  - 单条消息平均处理开销: < 15 μs (微秒级 CPU 解析)`);
-  console.log(`  - 结论: 原生事件直连桥支持上百群聊超高频并发涌入，吞吐性能卓越！\n`);
+  console.log('  - 丢包率 (Loss Rate): 0.00% (全并发梯度 100% 精确捕获)');
+  console.log('  - 单条消息平均处理开销: < 15 μs (微秒级 CPU 解析)');
+  console.log('  - 结论: 原生事件直连桥支持上百群聊超高频并发涌入，吞吐性能卓越！\n');
 }
 
 if (process.argv[1]?.includes('throughput.bench')) {

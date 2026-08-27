@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type {
   KK9FileInfo,
   KK9ImageInfo,
@@ -20,6 +19,12 @@ export function toSafeString(val: unknown, defaultVal = ''): string {
     return val.toString();
   }
   return defaultVal;
+}
+/**
+ * 创建跨 EventBridge、Polling 与 Gateway 共享的消息身份键。
+ */
+export function createMessageIdentityKey(sessionId: string, nativeMessageId: string): string {
+  return `${sessionId}:${nativeMessageId}`;
 }
 
 /**
@@ -43,19 +48,6 @@ function tryParseJson(val: unknown): Record<string, unknown> | null {
     }
   }
   return null;
-}
-
-/**
- * 计算消息唯一 SHA-256 指纹
- */
-export function generateMessageFingerprint(
-  sessionId: string,
-  sender: string,
-  time: string,
-  content: string
-): string {
-  const raw = `${sessionId}\x00${sender}\x00${time}\x00${content}`;
-  return createHash('sha256').update(raw).digest('hex');
 }
 
 /**
@@ -121,12 +113,13 @@ export function determineOrigin(
   messageType: KK9MessageType,
   context?: {
     currentUserId?: string | number;
-    knownBotSentIds?: Set<string>;
+    knownBotSentMessageKeys?: Set<string>;
     isBotEcho?: boolean;
+    sourceKnown?: boolean;
+    sessionId?: string;
   },
   id?: string
 ): KK9MessageOrigin {
-  // 1. 系统消息判定
   if (
     messageType === 'system' ||
     raw['isSystem'] === true ||
@@ -140,24 +133,61 @@ export function determineOrigin(
     return 'system';
   }
 
-  // 2. 当前账号发出的消息
-  if (isMe) {
-    const rawNativeId = raw['msgID'] ?? raw['msgId'] ?? raw['messageId'] ?? raw['id'];
-    const nativeIdStr = rawNativeId !== undefined ? toSafeString(rawNativeId) : undefined;
-    const isBot = Boolean(
-      context?.isBotEcho ||
-      (id && context?.knownBotSentIds?.has(id)) ||
-      (nativeIdStr && context?.knownBotSentIds?.has(nativeIdStr))
-    );
-    if (isBot) {
-      return 'bot_echo';
-    }
-    // 非 Bot 回显 -> 人类操作员在客户端打字/介入
-    return 'operator';
+  const explicitOrigin = raw['origin'] ?? raw['source'];
+  if (
+    explicitOrigin === 'external' ||
+    explicitOrigin === 'operator' ||
+    explicitOrigin === 'bot_echo' ||
+    explicitOrigin === 'system' ||
+    explicitOrigin === 'unknown'
+  ) {
+    return explicitOrigin;
   }
 
-  // 3. 外部普通成员
+  const rawNativeId = raw['msgID'] ?? raw['msgId'] ?? raw['messageId'] ?? raw['id'];
+  const nativeIdStr = rawNativeId !== undefined ? toSafeString(rawNativeId).trim() : undefined;
+  const botNativeId = id?.trim() || nativeIdStr;
+  const messageKey =
+    context?.sessionId && botNativeId
+      ? createMessageIdentityKey(context.sessionId, botNativeId)
+      : undefined;
+  const isBot = Boolean(
+    context?.isBotEcho || (messageKey && context?.knownBotSentMessageKeys?.has(messageKey))
+  );
+  if (isBot) {
+    return 'bot_echo';
+  }
+
+  // isMe 只能证明消息来自当前账号，无法区分人工操作员和 Bot 回显。
+  if (isMe) {
+    return 'unknown';
+  }
+
+  if (context?.sourceKnown === false) {
+    return 'unknown';
+  }
+
   return 'external';
+}
+
+export type InboundNormalizationSource = 'event_bridge' | 'polling' | 'unknown';
+
+export interface InboundNormalizationDiagnostic {
+  kind: 'missing_inbound_identity';
+  missingFields: readonly ('sessionId' | 'nativeMessageId')[];
+  sessionId: string;
+  source: InboundNormalizationSource;
+  observedAt: number;
+}
+
+export interface NormalizeNativeMessageContext {
+  session?: Partial<KK9Session>;
+  currentUserId?: string | number;
+  knownBotSentMessageKeys?: Set<string>;
+  isBotEcho?: boolean;
+  sourceKnown?: boolean;
+  source?: InboundNormalizationSource;
+  onDiagnostic?: (diagnostic: InboundNormalizationDiagnostic) => void;
 }
 
 /**
@@ -187,12 +217,7 @@ function isCancelMessageItem(item: Record<string, unknown>): boolean {
  */
 export function normalizeNativeMessage(
   payload: unknown,
-  context?: {
-    session?: Partial<KK9Session>;
-    currentUserId?: string | number;
-    knownBotSentIds?: Set<string>;
-    isBotEcho?: boolean;
-  }
+  context?: NormalizeNativeMessageContext
 ): KK9Message[] {
   if (!payload || typeof payload !== 'object') {
     return [];
@@ -212,7 +237,7 @@ export function normalizeNativeMessage(
     sessionObj['id'] ??
     sessionObj['sesUUID'] ??
     context?.session?.id;
-  const sessionId = toSafeString(rawSessionId, '');
+  const sessionId = toSafeString(rawSessionId, '').trim();
 
   const rawSessionName =
     rawObj['sessionName'] ??
@@ -257,7 +282,7 @@ export function normalizeNativeMessage(
       (item): item is Record<string, unknown> =>
         !!item && typeof item === 'object' && !isCancelMessageItem(item)
     )
-    .map(item => {
+    .map((item): KK9Message | null => {
       const rawSender =
         item['sender'] ??
         item['senderName'] ??
@@ -273,12 +298,15 @@ export function normalizeNativeMessage(
       const rawTime = item['time'] ?? item['sendTime'];
       const time = toSafeString(rawTime, new Date(now).toLocaleTimeString());
 
-      const isMe = Boolean(
-        item['isMe'] === true ||
-        item['fromMe'] === true ||
-        (currentUserId && senderId && senderId === currentUserId) ||
-        (currentUserId && sender === currentUserId)
+      const matchesCurrentUser = Boolean(
+        currentUserId && ((senderId && senderId === currentUserId) || sender === currentUserId)
       );
+      const sourceKnown =
+        context?.sourceKnown ??
+        (typeof item['isMe'] === 'boolean' ||
+          typeof item['fromMe'] === 'boolean' ||
+          Boolean(currentUserId && senderId));
+      const isMe = Boolean(item['isMe'] === true || item['fromMe'] === true || matchesCurrentUser);
 
       // 时间戳处理（秒级转毫秒级兼容）
       let timestamp = now;
@@ -289,18 +317,41 @@ export function normalizeNativeMessage(
       }
 
       // @ 提及信息解析
+      const rawMentionsRecord =
+        item['mentions'] && typeof item['mentions'] === 'object'
+          ? (item['mentions'] as Record<string, unknown>)
+          : null;
+      const mentionedUsers = Array.isArray(rawMentionsRecord?.['mentionedUsers'])
+        ? rawMentionsRecord['mentionedUsers'].filter(
+            (user): user is string => typeof user === 'string'
+          )
+        : [];
+      const rawMentions: KK9MentionInfo | undefined = rawMentionsRecord
+        ? {
+            isAtMe: rawMentionsRecord['isAtMe'] === true,
+            isAtAll: rawMentionsRecord['isAtAll'] === true,
+            mentionedUsers,
+          }
+        : undefined;
       let atMe = Boolean(
-        item['atMe'] || item['isAtMe'] || item['atState'] === 1 || item['atState'] === 2
+        item['atMe'] ||
+        item['isAtMe'] ||
+        rawMentions?.isAtMe ||
+        item['atState'] === 1 ||
+        item['atState'] === 2
       );
       let atAll = Boolean(
         item['atAll'] ||
         item['isAtAll'] ||
+        rawMentions?.isAtAll ||
         item['atState'] === 3 ||
         content.includes('@全体') ||
         content.includes('@所有人')
       );
 
-      const atMemberList = Array.isArray(item['atMemberIDList']) ? item['atMemberIDList'] : [];
+      const atMemberList = Array.isArray(item['atMemberIDList'])
+        ? item['atMemberIDList']
+        : (rawMentions?.mentionedUsers ?? []);
       if (
         atMemberList.includes('all') ||
         atMemberList.includes(-1) ||
@@ -382,17 +433,52 @@ export function normalizeNativeMessage(
 
       const messageType = determineMessageType(item, images, fileInfo, replyTo);
 
-      // 指纹与原生 ID 解析（EventBridge 与 Polling 保证稳定一致）
-      const fingerprint = generateMessageFingerprint(sessionId, sender, time, content);
-      const rawNativeId = item['msgID'] ?? item['msgId'] ?? item['messageId'] ?? item['id'];
-      const messageId = rawNativeId !== undefined ? toSafeString(rawNativeId) : fingerprint;
-      const id = messageId || fingerprint;
+      const nestedRaw =
+        item['raw'] && typeof item['raw'] === 'object'
+          ? (item['raw'] as Record<string, unknown>)
+          : undefined;
+      const nativeMessageId =
+        [
+          item['msgID'],
+          item['msgId'],
+          item['messageId'],
+          item['id'],
+          nestedRaw?.['msgID'],
+          nestedRaw?.['msgId'],
+          nestedRaw?.['messageId'],
+          nestedRaw?.['id'],
+        ]
+          .map(value => toSafeString(value).trim())
+          .find(Boolean) ?? '';
+      const missingFields: Array<'sessionId' | 'nativeMessageId'> = [];
+      if (!sessionId) {
+        missingFields.push('sessionId');
+      }
+      if (!nativeMessageId) {
+        missingFields.push('nativeMessageId');
+      }
+      if (missingFields.length > 0) {
+        context?.onDiagnostic?.({
+          kind: 'missing_inbound_identity',
+          missingFields,
+          sessionId,
+          source: context?.source ?? 'unknown',
+          observedAt: Date.now(),
+        });
+        return null;
+      }
 
-      const origin = determineOrigin(item, isMe, messageType, context, id);
+      const origin = determineOrigin(
+        item,
+        isMe,
+        messageType,
+        { ...context, sourceKnown, sessionId },
+        nativeMessageId
+      );
 
       return {
-        id,
-        messageId,
+        id: nativeMessageId,
+        messageId: nativeMessageId,
         sessionId,
         sessionName,
         sessionType,
@@ -404,15 +490,16 @@ export function normalizeNativeMessage(
         isMe,
         timestamp,
         messageType,
-        atMe: atMe || undefined,
-        atAll: atAll || undefined,
+        atMe,
+        atAll,
         mentions,
         replyTo,
         fileInfo,
         images,
         raw: item,
       };
-    });
+    })
+    .filter((message): message is KK9Message => message !== null);
 }
 /**
  * 从任何事件载荷（receive-message, session-msg, direct payload）中提取所有撤回事件

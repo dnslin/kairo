@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import EventEmitter from 'node:events';
+import type { KK9Driver } from '@kkbot/driver';
 import { UnifiedBootstrapper } from '../src/bootstrapper.js';
 import { createValidTestYaml } from './fixtures.js';
 import fs from 'node:fs/promises';
@@ -63,8 +65,10 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
 
     // 3. Database file created and contains KKBot migrations and Mastra tables
     const kkbotClient = bootstrapper.getKKBotClient();
-    const tablesRes = await kkbotClient.execute("SELECT name FROM sqlite_master WHERE type='table'");
-    const tableNames = tablesRes.rows.map((r) => (typeof r.name === 'string' ? r.name : ''));
+    const tablesRes = await kkbotClient.execute(
+      "SELECT name FROM sqlite_master WHERE type='table'"
+    );
+    const tableNames = tablesRes.rows.map(r => (typeof r.name === 'string' ? r.name : ''));
     expect(tableNames).toContain('_kkbot_migrations');
     expect(tableNames).toContain('org_departments');
     expect(tableNames).toContain('sessions');
@@ -97,7 +101,7 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     const boot = new UnifiedBootstrapper({
       configPath: configFile,
       hooks: {
-        beforeAcquire: (stage) => {
+        beforeAcquire: stage => {
           if (stage === 'Mastra') {
             throw new Error('Simulated Mastra creation failure');
           }
@@ -123,7 +127,7 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     const boot = new UnifiedBootstrapper({
       configPath: configFile,
       hooks: {
-        beforeFinalizer: (resourceId) => {
+        beforeFinalizer: resourceId => {
           if (resourceId === 'Mastra') {
             throw new Error('Simulated Mastra shutdown failure');
           }
@@ -153,17 +157,120 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     expect(res1).toBe(res2);
     expect(boot.getGate().isOpen()).toBe(false);
   });
+  it('driver.connect 尚未落定时 Shutdown 等待 acquire 并阻止后续 Coordinator 登记', async () => {
+    let connectStarted = false;
+    let releaseConnect!: () => void;
+    const connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve;
+    });
+    let disconnectCount = 0;
+    const driver = Object.assign(new EventEmitter(), {
+      async connect() {
+        connectStarted = true;
+        await connectGate;
+      },
+      disconnect() {
+        disconnectCount += 1;
+        return Promise.resolve();
+      },
+      getHealthSnapshot() {
+        return {
+          startupGenerationId: 'test-generation',
+          cdpStatus: 'connected',
+          cdpConnectionIdentity: null,
+          eventBridgeAttached: true,
+          eventBridgeConnectionIdentity: null,
+        };
+      },
+      scanCompensationWindow() {
+        return Promise.resolve([]);
+      },
+      startPolling() {},
+    }) as unknown as KK9Driver;
 
+    const boot = new UnifiedBootstrapper({
+      configPath: configFile,
+      driverFactory: () => driver,
+    });
+    const startPromise = boot.start();
+    while (!connectStarted) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    let shutdownSettled = false;
+    const shutdownPromise = boot.shutdown('connect_mid_shutdown').then(result => {
+      shutdownSettled = true;
+      return result;
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(shutdownSettled).toBe(false);
+
+    releaseConnect();
+    await expect(startPromise).rejects.toThrow(/Shutdown/);
+    const shutdownResult = await shutdownPromise;
+    expect(shutdownResult.successful).toBe(true);
+    expect(disconnectCount).toBe(1);
+    expect(boot.getCoordinator()).toBeNull();
+    expect(boot.getGate().isOpen()).toBe(false);
+  });
+
+  it('阻塞 Driver acquire 与 Shutdown finalizer 共享单一 deadline', async () => {
+    let connectStarted = false;
+    let releaseConnect!: () => void;
+    const connectGate = new Promise<void>(resolve => {
+      releaseConnect = resolve;
+    });
+    const driver = Object.assign(new EventEmitter(), {
+      async connect() {
+        connectStarted = true;
+        await connectGate;
+      },
+      disconnect() {
+        return Promise.resolve();
+      },
+      getHealthSnapshot() {
+        return {
+          startupGenerationId: 'deadline-generation',
+          cdpStatus: 'connected',
+          cdpConnectionIdentity: null,
+          eventBridgeAttached: true,
+          eventBridgeConnectionIdentity: null,
+        };
+      },
+      scanCompensationWindow() {
+        return Promise.resolve([]);
+      },
+      startPolling() {},
+    }) as unknown as KK9Driver;
+    const boot = new UnifiedBootstrapper({
+      configPath: configFile,
+      driverFactory: () => driver,
+      shutdownDeadlineMs: 80,
+    });
+    const startPromise = boot.start();
+    while (!connectStarted) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    const startedAt = Date.now();
+    const shutdownResult = await boot.shutdown('deadline_acquire');
+    expect(Date.now() - startedAt).toBeLessThan(300);
+    expect(boot.getGate().isOpen()).toBe(false);
+
+    releaseConnect();
+    await expect(startPromise).rejects.toThrow(/Shutdown/);
+    expect(shutdownResult.executedResources).toContain('Driver');
+  });
   it('should throw AggregateError when both startup and rollback finalizers encounter failures', async () => {
     const boot = new UnifiedBootstrapper({
       configPath: configFile,
       hooks: {
-        beforeAcquire: (stage) => {
+        beforeAcquire: stage => {
           if (stage === 'Preflight') {
             throw new Error('Initial Preflight failure');
           }
         },
-        beforeFinalizer: (resId) => {
+        beforeFinalizer: resId => {
           if (resId === 'KKBotClient') {
             throw new Error('Rollback finalizer failure');
           }

@@ -340,6 +340,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       // 人类操作员在客户端打字回复 (isMe: true)
       const humanMsg = createSampleMessage({
         id: 'h1',
+        origin: 'operator',
         isMe: true,
         sender: '我',
         content: '您好，我是人工客服小李，请问有什么可以帮您？',
@@ -407,6 +408,34 @@ describe('SessionCoordinator 业务编排器测试', () => {
 
       await coordinator.stop();
     });
+    it('未知来源消息仅写入 Raw Store，不进入队列或人工接管', async () => {
+      const onConsolidated = vi.fn();
+      const coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        config: { debounceMs: 1500, onConsolidatedMessage: onConsolidated },
+      });
+      await coordinator.start();
+
+      await coordinator.handleInboundMessage(
+        createSampleMessage({
+          id: 'unknown-self-001',
+          isMe: true,
+          sender: '未知来源自发消息',
+          content: '不能确认来源的消息',
+        })
+      );
+
+      expect(coordinator.getPendingQueue('session_001')).toHaveLength(0);
+      expect(await coordinator.isTakeoverActive('session_001')).toBe(false);
+      expect(onConsolidated).not.toHaveBeenCalled();
+      const history = await store.messages.getSessionHistory('session_001');
+      expect(history).toHaveLength(1);
+      expect(history[0]?.origin).toBe('unknown');
+      expect(history[0]?.processingState).toBe('raw_only');
+
+      await coordinator.stop();
+    });
 
     it('Bot 自身通过 coordinator.dispatchReply 发送的消息不应误触发人工退避', async () => {
       const onTakeover = vi.fn();
@@ -429,6 +458,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
         createSampleMessage({
           id: res.messageId || 'bot_msg_001',
           isMe: true,
+          origin: 'bot_echo',
           content: '这是 Bot 的自动回复',
         })
       );
@@ -678,6 +708,101 @@ describe('SessionCoordinator 业务编排器测试', () => {
 
       await coordinator.stop();
       await coordinator.stop(); // 重复 stop 不应抛错
+    });
+    it('活动 flush 失败时 stop 完成清理后抛出 AggregateError', async () => {
+      const coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+      });
+      const internals = coordinator as unknown as {
+        activeFlushes: Set<Promise<void>>;
+      };
+      const failure = Promise.resolve().then(() => {
+        throw new Error('flush persistence failed');
+      });
+      internals.activeFlushes.add(failure);
+      void failure.then(
+        () => internals.activeFlushes.delete(failure),
+        () => internals.activeFlushes.delete(failure)
+      );
+
+      await expect(coordinator.stop()).rejects.toThrow(AggregateError);
+    });
+    it('debounce flush 已触发且 Raw Store 慢写时，stop 必须等待 flush 完成', async () => {
+      let releaseSave!: () => void;
+      const saveGate = new Promise<void>(resolve => {
+        releaseSave = resolve;
+      });
+      const originalSave = store.messages.saveMessage.bind(store.messages);
+      const saveSpy = vi.spyOn(store.messages, 'saveMessage').mockImplementation(async input => {
+        await saveGate;
+        return originalSave(input);
+      });
+      const coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        config: { debounceMs: 10, maxWaitMs: 100 },
+      });
+      await coordinator.start();
+
+      const inboundPromise = coordinator.handleInboundMessage(
+        createSampleMessage({ id: 'slow-save-001', content: '慢写入消息' })
+      );
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(10);
+
+      let stopSettled = false;
+      const stopPromise = coordinator.stop().then(() => {
+        stopSettled = true;
+      });
+      await Promise.resolve();
+      expect(stopSettled).toBe(false);
+
+      releaseSave();
+      await inboundPromise;
+      await stopPromise;
+      expect(stopSettled).toBe(true);
+      expect(saveSpy).toHaveBeenCalled();
+    });
+    it('未 start 时显式 flush 与 stop 并发，stop 仍等待活动 flush', async () => {
+      let releaseSave!: () => void;
+      const saveGate = new Promise<void>(resolve => {
+        releaseSave = resolve;
+      });
+      const originalSave = store.messages.saveMessage.bind(store.messages);
+      vi.spyOn(store.messages, 'saveMessage').mockImplementation(async input => {
+        await saveGate;
+        return originalSave(input);
+      });
+      const coordinator = new SessionCoordinator({
+        driver: mockDriver as unknown as KK9Driver,
+        store,
+        config: { debounceMs: 10, maxWaitMs: 100 },
+      });
+      const sessionId = 'session_not_started_flush_001';
+      const inboundPromise = coordinator.handleInboundMessage(
+        createSampleMessage({ sessionId, id: 'not-started-flush-001' })
+      );
+      await Promise.resolve();
+      const flushPromise = coordinator.flushSession(sessionId);
+      await Promise.resolve();
+
+      let stopSettled = false;
+      const stopPromise = coordinator.stop().then(() => {
+        stopSettled = true;
+      });
+      await Promise.resolve();
+      expect(stopSettled).toBe(false);
+
+      releaseSave();
+      await inboundPromise;
+      await flushPromise;
+      await stopPromise;
+      expect(stopSettled).toBe(true);
+      expect(
+        (await store.messages.getMessageBySessionAndMessageId(sessionId, 'not-started-flush-001'))
+          ?.processingState
+      ).toBe('pending');
     });
   });
 

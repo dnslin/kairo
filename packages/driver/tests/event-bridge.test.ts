@@ -2,7 +2,12 @@ import EventEmitter from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { KK9EventBridge } from '../src/bridge/event-bridge.js';
 import type { CdpClient } from '../src/cdp/client.js';
-import type { ConnectionStatus, KK9Message, KK9RecalledEvent } from '../src/types/index.js';
+import type {
+  CdpConnectionIdentity,
+  ConnectionStatus,
+  KK9Message,
+  KK9RecalledEvent,
+} from '../src/types/index.js';
 
 class MockCdpClient extends EventEmitter {
   private status: ConnectionStatus = 'disconnected';
@@ -14,8 +19,12 @@ class MockCdpClient extends EventEmitter {
   });
   public evaluateMock = vi.fn().mockImplementation(() => Promise.resolve(this.evaluateResult));
 
+  public connectionIdentity: CdpConnectionIdentity | null = null;
   public getStatus(): ConnectionStatus {
     return this.status;
+  }
+  public getConnectionIdentity(): CdpConnectionIdentity | null {
+    return this.connectionIdentity;
   }
 
   public async connect(): Promise<void> {
@@ -60,8 +69,8 @@ class MockCdpClient extends EventEmitter {
   }
 
   public async simulateReconnect(): Promise<void> {
-    this.status = 'reconnecting';
-    this.emit('status', 'reconnecting');
+    this.status = 'disconnected';
+    this.emit('status', 'disconnected');
     this.status = 'connected';
     this.emit('status', 'connected');
     for (let i = 0; i < 10; i++) {
@@ -77,7 +86,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       pageMatch: 'renderer.html',
     },
     bindingName: '__kkbot_native_bridge',
-    maxFingerprints: 100,
+    maxMessageIds: 100,
     currentUserId: '10086',
   };
 
@@ -112,6 +121,52 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(bridge.isAttached()).toBe(false);
   });
 
+  it('注入结果缺少原生 bus 时拒绝 attached 并报告结构化失效', async () => {
+    const mockCdp = new MockCdpClient();
+    mockCdp.evaluateResult = { ok: true, busFound: false, sessionsHooked: 0 };
+    const bridge = new KK9EventBridge(defaultConfig, mockCdp as unknown as CdpClient);
+    const healthEvents: Array<{ kind: string }> = [];
+    bridge.on('health', event => healthEvents.push(event));
+
+    await expect(bridge.connect()).rejects.toThrow('EventBridge 注入失败');
+    expect(bridge.isAttached()).toBe(false);
+    expect(healthEvents.some(event => event.kind === 'event_bridge_invalidated')).toBe(true);
+  });
+
+  it('非空 CDP identity 注入后保留 identity 并接收同代首条 binding', async () => {
+    const mockCdp = new MockCdpClient();
+    const identity: CdpConnectionIdentity = {
+      startupGenerationId: 'gen-event-identity-01',
+      connectionId: 'connection-event-identity-01',
+      targetId: 'target-event-identity-01',
+      webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/target',
+      connectedAt: 1_700_000_000_000,
+    };
+    mockCdp.connectionIdentity = identity;
+    const bridge = new KK9EventBridge(
+      { ...defaultConfig, startupGenerationId: identity.startupGenerationId },
+      mockCdp as unknown as CdpClient
+    );
+    await bridge.connect();
+
+    expect(bridge.getConnectionIdentity()).toEqual(identity);
+    const received: KK9Message[] = [];
+    bridge.on('message', message => received.push(message));
+    mockCdp.triggerBinding('__kkbot_native_bridge', {
+      generationId: identity.startupGenerationId,
+      connectionId: identity.connectionId,
+      type: 'receive-message',
+      data: {
+        id: 'identity-message-01',
+        sessionId: 'identity-session-01',
+        sender: '员工',
+        content: '同代消息',
+      },
+    });
+
+    expect(received).toHaveLength(1);
+    expect(received[0]?.id).toBe('identity-message-01');
+  });
   it('receive-message 事件：解析标准消息并派发 message 事件', async () => {
     const mockCdp = new MockCdpClient();
     const bridge = new KK9EventBridge(defaultConfig, mockCdp as unknown as CdpClient);
@@ -193,7 +248,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(receivedMessages[1]!.content).toBe('第二条消息');
   });
 
-  it('自身发出消息 (isMe: true 或 senderId === currentUserId) 正确识别 origin 并真实派发', async () => {
+  it('自身消息只有显式 operator/bot 事实时才分类来源并派发', async () => {
     const mockCdp = new MockCdpClient();
     const bridge = new KK9EventBridge(
       { ...defaultConfig, currentUserId: '10086' },
@@ -209,6 +264,8 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-self-1',
+        sessionId: 'session-self-1',
+        origin: 'operator',
         sender: '我',
         content: '这是我自己发出的消息',
         isMe: true,
@@ -220,6 +277,8 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-self-2',
+        sessionId: 'session-self-2',
+        origin: 'operator',
         senderId: '10086',
         sender: '机器人自己',
         content: '通过 UID 识别的自身消息',
@@ -231,6 +290,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-other-1',
+        sessionId: 'session-other-1',
         senderId: '99999',
         sender: '王五',
         content: '这是一条他人发出的消息',
@@ -246,7 +306,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(receivedMessages[2]!.origin).toBe('external');
   });
 
-  it('去重指纹守卫：相同消息指纹不重复派发', async () => {
+  it('按 sessionId 隔离 native messageId，同会话重复只派发一次', async () => {
     const mockCdp = new MockCdpClient();
     const bridge = new KK9EventBridge(defaultConfig, mockCdp as unknown as CdpClient);
     await bridge.connect();
@@ -268,8 +328,18 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
     mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
     mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
+    mockCdp.triggerBinding('__kkbot_native_bridge', {
+      type: 'receive-message',
+      data: {
+        id: 'msg-dup-1',
+        sessionId: '0-101',
+        sender: '赵六',
+        content: '另一会话中的同一 native ID',
+        sendTime: '11:00:00',
+      },
+    });
 
-    expect(receivedMessages).toHaveLength(1);
+    expect(receivedMessages).toHaveLength(2);
   });
 
   it('@ 提及检测：精准派发专用的 at 事件', async () => {
@@ -291,6 +361,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-at-1',
+        sessionId: 'session-at-1',
         sender: '钱七',
         content: '@机器人 你好',
         atMemberIDList: ['10086'],
@@ -302,6 +373,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-at-2',
+        sessionId: 'session-at-2',
         sender: '孙八',
         content: '@全体成员 下午开会',
         atAll: true,
@@ -313,6 +385,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-normal-1',
+        sessionId: 'session-normal-1',
         sender: '周九',
         content: '普通闲聊',
       },
@@ -400,20 +473,29 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(recalledEvents[2]!.sender).toBe('王五');
   });
 
-  it('韧性与重连：CDP 重新连接后自动 reattach 重新注入 Hook', async () => {
+  it('连接重新建立时不应在当前进程自动 reattach', async () => {
     const mockCdp = new MockCdpClient();
     const bridge = new KK9EventBridge(defaultConfig, mockCdp as unknown as CdpClient);
     await bridge.connect();
 
     const initialEvaluateCount = mockCdp.evaluateMock.mock.calls.length;
 
-    // 模拟底层 WebSocket 发生重连并重新恢复连接
     await mockCdp.simulateReconnect();
-    // 应自动触发 reattach
-    expect(mockCdp.evaluateMock.mock.calls.length).toBeGreaterThan(initialEvaluateCount);
-    expect(bridge.isAttached()).toBe(true);
+
+    expect(mockCdp.evaluateMock.mock.calls.length).toBe(initialEvaluateCount);
+    expect(bridge.isAttached()).toBe(false);
   });
 
+  it('同一代同一连接重复 reattach 不重复注入 Hook', async () => {
+    const mockCdp = new MockCdpClient();
+    const bridge = new KK9EventBridge(defaultConfig, mockCdp as unknown as CdpClient);
+    await bridge.connect();
+    const initialEvaluateCount = mockCdp.evaluateMock.mock.calls.length;
+
+    await expect(bridge.reattach()).resolves.toBe(true);
+
+    expect(mockCdp.evaluateMock.mock.calls.length).toBe(initialEvaluateCount);
+  });
   it('心跳转发与畸变数据容错', async () => {
     const mockCdp = new MockCdpClient();
     const bridge = new KK9EventBridge(defaultConfig, mockCdp as unknown as CdpClient);

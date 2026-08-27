@@ -7,12 +7,17 @@ export { KK9Driver } from './driver.js';
 export { FakeKK9Driver, type FakeSendBehavior, type RecordedSendCall } from './fake-driver.js';
 export { KK9EventBridge } from './bridge/event-bridge.js';
 export {
-  generateMessageFingerprint,
+  createMessageIdentityKey,
   normalizeNativeMessage,
   normalizeRecalledEvent,
   extractRecalledEventsFromPayload,
 } from './bridge/converter.js';
-export { CdpClient } from './cdp/client.js';
+export type {
+  InboundNormalizationDiagnostic,
+  NormalizeNativeMessageContext,
+  InboundNormalizationSource,
+} from './bridge/converter.js';
+export { CdpClient, type CdpClientOptions } from './cdp/client.js';
 export { SessionOps } from './dom/session-ops.js';
 export { MessageOps, readImageAsBase64, saveImageToFile } from './dom/message-ops.js';
 export { SendOps } from './dom/send-ops.js';
@@ -46,6 +51,11 @@ export { logger, createChildLogger } from './utils/logger.js';
 
 export type {
   ConnectionStatus,
+  DriverHealthKind,
+  CdpConnectionIdentity,
+  CdpConnectionLostEvent,
+  DriverHealthEvent,
+  DriverHealthSnapshot,
   KK9SessionType,
   KK9MessageType,
   KK9MessageOrigin,
@@ -66,6 +76,7 @@ export type {
   SelectorsConfig,
   CdpConfig,
   PollingConfig,
+  CompensationScanOptions,
   DriverConfig,
   EventBridgeConfig,
   EventBridgeEvents,

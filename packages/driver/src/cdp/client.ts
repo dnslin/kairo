@@ -1,6 +1,12 @@
+import { randomUUID } from 'node:crypto';
 import EventEmitter from 'node:events';
 import WebSocket from 'ws';
-import type { CdpConfig, ConnectionStatus } from '../types/index.js';
+import type {
+  CdpConfig,
+  CdpConnectionIdentity,
+  CdpConnectionLostEvent,
+  ConnectionStatus,
+} from '../types/index.js';
 import { CdpError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 
@@ -26,23 +32,39 @@ interface PendingCommand {
   timer: NodeJS.Timeout;
 }
 
+export interface CdpClientOptions {
+  startupGenerationId?: string;
+}
+
 export class CdpClient extends EventEmitter {
   private ws: WebSocket | null = null;
   private status: ConnectionStatus = 'disconnected';
   private messageId = 0;
   private pending = new Map<number, PendingCommand>();
   private heartbeatTimer: NodeJS.Timeout | null = null;
-  private reconnectTimer: NodeJS.Timeout | null = null;
-  private reconnectAttempts = 0;
   private connectedAt = 0;
+  private connectionIdentity: CdpConnectionIdentity | null = null;
   private isIntentionallyClosed = false;
+  private readonly startupGenerationId: string;
 
-  constructor(private readonly config: CdpConfig) {
+  constructor(
+    private readonly config: CdpConfig,
+    options: CdpClientOptions = {}
+  ) {
     super();
+    this.startupGenerationId = options.startupGenerationId ?? randomUUID();
   }
 
   public getStatus(): ConnectionStatus {
     return this.status;
+  }
+
+  public getStartupGenerationId(): string {
+    return this.startupGenerationId;
+  }
+
+  public getConnectionIdentity(): CdpConnectionIdentity | null {
+    return this.connectionIdentity;
   }
 
   public getUptimeMs(): number {
@@ -62,15 +84,29 @@ export class CdpClient extends EventEmitter {
       }
 
       await this.connectWebSocket(target.webSocketDebuggerUrl);
-      this.setStatus('connected');
       this.connectedAt = Date.now();
-      this.reconnectAttempts = 0;
+      this.connectionIdentity = {
+        startupGenerationId: this.startupGenerationId,
+        connectionId: randomUUID(),
+        targetId: target.id,
+        webSocketDebuggerUrl: target.webSocketDebuggerUrl,
+        connectedAt: this.connectedAt,
+      };
+      this.setStatus('connected');
       this.startHeartbeat();
-      log.info({ title: target.title, url: target.url }, 'CDP 客户端连接成功');
+      log.info(
+        { title: target.title, url: target.url, startupGenerationId: this.startupGenerationId },
+        'CDP 客户端连接成功'
+      );
     } catch (err) {
+      this.connectionIdentity = null;
+      this.connectedAt = 0;
       this.setStatus('disconnected');
       const error = err instanceof Error ? err : new Error(String(err));
-      log.error({ err: error.message }, 'CDP 连接失败');
+      log.error(
+        { err: error.message, startupGenerationId: this.startupGenerationId },
+        'CDP 连接失败'
+      );
       throw new CdpError(`CDP 连接失败: ${error.message}`, error);
     }
   }
@@ -78,7 +114,6 @@ export class CdpClient extends EventEmitter {
   public async disconnect(): Promise<void> {
     this.isIntentionallyClosed = true;
     this.stopHeartbeat();
-    this.clearReconnect();
 
     for (const [id, pending] of this.pending.entries()) {
       clearTimeout(pending.timer);
@@ -94,8 +129,10 @@ export class CdpClient extends EventEmitter {
       this.ws = null;
     }
 
+    this.connectionIdentity = null;
+    this.connectedAt = 0;
     this.setStatus('disconnected');
-    log.info('CDP 客户端已主动断开');
+    log.info({ startupGenerationId: this.startupGenerationId }, 'CDP 客户端已主动断开');
     await Promise.resolve();
   }
 
@@ -154,12 +191,9 @@ export class CdpClient extends EventEmitter {
 
     return res.result?.value as T;
   }
+
   public async bringToFront(): Promise<void> {
-    try {
-      await this.sendCommand('Page.bringToFront');
-    } catch {
-      // 忽略部分不支持 Page.bringToFront 的渲染目标
-    }
+    await this.sendCommand('Page.bringToFront');
   }
 
   public async dispatchKeyEvent(params: {
@@ -267,56 +301,48 @@ export class CdpClient extends EventEmitter {
 
     ws.on('close', (code, reason) => {
       log.warn({ code, reason: reason.toString() }, 'CDP WebSocket 连接断开');
-      this.handleDisconnect('WebSocket closed');
+      this.handleDisconnect('WebSocket closed', ws);
     });
   }
 
-  private handleDisconnect(reason: string): void {
+  private handleDisconnect(reason: string, disconnectedSocket: WebSocket | null = this.ws): void {
     if (this.status === 'disconnected') return;
+    if (this.ws && disconnectedSocket && this.ws !== disconnectedSocket) return;
+
     this.stopHeartbeat();
+    const cause = new CdpError(`连接已断开: ${reason}`);
+    const identity = this.connectionIdentity;
+    const socket = this.ws;
 
     for (const [id, pending] of this.pending.entries()) {
       clearTimeout(pending.timer);
-      pending.reject(new CdpError(`连接已断开: ${reason}`));
+      pending.reject(cause);
       this.pending.delete(id);
     }
 
+    if (
+      socket &&
+      (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
+    ) {
+      socket.removeAllListeners();
+      socket.terminate();
+    }
+    this.ws = null;
+    this.connectionIdentity = null;
+    this.connectedAt = 0;
     this.setStatus('disconnected');
+
     if (!this.isIntentionallyClosed) {
-      this.scheduleReconnect();
-    }
-  }
-
-  private scheduleReconnect(): void {
-    if (this.isIntentionallyClosed || this.reconnectTimer) return;
-
-    const maxRetries = this.config.maxReconnectRetries ?? 5;
-    if (this.reconnectAttempts >= maxRetries) {
-      log.error({ maxRetries }, '已达最大重连次数，放弃重连');
-      this.emit('error', new CdpError(`重连失败已达上限 (${maxRetries})`));
-      return;
-    }
-
-    const baseDelay = this.config.reconnectBaseDelayMs ?? 1000;
-    const maxDelay = this.config.reconnectMaxDelayMs ?? 10000;
-    const delay = Math.min(baseDelay * Math.pow(2, this.reconnectAttempts), maxDelay);
-
-    this.reconnectAttempts++;
-    this.setStatus('reconnecting');
-    log.info({ attempt: this.reconnectAttempts, delayMs: delay }, '计划执行 CDP 重连');
-
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.connect().catch(() => {
-        // scheduleReconnect 已在 connect catch 中触发
-      });
-    }, delay);
-  }
-
-  private clearReconnect(): void {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+      const event: CdpConnectionLostEvent = {
+        startupGenerationId: this.startupGenerationId,
+        connectionIdentity: identity,
+        observedAt: Date.now(),
+        cause,
+      };
+      this.emit('connection_lost', event);
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', cause);
+      }
     }
   }
 

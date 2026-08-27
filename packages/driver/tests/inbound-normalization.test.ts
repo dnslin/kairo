@@ -1,9 +1,14 @@
 import EventEmitter from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { normalizeNativeMessage, generateMessageFingerprint } from '../src/bridge/converter.js';
+import {
+  createMessageIdentityKey,
+  normalizeNativeMessage,
+  type InboundNormalizationDiagnostic,
+  type NormalizeNativeMessageContext,
+} from '../src/bridge/converter.js';
+
 import { KK9EventBridge } from '../src/bridge/event-bridge.js';
 import type { CdpClient } from '../src/cdp/client.js';
-import { MessageOps } from '../src/dom/message-ops.js';
 import { KK9Driver } from '../src/driver.js';
 import type { ConnectionStatus, KK9Message } from '../src/types/index.js';
 
@@ -36,39 +41,77 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
   const currentUserId = 'emp_bot_001';
 
   describe('1. 稳定身份与 EventBridge / Polling 同构测试', () => {
-    it('EventBridge 与 Polling 必须对同一原生消息生成完全一致的稳定身份与指纹', () => {
-      const sessionId = 'group_project_room';
-      const sender = '张工';
-      const time = '14:30:00';
-      const content = '这是今天下午的项目周报文档，请查收。';
+    it('EventBridge 与 Polling 缺少 sessionId 或 native messageId 时拒绝入站并报告事实诊断', () => {
+      const diagnostics: InboundNormalizationDiagnostic[] = [];
+      const contextFor = (source: 'event_bridge' | 'polling'): NormalizeNativeMessageContext => ({
+        currentUserId,
+        source,
+        onDiagnostic: diagnostic => diagnostics.push(diagnostic),
+      });
 
-      // 1. Converter (EventBridge 路径)
-      const ebFingerprint = generateMessageFingerprint(sessionId, sender, time, content);
-      const ebRawPayload = {
-        sessionId,
-        sessionName: '项目周报大群',
-        sessionType: 'group',
-        sender,
-        senderId: 'user_zhang',
-        content,
-        time,
-        timestamp: 1787640000000,
-        isMe: false,
-      };
-      const ebMessages = normalizeNativeMessage(ebRawPayload, { currentUserId });
-      expect(ebMessages).toHaveLength(1);
-      const ebMsg = ebMessages[0];
+      const eventMessages = normalizeNativeMessage(
+        {
+          sessionId: 'group_project_room',
+          sessionName: '项目周报大群',
+          sessionType: 'group',
+          sender: '张工',
+          content: '这是今天下午的项目周报文档，请查收。',
+          time: '14:30:00',
+          timestamp: 1787640000000,
+          isMe: false,
+        },
+        contextFor('event_bridge')
+      );
+      const pollingMessages = normalizeNativeMessage(
+        {
+          sessionId: 'group_project_room',
+          sessionName: '项目周报大群',
+          sessionType: 'group',
+          sender: '张工',
+          content: '这是今天下午的项目周报文档，请查收。',
+          time: '',
+          timestamp: 1787640000000,
+          isMe: false,
+        },
+        contextFor('polling')
+      );
+      const missingSessionMessages = normalizeNativeMessage(
+        {
+          msgID: 'native-no-session',
+          sender: '张工',
+          content: '缺少会话归属的消息',
+          time: '14:31:00',
+          timestamp: 1787640060000,
+          isMe: false,
+        },
+        contextFor('event_bridge')
+      );
 
-      // 2. MessageOps (Polling / DOM 路径)
-      const pollFingerprint = MessageOps.generateFingerprint(sessionId, sender, time, content);
-
-      // 验证指纹完全相同
-      expect(ebFingerprint).toBe(pollFingerprint);
-      expect(ebMsg.id).toBe(ebFingerprint);
-      expect(ebMsg.messageId).toBe(ebFingerprint);
-      expect(ebMsg.sessionId).toBe(sessionId);
-      expect(ebMsg.sessionType).toBe('group');
-      expect(ebMsg.origin).toBe('external');
+      expect(eventMessages).toHaveLength(0);
+      expect(pollingMessages).toHaveLength(0);
+      expect(missingSessionMessages).toHaveLength(0);
+      expect(diagnostics).toHaveLength(3);
+      expect(diagnostics[0]).toMatchObject({
+        kind: 'missing_inbound_identity',
+        missingFields: ['nativeMessageId'],
+        sessionId: 'group_project_room',
+        source: 'event_bridge',
+        observedAt: expect.any(Number),
+      });
+      expect(diagnostics[1]).toMatchObject({
+        kind: 'missing_inbound_identity',
+        missingFields: ['nativeMessageId'],
+        sessionId: 'group_project_room',
+        source: 'polling',
+        observedAt: expect.any(Number),
+      });
+      expect(diagnostics[2]).toMatchObject({
+        kind: 'missing_inbound_identity',
+        missingFields: ['sessionId'],
+        sessionId: '',
+        source: 'event_bridge',
+        observedAt: expect.any(Number),
+      });
     });
 
     it('当原生 payload 包含 native msgID / msgId / messageId 时，优先提取为 native messageId', () => {
@@ -103,6 +146,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         sessionId: 'group_room_1',
         sessionType: 'group',
         sender: '李四',
+        id: 'native-external-1',
         senderId: 'user_lisi',
         content: '大家好！',
         time: '10:00:00',
@@ -119,6 +163,8 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         sessionType: 'private',
         sender: '我',
         senderId: currentUserId,
+        id: 'native-operator-1',
+        origin: 'operator',
         content: '收到，我这就处理。',
         time: '10:05:00',
         isMe: true,
@@ -128,7 +174,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       expect(msg.isMe).toBe(true);
     });
 
-    it('机器人自身发出的消息在事件总线回显 (isBotEcho / knownBotSentIds) 应判定为 bot_echo', () => {
+    it('机器人自身发出的消息在事件总线回显 (isBotEcho / knownBotSentMessageKeys) 应判定为 bot_echo', () => {
       const botMsgId = 'bot_sent_uuid_001';
       const payload = {
         id: botMsgId,
@@ -142,29 +188,29 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       };
       const [msg] = normalizeNativeMessage(payload, {
         currentUserId,
-        knownBotSentIds: new Set([botMsgId]),
+        knownBotSentMessageKeys: new Set([createMessageIdentityKey('session_user_002', botMsgId)]),
       });
       expect(msg.origin).toBe('bot_echo');
       expect(msg.isMe).toBe(true);
     });
-    it('反例：isMe=true, botEcho=true/isBot=true 但 ID 不在已登记集合时仍必须严格判定为 operator', () => {
+    it('反例：isMe=true 且没有可靠来源关联时保留 unknown', () => {
       const payload = {
         id: 'unregistered_msg_999',
         sessionId: 'session_user_003',
         sessionType: 'private',
         sender: '我',
         senderId: currentUserId,
-        content: '操作员发出但 payload 携带了未证实 isBot 字段',
+        content: '操作员发出但没有可验证的来源事实',
         time: '10:07:00',
         isMe: true,
-        isBot: true,
-        botEcho: true,
       };
       const [msg] = normalizeNativeMessage(payload, {
         currentUserId,
-        knownBotSentIds: new Set(['other_bot_msg']),
+        knownBotSentMessageKeys: new Set([
+          createMessageIdentityKey('session_user_003', 'other_bot_msg'),
+        ]),
       });
-      expect(msg.origin).toBe('operator');
+      expect(msg.origin).toBe('unknown');
       expect(msg.isMe).toBe(true);
     });
 
@@ -173,6 +219,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         sessionId: 'group_room_1',
         sessionType: 'group',
         sender: '系统消息',
+        id: 'native-system-1',
         content: '张三 邀请了 李四 加入群聊',
         time: '10:10:00',
         isSystem: true,
@@ -190,6 +237,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         sessionType: 'private',
         content: '私聊测试',
         sender: '员工A',
+        id: 'native-private-1',
       };
       const [msg] = normalizeNativeMessage(payload);
       expect(msg.sessionType).toBe('private');
@@ -201,6 +249,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         sessionType: 'group',
         content: '群聊测试 1',
         sender: '员工B',
+        id: 'native-group-1',
       };
       const [msg1] = normalizeNativeMessage(payload1);
       expect(msg1.sessionType).toBe('group');
@@ -209,6 +258,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         session: { id: 'group_789', type: 1, name: '技术攻坚群' },
         content: '群聊测试 2',
         sender: '员工C',
+        id: 'native-group-2',
       };
       const [msg2] = normalizeNativeMessage(payload2);
       expect(msg2.sessionType).toBe('group');
@@ -221,6 +271,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         sessionId: 'group_dev',
         sessionType: 'group',
         sender: '测试员',
+        id: 'native-mentions-1',
         senderId: 'user_tester',
         content: '@智能助手 请查收测试报告 @所有人',
         atMe: true,
@@ -241,6 +292,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         sessionId: 'group_dev',
         sessionType: 'group',
         sender: '开发A',
+        id: 'native-reply-1',
         content: '这个Bug已修复。',
         replyMsg: {
           id: 'msg_orig_001',
@@ -260,6 +312,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         sessionId: 'group_dev',
         sessionType: 'group',
         sender: '设计B',
+        id: 'native-attachment-1',
         content: '[文件: UI规范.pdf]',
         fileName: 'UI规范.pdf',
         fileSize: '5.2MB',
@@ -292,8 +345,8 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       );
       await bridge.connect();
 
-      // 登记已发送的 Bot 消息 ID
-      bridge.recordBotSentMessageId('eb_bot_echo_1');
+      // 登记已发送的 Bot 消息身份键
+      bridge.recordBotSentMessageId('group_eb', 'eb_bot_echo_1');
 
       const emittedMessages: KK9Message[] = [];
       bridge.on('message', msg => emittedMessages.push(msg));
@@ -320,12 +373,14 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
           sessionType: 'group',
           sender: '操作员',
           senderId: currentUserId,
+          origin: 'operator',
           content: '操作员在客户端打字',
           isMe: true,
         },
       });
 
-      // 3. bot_echo (isMe: true 且已在 knownBotSentIds 中)
+      // 3. bot_echo (isMe: true 且已在 knownBotSentMessageKeys 中)
+
       mockCdp.triggerBinding('__kkbot_native_bridge', {
         type: 'receive-message',
         data: {
@@ -375,8 +430,8 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       driver.cdp = mockCdp;
       // @ts-expect-error 访问私有 messageOps 成员注入单元测试桩
       driver.messageOps.cdp = mockCdp;
-      // 登记已发送 Bot 消息 ID
-      driver.recordBotSentMessageId('poll_bot_echo_1');
+      // 登记已发送的 Bot 消息身份键
+      driver.recordBotSentMessageId('ses_poll_all', 'poll_bot_echo_1');
 
       const emittedMessages: KK9Message[] = [];
       driver.on('message', msg => emittedMessages.push(msg));
@@ -390,6 +445,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
           content: '请协助处理单据',
           isMe: false,
           messageType: 'text',
+          raw: { msgID: 'poll-ext-1' },
         },
         {
           sender: '我',
@@ -397,7 +453,9 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
           time: '12:01',
           content: '我正在看',
           isMe: true,
+          origin: 'operator',
           messageType: 'text',
+          raw: { msgID: 'poll-op-1' },
         },
         {
           sender: 'KKBot 助手',
@@ -407,7 +465,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
           isMe: true,
           messageType: 'text',
           raw: {
-            id: 'poll_bot_echo_1',
+            msgID: 'poll_bot_echo_1',
           },
         },
         {
@@ -416,6 +474,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
           content: '系统例行维护提醒',
           isMe: false,
           messageType: 'system',
+          raw: { msgID: 'poll-system-1' },
         },
       ];
       mockCdp.evaluateMock.mockImplementation((script: string) => {
@@ -446,6 +505,51 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
 
       expect(emittedMessages[3].origin).toBe('system');
       expect(emittedMessages[3].messageId).toBeDefined();
+    });
+    it('Polling 按 sessionId 隔离相同 native messageId', async () => {
+      const mockCdp = new MockCdpClient();
+      const driver = new KK9Driver({
+        cdp: { url: 'http://127.0.0.1:9222' },
+        currentUserId,
+      });
+
+      // @ts-expect-error 访问私有 cdp 成员注入单元测试桩
+      driver.cdp = mockCdp;
+      // @ts-expect-error 访问私有 messageOps 成员注入单元测试桩
+      driver.messageOps.cdp = mockCdp;
+
+      mockCdp.evaluateMock.mockImplementation((script: string) =>
+        script.includes('extractContent')
+          ? Promise.resolve([
+              {
+                sender: '员工',
+                time: '12:30',
+                content: '同一 native ID 的消息',
+                isMe: false,
+                messageType: 'text',
+                raw: { msgID: 'shared-native-id' },
+              },
+            ])
+          : Promise.resolve([])
+      );
+
+      const emittedMessages: KK9Message[] = [];
+      driver.on('message', message => emittedMessages.push(message));
+
+      // @ts-expect-error 访问私有方法验证轮询去重边界
+      await driver.collectAndEmitMessages(
+        { id: 'session-a', name: '会话 A', type: 'private', unread: true },
+        10
+      );
+      // @ts-expect-error 访问私有方法验证轮询去重边界
+      await driver.collectAndEmitMessages(
+        { id: 'session-b', name: '会话 B', type: 'private', unread: true },
+        10
+      );
+
+      expect(emittedMessages).toHaveLength(2);
+      expect(emittedMessages.map(message => message.sessionId)).toEqual(['session-a', 'session-b']);
+      expect(emittedMessages.every(message => message.messageId === 'shared-native-id')).toBe(true);
     });
   });
 });

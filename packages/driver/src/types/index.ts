@@ -3,16 +3,51 @@ import type { RenderCanvasOptions } from './card.js';
 /**
  * @kkbot/driver 强类型定义
  */
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
+
+export type DriverHealthKind =
+  | 'cdp_invalidated'
+  | 'event_bridge_invalidated'
+  | 'connection_identity_mismatch';
+
+export interface CdpConnectionIdentity {
+  startupGenerationId: string;
+  connectionId: string;
+  targetId: string;
+  webSocketDebuggerUrl: string;
+  connectedAt: number;
+}
+
+export interface CdpConnectionLostEvent {
+  startupGenerationId: string;
+  connectionIdentity: CdpConnectionIdentity | null;
+  observedAt: number;
+  cause: Error;
+}
+
+export interface DriverHealthEvent {
+  kind: DriverHealthKind;
+  startupGenerationId: string;
+  connectionIdentity: CdpConnectionIdentity | null;
+  expectedConnectionIdentity?: CdpConnectionIdentity | null;
+  observedAt: number;
+  cause: Error;
+}
+
+export interface DriverHealthSnapshot {
+  startupGenerationId: string;
+  cdpStatus: ConnectionStatus;
+  cdpConnectionIdentity: CdpConnectionIdentity | null;
+  eventBridgeAttached: boolean;
+  eventBridgeConnectionIdentity: CdpConnectionIdentity | null;
+}
 
 export type KK9SessionType = 'private' | 'group';
 
 export type KK9MessageType = 'text' | 'image' | 'file' | 'quote' | 'rich-text' | 'system';
 
-/**
- * 消息来源身份：外部成员 (external)、操作员 (operator)、机器人回显 (bot_echo)、系统消息 (system)
- */
-export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system';
+/** 消息来源身份；unknown 表示当前可观察事实不足以安全分类。 */
+export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system' | 'unknown';
 export type InboundMessageOrigin = KK9MessageOrigin;
 
 /**
@@ -52,8 +87,9 @@ export type FormattedText = string | TextSegment[] | { html: string };
  * 引用/回复目标定义
  */
 export interface KK9ReplyTarget {
-  /** 消息 DOM id 如 "msg-123327741" 或 SHA-256 指纹 */
+  /** KK9 原生消息 ID，无法取得时该消息不得进入公开入站模型 */
   messageId?: string;
+
   /** 消息在列表中的索引 */
   msgIdx?: number;
   /** 被引用者昵称 */
@@ -131,10 +167,11 @@ export interface KK9Session {
 }
 
 export interface KK9Message {
-  /** 基于 SHA-256 计算的唯一消息指纹或原生 ID */
+  /** 基于 KK9 原生消息 ID 的稳定身份 */
   id: string;
-  /** 原生 native message ID（若不可用则为稳定指纹，保证非空） */
+  /** KK9 原生消息 ID；标准化失败时消息被丢弃 */
   messageId?: string;
+
   sessionId: string;
   sessionName: string;
   sessionType: KK9SessionType;
@@ -218,9 +255,6 @@ export interface CdpConfig {
   pageMatch: string;
   timeoutMs?: number;
   heartbeatIntervalMs?: number;
-  maxReconnectRetries?: number;
-  reconnectBaseDelayMs?: number;
-  reconnectMaxDelayMs?: number;
 }
 
 export interface PollingConfig {
@@ -231,24 +265,36 @@ export interface PollingConfig {
   /** 是否允许轮询自动在未读会话间切换（设为 false 时仅在当前激活会话监听） */
   autoSwitchSession?: boolean;
 }
+export interface CompensationScanOptions {
+  fromTimestamp: number;
+  toTimestamp?: number;
+  sessionIds?: readonly string[];
+  maxMessagesPerSession?: number;
+  switchDelayMs?: number;
+}
 
 export interface DriverConfig {
   cdp: CdpConfig;
   currentUserId?: string | number;
   selectors?: Partial<SelectorsConfig>;
   polling?: Partial<PollingConfig>;
+  /** Composition Root 分配的唯一启动代次。 */
+  startupGenerationId?: string;
 }
+
 export interface EventBridgeConfig {
   cdp: CdpConfig;
+  /** Composition Root 分配的唯一启动代次。 */
+  startupGenerationId?: string;
   /** 自定义 CDP 绑定名称 (默认 '__kkbot_native_bridge') */
   bindingName?: string;
-  /** 去重指纹最大缓存数量 (默认 10000) */
-  maxFingerprints?: number;
+  /** 去重 native messageId 的最大缓存数量 (默认 10000) */
+  maxMessageIds?: number;
   /** 当前用户 UID / 账号 (用于识别自身发出消息 isMe) */
   currentUserId?: string | number;
   enableRecallHook?: boolean;
-  /** 共享的已发送 Bot 消息 ID 集合 */
-  knownBotSentIds?: Set<string>;
+  /** 共享的已发送 Bot 消息身份键集合（sessionId:nativeMessageId） */
+  knownBotSentMessageKeys?: Set<string>;
 }
 
 /**
@@ -314,7 +360,9 @@ export interface DriverEvents {
   recalled: (event: KK9RecalledEvent) => void;
   error: (error: Error) => void;
   heartbeat: (uptimeMs: number) => void;
+  health: (event: DriverHealthEvent) => void;
 }
+
 /**
  * 原生事件桥事件契约（与 DriverEvents 100% 同构）
  */

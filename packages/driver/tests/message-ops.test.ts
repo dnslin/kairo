@@ -6,28 +6,7 @@ import { MessageOps, readImageAsBase64, saveImageToFile } from '../src/dom/messa
 import { DEFAULT_SELECTORS } from '../src/dom/selectors.js';
 import type { KK9ImageInfo } from '../src/types/index.js';
 
-describe('MessageOps 消息指纹与解析测试', () => {
-  describe('generateFingerprint', () => {
-    it('相同输入应生成完全相同的 SHA-256 指纹', () => {
-      const fp1 = MessageOps.generateFingerprint('session_123', '张三', '10:00', '你好');
-      const fp2 = MessageOps.generateFingerprint('session_123', '张三', '10:00', '你好');
-      expect(fp1).toBe(fp2);
-      expect(fp1).toHaveLength(64);
-    });
-
-    it('不同字段组合使用空字符隔离，不应产生哈希碰撞', () => {
-      const fpA = MessageOps.generateFingerprint('session_1', '2张三', '10:00', '你好');
-      const fpB = MessageOps.generateFingerprint('session_12', '张三', '10:00', '你好');
-      expect(fpA).not.toBe(fpB);
-    });
-
-    it('时间或内容微小变动指纹应彻底改变', () => {
-      const fp1 = MessageOps.generateFingerprint('session_1', '张三', '10:00', '你好');
-      const fp2 = MessageOps.generateFingerprint('session_1', '张三', '10:01', '你好');
-      expect(fp1).not.toBe(fp2);
-    });
-  });
-
+describe('MessageOps 消息解析测试', () => {
   describe('readImageAsBase64 and saveImageToFile', () => {
     it('应能正确将图片读取为 Base64 Data URL 并另存为指定路径', () => {
       const tmpSrc = path.resolve('tmp_test_src.png');
@@ -72,6 +51,7 @@ describe('MessageOps 消息指纹与解析测试', () => {
           content: '@机器人 @陈鹏 @王治 请查一下报表',
           isMe: false,
           messageType: 'text',
+          raw: { msgID: 'native-msg-mention-1' },
           atMe: true,
           atAll: false,
           mentions: {
@@ -103,7 +83,23 @@ describe('MessageOps 消息指纹与解析测试', () => {
       expect(msg.senderId).toBe('user_456');
       expect(msg.atMe).toBe(true);
       expect(msg.mentions?.mentionedUsers).toEqual(['机器人', '陈鹏', '王治']);
-      expect(msg.id).toHaveLength(64);
+      expect(msg.id).toBe('native-msg-mention-1');
+    });
+    it('缺少 Vue/native runtime messageId 时丢弃消息并返回空结果', async () => {
+      const mockCdp = {
+        evaluate: vi.fn().mockResolvedValue([
+          {
+            sender: '未知成员',
+            time: '14:21',
+            content: '没有可验证身份的消息',
+            isMe: false,
+            messageType: 'text',
+          },
+        ]),
+      } as unknown as CdpClient;
+
+      const ops = new MessageOps(mockCdp, DEFAULT_SELECTORS);
+      await expect(ops.getRecentMessages(5)).resolves.toEqual([]);
     });
 
     it('群聊中他人互相@时，atMe应为false，避免错误触发@事件', async () => {
@@ -115,6 +111,7 @@ describe('MessageOps 消息指纹与解析测试', () => {
           content: '@李四 请查收文件',
           isMe: false,
           messageType: 'text',
+          raw: { msgID: 'native-msg-mention-2' },
           atMe: false,
           atAll: false,
           mentions: {
@@ -152,6 +149,7 @@ describe('MessageOps 消息指纹与解析测试', () => {
           content: '请查看故障现场截图： [图片]',
           isMe: false,
           messageType: 'rich-text',
+          raw: { msgID: 'native-msg-image-1' },
           images: [
             {
               filePath: 'C:\\Users\\test\\file-cache\\image\\error_pic.png',
@@ -170,7 +168,11 @@ describe('MessageOps 消息指纹与解析测试', () => {
       } as unknown as CdpClient;
 
       const ops = new MessageOps(mockCdp, DEFAULT_SELECTORS);
-      const messages = await ops.getRecentMessages(5);
+      const messages = await ops.getRecentMessages(5, {
+        id: 'session-image',
+        name: '图片会话',
+        type: 'private',
+      });
 
       expect(messages).toHaveLength(1);
       const msg = messages[0]!;
@@ -193,6 +195,7 @@ describe('MessageOps 消息指纹与解析测试', () => {
             replyToContent: '建议采用方案B',
             replyToId: 'msg-12345',
           },
+          raw: { msgID: 'native-msg-reply-1' },
         },
       ];
 
@@ -201,7 +204,11 @@ describe('MessageOps 消息指纹与解析测试', () => {
       } as unknown as CdpClient;
 
       const ops = new MessageOps(mockCdp, DEFAULT_SELECTORS);
-      const messages = await ops.getRecentMessages(5);
+      const messages = await ops.getRecentMessages(5, {
+        id: 'session-reply',
+        name: '回复会话',
+        type: 'private',
+      });
 
       expect(messages).toHaveLength(1);
       const msg = messages[0]!;
@@ -224,6 +231,7 @@ describe('MessageOps 消息指纹与解析测试', () => {
             fileSize: '2.5MB',
             fileExt: 'docx',
           },
+          raw: { msgID: 'native-msg-file-1' },
         },
       ];
 
@@ -232,7 +240,11 @@ describe('MessageOps 消息指纹与解析测试', () => {
       } as unknown as CdpClient;
 
       const ops = new MessageOps(mockCdp, DEFAULT_SELECTORS);
-      const messages = await ops.getRecentMessages(5);
+      const messages = await ops.getRecentMessages(5, {
+        id: 'session-file',
+        name: '文件会话',
+        type: 'private',
+      });
 
       expect(messages).toHaveLength(1);
       const msg = messages[0]!;

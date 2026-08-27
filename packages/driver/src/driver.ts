@@ -1,11 +1,14 @@
 import EventEmitter from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CdpClient } from './cdp/client.js';
-import { MessageOps } from './dom/message-ops.js';
+import { KK9EventBridge } from './bridge/event-bridge.js';
+import { createMessageIdentityKey, normalizeRecalledEvent } from './bridge/converter.js';
+
 import { OrgOps } from './dom/org-ops.js';
 import { resolveSelectors } from './dom/selectors.js';
 import { SendOps } from './dom/send-ops.js';
 import { SessionOps } from './dom/session-ops.js';
+import { MessageOps } from './dom/message-ops.js';
 import { renderCardToBase64 as renderCanvasCard } from './canvas/renderer.js';
 import {
   createAlertCard,
@@ -17,10 +20,14 @@ import type {
   AlertCardParams,
   ApprovalCardParams,
   CardData,
+  CdpConnectionLostEvent,
+  CompensationScanOptions,
   ConnectionStatus,
   DecisionCardParams,
   DriverConfig,
   DriverEvents,
+  DriverHealthEvent,
+  DriverHealthSnapshot,
   FormattedText,
   KK9Employee,
   KK9Message,
@@ -36,6 +43,7 @@ import type {
   SendOptions,
   SendResult,
 } from './types/index.js';
+import { DriverError } from './utils/errors.js';
 import { createChildLogger } from './utils/logger.js';
 
 const log = createChildLogger('kk9-driver');
@@ -49,6 +57,9 @@ export declare interface KK9Driver {
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare
 export class KK9Driver extends EventEmitter {
   private readonly cdp: CdpClient;
+  private readonly eventBridge: KK9EventBridge;
+  private readonly startupGenerationId: string;
+  private invalidated = false;
   private readonly selectors: SelectorsConfig;
   private readonly sessionOps: SessionOps;
   private readonly messageOps: MessageOps;
@@ -56,13 +67,49 @@ export class KK9Driver extends EventEmitter {
   private readonly orgOps: OrgOps;
   private isPolling = false;
   private pollTimer: NodeJS.Timeout | null = null;
-  private readonly knownFingerprints = new Set<string>();
-  private readonly knownRecalledIds = new Set<string>();
-  private readonly knownBotSentIds = new Set<string>();
+  private cancelBindingAttached = false;
+  private readonly knownMessageKeys = new Set<string>();
+  private readonly knownRecalledMessageKeys = new Set<string>();
+  private readonly knownBotSentMessageKeys = new Set<string>();
+
+  private readonly handleCancelBinding = (rawParams: unknown): void => {
+    if (
+      !rawParams ||
+      typeof rawParams !== 'object' ||
+      !('name' in rawParams) ||
+      !('payload' in rawParams) ||
+      rawParams.name !== '__kkbot_on_recalled' ||
+      typeof rawParams.payload !== 'string'
+    ) {
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(rawParams.payload);
+      const event = normalizeRecalledEvent(parsed);
+      if (event) {
+        this.handleRecalledEvent(event);
+      }
+    } catch {
+      log.warn('解析撤回 binding 载荷失败');
+    }
+  };
+
   constructor(private readonly config: DriverConfig) {
     super();
     this.selectors = resolveSelectors(config.selectors);
-    this.cdp = new CdpClient(config.cdp);
+    this.cdp = new CdpClient(config.cdp, {
+      startupGenerationId: config.startupGenerationId,
+    });
+    this.startupGenerationId = this.cdp.getStartupGenerationId();
+    this.eventBridge = new KK9EventBridge(
+      {
+        cdp: config.cdp,
+        startupGenerationId: this.startupGenerationId,
+        currentUserId: config.currentUserId,
+        knownBotSentMessageKeys: this.knownBotSentMessageKeys,
+      },
+      this.cdp
+    );
     this.sessionOps = new SessionOps(this.cdp, this.selectors);
     this.messageOps = new MessageOps(this.cdp, this.selectors);
     this.sendOps = new SendOps(this.cdp, this.selectors);
@@ -74,14 +121,38 @@ export class KK9Driver extends EventEmitter {
     return this.cdp.getStatus();
   }
 
-  public async connect(): Promise<void> {
-    await this.cdp.connect();
-    await this.setupCancelMessageHook();
+  public getStartupGenerationId(): string {
+    return this.startupGenerationId;
   }
 
+  public getHealthSnapshot(): DriverHealthSnapshot {
+    return {
+      startupGenerationId: this.startupGenerationId,
+      cdpStatus: this.cdp.getStatus(),
+      cdpConnectionIdentity: this.cdp.getConnectionIdentity(),
+      eventBridgeAttached: this.eventBridge.isAttached(),
+      eventBridgeConnectionIdentity: this.eventBridge.getConnectionIdentity(),
+    };
+  }
+
+  public async connect(): Promise<void> {
+    if (this.invalidated) {
+      throw new DriverError(
+        `Driver 属于已失效的 startup generation ${this.startupGenerationId}，禁止原地重连`,
+        'DRIVER_INVALIDATED'
+      );
+    }
+    await this.eventBridge.connect();
+    await this.setupCancelMessageHook();
+  }
   public async disconnect(): Promise<void> {
+    this.invalidated = true;
     this.stopPolling();
-    await this.cdp.disconnect();
+    if (this.cancelBindingAttached) {
+      this.cdp.off('Runtime.bindingCalled', this.handleCancelBinding);
+      this.cancelBindingAttached = false;
+    }
+    await this.eventBridge.disconnect();
   }
 
   public async getSessions(): Promise<KK9Session[]> {
@@ -104,22 +175,38 @@ export class KK9Driver extends EventEmitter {
     return this.sessionOps.markSessionRead(sessionId);
   }
   /**
-   * 记录由 Bot 自身发出的消息 ID（用于回显识别为 bot_echo）
+   * 记录由 Bot 自身发出的消息身份（sessionId:nativeMessageId）。
    */
-  public recordBotSentMessageId(messageId: string): void {
-    if (!messageId) return;
-    this.knownBotSentIds.add(messageId);
-    if (this.knownBotSentIds.size > 10000) {
-      const firstKey = this.knownBotSentIds.values().next().value;
-      if (firstKey) this.knownBotSentIds.delete(firstKey);
+  public recordBotSentMessageId(sessionId: string, messageId: string): void {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedSessionId || !normalizedMessageId) return;
+    this.knownBotSentMessageKeys.add(
+      createMessageIdentityKey(normalizedSessionId, normalizedMessageId)
+    );
+    if (this.knownBotSentMessageKeys.size > 10000) {
+      const firstKey = this.knownBotSentMessageKeys.values().next().value;
+      if (firstKey) this.knownBotSentMessageKeys.delete(firstKey);
     }
   }
 
   /**
-   * 判断指定消息 ID 是否为 Bot 自身发出
+   * 判断指定会话中的消息 ID 是否为 Bot 自身发出。
    */
-  public isBotSentMessageId(messageId: string): boolean {
-    return this.knownBotSentIds.has(messageId);
+  public isBotSentMessageId(sessionId: string, messageId: string): boolean {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedSessionId || !normalizedMessageId) return false;
+    return this.knownBotSentMessageKeys.has(
+      createMessageIdentityKey(normalizedSessionId, normalizedMessageId)
+    );
+  }
+
+  private rememberBotSentMessage(result: SendResult, targetSessionId?: string): void {
+    if (!result.success || !result.messageId) return;
+    const sessionId = targetSessionId?.trim();
+    if (!sessionId) return;
+    this.recordBotSentMessageId(sessionId, result.messageId);
   }
 
   public async getRecentMessages(limit = 20, session?: KK9Session): Promise<KK9Message[]> {
@@ -127,9 +214,73 @@ export class KK9Driver extends EventEmitter {
     return this.messageOps.getRecentMessages(
       limit,
       targetSession,
-      this.knownBotSentIds,
+      this.knownBotSentMessageKeys,
+
       this.config.currentUserId
     );
+  }
+  public async scanCompensationWindow(options: CompensationScanOptions): Promise<KK9Message[]> {
+    const toTimestamp = options.toTimestamp ?? Date.now();
+    if (options.fromTimestamp > toTimestamp) {
+      throw new DriverError(
+        `补偿扫描时间窗口无效: from=${options.fromTimestamp}, to=${toTimestamp}`,
+        'COMPENSATION_SCAN_INVALID_WINDOW'
+      );
+    }
+    if (this.getStatus() !== 'connected') {
+      throw new DriverError(
+        `补偿扫描需要已连接的 CDP (当前状态: ${this.getStatus()})`,
+        'COMPENSATION_SCAN_UNAVAILABLE'
+      );
+    }
+
+    try {
+      const allSessions = await this.getSessions();
+      const requestedIds = options.sessionIds ? new Set(options.sessionIds) : null;
+      const sessions = requestedIds
+        ? allSessions.filter(session => requestedIds.has(session.id))
+        : allSessions;
+      const maxMessages = options.maxMessagesPerSession ?? 20;
+      const switchDelayMs = options.switchDelayMs ?? this.config.polling?.switchDelayMs ?? 500;
+      const seen = new Set<string>();
+      const recovered: KK9Message[] = [];
+
+      for (const session of sessions) {
+        const switched = await this.selectSession(session.id);
+        if (!switched) {
+          throw new DriverError(
+            `补偿扫描切换会话失败: ${session.id}`,
+            'COMPENSATION_SCAN_SESSION_SWITCH_FAILED'
+          );
+        }
+        if (switchDelayMs > 0) {
+          await sleep(switchDelayMs);
+        }
+
+        const messages = await this.getRecentMessages(maxMessages, session);
+        for (const message of messages) {
+          if (message.timestamp < options.fromTimestamp || message.timestamp > toTimestamp) {
+            continue;
+          }
+          const messageId = message.messageId || message.id;
+          const key = createMessageIdentityKey(message.sessionId, messageId);
+
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          recovered.push(message);
+        }
+      }
+
+      return recovered;
+    } catch (err) {
+      if (err instanceof DriverError) {
+        throw err;
+      }
+      const cause = err instanceof Error ? err : new Error(String(err));
+      throw new DriverError(`补偿扫描失败: ${cause.message}`, 'COMPENSATION_SCAN_FAILED', cause);
+    }
   }
 
   /**
@@ -137,60 +288,44 @@ export class KK9Driver extends EventEmitter {
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
     const res = await this.sendOps.sendText(text, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  /**
-   * 发送富文本格式化消息
-   */
   public async sendRichText(
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
     const res = await this.sendOps.sendRichText(content, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  /**
-   * 快捷发送引用/回复消息
-   */
   public async sendReply(
     replyTo: string | KK9ReplyTarget,
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
     const res = await this.sendOps.sendReply(replyTo, content, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  /**
-   * 发送本地文件
-   */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const res = await this.sendOps.sendFile(filePath, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  /**
-   * 发送本地图片
-   */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     const res = await this.sendOps.sendImage(imagePath, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
+    return res;
+  }
+
+  public async sendCard(cardData: CardData, options?: SendCardOptions): Promise<SendResult> {
+    const res = await this.sendOps.sendCard(cardData, options);
+    this.rememberBotSentMessage(res, options?.targetSessionId);
     return res;
   }
 
@@ -199,17 +334,6 @@ export class KK9Driver extends EventEmitter {
    */
   public async renderCardToBase64(card: CardData, options?: RenderCanvasOptions): Promise<string> {
     return renderCanvasCard(this.cdp, card, options);
-  }
-
-  /**
-   * 发送自定义视觉卡片
-   */
-  public async sendCard(cardData: CardData, options?: SendCardOptions): Promise<SendResult> {
-    const res = await this.sendOps.sendCard(cardData, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
-    return res;
   }
 
   /**
@@ -268,13 +392,22 @@ export class KK9Driver extends EventEmitter {
    * 处理并派发消息撤回事件 (自动去重)
    */
   public handleRecalledEvent(event: KK9RecalledEvent): void {
-    if (!event.messageId || this.knownRecalledIds.has(event.messageId)) {
+    if (!event.messageId || !event.sessionId) {
+      log.warn(
+        { messageId: event.messageId, sessionId: event.sessionId },
+        '丢弃缺少入站身份字段的撤回事件'
+      );
       return;
     }
-    this.knownRecalledIds.add(event.messageId);
-    if (this.knownRecalledIds.size > 10000) {
-      const firstKey = this.knownRecalledIds.values().next().value;
-      if (firstKey) this.knownRecalledIds.delete(firstKey);
+    const messageKey = createMessageIdentityKey(event.sessionId, event.messageId);
+
+    if (this.knownRecalledMessageKeys.has(messageKey)) {
+      return;
+    }
+    this.knownRecalledMessageKeys.add(messageKey);
+    if (this.knownRecalledMessageKeys.size > 10000) {
+      const firstKey = this.knownRecalledMessageKeys.values().next().value;
+      if (firstKey) this.knownRecalledMessageKeys.delete(firstKey);
     }
 
     log.info({ messageId: event.messageId, sender: event.sender }, '捕获到消息撤回事件并派发');
@@ -395,13 +528,12 @@ export class KK9Driver extends EventEmitter {
         const recallNodes = document.querySelectorAll('.rcd-item.system-msg, .message-item.system-msg, .rcd-recall-msg, .system-recall');
         for (const node of recallNodes) {
           const text = node.textContent?.trim() || '';
-          if (text.includes('撤回了一条消息')) {
-            const id = node.getAttribute('id') || node.getAttribute('data-id') || ('recall_' + text + '_' + Date.now());
-            const sender = text.replace(/撤回了一条消息.*$/, '').trim() || '某人';
+          const nativeId = node.getAttribute('data-msgid');
+          if (text.includes('撤回了一条消息') && nativeId) {
             events.push({
-              messageId: id,
+              messageId: nativeId,
               sessionId: ${JSON.stringify(sessionId)},
-              sender,
+              sender: 'unknown',
               time: new Date().toLocaleTimeString(),
               timestamp: Date.now()
             });
@@ -423,25 +555,15 @@ export class KK9Driver extends EventEmitter {
   }
 
   private async setupCancelMessageHook(): Promise<void> {
-    try {
-      await this.cdp.sendCommand('Runtime.enable');
-      await this.cdp
-        .sendCommand('Runtime.addBinding', { name: '__kkbot_on_recalled' })
-        .catch(() => {});
-
-      this.cdp.on('Runtime.bindingCalled', (rawParams: unknown) => {
-        const params = rawParams as { name?: string; payload?: string };
-        if (params?.name === '__kkbot_on_recalled' && typeof params?.payload === 'string') {
-          try {
-            const evt = JSON.parse(params.payload) as KK9RecalledEvent;
-            this.handleRecalledEvent(evt);
-          } catch {
-            // 忽略解析异常
-          }
-        }
-      });
-    } catch {
-      // 忽略 CDP binding 异常
+    if (!this.cancelBindingAttached) {
+      try {
+        await this.cdp.sendCommand('Runtime.enable');
+        await this.cdp.sendCommand('Runtime.addBinding', { name: '__kkbot_on_recalled' });
+        this.cdp.on('Runtime.bindingCalled', this.handleCancelBinding);
+        this.cancelBindingAttached = true;
+      } catch (err) {
+        log.warn({ err: String(err) }, '撤回 binding 注入失败，保留 EventBridge 原生撤回路径');
+      }
     }
 
     const hookScript = `
@@ -528,12 +650,14 @@ export class KK9Driver extends EventEmitter {
     await this.collectRecalledEvents(session.id);
     const messages = await this.getRecentMessages(limit, session);
     for (const msg of messages) {
-      if (!this.knownFingerprints.has(msg.id)) {
-        this.knownFingerprints.add(msg.id);
-        // 限制内存指纹集合大小，防止无限内存增长
-        if (this.knownFingerprints.size > 10000) {
-          const firstKey = this.knownFingerprints.values().next().value;
-          if (firstKey) this.knownFingerprints.delete(firstKey);
+      const messageKey = createMessageIdentityKey(msg.sessionId, msg.id);
+
+      if (!this.knownMessageKeys.has(messageKey)) {
+        this.knownMessageKeys.add(messageKey);
+        // 限制内存消息 ID 集合大小，防止无限内存增长
+        if (this.knownMessageKeys.size > 10000) {
+          const firstKey = this.knownMessageKeys.values().next().value;
+          if (firstKey) this.knownMessageKeys.delete(firstKey);
         }
 
         log.debug({ id: msg.id, sender: msg.sender, content: msg.content }, '捕获新消息并触发事件');
@@ -552,5 +676,25 @@ export class KK9Driver extends EventEmitter {
     this.cdp.on('status', (status: ConnectionStatus) => this.emit('status', status));
     this.cdp.on('heartbeat', (uptime: number) => this.emit('heartbeat', uptime));
     this.cdp.on('error', (err: Error) => this.emit('error', err));
+    this.cdp.on('connection_lost', (event: CdpConnectionLostEvent) => {
+      this.invalidated = true;
+      const health: DriverHealthEvent = {
+        kind: 'cdp_invalidated',
+        startupGenerationId: this.startupGenerationId,
+        connectionIdentity: event.connectionIdentity,
+        observedAt: event.observedAt,
+        cause: event.cause,
+      };
+      this.emit('health', health);
+    });
+
+    this.eventBridge.on('message', (message: KK9Message) => this.emit('message', message));
+    this.eventBridge.on('at', (message: KK9Message) => this.emit('at', message));
+    this.eventBridge.on('recalled', (event: KK9RecalledEvent) => this.handleRecalledEvent(event));
+    this.eventBridge.on('health', (event: DriverHealthEvent) => {
+      this.invalidated = true;
+      this.emit('health', event);
+    });
+    this.eventBridge.on('error', (err: Error) => this.emit('error', err));
   }
 }
