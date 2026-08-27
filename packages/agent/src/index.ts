@@ -65,6 +65,7 @@ export { createChildLogger, logger } from './utils/logger.js';
 export * from './tools/index.js';
 export * from './hitl/index.js';
 
+export * from './processors/index.js';
 // ============================================================================
 // Mastra-Native Agent 架构 (Issue #174)
 // ============================================================================
@@ -84,6 +85,7 @@ export {
 export { Memory } from '@mastra/memory';
 export {
   KKBotAgent,
+  DEFAULT_KKBOT_INSTRUCTIONS,
   deriveUserMessageId,
   deriveAssistantMessageId,
   ensureMastraThread,
@@ -105,3 +107,9 @@ export {
   type FakeModelOptions,
   type FakeModelContentPart,
 } from './testing/fake-model.js';
+export {
+  createSseMcpServerFixture,
+  getAvailableMcpFixturePort,
+  type SseMcpServerFixtureOptions,
+  type SseMcpServerFixture,
+} from './testing/sse-mcp-fixture.js';

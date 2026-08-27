@@ -2,8 +2,8 @@ import { z } from 'zod';
 import type { OrgRepository, OrgEmployeeWithDepts } from '@kkbot/store';
 import { createAgentTool } from '../registry.js';
 import type { AgentTool } from '../types.js';
+import { createKkTool, type KkMastraTool } from '../create-tool.js';
 import { createChildLogger } from '../../utils/logger.js';
-
 const log = createChildLogger('tool-search-org');
 
 /**
@@ -50,8 +50,42 @@ export interface SearchOrganizationOutput {
 }
 
 /**
- * 创建 search_organization 内置工具
- * 对接 @kkbot/store 的 OrgRepository，支持中文名/工号/拼音首字母检索同事信息与汇报链
+ * 执行 search_organization 核心组织架构与汇报链检索逻辑
+ */
+export async function executeSearchOrganizationCore(
+  orgRepo: OrgRepository,
+  input: SearchOrganizationInput
+): Promise<SearchOrganizationOutput> {
+  const cleanQuery = input.query.trim();
+  const limit = input.limit ?? 10;
+  const includeReportingChain = Boolean(input.includeReportingChain);
+
+  log.debug({ query: cleanQuery, limit, includeReportingChain }, '执行组织架构同事与汇报链检索');
+
+  const employees = await orgRepo.findEmployees(cleanQuery, limit);
+  const enrichedEmployees: EmployeeWithReportingChain[] = [];
+
+  for (const emp of employees) {
+    if (includeReportingChain) {
+      const reportingChain = await orgRepo.getReportingChain(emp.id);
+      enrichedEmployees.push({
+        ...emp,
+        reportingChain,
+      });
+    } else {
+      enrichedEmployees.push(emp);
+    }
+  }
+
+  return {
+    success: true,
+    count: enrichedEmployees.length,
+    employees: enrichedEmployees,
+  };
+}
+
+/**
+ * 创建 search_organization 内置工具 (旧 ToolRegistry 兼容)
  */
 export function createSearchOrganizationTool(options: {
   orgRepo: OrgRepository;
@@ -63,41 +97,28 @@ export function createSearchOrganizationTool(options: {
     description: '根据工号、中文名、拼音缩写或部门检索企业员工档案、职位与直属汇报链。只读查询。',
     readOnly: true,
     inputSchema: SearchOrganizationInputSchema,
-    execute: async input => {
-      const cleanQuery = input.query.trim();
-      const limit = input.limit ?? 10;
-      const includeReportingChain = Boolean(input.includeReportingChain);
-
-      log.debug(
-        { query: cleanQuery, limit, includeReportingChain },
-        '执行组织架构同事与汇报链检索'
-      );
-
-      const employees = await orgRepo.findEmployees(cleanQuery, limit);
-
-      const enrichedEmployees: EmployeeWithReportingChain[] = [];
-
-      for (const emp of employees) {
-        if (includeReportingChain) {
-          const reportingChain = await orgRepo.getReportingChain(emp.id);
-          enrichedEmployees.push({
-            ...emp,
-            reportingChain,
-          });
-        } else {
-          enrichedEmployees.push(emp);
-        }
-      }
-
-      return {
-        success: true,
-        count: enrichedEmployees.length,
-        employees: enrichedEmployees,
-      };
-    },
+    execute: async input => executeSearchOrganizationCore(orgRepo, input),
     metadata: {
       category: 'organization',
       builtin: true,
     },
+  });
+}
+
+/**
+ * 创建 Mastra-native search_organization 工具
+ */
+export function createMastraSearchOrganizationTool(options: {
+  orgRepo: OrgRepository;
+}): KkMastraTool<typeof SearchOrganizationInputSchema> {
+  const { orgRepo } = options;
+
+  return createKkTool({
+    id: 'search_organization',
+    description: '根据工号、中文名、拼音缩写或部门检索企业员工档案、职位与直属汇报链。只读查询。',
+    effect: 'read',
+    risk: 'low',
+    inputSchema: SearchOrganizationInputSchema,
+    execute: async ({ context }) => executeSearchOrganizationCore(orgRepo, context),
   });
 }
