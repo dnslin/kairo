@@ -28,6 +28,8 @@ const EXT_TO_MIME: Record<string, string> = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
   '.bmp': 'image/bmp',
   '.ico': 'image/x-icon',
   '.pdf': 'application/pdf',
@@ -66,12 +68,28 @@ export class MediaStorage {
 
     this.ensureDirectorySync(this.baseDir);
   }
+  /**
+   * 获取单次媒体输入允许的最大字节数。
+   */
+  public getMaxFileSize(): number {
+    return this.maxFileSize;
+  }
 
   /**
-   * 获取基础存储绝对路径
+   * 根据文件名、扩展名或资源 URI 返回图片 MIME 类型。
    */
-  public getBaseDir(): string {
-    return this.baseDir;
+  public getImageMimeType(source: string): string | undefined {
+    const value = source.trim();
+    if (!value) {
+      return undefined;
+    }
+
+    const cleanSource = value.split(/[?#]/, 1)[0] ?? value;
+    const extension = (
+      cleanSource.startsWith('.') ? cleanSource : extname(cleanSource) || `.${cleanSource}`
+    ).toLowerCase();
+    const mimeType = EXT_TO_MIME[extension];
+    return mimeType?.startsWith('image/') ? mimeType : undefined;
   }
 
   /**
@@ -249,9 +267,7 @@ export class MediaStorage {
    * 判断是否为图片扩展名
    */
   private isImageExt(ext: string): boolean {
-    return ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.ico'].includes(
-      ext.toLowerCase()
-    );
+    return EXT_TO_MIME[ext.toLowerCase()]?.startsWith('image/') ?? false;
   }
 
   /**

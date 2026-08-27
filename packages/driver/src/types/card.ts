@@ -122,7 +122,7 @@ export type CardActionVariant =
  * 模拟交互按钮与快捷指令提示
  */
 export interface CardAction {
-  /** 按钮显示文本 (如 '✔ 确认授权执行') */
+  /** 按钮显示文本 (如 '查看详情') */
   text: string;
   /** 按钮语义变体样式 */
   variant?: CardActionVariant;
@@ -140,7 +140,7 @@ export interface CardAction {
  * 底部说明栏配置
  */
 export interface CardFooter {
-  /** 底部提示文本 (如 '💡 提示：本消息为智能卡片，请直接在会话中回复数字 [1] 或 [2] 完成决策') */
+  /** 底部提示文本 (如 '提示：请在会话中选择一个方案') */
   text: string;
   /** 底部图标或 Emoji (如 '💡') */
   icon?: string;
@@ -217,45 +217,6 @@ export interface CardLayoutResult {
   fieldsHeight: number;
   actionsHeight: number;
   footerHeight: number;
-}
-
-/**
- * 审批风险等级
- */
-export type ApprovalRiskLevel = 'P1' | 'P2' | 'P3' | 'P4';
-
-/**
- * 审批决策卡片参数
- */
-export interface ApprovalCardParams {
-  /** 申请人 (必填) */
-  applicant: string;
-  /** 申请事项 / 审批内容 (必填) */
-  item: string;
-  /** 审批单号 / 工单编号 */
-  orderNo?: string;
-  /** 所属部门 */
-  department?: string;
-  /** 风险等级 (P1 极高风险, P2 高风险, P3 中风险, P4 低风险)，默认为 'P3' */
-  riskLevel?: ApprovalRiskLevel;
-  /** 申请理由 / 详细说明 */
-  reason?: string;
-  /** 卡片主标题，默认为 '审批申请' */
-  title?: string;
-  /** 卡片副标题 / 发起系统，默认为 '审批决策中心' */
-  subtitle?: string;
-  /** 顶部图标或 Emoji，默认为 '🛡️' */
-  icon?: string;
-  /** 自定义扩展属性字段列表 */
-  customFields?: CardField[];
-  /** 同意按钮文本或自定义动作配置，默认为 { text: '✔ 同意', variant: 'success', replyCommand: '1' } */
-  approveAction?: string | Partial<CardAction>;
-  /** 拒绝按钮文本或自定义动作配置，默认为 { text: '✖ 拒绝', variant: 'danger', replyCommand: '2' } */
-  rejectAction?: string | Partial<CardAction>;
-  /** 完整自定义操作按钮列表 (传入时将覆盖默认的同意/拒绝按钮) */
-  actions?: CardAction[];
-  /** 底部提示说明，默认为 '💡 提示：可直接在会话中回复 [1] 同意 或 [2] 拒绝' */
-  footer?: CardFooter | string;
 }
 
 /**

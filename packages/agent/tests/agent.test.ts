@@ -4,7 +4,7 @@ import { createTool } from '@mastra/core/tools';
 import { RequestContext } from '@mastra/core/request-context';
 import { KKBotAgent, type KKBotAgentOptions } from '../src/agent.js';
 import { MastraModelFactory } from '../src/models/factory.js';
-import { createFakeModel } from './fixtures/fake-model.js';
+import { createFakeModel } from '../src/testing/fake-model.js';
 
 describe('KKBotAgent (Mastra-native Agent)', () => {
   function createTestAgent(options: {
@@ -17,7 +17,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
     factory?: MastraModelFactory;
     tools?: KKBotAgentOptions['tools'];
     errorProcessors?: KKBotAgentOptions['errorProcessors'];
-    maxSteps?: number;
+    instructions?: string;
     id?: string;
     name?: string;
   }) {
@@ -36,6 +36,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       id: options.id ?? 'test-agent',
       name: options.name ?? 'Test KKBot',
       modelFactory: factory,
+      instructions: options.instructions,
       tools: options.tools,
       errorProcessors: options.errorProcessors,
       maxSteps: options.maxSteps,
@@ -71,6 +72,25 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       totalTokens: 20,
     });
     expect(fastModel.callCount).toBe(1);
+  });
+  it('自定义 Soul 不得覆盖高风险操作未执行安全约束', async () => {
+    let capturedPrompt: unknown;
+    const model = createFakeModel({
+      responses: [{ text: '请由管理员手动处理', finishReason: 'stop' }],
+      onGenerate: (_count, options) => {
+        capturedPrompt = options.prompt;
+      },
+    });
+    const agent = createTestAgent({
+      model,
+      instructions: '这是业务 Soul，请保持简洁并遵循部门语气。',
+    });
+
+    await agent.execute({ input: '请给张三授予管理员权限' });
+
+    const promptJson = JSON.stringify(capturedPrompt) ?? '';
+    expect(promptJson).toContain('这是业务 Soul，请保持简洁并遵循部门语气。');
+    expect(promptJson).toContain('KKBot 没有执行外部操作');
   });
 
   it('连续调用两个或更多 Tool 并在每个 Tool result 后继续推理', async () => {
@@ -173,6 +193,48 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
     expect(result.finishReason).toBe('stop');
     expect(result.rawOutput.steps.length).toBe(1);
     expect(plainModel.callCount).toBe(1);
+  });
+  it('Mastra UserModelMessage 的图片内容参与 VISION 分类并传入模型', async () => {
+    let capturedPrompt: unknown;
+    const imageModel = createFakeModel({
+      modelId: 'vision-input-model',
+      responses: [{ text: '已读取图片附件', finishReason: 'stop' }],
+      onGenerate: (_count, options) => {
+        capturedPrompt = options.prompt;
+      },
+    });
+    const agent = createTestAgent({ model: imageModel });
+    const executeOptions: Parameters<KKBotAgent['execute']>[0] = {
+      input: {
+        kind: 'mastra-message',
+        tierInput: {
+          text: '请处理这个附件',
+          attachments: [
+            {
+              mediaType: 'image/png',
+              filename: 'screen.png',
+              isVisual: true,
+              hasCompleteTrustedText: false,
+            },
+          ],
+        },
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: '请处理这个附件' },
+            { type: 'image', image: 'data:image/png;base64,AA==', mediaType: 'image/png' },
+          ],
+        },
+      },
+    };
+
+    const result = await agent.execute(executeOptions);
+
+    expect(result.tier).toBe('VISION');
+    expect(result.text).toBe('已读取图片附件');
+    const promptJson = JSON.stringify(capturedPrompt) ?? '';
+    expect(promptJson).toContain('"type":"file"');
+    expect(promptJson).toContain('"data":"AA=="');
   });
 
   it('非重试错误不会发生无意义重试', async () => {
@@ -383,8 +445,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
     expect(result.usage.raw?.totalTokens).toBeUndefined();
   });
 
-
-  it('旧 inputProcessors 数组形状不能在运行时移除默认输入安全门', async () => {
+  it('传入自定义 inputProcessors 参数不能移除默认输入安全门', async () => {
     let modelInvoked = false;
     const model = createFakeModel({
       responses: [{ text: '不应到达模型' }],
@@ -410,7 +471,7 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
     expect(modelInvoked).toBe(false);
   });
 
-  it('旧 outputProcessors 数组形状不能在运行时移除默认输出安全门', async () => {
+  it('传入自定义 outputProcessors 参数不能移除默认输出安全门', async () => {
     const model = createFakeModel({ responses: [{ text: '<think>内部推理</think>正常回复' }] });
     const factory = new MastraModelFactory({
       tiers: {
@@ -464,13 +525,16 @@ describe('KKBotAgent (Mastra-native Agent)', () => {
       }),
       agent.execute({
         input: {
-          text: '查看附件图片',
-          attachments: [
-            {
-              mediaType: 'image/png',
-              hasCompleteTrustedText: false,
-            },
-          ],
+          kind: 'tier',
+          input: {
+            text: '查看附件图片',
+            attachments: [
+              {
+                mediaType: 'image/png',
+                hasCompleteTrustedText: false,
+              },
+            ],
+          },
         },
         requestContext: sharedContext,
       }),

@@ -26,7 +26,7 @@ export function extractTextFromMastraContent(content: unknown): string {
     }
   }
 
-  // 2. 兜底旧格式或顶层 content 字段
+  // 兼容 Mastra 内容对象的顶层 content 字段
   if (typeof v2.content === 'string') {
     return v2.content;
   }

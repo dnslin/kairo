@@ -10,15 +10,9 @@ import { SendOps } from './dom/send-ops.js';
 import { SessionOps } from './dom/session-ops.js';
 import { MessageOps } from './dom/message-ops.js';
 import { renderCardToBase64 as renderCanvasCard } from './canvas/renderer.js';
-import {
-  createAlertCard,
-  createApprovalCard,
-  createDecisionCard,
-  createReportCard,
-} from './canvas/templates.js';
+import { createAlertCard, createDecisionCard, createReportCard } from './canvas/templates.js';
 import type {
   AlertCardParams,
-  ApprovalCardParams,
   CardData,
   CdpConnectionLostEvent,
   CompensationScanOptions,
@@ -334,17 +328,6 @@ export class KK9Driver extends EventEmitter {
    */
   public async renderCardToBase64(card: CardData, options?: RenderCanvasOptions): Promise<string> {
     return renderCanvasCard(this.cdp, card, options);
-  }
-
-  /**
-   * 快捷发送审批决策卡片
-   */
-  public async sendApprovalCard(
-    params: ApprovalCardParams,
-    options?: SendCardOptions
-  ): Promise<SendResult> {
-    const cardData = createApprovalCard(params);
-    return this.sendCard(cardData, options);
   }
 
   /**

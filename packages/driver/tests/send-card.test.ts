@@ -8,7 +8,6 @@ import { SendOps } from '../src/dom/send-ops.js';
 import { KK9Driver } from '../src/driver.js';
 import type {
   AlertCardParams,
-  ApprovalCardParams,
   CardData,
   DecisionCardParams,
   ReportCardParams,
@@ -24,15 +23,15 @@ describe('SendOps & KK9Driver Canvas 视觉卡片发送流水线测试', () => {
 
   const validCard: CardData = {
     header: {
-      title: '测试审批单',
+      title: '测试决策卡片',
       subtitle: '自动化测试',
-      icon: '🛡️',
+      icon: '📌',
     },
     fields: [
-      { label: '申请人', value: '张三' },
+      { label: '发起人', value: '张三' },
       { label: '事项', value: '发布生产版本' },
     ],
-    actions: [{ text: '✔ 同意', variant: 'success', replyCommand: '1' }],
+    actions: [{ text: '选择方案', variant: 'primary', replyCommand: '1' }],
   };
 
   describe('SendOps.sendCard', () => {
@@ -260,35 +259,6 @@ describe('SendOps & KK9Driver Canvas 视觉卡片发送流水线测试', () => {
 
       expect(res.success).toBe(true);
       expect(internal.sendOps.sendCard).toHaveBeenCalledWith(validCard, options);
-    });
-
-    it('driver.sendApprovalCard 自动构建审批卡片并发送', async () => {
-      const driver = new KK9Driver({
-        cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
-      });
-
-      const internal = driver as unknown as {
-        sendOps: { sendCard: (card: CardData, options?: SendCardOptions) => Promise<SendResult> };
-      };
-      internal.sendOps.sendCard = vi
-        .fn()
-        .mockResolvedValue({ success: true, messageId: 'msg_appr_01' });
-
-      const params: ApprovalCardParams = {
-        applicant: '王五',
-        item: '生产数据库权限申请',
-        riskLevel: 'P1',
-        orderNo: 'ORDER-2026-001',
-      };
-
-      const res = await driver.sendApprovalCard(params, { dpr: 2 });
-      expect(res.success).toBe(true);
-      expect(internal.sendOps.sendCard).toHaveBeenCalledOnce();
-
-      const calledCard = vi.mocked(internal.sendOps.sendCard).mock.calls[0]![0];
-      expect(calledCard.header.title).toBe('审批申请');
-      expect(calledCard.theme).toBe('danger'); // P1 maps to danger theme
-      expect(calledCard.fields?.some(f => f.label === '申请人' && f.value === '王五')).toBe(true);
     });
 
     it('driver.sendAlertCard 自动构建告警卡片并发送', async () => {

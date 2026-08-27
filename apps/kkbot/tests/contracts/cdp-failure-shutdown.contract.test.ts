@@ -11,8 +11,9 @@ import type {
   KK9Driver,
   KK9Message,
 } from '@kkbot/driver';
-import { UnifiedBootstrapper } from '../../src/bootstrapper.js';
+import { UnifiedBootstrapper, type AgentFactory } from '../../src/bootstrapper.js';
 import { createValidTestYaml } from '../fixtures.js';
+import { KKBotAgent, MastraModelFactory, createFakeModel } from '@kkbot/agent';
 
 class FakeDriver extends EventEmitter {
   public readonly connect = vi.fn().mockResolvedValue(undefined);
@@ -43,6 +44,22 @@ class FakeDriver extends EventEmitter {
       eventBridgeConnectionIdentity: this.identity,
     };
   }
+}
+function createTestAgentFactory(): AgentFactory {
+  const model = createFakeModel();
+  const modelFactory = new MastraModelFactory({
+    tiers: {
+      FAST: { models: [{ model }] },
+      DEEP: { models: [{ model }] },
+      VISION: { models: [{ model }] },
+    },
+  });
+  return (_config, { memory, tools }) =>
+    new KKBotAgent({
+      modelFactory,
+      memory,
+      tools,
+    });
 }
 
 describe('BOOT-01 Driver 故障退出合同', () => {
@@ -88,6 +105,7 @@ describe('BOOT-01 Driver 故障退出合同', () => {
         driver = new FakeDriver(generationId);
         return driver as unknown as KK9Driver;
       },
+      agentFactory: createTestAgentFactory(),
     });
 
     await bootstrapper.start();

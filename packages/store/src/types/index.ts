@@ -215,12 +215,11 @@ export interface SearchEmployeeOptions {
 }
 
 /**
- * 会话工作模式
- * - auto: 自动应答
- * - draft: 草稿待审
- * - disabled: 完全禁用
+ * 会话工作模式。
+ * - auto：自动应答
+ * - disabled：完全禁用
  */
-export type SessionMode = 'auto' | 'draft' | 'disabled';
+export type SessionMode = 'auto' | 'disabled';
 
 /**
  * 会话类型（私聊或群聊）
@@ -598,9 +597,6 @@ export interface Delivery {
   /** 更新时间戳 (毫秒) */
   updatedAt: number;
 }
-
-/** 向后兼容别名 */
-export type MessageDelivery = Delivery;
 
 /**
  * 创建 Delivery 输入参数

@@ -1,4 +1,5 @@
 import { Agent, TripWire, type ToolsInput } from '@mastra/core/agent';
+import type { MessageInput } from '@mastra/core/agent/message-list';
 import type { Memory } from '@mastra/memory';
 import {
   RequestContext,
@@ -17,6 +18,18 @@ import { splitKKBotProcessors, type KKBotProcessorsOptions } from './processors/
 import { extractTextFromMastraContent } from './processors/content-utils.js';
 
 export type AgentGenerateRawOutput = FullOutput<unknown>;
+export interface TierAgentInput {
+  readonly kind: 'tier';
+  readonly input: NormalizedModelTierInput;
+}
+
+export interface MastraAgentInput {
+  readonly kind: 'mastra-message';
+  readonly tierInput: NormalizedModelTierInput;
+  readonly message: MessageInput;
+}
+
+export type AgentInput = string | TierAgentInput | MastraAgentInput;
 
 export interface KKBotAgentOptions {
   id?: string;
@@ -34,7 +47,7 @@ export interface KKBotAgentOptions {
 }
 
 export interface ExecuteAgentOptions {
-  input: string | NormalizedModelTierInput;
+  input: AgentInput;
   /** 规则版本，默认 'v1.0' */
   rulesVersion?: string;
   sessionId?: string;
@@ -62,14 +75,13 @@ export interface KKBotAgentRunResult {
 }
 
 /**
- * KKBotAgent: Mastra-native Agent 核心执行入口
+ * KKBotAgent：Mastra-native Agent 核心执行入口。
  *
  * 核心契约：
- * 1. 生产执行者必须是 Mastra Agent 实例 (this.mastraAgent.generate)。
- * 2. 由 ModelTierPolicy 计算确定性 ModelTier 并注入 RequestContext。
- * 3. 不调用旧 KkbotAgentRuntime、自定义 Tool Executor 或自定义模型循环。
- * 4. retry、fallback、Tool Calling Loop、AbortSignal 和 maxSteps 均由 Mastra 原生持有并执行。
- * 5. Token Usage 直接从 Mastra 权威结果读取，不使用旧 Runtime 估算。
+ * 1. 生产执行者是 Mastra Agent 实例。
+ * 2. ModelTierPolicy 计算确定性 ModelTier 并写入 RequestContext。
+ * 3. retry、fallback、Tool Calling、AbortSignal 和 maxSteps 由 Mastra 原生持有。
+ * 4. Token Usage 直接读取 Mastra 权威结果，不在集成层估算。
  */
 export const DEFAULT_KKBOT_INSTRUCTIONS =
   '你是企业智能助手 KKBot。请遵循安全与企业规范。当用户要求执行删除数据、修改权限、资金转账、全员群发或修改敏感数据等高风险操作时，由于系统未开放此类写操作工具，你只能提供建议、拟写内容或人工操作清单，并明确说明：KKBot 没有执行外部操作。';
@@ -85,10 +97,15 @@ export class KKBotAgent {
     const inputProcessors = defaultProcessors.inputProcessors;
     const outputProcessors = defaultProcessors.outputProcessors;
 
+    const customInstructions = options.instructions?.trim();
+    const instructions = customInstructions
+      ? `${customInstructions}\n\n${DEFAULT_KKBOT_INSTRUCTIONS}`
+      : DEFAULT_KKBOT_INSTRUCTIONS;
+
     this.mastraAgent = new Agent({
       id: options.id ?? 'kkbot-mastra-agent',
       name: options.name ?? 'KKBot Agent',
-      instructions: options.instructions ?? DEFAULT_KKBOT_INSTRUCTIONS,
+      instructions,
       model: options.modelFactory.createDynamicModelResolver(),
       memory: options.memory,
       tools: options.tools,
@@ -102,8 +119,17 @@ export class KKBotAgent {
   }
 
   async execute(options: ExecuteAgentOptions): Promise<KKBotAgentRunResult> {
-    const normalizedInput: NormalizedModelTierInput =
-      typeof options.input === 'string' ? { text: options.input } : options.input;
+    const input = options.input;
+    let normalizedInput: NormalizedModelTierInput;
+    let mastraInput: MessageInput | undefined;
+    if (typeof input === 'string') {
+      normalizedInput = { text: input };
+    } else if (input.kind === 'mastra-message') {
+      normalizedInput = input.tierInput;
+      mastraInput = input.message;
+    } else {
+      normalizedInput = input.input;
+    }
 
     const tier = resolveModelTier(normalizedInput, options.rulesVersion ?? 'v1.0');
 
@@ -128,7 +154,7 @@ export class KKBotAgent {
       throw new Error('Agent 执行已被 AbortSignal 中止');
     }
 
-    const rawOutput = await this.mastraAgent.generate(normalizedInput.text, {
+    const rawOutput = await this.mastraAgent.generate(mastraInput ?? normalizedInput.text, {
       requestContext: reqCtx,
       abortSignal: options.abortSignal,
       maxSteps: options.maxSteps,

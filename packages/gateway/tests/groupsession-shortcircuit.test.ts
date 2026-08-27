@@ -1,8 +1,12 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import EventEmitter from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KK9Driver, KK9Message, KK9RecalledEvent, SendResult } from '@kkbot/driver';
 import { createKKBotStore, type KKBotStore } from '@kkbot/store';
-import type { AgentReplyResult, KkbotAgentRuntime } from '@kkbot/agent';
+import { KKBotAgent, MastraModelFactory, Memory, createFakeModel } from '@kkbot/agent';
+import { LibSQLStore } from '@mastra/libsql';
 import { SessionCoordinator } from '../src/coordinator.js';
 
 class MockDriver extends EventEmitter {
@@ -264,114 +268,144 @@ describe('Gateway GroupSession 强制短路与 Raw Store-only 分流测试 (TDD 
 
     it('通过公开入口启动同 sessionId 的 PrivateSession 在途 Run，群聊消息绝不会 Abort 该在途 Run', async () => {
       const targetSessionId = 'session_concurrent_same_id';
-      const { promise: waitingAgentPromise, resolve: resolveAgentRun } =
-        Promise.withResolvers<AgentReplyResult>();
+      const modelStarted = Promise.withResolvers<void>();
       let capturedSignal: AbortSignal | null = null;
 
-      const fakeAgentRuntime = {
-        execute: vi
-          .fn()
-          .mockImplementation(
-            (
-              _sid: string,
-              _msg: unknown,
-              opts?: { signal?: AbortSignal }
-            ): Promise<AgentReplyResult> => {
-              capturedSignal = opts?.signal ?? null;
-              return waitingAgentPromise;
+      const model = createFakeModel({
+        responses: [{ text: '中断前不应发送', finishReason: 'stop' }],
+        onGenerate: async (_callCount, callOptions) => {
+          capturedSignal = callOptions.abortSignal ?? null;
+          modelStarted.resolve();
+          await new Promise<void>(resolve => {
+            if (callOptions.abortSignal?.aborted) {
+              resolve();
+              return;
             }
-          ),
-      } as unknown as KkbotAgentRuntime;
+            callOptions.abortSignal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+        },
+      });
+      const modelFactory = new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model }] },
+          DEEP: { models: [{ model }] },
+          VISION: { models: [{ model }] },
+        },
+      });
+      const testTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kkbot-groupsession-agent-'));
+      const testDbPath = path.join(testTempDir, 'test.db');
+      const testFileUrl = `file:${testDbPath.replace(/\\/g, '/')}`;
+      const testStore = await createKKBotStore({ url: testFileUrl });
+      const storage = new LibSQLStore({ id: 'groupsession-agent-storage', url: testFileUrl });
+      await storage.init();
+      const mastraMemory = new Memory({ storage });
+      const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
 
       const testCoordinator = new SessionCoordinator({
         driver: mockDriver as unknown as KK9Driver,
-        store,
-        agentRuntime: fakeAgentRuntime,
+        store: testStore,
+        agent,
+        mastraMemory,
         config: {
           debounceMs: 10,
           maxWaitMs: 50,
         },
       });
-      await testCoordinator.start();
+      let cleanupError: Error | undefined;
+      try {
+        await testCoordinator.start();
 
-      const inFlightAbortedSpy = vi.fn();
-      testCoordinator.on('in_flight_aborted', inFlightAbortedSpy);
+        const inFlightAbortedSpy = vi.fn();
+        testCoordinator.on('in_flight_aborted', inFlightAbortedSpy);
 
-      // 1. 通过公开入站入口发送 PrivateSession 消息
-      const privateMsg: KK9Message = {
-        id: 'priv_msg_1',
-        messageId: 'priv_msg_1',
-        sessionId: targetSessionId,
-        sessionName: '私聊并发目标',
-        sessionType: 'private',
-        origin: 'external',
-        sender: '员工',
-        content: '发起耗时生成任务',
-        time: '12:00',
-        isMe: false,
-        timestamp: Date.now(),
-      };
-      const { promise: startedPromise, resolve: resolveStarted } = Promise.withResolvers<void>();
-      testCoordinator.once('agent_started', () => {
-        resolveStarted();
-      });
-      await testCoordinator.handleInboundMessage(privateMsg);
-      const flushPromise = testCoordinator.flushSession(targetSessionId);
-      await startedPromise;
+        const privateMsg: KK9Message = {
+          id: 'priv_msg_1',
+          messageId: 'priv_msg_1',
+          sessionId: targetSessionId,
+          sessionName: '私聊并发目标',
+          sessionType: 'private',
+          origin: 'external',
+          sender: '员工',
+          senderId: 'emp_concurrent_same_id',
+          content: '发起耗时生成任务',
+          time: '12:00',
+          isMe: false,
+          timestamp: Date.now(),
+        };
+        const startedPromise = new Promise<void>(resolve => {
+          testCoordinator.once('agent_started', () => resolve());
+        });
+        await testCoordinator.handleInboundMessage(privateMsg);
+        const flushPromise = testCoordinator.flushSession(targetSessionId);
+        await startedPromise;
+        await modelStarted.promise;
 
-      // 验证在途会话已建立
-      expect(testCoordinator.hasInFlightSession(targetSessionId)).toBe(true);
-      expect(capturedSignal).not.toBeNull();
-      expect(capturedSignal!.aborted).toBe(false);
+        expect(testCoordinator.hasInFlightSession(targetSessionId)).toBe(true);
+        expect(capturedSignal).not.toBeNull();
+        expect(capturedSignal!.aborted).toBe(false);
 
-      // 2. 发送具有【相同 sessionId】的群聊消息
-      const sameIdGroupMsg: KK9Message = {
-        id: 'grp_same_id_msg',
-        messageId: 'grp_same_id_msg',
-        sessionId: targetSessionId,
-        sessionName: '相同ID的群消息',
-        sessionType: 'group',
-        origin: 'external',
-        sender: '群成员',
-        content: '同 ID 群聊消息到达，不应打断在途私聊',
-        time: '12:01',
-        isMe: false,
-        timestamp: Date.now(),
-      };
+        const sameIdGroupMsg: KK9Message = {
+          id: 'grp_same_id_msg',
+          messageId: 'grp_same_id_msg',
+          sessionId: targetSessionId,
+          sessionName: '相同ID的群消息',
+          sessionType: 'group',
+          origin: 'external',
+          sender: '群成员',
+          content: '同 ID 群聊消息到达，不应打断在途私聊',
+          time: '12:01',
+          isMe: false,
+          timestamp: Date.now(),
+        };
 
-      await testCoordinator.handleInboundMessage(sameIdGroupMsg);
+        await testCoordinator.handleInboundMessage(sameIdGroupMsg);
 
-      // 3. 严格断言：私聊在途 Run 未被 abort，未触发 in_flight_aborted
-      expect(capturedSignal!.aborted).toBe(false);
-      expect(inFlightAbortedSpy).not.toHaveBeenCalled();
-      expect(testCoordinator.hasInFlightSession(targetSessionId)).toBe(true);
+        expect(capturedSignal!.aborted).toBe(false);
+        expect(inFlightAbortedSpy).not.toHaveBeenCalled();
+        expect(testCoordinator.hasInFlightSession(targetSessionId)).toBe(true);
 
-      // 4. 对照验证：发送同 sessionId 的 PrivateSession 消息时，必须触发打断
-      const secondPrivateMsg: KK9Message = {
-        id: 'priv_msg_2',
-        messageId: 'priv_msg_2',
-        sessionId: targetSessionId,
-        sessionName: '私聊并发目标',
-        sessionType: 'private',
-        origin: 'external',
-        sender: '员工',
-        content: '第二条私聊消息，应当打断在途生成',
-        time: '12:02',
-        isMe: false,
-        timestamp: Date.now(),
-      };
-      await testCoordinator.handleInboundMessage(secondPrivateMsg);
+        const secondPrivateMsg: KK9Message = {
+          id: 'priv_msg_2',
+          messageId: 'priv_msg_2',
+          sessionId: targetSessionId,
+          sessionName: '私聊并发目标',
+          sessionType: 'private',
+          origin: 'external',
+          sender: '员工',
+          senderId: 'emp_concurrent_same_id',
+          content: '第二条私聊消息，应当打断在途生成',
+          time: '12:02',
+          isMe: false,
+          timestamp: Date.now(),
+        };
+        await testCoordinator.handleInboundMessage(secondPrivateMsg);
 
-      expect(capturedSignal!.aborted).toBe(true);
-      expect(inFlightAbortedSpy).toHaveBeenCalledWith(
-        targetSessionId,
-        expect.any(Number),
-        'new_inbound_message'
-      );
+        expect(capturedSignal!.aborted).toBe(true);
+        expect(inFlightAbortedSpy).toHaveBeenCalledWith(
+          targetSessionId,
+          expect.any(Number),
+          'new_inbound_message'
+        );
 
-      resolveAgentRun({ content: '完成', finishReason: 'stop' });
-      await flushPromise;
-      await testCoordinator.stop();
+        await flushPromise;
+      } finally {
+        await testCoordinator.stop();
+        testStore.close();
+        await storage.close();
+        try {
+          await fs.rm(testTempDir, { recursive: true, force: true });
+        } catch (error) {
+          const code =
+            typeof error === 'object' && error !== null && 'code' in error ? error.code : undefined;
+          if (code !== 'EBUSY') {
+            cleanupError =
+              error instanceof Error ? error : new Error(String(error), { cause: error });
+          }
+        }
+      }
+      if (cleanupError) {
+        throw cleanupError;
+      }
     });
   });
 

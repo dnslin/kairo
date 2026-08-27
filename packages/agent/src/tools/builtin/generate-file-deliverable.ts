@@ -2,8 +2,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { createAgentTool } from '../registry.js';
-import type { AgentTool, ToolExecutionContext } from '../types.js';
 import { ToolValidationError } from '../../utils/errors.js';
 import { createKkTool, type KkMastraTool } from '../create-tool.js';
 import { MASTRA_THREAD_ID_KEY, MASTRA_RESOURCE_ID_KEY } from '@mastra/core/request-context';
@@ -395,51 +393,6 @@ export function executeGenerateFileDeliverableCore(
     operatorId: effectiveOperatorId.trim(),
     alreadyExisted,
   };
-}
-
-/**
- * 创建 generate_file_deliverable 内置工具 (旧 ToolRegistry 兼容)
- */
-export function createGenerateFileDeliverableTool(
-  options: GenerateFileDeliverableOptions = {}
-): AgentTool<GenerateFileDeliverableInput, GenerateFileDeliverableOutput> {
-  const baseDir = resolve(options.baseDir ?? 'data/media');
-  const seenIdempotencyKeys: Record<string, string> = {};
-
-  return createAgentTool<GenerateFileDeliverableInput, GenerateFileDeliverableOutput>({
-    id: 'generate_file_deliverable',
-    description:
-      '将结构化数据或文本整理生成为 .csv 花名册/表格或 .md Markdown 文档，并持久化保存至本地受控媒体目录。写操作工具。',
-    readOnly: false,
-    inputSchema: GenerateFileDeliverableInputSchema,
-    execute: async (
-      input,
-      context?: ToolExecutionContext
-    ): Promise<GenerateFileDeliverableOutput> => {
-      await Promise.resolve();
-      const sessionId = context?.threadId;
-      const operatorId = context?.senderId ?? context?.resourceId;
-
-      if (!sessionId || typeof sessionId !== 'string' || sessionId.trim().length === 0) {
-        throw new ToolValidationError(
-          'generate_file_deliverable',
-          '低风险写操作工具缺少权威 threadId 会话身份，已阻断执行以防安全逃逸'
-        );
-      }
-
-      if (!operatorId || typeof operatorId !== 'string' || operatorId.trim().length === 0) {
-        throw new ToolValidationError(
-          'generate_file_deliverable',
-          '低风险写操作工具缺少权威 senderId/resourceId 操作者身份，已阻断执行以防安全逃逸'
-        );
-      }
-
-      return executeGenerateFileDeliverableCore(input, baseDir, seenIdempotencyKeys, {
-        sessionId: sessionId.trim(),
-        operatorId: operatorId.trim(),
-      });
-    },
-  });
 }
 
 /**

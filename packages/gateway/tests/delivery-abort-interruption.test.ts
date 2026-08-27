@@ -149,7 +149,7 @@ describe('Delivery Abort & New Message Interruption', () => {
     expect(userMsgs[1].id).toBe(deriveUserMessageId(sessionId, 'msg_deb_2'));
   });
 
-  it('Run 期间新消息 0ms 中断当前只读 Run，旧 user 事实保留，新一轮只提交新 user', async () => {
+  it('Run 期间新消息 0ms 中断当前只读 Run，已提交 user 事实保留，新一轮只提交新 user', async () => {
     const { promise: model1Started, resolve: resolveModel1Started } = Promise.withResolvers<void>();
     const { promise: waitAbortPromise, resolve: resolveAborted } = Promise.withResolvers<void>();
 
@@ -203,7 +203,7 @@ describe('Delivery Abort & New Message Interruption', () => {
     await model1Started;
     expect(coordinator.hasInFlightSession(sessionId)).toBe(true);
 
-    // 2. 在第一轮 Run 执行中，同一会话到达新消息 -> 0ms 中断旧 Run
+    // 2. Agent Run 执行中到达新消息 -> 0ms 中断当前只读 Run
     mockDriver.emitMessage({
       id: 'msg_round2',
       sessionId,
@@ -219,7 +219,7 @@ describe('Delivery Abort & New Message Interruption', () => {
     // 等待第二轮生成与交付完成
     await new Promise(r => setTimeout(r, 200));
 
-    // 验证: 旧 user 事实与新 user 事实均在 Mastra Thread 中
+    // 验证：已提交 user 事实与新 user 事实均在 Mastra Thread 中
     const { messages } = await mastraMemory.recall({ threadId: sessionId, resourceId: 'emp_lisi' });
     const userMsgs = messages.filter(m => m.role === 'user');
     expect(userMsgs).toHaveLength(2);

@@ -239,7 +239,7 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
 
     await ensureMastraThread(mastraMemory, threadId, resourceId);
 
-    // 预置旧对话历史
+    // 预置既有对话历史
     await mastraMemory.saveMessages({
       messages: [
         createMastraTextMessage({
@@ -306,7 +306,7 @@ describe('MEMORY-01 Contract: Mastra-native Memory, Thread/Resource Identity & R
     });
 
     expect(afterRunMsgs.length).toBe(3);
-    expect(afterRunMsgs.filter((m) => m.role === 'assistant').length).toBe(1); // 仍只有旧的那条
+    expect(afterRunMsgs.filter((m) => m.role === 'assistant').length).toBe(1); // 仍只有既有的那条
   });
 
   it('MEMORY-01.5: assistant message 仅在 Delivery 进入 sent 后通过 Memory.saveMessages 显式提交', async () => {

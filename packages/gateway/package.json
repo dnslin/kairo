@@ -24,12 +24,11 @@
     "@kkbot/agent": "workspace:*",
     "@kkbot/driver": "workspace:*",
     "@kkbot/store": "workspace:*",
-    "@libsql/client": "^0.17.4",
     "@mastra/core": "catalog:",
-    "@mastra/libsql": "catalog:",
     "pino": "^9.6.0"
   },
   "devDependencies": {
+    "@mastra/libsql": "catalog:",
     "@types/node": "^22.12.0",
     "pino-pretty": "^13.0.0",
     "typescript": "^5.7.3",

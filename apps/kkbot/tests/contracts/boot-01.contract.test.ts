@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { UnifiedBootstrapper } from '../../src/bootstrapper.js';
 import { WorkAdmissionGateClosedError } from '../../src/gate.js';
 import { createValidTestYaml } from '../fixtures.js';
+import { KKBotAgent, MastraModelFactory, createFakeModel } from '@kkbot/agent';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -32,8 +33,14 @@ describe('BOOT-01 Contract: Composition Root, Gate, Ledger & Shutdown', () => {
     expect(cfg).toBeDefined();
 
     // 严禁生成数据库或锁文件
-    const dbExists = await fs.stat(dbFilePath).then(() => true).catch(() => false);
-    const lockExists = await fs.stat(path.join(tempDir, 'kkbot.lock')).then(() => true).catch(() => false);
+    const dbExists = await fs
+      .stat(dbFilePath)
+      .then(() => true)
+      .catch(() => false);
+    const lockExists = await fs
+      .stat(path.join(tempDir, 'kkbot.lock'))
+      .then(() => true)
+      .catch(() => false);
     expect(dbExists).toBe(false);
     expect(lockExists).toBe(false);
 
@@ -64,12 +71,49 @@ describe('BOOT-01 Contract: Composition Root, Gate, Ledger & Shutdown', () => {
 
     await boot.shutdown();
   });
+  it('BOOT-01.3a: Composition Root 注入共享 Memory、静态 Tool 并注册 Mastra Agent', async () => {
+    let sharedMemory: unknown;
+    let receivedToolCount = 0;
+    let createdAgent: KKBotAgent | undefined;
+    const model = createFakeModel({ responses: [{ text: 'boot agent' }] });
+    const boot = new UnifiedBootstrapper({
+      configPath: configFile,
+      agentFactory: (config, dependencies) => {
+        sharedMemory = dependencies.memory;
+        receivedToolCount = Object.keys(dependencies.tools).length;
+        const modelFactory = new MastraModelFactory({
+          tiers: {
+            FAST: { models: [{ model }] },
+            DEEP: { models: [{ model }] },
+            VISION: { models: [{ model }] },
+          },
+        });
+        createdAgent = new KKBotAgent({
+          id: config.agent.id,
+          modelFactory,
+          memory: dependencies.memory,
+          tools: dependencies.tools,
+        });
+        return createdAgent;
+      },
+    });
+
+    await boot.start();
+    const report = await boot.preflight();
+    expect(report.memoryReady).toBe(true);
+    expect(report.agentReady).toBe(true);
+
+    expect(sharedMemory).toBeDefined();
+    expect(receivedToolCount).toBeGreaterThan(0);
+    expect(boot.getMastra().getAgent('kk-assistant')).toBe(createdAgent?.mastraAgent);
+    await boot.shutdown();
+  });
 
   it('BOOT-01.4: Ready Barrier 失败时 Gate 从未开放并自动执行回滚', async () => {
     const boot = new UnifiedBootstrapper({
       configPath: configFile,
       hooks: {
-        beforeAcquire: (stage) => {
+        beforeAcquire: stage => {
           if (stage === 'Preflight') {
             throw new Error('Preflight readiness check failed');
           }
@@ -81,18 +125,28 @@ describe('BOOT-01 Contract: Composition Root, Gate, Ledger & Shutdown', () => {
     expect(boot.getGate().isOpen()).toBe(false);
 
     // 锁已在回滚中释放
-    const lockExists = await fs.stat(path.join(tempDir, 'kkbot.lock')).then(() => true).catch(() => false);
+    const lockExists = await fs
+      .stat(path.join(tempDir, 'kkbot.lock'))
+      .then(() => true)
+      .catch(() => false);
     expect(lockExists).toBe(false);
   });
 
   it('BOOT-01.5: 矩阵故障注入：每个 acquire 阶段分别失败时逆拓扑释放已取得资源', async () => {
-    const stages = ['InstanceLock', 'KKBotClient', 'KKBotMigrations', 'LibSQLStore', 'Mastra', 'Preflight'];
+    const stages = [
+      'InstanceLock',
+      'KKBotClient',
+      'KKBotMigrations',
+      'LibSQLStore',
+      'Mastra',
+      'Preflight',
+    ];
 
     for (const failingStage of stages) {
       const boot = new UnifiedBootstrapper({
         configPath: configFile,
         hooks: {
-          beforeAcquire: (stage) => {
+          beforeAcquire: stage => {
             if (stage === failingStage) {
               throw new Error(`Injected acquire failure at ${failingStage}`);
             }
@@ -104,7 +158,10 @@ describe('BOOT-01 Contract: Composition Root, Gate, Ledger & Shutdown', () => {
       expect(boot.getGate().isOpen()).toBe(false);
 
       // 验证锁已释放
-      const lockExists = await fs.stat(path.join(tempDir, 'kkbot.lock')).then(() => true).catch(() => false);
+      const lockExists = await fs
+        .stat(path.join(tempDir, 'kkbot.lock'))
+        .then(() => true)
+        .catch(() => false);
       expect(lockExists).toBe(false);
     }
   });
@@ -116,7 +173,7 @@ describe('BOOT-01 Contract: Composition Root, Gate, Ledger & Shutdown', () => {
     const boot = new UnifiedBootstrapper({
       configPath: configFile,
       hooks: {
-        beforeFinalizer: (resId) => {
+        beforeFinalizer: resId => {
           trace.push(resId);
           if (resId === failingFinalizer) {
             throw new Error(`Finalizer failure at ${resId}`);
@@ -145,10 +202,10 @@ describe('BOOT-01 Contract: Composition Root, Gate, Ledger & Shutdown', () => {
     const boot = new UnifiedBootstrapper({
       configPath: configFile,
       hooks: {
-        beforeFinalizer: (resId) => {
+        beforeFinalizer: resId => {
           sequence.push(`before_${resId}`);
         },
-        afterFinalizer: (resId) => {
+        afterFinalizer: resId => {
           sequence.push(`after_${resId}`);
         },
       },

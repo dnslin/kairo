@@ -1,7 +1,8 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import type { KK9Driver, DriverHealthSnapshot, KK9Message } from '@kkbot/driver';
-import { UnifiedBootstrapper } from '../../src/bootstrapper.js';
+import { UnifiedBootstrapper, type AgentFactory } from '../../src/bootstrapper.js';
+import { KKBotAgent, MastraModelFactory, createFakeModel } from '@kkbot/agent';
 
 class FakeDriver extends EventEmitter {
   public readonly generationId: string;
@@ -19,11 +20,15 @@ class FakeDriver extends EventEmitter {
   }
 
   public connect(): void {
-    process.stdout.write(`${JSON.stringify({ event: 'driver_connected', generationId: this.generationId })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ event: 'driver_connected', generationId: this.generationId })}\n`
+    );
   }
 
   public disconnect(): void {
-    process.stdout.write(`${JSON.stringify({ event: 'driver_disconnected', generationId: this.generationId })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ event: 'driver_disconnected', generationId: this.generationId })}\n`
+    );
   }
 
   public getHealthSnapshot(): DriverHealthSnapshot {
@@ -52,8 +57,26 @@ class FakeDriver extends EventEmitter {
   }
 
   public startPolling(): void {
-    process.stdout.write(`${JSON.stringify({ event: 'polling_started', generationId: this.generationId })}\n`);
+    process.stdout.write(
+      `${JSON.stringify({ event: 'polling_started', generationId: this.generationId })}\n`
+    );
   }
+}
+function createTestAgentFactory(): AgentFactory {
+  const model = createFakeModel();
+  const modelFactory = new MastraModelFactory({
+    tiers: {
+      FAST: { models: [{ model }] },
+      DEEP: { models: [{ model }] },
+      VISION: { models: [{ model }] },
+    },
+  });
+  return (_config, { memory, tools }) =>
+    new KKBotAgent({
+      modelFactory,
+      memory,
+      tools,
+    });
 }
 
 const configPath = process.argv[2];
@@ -68,6 +91,7 @@ const bootstrapper = new UnifiedBootstrapper({
     fakeDriver = new FakeDriver(generationId);
     return fakeDriver as unknown as KK9Driver;
   },
+  agentFactory: createTestAgentFactory(),
 });
 
 await bootstrapper.start();

@@ -1,4 +1,16 @@
-import type { SensitiveCheckResult, SensitiveFilterResult } from '../types/index.js';
+interface SensitiveCheckResult {
+  safe: boolean;
+  reason?: string;
+  matchedKeywords?: string[];
+  matchedPatterns?: string[];
+}
+
+interface SensitiveFilterResult {
+  safe: boolean;
+  filteredText: string;
+  matchedRules: string[];
+  replacedCount: number;
+}
 
 /**
  * 默认内置越狱/提示词注入匹配正则规则

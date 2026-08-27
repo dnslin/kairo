@@ -48,7 +48,6 @@ export type KK9MessageType = 'text' | 'image' | 'file' | 'quote' | 'rich-text' |
 
 /** 消息来源身份；unknown 表示当前可观察事实不足以安全分类。 */
 export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system' | 'unknown';
-export type InboundMessageOrigin = KK9MessageOrigin;
 
 /**
  * 文本样式属性
@@ -201,9 +200,6 @@ export interface KK9Message {
   images?: KK9ImageInfo[];
   raw?: Record<string, unknown>;
 }
-
-/** 领域规范化入站消息别名 */
-export type InboundMessage = KK9Message;
 
 /**
  * 员工档案与组织架构信息
@@ -363,11 +359,6 @@ export interface DriverEvents {
   health: (event: DriverHealthEvent) => void;
 }
 
-/**
- * 原生事件桥事件契约（与 DriverEvents 100% 同构）
- */
-export type EventBridgeEvents = DriverEvents;
-
 export type {
   CardThemeType,
   CardThemeCustom,
@@ -385,8 +376,6 @@ export type {
   RenderCanvasOptions,
   ResolvedCardTheme,
   CardLayoutResult,
-  ApprovalRiskLevel,
-  ApprovalCardParams,
   AlertSeverity,
   AlertMetric,
   AlertCardParams,

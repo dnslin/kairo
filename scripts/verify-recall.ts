@@ -3,7 +3,7 @@ import { KK9Driver } from '../packages/driver/src/index.js';
 
 async function runRecallVerification(): Promise<void> {
   console.log('====================================================');
-  console.log('🚀 KK9 消息撤回双轨 API 与事件捕获实机验证');
+  console.log('KK9 消息撤回接口与事件捕获实机验证');
   console.log('====================================================\n');
 
   const driver = new KK9Driver({

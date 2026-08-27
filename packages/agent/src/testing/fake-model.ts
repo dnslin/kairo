@@ -57,6 +57,7 @@ export interface FakeLanguageModel {
   readonly modelId: string;
   readonly provider: string;
   readonly specificationVersion: 'v2';
+  readonly supportedUrls: Record<string, RegExp[]>;
   readonly callCount: number;
   doGenerate(options: FakeModelCallOptions): Promise<FakeModelGenerateResult>;
 }
@@ -73,6 +74,7 @@ export function createFakeModel(options: FakeModelOptions = {}): FakeLanguageMod
 
   return {
     specificationVersion: 'v2',
+    supportedUrls: {},
     modelId,
     provider,
     get callCount(): number {

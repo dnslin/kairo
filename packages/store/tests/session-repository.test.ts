@@ -3,7 +3,7 @@ import type { Client } from '@libsql/client';
 import {
   closeDatabase,
   createDatabaseClient,
-  isDatabaseInstance,
+  isClientInstance,
   KKBotStore,
   OrgRepository,
   SessionRepository,
@@ -128,14 +128,14 @@ describe('SessionRepository 会话状态持久化仓储测试 (TDD Red -> Green)
       await sessionRepo.upsertSession({
         id: sessionId,
         name: '项目核心群 (已改名)',
-        mode: 'draft',
+        mode: 'disabled',
         updatedAt: updateTime,
       });
 
       const updated = await sessionRepo.getSession(sessionId);
       expect(updated).not.toBeNull();
       expect(updated?.name).toBe('项目核心群 (已改名)');
-      expect(updated?.mode).toBe('draft');
+      expect(updated?.mode).toBe('disabled');
       // 保留原有未更新字段
       expect(updated?.type).toBe('group');
       expect(updated?.humanTakeoverUntil).toBe(1700001000000);
@@ -416,20 +416,20 @@ describe('SessionRepository 会话状态持久化仓储测试 (TDD Red -> Green)
       await store.sessions.upsertSession({
         id: 'ses_facade_001',
         name: '门面测试会话',
-        mode: 'draft',
+        mode: 'disabled',
       });
 
       const session = await store.sessions.getSession('ses_facade_001');
       expect(session?.name).toBe('门面测试会话');
-      expect(session?.mode).toBe('draft');
+      expect(session?.mode).toBe('disabled');
     });
 
-    it('isDatabaseInstance 类型守卫应正确识别 Database/Client 实例并防御非数据库对象', () => {
-      expect(isDatabaseInstance(db)).toBe(true);
-      expect(isDatabaseInstance(null)).toBe(false);
-      expect(isDatabaseInstance(undefined)).toBe(false);
-      expect(isDatabaseInstance({})).toBe(false);
-      expect(isDatabaseInstance({ path: ':memory:' })).toBe(false);
+    it('isClientInstance 类型守卫应正确识别 Database/Client 实例并防御非数据库对象', () => {
+      expect(isClientInstance(db)).toBe(true);
+      expect(isClientInstance(null)).toBe(false);
+      expect(isClientInstance(undefined)).toBe(false);
+      expect(isClientInstance({})).toBe(false);
+      expect(isClientInstance({ path: ':memory:' })).toBe(false);
     });
 
     it('多次使用相同字段组合更新会话时应正确生效', async () => {
@@ -438,10 +438,10 @@ describe('SessionRepository 会话状态持久化仓储测试 (TDD Red -> Green)
 
       // 多次重复相同字段形状的更新
       for (let i = 1; i <= 5; i++) {
-        await sessionRepo.upsertSession({ id: sid, name: `名称第${i}次`, mode: 'draft' });
+        await sessionRepo.upsertSession({ id: sid, name: `名称第${i}次`, mode: 'disabled' });
         const cur = await sessionRepo.getSession(sid);
         expect(cur?.name).toBe(`名称第${i}次`);
-        expect(cur?.mode).toBe('draft');
+        expect(cur?.mode).toBe('disabled');
       }
     });
   });

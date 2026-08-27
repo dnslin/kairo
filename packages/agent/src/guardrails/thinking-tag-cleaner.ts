@@ -1,4 +1,8 @@
-import type { ThinkingCleanResult } from '../types/index.js';
+interface ThinkingCleanResult {
+  cleanedText: string;
+  thinkingText: string;
+  hasThinking: boolean;
+}
 
 /**
  * 思考标签剥离清洗器

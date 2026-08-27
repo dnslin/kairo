@@ -174,11 +174,6 @@ export async function createDatabaseClient(options?: DatabaseOptions): Promise<C
 }
 
 /**
- * 别名导出，保持向后兼容
- */
-export const createDatabase = createDatabaseClient;
-
-/**
  * 优雅关闭数据库连接
  *
  * @param client LibSQL 客户端实例
