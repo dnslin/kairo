@@ -340,6 +340,7 @@ describe('SessionCoordinator 业务编排器测试', () => {
       // 人类操作员在客户端打字回复 (isMe: true)
       const humanMsg = createSampleMessage({
         id: 'h1',
+        origin: 'operator',
         isMe: true,
         sender: '我',
         content: '您好，我是人工客服小李，请问有什么可以帮您？',
@@ -420,7 +421,6 @@ describe('SessionCoordinator 业务编排器测试', () => {
         createSampleMessage({
           id: 'unknown-self-001',
           isMe: true,
-          origin: 'unknown',
           sender: '未知来源自发消息',
           content: '不能确认来源的消息',
         })

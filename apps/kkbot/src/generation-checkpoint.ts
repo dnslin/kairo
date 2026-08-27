@@ -34,8 +34,21 @@ export class GenerationCheckpointStore {
       await fs.writeFile(tempPath, `${JSON.stringify(checkpoint)}\n`, 'utf8');
       await fs.rename(tempPath, this.filePath);
     } catch (err) {
-      await fs.rm(tempPath, { force: true }).catch(() => undefined);
       const cause = err instanceof Error ? err : new Error(String(err));
+      try {
+        await fs.rm(tempPath, { force: true });
+      } catch (cleanupError) {
+        const cleanupCause =
+          cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError));
+        const aggregate = new AggregateError(
+          [cause, cleanupCause],
+          '写入启动代次 checkpoint 失败且临时文件清理失败'
+        );
+        throw new Error(
+          `写入启动代次 checkpoint 失败: ${this.filePath}; 原因: ${cause.message}; 临时文件清理失败: ${cleanupCause.message}`,
+          { cause: aggregate }
+        );
+      }
       throw new Error(`写入启动代次 checkpoint 失败: ${this.filePath}`, { cause });
     }
   }

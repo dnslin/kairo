@@ -167,6 +167,52 @@ describe('KK9Driver 端到端事件驱动测试', () => {
     expect(internal.sendOps.sendFile).toHaveBeenCalled();
   });
 
+  it('发送成功只按显式目标会话登记，发送后当前会话变化不改写归属', async () => {
+    const driver = new KK9Driver({
+      cdp: {
+        url: 'http://127.0.0.1:9222',
+        pageMatch: 'renderer.html',
+      },
+    });
+    const internal = driver as unknown as DriverInternal;
+    internal.sendOps.sendText = vi.fn().mockResolvedValue({
+      success: true,
+      messageId: 'shared-native-id',
+    });
+    const getCurrentSession = vi.spyOn(driver, 'getCurrentSession').mockResolvedValue({
+      id: 'session-b',
+      name: '会话 B',
+      type: 'private',
+      unread: false,
+    });
+
+    await driver.sendText('会话 A 的回复', { targetSessionId: 'session-a' });
+
+    expect(getCurrentSession).not.toHaveBeenCalled();
+    expect(driver.isBotSentMessageId('session-a', 'shared-native-id')).toBe(true);
+    expect(driver.isBotSentMessageId('session-b', 'shared-native-id')).toBe(false);
+  });
+
+  it('没有显式目标会话时不登记 Bot 消息身份', async () => {
+    const driver = new KK9Driver({
+      cdp: {
+        url: 'http://127.0.0.1:9222',
+        pageMatch: 'renderer.html',
+      },
+    });
+    const internal = driver as unknown as DriverInternal;
+    internal.sendOps.sendText = vi.fn().mockResolvedValue({
+      success: true,
+      messageId: 'untargeted-native-id',
+    });
+    const getCurrentSession = vi.spyOn(driver, 'getCurrentSession');
+
+    await driver.sendText('没有目标会话的回复');
+
+    expect(getCurrentSession).not.toHaveBeenCalled();
+    expect(driver.isBotSentMessageId('session-a', 'untargeted-native-id')).toBe(false);
+  });
+
   it('转发调用 getOrgEmployees 与 getUserProfile', async () => {
     const driver = new KK9Driver({
       cdp: {

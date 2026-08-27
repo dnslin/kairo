@@ -132,6 +132,39 @@ describe('AcquisitionLedger & Reverse Topological Shutdown', () => {
     expect(result.errors[0].resourceId).toBe('Mastra');
     expect(result.errors[0].error.message).toBe('Mastra shutdown crashed');
   });
+  it('Finalizer 超时后迟到拒绝仍保留可诊断错误', async () => {
+    const ledger = new AcquisitionLedger('gen-late-finalizer');
+    const gate = new WorkAdmissionGate('gen-late-finalizer');
+    ledger.record({
+      id: 'resource-late',
+      owner: 'test',
+      finalizer: async () => {
+        await new Promise(resolve => setTimeout(resolve, 20));
+        throw new Error('late-finalizer-cause');
+      },
+    });
+    const observed: string[] = [];
+
+    const result = await executeReverseShutdown({
+      ledger,
+      gate,
+      deadlineMs: 1,
+      logger: {
+        error: (value, message) => {
+          const errorValue =
+            typeof value === 'object' && value !== null && 'err' in value ? value.err : undefined;
+          observed.push(
+            `${errorValue instanceof Error ? errorValue.message : String(errorValue)}${message ?? ''}`
+          );
+        },
+      },
+    });
+    const returnedErrorCount = result.errors.length;
+    await new Promise(resolve => setTimeout(resolve, 40));
+
+    expect(result.errors).toHaveLength(returnedErrorCount);
+    expect(observed.join('|')).toContain('late-finalizer-cause');
+  });
   it('两个阻塞 Finalizer 共享同一 Shutdown deadline，不按资源倍增', async () => {
     const ledger = new AcquisitionLedger('gen-deadline');
     const gate = new WorkAdmissionGate('gen-deadline');

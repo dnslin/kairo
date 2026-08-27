@@ -169,6 +169,29 @@ async function resolveExistingOrTombstonedMessage(
   return null;
 }
 
+async function rollbackAndThrow(
+  transaction: { rollback: () => Promise<void> | void },
+  primaryError: unknown,
+  operation: string
+): Promise<never> {
+  const primary = primaryError instanceof Error ? primaryError : new Error(String(primaryError));
+  try {
+    await transaction.rollback();
+  } catch (rollbackError) {
+    const rollbackCause =
+      rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError));
+    const aggregate = new AggregateError(
+      [primary, rollbackCause],
+      `${operation}失败且事务回滚失败`
+    );
+    throw new TransactionError(
+      `${operation}失败: ${primary.message}; 回滚失败: ${rollbackCause.message}`,
+      aggregate
+    );
+  }
+  throw new TransactionError(`${operation}失败: ${primary.message}`, primary);
+}
+
 /**
  * 消息仓储类
  * 负责会话消息持久化、原生 ID 100% 精确撤回、多模态载荷读写与历史上下文过滤
@@ -715,9 +738,7 @@ export class MessageRepository {
         await tx.commit();
         return claimedMessageIds;
       } catch (error) {
-        await tx.rollback().catch(() => undefined);
-        const cause = error instanceof Error ? error : new Error(String(error));
-        throw new TransactionError(`领取 Agent 输入消息失败: ${cause.message}`, cause);
+        return rollbackAndThrow(tx, error, '领取 Agent 输入消息');
       }
     });
   }
@@ -746,9 +767,7 @@ export class MessageRepository {
         }
         await tx.commit();
       } catch (error) {
-        await tx.rollback().catch(() => undefined);
-        const cause = error instanceof Error ? error : new Error(String(error));
-        throw new TransactionError(`释放 Agent claim 失败: ${cause.message}`, cause);
+        return rollbackAndThrow(tx, error, '释放 Agent claim');
       }
     });
   }
@@ -775,9 +794,7 @@ export class MessageRepository {
         }
         await tx.commit();
       } catch (error) {
-        await tx.rollback().catch(() => undefined);
-        const cause = error instanceof Error ? error : new Error(String(error));
-        throw new TransactionError(`标记 Raw-only 消息失败: ${cause.message}`, cause);
+        return rollbackAndThrow(tx, error, '标记 Raw-only 消息');
       }
     });
   }

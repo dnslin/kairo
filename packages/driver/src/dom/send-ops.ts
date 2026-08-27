@@ -164,6 +164,17 @@ export class SendOps {
       verifyLatencyMs,
     };
   }
+  private postTriggerFailure(label: string, error: unknown, startTime: number): SendResult {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    log.error({ err: errorMsg }, `${label}发送后响应丢失，结果为 unknown`);
+    return {
+      success: false,
+      error: `${label}发送动作响应丢失: ${errorMsg}`,
+      isPreTrigger: false,
+      verifyLatencyMs: Date.now() - startTime,
+    };
+  }
+
   /**
    * 激活引用/回复目标
    */
@@ -298,14 +309,7 @@ export class SendOps {
 
       return this.postTriggerUnknown('富文本', Date.now() - startTime);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送富文本后响应丢失，结果为 unknown');
-      return {
-        success: false,
-        error: `富文本发送动作响应丢失: ${errorMsg}`,
-        isPreTrigger: false,
-        verifyLatencyMs: Date.now() - startTime,
-      };
+      return this.postTriggerFailure('富文本', err, startTime);
     }
   }
   /**
@@ -415,14 +419,7 @@ export class SendOps {
 
       return this.postTriggerUnknown('回复消息', Date.now() - startTime);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送回复后响应丢失，结果为 unknown');
-      return {
-        success: false,
-        error: `回复发送动作响应丢失: ${errorMsg}`,
-        isPreTrigger: false,
-        verifyLatencyMs: Date.now() - startTime,
-      };
+      return this.postTriggerFailure('回复消息', err, startTime);
     }
   }
 
@@ -496,14 +493,7 @@ export class SendOps {
 
       return this.postTriggerUnknown('文件', Date.now() - startTime);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送文件后响应丢失，结果为 unknown');
-      return {
-        success: false,
-        error: `文件发送动作响应丢失: ${errorMsg}`,
-        isPreTrigger: false,
-        verifyLatencyMs: Date.now() - startTime,
-      };
+      return this.postTriggerFailure('文件', err, startTime);
     }
   }
   /**
@@ -647,14 +637,7 @@ export class SendOps {
 
       return this.postTriggerUnknown('图片', Date.now() - startTime);
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送图片后响应丢失，结果为 unknown');
-      return {
-        success: false,
-        error: `图片发送动作响应丢失: ${errorMsg}`,
-        isPreTrigger: false,
-        verifyLatencyMs: Date.now() - startTime,
-      };
+      return this.postTriggerFailure('图片', err, startTime);
     }
   }
   /**

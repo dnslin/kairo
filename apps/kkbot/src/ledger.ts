@@ -1,4 +1,7 @@
 import type { WorkAdmissionGate } from './gate.js';
+import { createChildLogger } from '@kkbot/driver';
+const defaultShutdownLogger = createChildLogger('shutdown');
+
 export const DEFAULT_SHUTDOWN_DEADLINE_MS = 10_000;
 
 export type FinalizerFn = () => Promise<void> | void;
@@ -177,16 +180,27 @@ export class AcquisitionLedger {
   }
 }
 
-async function runFinalizerWithDeadline(finalizer: FinalizerFn, deadlineAt: number): Promise<void> {
+async function runFinalizerWithDeadline(
+  finalizer: FinalizerFn,
+  deadlineAt: number,
+  onLateError: (error: Error) => void
+): Promise<void> {
   const remainingMs = deadlineAt - Date.now();
   if (remainingMs <= 0) {
     throw new Error('资源 Finalizer 未执行：Shutdown deadline 已耗尽');
   }
+
+  let timedOut = false;
   const finalizerPromise = Promise.resolve().then(finalizer);
-  void finalizerPromise.catch(() => undefined);
+  void finalizerPromise.catch(error => {
+    if (timedOut) {
+      onLateError(error instanceof Error ? error : new Error(String(error)));
+    }
+  });
   let timer: NodeJS.Timeout | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
+      timedOut = true;
       reject(new Error(`资源 Finalizer 超过 Shutdown deadline（剩余预算 ${remainingMs}ms）`));
     }, remainingMs);
   });
@@ -216,12 +230,18 @@ export async function executeReverseShutdown(
     deadlineMs = DEFAULT_SHUTDOWN_DEADLINE_MS,
     deadlineAt = Date.now() + Math.max(1, deadlineMs),
   } = options;
+  const diagnosticLogger = logger ?? defaultShutdownLogger;
+
   // 1. 第一动作：坚决关闭准入门
   gate.close();
 
   const shutdownOrder = ledger.getReverseTopologicalOrder();
-  const executedResources: string[] = [];
-  const errors: FinalizerError[] = [];
+  const result: ShutdownResult = {
+    successful: true,
+    executedResources: [],
+    errors: [],
+    triggerReason,
+  };
 
   // 2. 逆拓扑执行所有 finalizer
   for (const entry of shutdownOrder) {
@@ -229,29 +249,28 @@ export async function executeReverseShutdown(
       continue;
     }
 
-    executedResources.push(entry.id);
+    result.executedResources.push(entry.id);
     try {
-      await runFinalizerWithDeadline(entry.finalizer, deadlineAt);
+      await runFinalizerWithDeadline(entry.finalizer, deadlineAt, error => {
+        diagnosticLogger.error?.(
+          { resourceId: entry.id, owner: entry.owner, err: error },
+          '资源 Finalizer 在 deadline 后失败，补充记录迟到诊断'
+        );
+      });
     } catch (err) {
       const errorObj = err instanceof Error ? err : new Error(String(err));
-      errors.push({
+      result.errors.push({
         resourceId: entry.id,
         owner: entry.owner,
         error: errorObj,
       });
-      if (logger?.error) {
-        logger.error(
-          { resourceId: entry.id, owner: entry.owner, err: errorObj },
-          '资源 Finalizer 执行异常或超时，记录并继续释放其余资源'
-        );
-      }
+      result.successful = false;
+      diagnosticLogger.error?.(
+        { resourceId: entry.id, owner: entry.owner, err: errorObj },
+        '资源 Finalizer 执行异常或超时，记录并继续释放其余资源'
+      );
     }
   }
 
-  return {
-    successful: errors.length === 0,
-    executedResources,
-    errors,
-    triggerReason,
-  };
+  return result;
 }

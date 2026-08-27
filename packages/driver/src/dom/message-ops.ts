@@ -1,7 +1,9 @@
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import type { CdpClient } from '../cdp/client.js';
-import { normalizeNativeMessage } from '../bridge/converter.js';
+import {
+  normalizeNativeMessage,
+  type InboundNormalizationDiagnostic,
+} from '../bridge/converter.js';
 import type {
   KK9FileInfo,
   KK9ImageInfo,
@@ -64,25 +66,13 @@ export class MessageOps {
   ) {}
 
   /**
-   * 生成强唯一 SHA-256 指纹（使用不可见空字符分隔）
-   */
-  public static generateFingerprint(
-    sessionId: string,
-    sender: string,
-    time: string,
-    content: string
-  ): string {
-    const raw = `${sessionId}\x00${sender}\x00${time}\x00${content}`;
-    return createHash('sha256').update(raw).digest('hex');
-  }
-
-  /**
    * 读取当前激活会话的最近消息列表
    */
   public async getRecentMessages(
     limit = 20,
     session?: KK9Session,
-    knownBotSentIds?: Set<string>,
+    knownBotSentMessageKeys?: Set<string>,
+
     currentUserId?: string | number
   ): Promise<KK9Message[]> {
     const currentSessionId = session?.id || '';
@@ -139,10 +129,6 @@ export class MessageOps {
           const sender = senderEl?.textContent?.trim() || '';
           const time = timeEl?.textContent?.trim() || '';
           let content = extractContent(contentEl).trim();
-          const domMsgId = item.getAttribute('data-msg-id') ||
-            item.getAttribute('data-id') ||
-            item.getAttribute('id') ||
-            undefined;
           const senderId = item.getAttribute('data-sender-id') ||
             item.getAttribute('data-uid') ||
             item.getAttribute('data-sender') ||
@@ -293,7 +279,7 @@ export class MessageOps {
               replyTo,
               fileInfo,
               images: images.length > 0 ? images : undefined,
-              raw: vueMsg ? Object.assign({ id: vueMsg.msgID || vueMsg.msgId || vueMsg.id || domMsgId }, vueMsg) : (domMsgId ? { id: domMsgId } : undefined)
+              raw: vueMsg ? { ...vueMsg } : undefined,
             });
           }
         }
@@ -316,7 +302,20 @@ export class MessageOps {
         },
         {
           currentUserId,
-          knownBotSentIds,
+          knownBotSentMessageKeys,
+          source: 'polling',
+          onDiagnostic: (diagnostic: InboundNormalizationDiagnostic) => {
+            log.warn(
+              {
+                kind: diagnostic.kind,
+                missingFields: diagnostic.missingFields,
+                sessionId: diagnostic.sessionId,
+                source: diagnostic.source,
+                observedAt: diagnostic.observedAt,
+              },
+              'Polling 丢弃缺少入站身份字段的消息'
+            );
+          },
         }
       );
     } catch (err) {

@@ -74,6 +74,60 @@ describe('SessionCoordinator Work Admission Gate 合同', () => {
     expect(await store.messages.countMessages({ sessionId: 'session-group' })).toBe(1);
     expect(await store.deliveries.getDeliveriesBySession('session-group')).toHaveLength(0);
   });
+
+  it('Bot 回显按 sessionId 隔离，同 native messageId 的另一会话 external 仍入库并派发', async () => {
+    store = await createKKBotStore({ path: ':memory:' });
+    await runKKBotMigrations(store.db);
+    const gate: WorkAdmission = {
+      startupGenerationId: 'gen-gate-bot-echo-isolation',
+      isOpen: () => true,
+      assertOpen: () => undefined,
+    };
+    let consolidatedCount = 0;
+    const driver = {
+      getCurrentSession: () => ({ id: 'session-a' }),
+      selectSession: () => true,
+      sendText: () => ({ success: true, messageId: 'shared-native-id' }),
+      sendRichText: () => ({ success: true, messageId: 'shared-native-id' }),
+      markSessionRead: () => true,
+    } as unknown as KK9Driver;
+    const coordinator = new SessionCoordinator({
+      driver,
+      store,
+      admissionGate: gate,
+      config: {
+        debounceMs: 0,
+        maxWaitMs: 1000,
+        onConsolidatedMessage: () => {
+          consolidatedCount += 1;
+        },
+      },
+    });
+
+    const sent = await coordinator.dispatchReply('session-a', '会话 A 的 Bot 回复', {
+      markRead: false,
+    });
+    expect(sent.success).toBe(true);
+
+    const sessionBMessage: KK9Message = {
+      ...createMessage('private'),
+      id: 'shared-native-id',
+      messageId: 'shared-native-id',
+      sessionId: 'session-b',
+      sessionName: '会话 B',
+      content: '会话 B 的 external 入站消息',
+      origin: 'external',
+    };
+    await coordinator.handleInboundMessage(sessionBMessage);
+    await coordinator.flushSession(sessionBMessage.sessionId);
+
+    expect(consolidatedCount).toBe(1);
+    expect(await store.messages.countMessages({ sessionId: 'session-a' })).toBe(1);
+    expect(await store.messages.countMessages({ sessionId: 'session-b' })).toBe(1);
+    await expect(
+      store.messages.getMessageBySessionAndMessageId('session-b', 'shared-native-id')
+    ).resolves.toMatchObject({ origin: 'external' });
+  });
   it('相同 PrivateSession native messageId 重放不重复进入下游', async () => {
     store = await createKKBotStore({ path: ':memory:' });
     await runKKBotMigrations(store.db);

@@ -435,6 +435,34 @@ describe('MessageRepository 与会话消息持久化、原生 ID 撤回与多模
     });
   });
 
+  describe('9. 事务失败诊断', () => {
+    it('rollback 失败时保留主错误与回滚错误', async () => {
+      const primaryError = new Error('primary-transaction-error');
+      const rollbackError = new Error('rollback-transaction-error');
+      const transaction = {
+        execute: () => Promise.reject(primaryError),
+        commit: () => Promise.resolve(),
+        rollback: () => Promise.reject(rollbackError),
+      };
+      const client = {
+        transaction: () => Promise.resolve(transaction),
+      } as unknown as Client;
+      const isolatedRepo = new MessageRepository(client);
+
+      let thrown: unknown;
+      try {
+        await isolatedRepo.claimMessagesForAgent('session-rollback', ['message-1'], 'run-1');
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(Error);
+      const error = thrown as Error & { originalCause?: unknown };
+      expect(error.message).toContain('primary-transaction-error');
+      expect(error.message).toContain('rollback-transaction-error');
+      expect(error.originalCause).toBeInstanceOf(AggregateError);
+    });
+  });
   describe('7. Store 统一门面类集成测试', () => {
     it('应能通过 Store 门面统一访问 messages、org 与 media 仓储并完成全链路调用', async () => {
       const store = await createKKBotStore({ path: ':memory:', media: { baseDir: tempDir } });

@@ -87,8 +87,9 @@ export type FormattedText = string | TextSegment[] | { html: string };
  * 引用/回复目标定义
  */
 export interface KK9ReplyTarget {
-  /** 消息 DOM id 如 "msg-123327741" 或 SHA-256 指纹 */
+  /** KK9 原生消息 ID，无法取得时该消息不得进入公开入站模型 */
   messageId?: string;
+
   /** 消息在列表中的索引 */
   msgIdx?: number;
   /** 被引用者昵称 */
@@ -166,10 +167,11 @@ export interface KK9Session {
 }
 
 export interface KK9Message {
-  /** 基于 SHA-256 计算的唯一消息指纹或原生 ID */
+  /** 基于 KK9 原生消息 ID 的稳定身份 */
   id: string;
-  /** 原生 native message ID（若不可用则为稳定指纹，保证非空） */
+  /** KK9 原生消息 ID；标准化失败时消息被丢弃 */
   messageId?: string;
+
   sessionId: string;
   sessionName: string;
   sessionType: KK9SessionType;
@@ -286,13 +288,13 @@ export interface EventBridgeConfig {
   startupGenerationId?: string;
   /** 自定义 CDP 绑定名称 (默认 '__kkbot_native_bridge') */
   bindingName?: string;
-  /** 去重指纹最大缓存数量 (默认 10000) */
-  maxFingerprints?: number;
+  /** 去重 native messageId 的最大缓存数量 (默认 10000) */
+  maxMessageIds?: number;
   /** 当前用户 UID / 账号 (用于识别自身发出消息 isMe) */
   currentUserId?: string | number;
   enableRecallHook?: boolean;
-  /** 共享的已发送 Bot 消息 ID 集合 */
-  knownBotSentIds?: Set<string>;
+  /** 共享的已发送 Bot 消息身份键集合（sessionId:nativeMessageId） */
+  knownBotSentMessageKeys?: Set<string>;
 }
 
 /**

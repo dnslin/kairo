@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeNativeMessage } from '../src/bridge/converter.js';
+import { createMessageIdentityKey, normalizeNativeMessage } from '../src/bridge/converter.js';
 
 describe('InboundMessage 来源分类合同', () => {
   it('缺少 self/source 事实时保留 unknown，不伪装 external', () => {
@@ -10,10 +10,29 @@ describe('InboundMessage 来源分类合同', () => {
 
     expect(message?.origin).toBe('unknown');
   });
-  it('isMe=true 且不属于 Bot 发出集合时识别为 operator', () => {
+  it('仅有 isMe=true 且缺少来源关联时保留 unknown，避免误触发人工接管', () => {
+    const [message] = normalizeNativeMessage(
+      {
+        sessionId: 'session-self-unknown',
+        messages: [
+          { id: 'native-self-unknown', senderId: 'bot-01', isMe: true, content: '来源未明' },
+        ],
+      },
+      {
+        currentUserId: 'bot-01',
+        knownBotSentMessageKeys: new Set<string>(),
+      }
+    );
+
+    expect(message?.origin).toBe('unknown');
+  });
+
+  it('明确 origin=operator 时识别为 operator', () => {
     const [message] = normalizeNativeMessage({
       sessionId: 'session-self-operator',
-      messages: [{ id: 'native-self-operator', isMe: true, content: '人工发言' }],
+      messages: [
+        { id: 'native-self-operator', origin: 'operator', isMe: true, content: '人工发言' },
+      ],
     });
 
     expect(message?.origin).toBe('operator');
@@ -34,12 +53,14 @@ describe('InboundMessage 来源分类合同', () => {
         sessionId: 'session-self',
         messages: [
           { id: 'native-bot', senderId: 'bot-01', content: '自动回复' },
-          { id: 'native-operator', senderId: 'bot-01', content: '人工发言' },
+          { id: 'native-operator', senderId: 'bot-01', origin: 'operator', content: '人工发言' },
         ],
       },
-      { currentUserId: 'bot-01', knownBotSentIds: new Set(['native-bot']) }
+      {
+        currentUserId: 'bot-01',
+        knownBotSentMessageKeys: new Set([createMessageIdentityKey('session-self', 'native-bot')]),
+      }
     );
-
     expect(botEcho?.origin).toBe('bot_echo');
     expect(operator?.origin).toBe('operator');
   });

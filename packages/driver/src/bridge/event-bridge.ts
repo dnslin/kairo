@@ -16,8 +16,9 @@ import type {
 } from '../types/index.js';
 import { createChildLogger } from '../utils/logger.js';
 import {
+  createMessageIdentityKey,
+  type InboundNormalizationDiagnostic,
   extractRecalledEventsFromPayload,
-  generateMessageFingerprint,
   normalizeNativeMessage,
   normalizeRecalledEvent,
   toSafeString,
@@ -26,7 +27,7 @@ import {
 const log = createChildLogger('event-bridge');
 
 const DEFAULT_BINDING_NAME = '__kkbot_native_bridge';
-const DEFAULT_MAX_FINGERPRINTS = 10000;
+const DEFAULT_MAX_MESSAGE_IDS = 10000;
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export declare interface KK9EventBridge {
@@ -42,16 +43,17 @@ export class KK9EventBridge extends EventEmitter {
   private readonly cdp: CdpClient;
   private readonly startupGenerationId: string;
   private readonly bindingName: string;
-  private readonly maxFingerprints: number;
+  private readonly maxMessageIds: number;
   private readonly currentUserId?: string | number;
   private readonly enableRecallHook: boolean;
   private attached = false;
   private isConnecting = false;
   private lastAttachError: Error | null = null;
   private injectionIdentity: CdpConnectionIdentity | null = null;
-  private readonly knownFingerprints = new Set<string>();
-  private readonly knownRecalledIds = new Set<string>();
-  private readonly knownBotSentIds: Set<string>;
+  private readonly knownMessageKeys = new Set<string>();
+  private readonly knownRecalledMessageKeys = new Set<string>();
+  private readonly knownBotSentMessageKeys: Set<string>;
+
   constructor(
     config: EventBridgeConfig | DriverConfig | { cdp: CdpConfig },
     cdpClient?: CdpClient
@@ -60,10 +62,10 @@ export class KK9EventBridge extends EventEmitter {
     const bridgeConfig = config as EventBridgeConfig;
     this.startupGenerationId = bridgeConfig.startupGenerationId ?? randomUUID();
     this.bindingName = bridgeConfig.bindingName || DEFAULT_BINDING_NAME;
-    this.maxFingerprints = bridgeConfig.maxFingerprints || DEFAULT_MAX_FINGERPRINTS;
+    this.maxMessageIds = bridgeConfig.maxMessageIds || DEFAULT_MAX_MESSAGE_IDS;
     this.currentUserId = bridgeConfig.currentUserId;
     this.enableRecallHook = bridgeConfig.enableRecallHook ?? true;
-    this.knownBotSentIds = bridgeConfig.knownBotSentIds ?? new Set<string>();
+    this.knownBotSentMessageKeys = bridgeConfig.knownBotSentMessageKeys ?? new Set<string>();
 
     this.cdp =
       cdpClient || new CdpClient(config.cdp, { startupGenerationId: this.startupGenerationId });
@@ -99,22 +101,30 @@ export class KK9EventBridge extends EventEmitter {
   }
 
   /**
-   * 记录由 Bot 自身发出的消息 ID（用于回显识别为 bot_echo）
+   * 记录由 Bot 自身发出的消息身份（sessionId:nativeMessageId）。
    */
-  public recordBotSentMessageId(messageId: string): void {
-    if (!messageId) return;
-    this.knownBotSentIds.add(messageId);
-    if (this.knownBotSentIds.size > this.maxFingerprints) {
-      const firstKey = this.knownBotSentIds.values().next().value;
-      if (firstKey) this.knownBotSentIds.delete(firstKey);
+  public recordBotSentMessageId(sessionId: string, messageId: string): void {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedSessionId || !normalizedMessageId) return;
+    const messageKey = createMessageIdentityKey(normalizedSessionId, normalizedMessageId);
+    this.knownBotSentMessageKeys.add(messageKey);
+    if (this.knownBotSentMessageKeys.size > this.maxMessageIds) {
+      const firstKey = this.knownBotSentMessageKeys.values().next().value;
+      if (firstKey) this.knownBotSentMessageKeys.delete(firstKey);
     }
   }
 
   /**
-   * 判断指定消息 ID 是否为 Bot 自身发出
+   * 判断指定会话中的消息 ID 是否为 Bot 自身发出。
    */
-  public isBotSentMessageId(messageId: string): boolean {
-    return this.knownBotSentIds.has(messageId);
+  public isBotSentMessageId(sessionId: string, messageId: string): boolean {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedSessionId || !normalizedMessageId) return false;
+    return this.knownBotSentMessageKeys.has(
+      createMessageIdentityKey(normalizedSessionId, normalizedMessageId)
+    );
   }
 
   /**
@@ -248,6 +258,18 @@ export class KK9EventBridge extends EventEmitter {
     };
     this.emit('health', event);
   }
+  private reportNormalizationDiagnostic(diagnostic: InboundNormalizationDiagnostic): void {
+    log.warn(
+      {
+        kind: diagnostic.kind,
+        missingFields: diagnostic.missingFields,
+        sessionId: diagnostic.sessionId,
+        source: diagnostic.source,
+        observedAt: diagnostic.observedAt,
+      },
+      '丢弃缺少入站身份字段的消息'
+    );
+  }
 
   /**
    * 解析外部原始消息载荷并返回标准 KK9Message 实体
@@ -256,7 +278,10 @@ export class KK9EventBridge extends EventEmitter {
     return normalizeNativeMessage(raw, {
       session: sessionContext,
       currentUserId: this.currentUserId,
-      knownBotSentIds: this.knownBotSentIds,
+      knownBotSentMessageKeys: this.knownBotSentMessageKeys,
+
+      source: 'event_bridge',
+      onDiagnostic: diagnostic => this.reportNormalizationDiagnostic(diagnostic),
     });
   }
 
@@ -401,17 +426,19 @@ export class KK9EventBridge extends EventEmitter {
     const messages = normalizeNativeMessage(payload, {
       session: sessionContext,
       currentUserId: this.currentUserId,
-      knownBotSentIds: this.knownBotSentIds,
+      knownBotSentMessageKeys: this.knownBotSentMessageKeys,
+
+      source: 'event_bridge',
+      onDiagnostic: diagnostic => this.reportNormalizationDiagnostic(diagnostic),
     });
     for (const msg of messages) {
-      const fingerprint =
-        msg.id || generateMessageFingerprint(msg.sessionId, msg.sender, msg.time, msg.content);
-      if (this.knownFingerprints.has(fingerprint)) {
+      const messageKey = createMessageIdentityKey(msg.sessionId, msg.id);
+
+      if (this.knownMessageKeys.has(messageKey)) {
         continue;
       }
 
-      this.recordFingerprint(fingerprint);
-
+      this.recordMessageId(messageKey);
       log.debug({ id: msg.id, sender: msg.sender, content: msg.content }, '原生事件桥接收到新消息');
       this.emit('message', msg);
 
@@ -428,7 +455,7 @@ export class KK9EventBridge extends EventEmitter {
   private handleRecalledPayload(payload: unknown): void {
     if (!this.enableRecallHook) return;
     const evt = normalizeRecalledEvent(payload);
-    if (!evt || !evt.messageId) return;
+    if (!evt || !evt.messageId || !evt.sessionId) return;
     this.handleRecalledEvent(evt);
   }
 
@@ -436,12 +463,13 @@ export class KK9EventBridge extends EventEmitter {
    * 触发单条撤回事件
    */
   private handleRecalledEvent(evt: KK9RecalledEvent): void {
-    if (!this.enableRecallHook) return;
-    if (this.knownRecalledIds.has(evt.messageId)) {
+    if (!this.enableRecallHook || !evt.messageId || !evt.sessionId) return;
+    const messageKey = createMessageIdentityKey(evt.sessionId, evt.messageId);
+    if (this.knownRecalledMessageKeys.has(messageKey)) {
       return;
     }
 
-    this.recordRecalledId(evt.messageId);
+    this.recordRecalledKey(messageKey);
     log.info(
       { messageId: evt.messageId, sessionId: evt.sessionId, sender: evt.sender },
       '捕获到原生消息撤回事件'
@@ -450,24 +478,24 @@ export class KK9EventBridge extends EventEmitter {
   }
 
   /**
-   * 记录去重指纹（带 FIFO 淘汰）
+   * 记录去重消息 ID（带 FIFO 淘汰）
    */
-  private recordFingerprint(fingerprint: string): void {
-    this.knownFingerprints.add(fingerprint);
-    if (this.knownFingerprints.size > this.maxFingerprints) {
-      const oldest = this.knownFingerprints.values().next().value;
-      if (oldest) this.knownFingerprints.delete(oldest);
+  private recordMessageId(messageKey: string): void {
+    this.knownMessageKeys.add(messageKey);
+    if (this.knownMessageKeys.size > this.maxMessageIds) {
+      const oldest = this.knownMessageKeys.values().next().value;
+      if (oldest) this.knownMessageKeys.delete(oldest);
     }
   }
 
   /**
    * 记录已撤回消息 ID（带 FIFO 淘汰）
    */
-  private recordRecalledId(id: string): void {
-    this.knownRecalledIds.add(id);
-    if (this.knownRecalledIds.size > this.maxFingerprints) {
-      const oldest = this.knownRecalledIds.values().next().value;
-      if (oldest) this.knownRecalledIds.delete(oldest);
+  private recordRecalledKey(messageKey: string): void {
+    this.knownRecalledMessageKeys.add(messageKey);
+    if (this.knownRecalledMessageKeys.size > this.maxMessageIds) {
+      const oldest = this.knownRecalledMessageKeys.values().next().value;
+      if (oldest) this.knownRecalledMessageKeys.delete(oldest);
     }
   }
 

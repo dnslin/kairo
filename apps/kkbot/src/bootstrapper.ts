@@ -516,6 +516,7 @@ export class UnifiedBootstrapper {
    * 统一逆拓扑幂等优雅关闭
    */
   async shutdown(reason?: unknown): Promise<ShutdownResult> {
+    this.gate.close();
     if (this.shutdownPromise) {
       return this.shutdownPromise;
     }

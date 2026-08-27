@@ -1241,6 +1241,7 @@ describe('SessionCoordinator 与 @kkbot/agent 认知微内核完整集成装配�
       // 1. 人类客服在客户端打字回复客户
       const humanMsg = createSampleMsg({
         id: 'msg_human_agent',
+        origin: 'operator',
         isMe: true,
         content: '您好，我是人工客服，请问有什么可以帮您？',
       });

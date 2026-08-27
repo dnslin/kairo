@@ -2,7 +2,8 @@ import EventEmitter from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CdpClient } from './cdp/client.js';
 import { KK9EventBridge } from './bridge/event-bridge.js';
-import { normalizeRecalledEvent } from './bridge/converter.js';
+import { createMessageIdentityKey, normalizeRecalledEvent } from './bridge/converter.js';
+
 import { OrgOps } from './dom/org-ops.js';
 import { resolveSelectors } from './dom/selectors.js';
 import { SendOps } from './dom/send-ops.js';
@@ -67,9 +68,10 @@ export class KK9Driver extends EventEmitter {
   private isPolling = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private cancelBindingAttached = false;
-  private readonly knownFingerprints = new Set<string>();
-  private readonly knownRecalledIds = new Set<string>();
-  private readonly knownBotSentIds = new Set<string>();
+  private readonly knownMessageKeys = new Set<string>();
+  private readonly knownRecalledMessageKeys = new Set<string>();
+  private readonly knownBotSentMessageKeys = new Set<string>();
+
   private readonly handleCancelBinding = (rawParams: unknown): void => {
     if (
       !rawParams ||
@@ -104,7 +106,7 @@ export class KK9Driver extends EventEmitter {
         cdp: config.cdp,
         startupGenerationId: this.startupGenerationId,
         currentUserId: config.currentUserId,
-        knownBotSentIds: this.knownBotSentIds,
+        knownBotSentMessageKeys: this.knownBotSentMessageKeys,
       },
       this.cdp
     );
@@ -173,22 +175,38 @@ export class KK9Driver extends EventEmitter {
     return this.sessionOps.markSessionRead(sessionId);
   }
   /**
-   * 记录由 Bot 自身发出的消息 ID（用于回显识别为 bot_echo）
+   * 记录由 Bot 自身发出的消息身份（sessionId:nativeMessageId）。
    */
-  public recordBotSentMessageId(messageId: string): void {
-    if (!messageId) return;
-    this.knownBotSentIds.add(messageId);
-    if (this.knownBotSentIds.size > 10000) {
-      const firstKey = this.knownBotSentIds.values().next().value;
-      if (firstKey) this.knownBotSentIds.delete(firstKey);
+  public recordBotSentMessageId(sessionId: string, messageId: string): void {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedSessionId || !normalizedMessageId) return;
+    this.knownBotSentMessageKeys.add(
+      createMessageIdentityKey(normalizedSessionId, normalizedMessageId)
+    );
+    if (this.knownBotSentMessageKeys.size > 10000) {
+      const firstKey = this.knownBotSentMessageKeys.values().next().value;
+      if (firstKey) this.knownBotSentMessageKeys.delete(firstKey);
     }
   }
 
   /**
-   * 判断指定消息 ID 是否为 Bot 自身发出
+   * 判断指定会话中的消息 ID 是否为 Bot 自身发出。
    */
-  public isBotSentMessageId(messageId: string): boolean {
-    return this.knownBotSentIds.has(messageId);
+  public isBotSentMessageId(sessionId: string, messageId: string): boolean {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedSessionId || !normalizedMessageId) return false;
+    return this.knownBotSentMessageKeys.has(
+      createMessageIdentityKey(normalizedSessionId, normalizedMessageId)
+    );
+  }
+
+  private rememberBotSentMessage(result: SendResult, targetSessionId?: string): void {
+    if (!result.success || !result.messageId) return;
+    const sessionId = targetSessionId?.trim();
+    if (!sessionId) return;
+    this.recordBotSentMessageId(sessionId, result.messageId);
   }
 
   public async getRecentMessages(limit = 20, session?: KK9Session): Promise<KK9Message[]> {
@@ -196,7 +214,8 @@ export class KK9Driver extends EventEmitter {
     return this.messageOps.getRecentMessages(
       limit,
       targetSession,
-      this.knownBotSentIds,
+      this.knownBotSentMessageKeys,
+
       this.config.currentUserId
     );
   }
@@ -244,7 +263,8 @@ export class KK9Driver extends EventEmitter {
             continue;
           }
           const messageId = message.messageId || message.id;
-          const key = `${message.sessionId}:${messageId}`;
+          const key = createMessageIdentityKey(message.sessionId, messageId);
+
           if (seen.has(key)) {
             continue;
           }
@@ -268,60 +288,44 @@ export class KK9Driver extends EventEmitter {
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
     const res = await this.sendOps.sendText(text, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  /**
-   * 发送富文本格式化消息
-   */
   public async sendRichText(
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
     const res = await this.sendOps.sendRichText(content, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  /**
-   * 快捷发送引用/回复消息
-   */
   public async sendReply(
     replyTo: string | KK9ReplyTarget,
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
     const res = await this.sendOps.sendReply(replyTo, content, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  /**
-   * 发送本地文件
-   */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const res = await this.sendOps.sendFile(filePath, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  /**
-   * 发送本地图片
-   */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     const res = await this.sendOps.sendImage(imagePath, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
+    this.rememberBotSentMessage(res, options.targetSessionId);
+    return res;
+  }
+
+  public async sendCard(cardData: CardData, options?: SendCardOptions): Promise<SendResult> {
+    const res = await this.sendOps.sendCard(cardData, options);
+    this.rememberBotSentMessage(res, options?.targetSessionId);
     return res;
   }
 
@@ -330,17 +334,6 @@ export class KK9Driver extends EventEmitter {
    */
   public async renderCardToBase64(card: CardData, options?: RenderCanvasOptions): Promise<string> {
     return renderCanvasCard(this.cdp, card, options);
-  }
-
-  /**
-   * 发送自定义视觉卡片
-   */
-  public async sendCard(cardData: CardData, options?: SendCardOptions): Promise<SendResult> {
-    const res = await this.sendOps.sendCard(cardData, options);
-    if (res.success && res.messageId) {
-      this.recordBotSentMessageId(res.messageId);
-    }
-    return res;
   }
 
   /**
@@ -399,13 +392,22 @@ export class KK9Driver extends EventEmitter {
    * 处理并派发消息撤回事件 (自动去重)
    */
   public handleRecalledEvent(event: KK9RecalledEvent): void {
-    if (!event.messageId || this.knownRecalledIds.has(event.messageId)) {
+    if (!event.messageId || !event.sessionId) {
+      log.warn(
+        { messageId: event.messageId, sessionId: event.sessionId },
+        '丢弃缺少入站身份字段的撤回事件'
+      );
       return;
     }
-    this.knownRecalledIds.add(event.messageId);
-    if (this.knownRecalledIds.size > 10000) {
-      const firstKey = this.knownRecalledIds.values().next().value;
-      if (firstKey) this.knownRecalledIds.delete(firstKey);
+    const messageKey = createMessageIdentityKey(event.sessionId, event.messageId);
+
+    if (this.knownRecalledMessageKeys.has(messageKey)) {
+      return;
+    }
+    this.knownRecalledMessageKeys.add(messageKey);
+    if (this.knownRecalledMessageKeys.size > 10000) {
+      const firstKey = this.knownRecalledMessageKeys.values().next().value;
+      if (firstKey) this.knownRecalledMessageKeys.delete(firstKey);
     }
 
     log.info({ messageId: event.messageId, sender: event.sender }, '捕获到消息撤回事件并派发');
@@ -648,12 +650,14 @@ export class KK9Driver extends EventEmitter {
     await this.collectRecalledEvents(session.id);
     const messages = await this.getRecentMessages(limit, session);
     for (const msg of messages) {
-      if (!this.knownFingerprints.has(msg.id)) {
-        this.knownFingerprints.add(msg.id);
-        // 限制内存指纹集合大小，防止无限内存增长
-        if (this.knownFingerprints.size > 10000) {
-          const firstKey = this.knownFingerprints.values().next().value;
-          if (firstKey) this.knownFingerprints.delete(firstKey);
+      const messageKey = createMessageIdentityKey(msg.sessionId, msg.id);
+
+      if (!this.knownMessageKeys.has(messageKey)) {
+        this.knownMessageKeys.add(messageKey);
+        // 限制内存消息 ID 集合大小，防止无限内存增长
+        if (this.knownMessageKeys.size > 10000) {
+          const firstKey = this.knownMessageKeys.values().next().value;
+          if (firstKey) this.knownMessageKeys.delete(firstKey);
         }
 
         log.debug({ id: msg.id, sender: msg.sender, content: msg.content }, '捕获新消息并触发事件');

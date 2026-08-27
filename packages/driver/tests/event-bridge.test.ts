@@ -86,7 +86,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       pageMatch: 'renderer.html',
     },
     bindingName: '__kkbot_native_bridge',
-    maxFingerprints: 100,
+    maxMessageIds: 100,
     currentUserId: '10086',
   };
 
@@ -264,6 +264,8 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-self-1',
+        sessionId: 'session-self-1',
+        origin: 'operator',
         sender: '我',
         content: '这是我自己发出的消息',
         isMe: true,
@@ -275,6 +277,8 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-self-2',
+        sessionId: 'session-self-2',
+        origin: 'operator',
         senderId: '10086',
         sender: '机器人自己',
         content: '通过 UID 识别的自身消息',
@@ -286,6 +290,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-other-1',
+        sessionId: 'session-other-1',
         senderId: '99999',
         sender: '王五',
         content: '这是一条他人发出的消息',
@@ -301,7 +306,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(receivedMessages[2]!.origin).toBe('external');
   });
 
-  it('去重指纹守卫：相同消息指纹不重复派发', async () => {
+  it('按 sessionId 隔离 native messageId，同会话重复只派发一次', async () => {
     const mockCdp = new MockCdpClient();
     const bridge = new KK9EventBridge(defaultConfig, mockCdp as unknown as CdpClient);
     await bridge.connect();
@@ -323,8 +328,18 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
     mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
     mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
+    mockCdp.triggerBinding('__kkbot_native_bridge', {
+      type: 'receive-message',
+      data: {
+        id: 'msg-dup-1',
+        sessionId: '0-101',
+        sender: '赵六',
+        content: '另一会话中的同一 native ID',
+        sendTime: '11:00:00',
+      },
+    });
 
-    expect(receivedMessages).toHaveLength(1);
+    expect(receivedMessages).toHaveLength(2);
   });
 
   it('@ 提及检测：精准派发专用的 at 事件', async () => {
@@ -346,6 +361,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-at-1',
+        sessionId: 'session-at-1',
         sender: '钱七',
         content: '@机器人 你好',
         atMemberIDList: ['10086'],
@@ -357,6 +373,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-at-2',
+        sessionId: 'session-at-2',
         sender: '孙八',
         content: '@全体成员 下午开会',
         atAll: true,
@@ -368,6 +385,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       type: 'receive-message',
       data: {
         id: 'msg-normal-1',
+        sessionId: 'session-normal-1',
         sender: '周九',
         content: '普通闲聊',
       },

@@ -1,10 +1,13 @@
 /**
  * 三维基准压测套件 - 维度 2: 长周期 CPU 与内存占用监控 (Resource Benchmark)
- * 监控海量消息吞吐下的堆内存 (Heap)、常驻内存 (RSS) 及指纹防爆守卫稳定性
+ * 监控海量消息吞吐下的堆内存 (Heap)、常驻内存 (RSS) 及复合消息身份键防爆守卫稳定性
  */
 
 import { performance } from 'node:perf_hooks';
-import { generateMessageFingerprint, normalizeNativeMessage } from '../../packages/driver/src/index.js';
+import {
+  createMessageIdentityKey,
+  normalizeNativeMessage,
+} from '../../packages/driver/src/index.js';
 
 interface MemorySample {
   stage: string;
@@ -12,7 +15,7 @@ interface MemorySample {
   heapUsedMb: number;
   heapTotalMb: number;
   rssMb: number;
-  fingerprintsCount: number;
+  messageKeysCount: number;
   durationMs: number;
 }
 
@@ -28,7 +31,7 @@ function getMemoryUsage() {
 async function runResourceBenchmark(): Promise<void> {
   console.log('========================================================================');
   console.log('💾 [基准压测 2/3] 长周期 CPU 与内存占用监控 (Resource Benchmark)');
-  console.log('   测试规模: 50,000 条长周期消息连续注入，验证 FIFO 指纹缓存防爆与内存稳定性');
+  console.log('   测试规模: 50,000 条长周期消息连续注入，验证 FIFO 消息键缓存防爆与内存稳定性');
   console.log('========================================================================\n');
 
   if (global.gc) {
@@ -37,8 +40,8 @@ async function runResourceBenchmark(): Promise<void> {
 
   const totalMessages = 50000;
   const sampleInterval = 10000;
-  const maxFingerprints = 10000;
-  const knownFingerprints = new Set<string>();
+  const maxMessageKeys = 10000;
+  const knownMessageKeys = new Set<string>();
   const samples: MemorySample[] = [];
 
   const initialMem = getMemoryUsage();
@@ -48,11 +51,13 @@ async function runResourceBenchmark(): Promise<void> {
     stage: '基准起点 (Init)',
     count: 0,
     ...initialMem,
-    fingerprintsCount: 0,
+    messageKeysCount: 0,
     durationMs: 0,
   });
 
-  console.log(`⏱️ 初始内存: Heap Used = ${initialMem.heapUsedMb} MB | RSS = ${initialMem.rssMb} MB\n`);
+  console.log(
+    `⏱️ 初始内存: Heap Used = ${initialMem.heapUsedMb} MB | RSS = ${initialMem.rssMb} MB\n`
+  );
   console.log(`🚀 开始注入 ${totalMessages} 条高负载富文本及多附件消息...\n`);
 
   for (let i = 1; i <= totalMessages; i++) {
@@ -71,7 +76,8 @@ async function runResourceBenchmark(): Promise<void> {
           content: `长周期压测消息内容 [${i}]: 这是包含格式化文本与元数据的消息负载。时间戳=${Date.now()}`,
           sendTime: new Date().toLocaleTimeString(),
           atMemberIDList: i % 10 === 0 ? ['all'] : [],
-          replyMsg: i % 5 === 0 ? { id: `msg-${i - 1}`, sender: '前序用户', text: '引用内容' } : undefined,
+          replyMsg:
+            i % 5 === 0 ? { id: `msg-${i - 1}`, sender: '前序用户', text: '引用内容' } : undefined,
         },
       },
     };
@@ -79,13 +85,13 @@ async function runResourceBenchmark(): Promise<void> {
     // 1. 标准化消息
     const messages = normalizeNativeMessage(rawPayload.data);
 
-    // 2. 指纹计算与 FIFO 缓存防爆
+    // 2. 复合消息身份键计算与 FIFO 缓存防爆
     for (const msg of messages) {
-      const fp = msg.id || generateMessageFingerprint(msg.sessionId, msg.sender, msg.time, msg.content);
-      knownFingerprints.add(fp);
-      if (knownFingerprints.size > maxFingerprints) {
-        const oldest = knownFingerprints.values().next().value;
-        if (oldest) knownFingerprints.delete(oldest);
+      const messageKey = createMessageIdentityKey(msg.sessionId, msg.messageId || msg.id);
+      knownMessageKeys.add(messageKey);
+      if (knownMessageKeys.size > maxMessageKeys) {
+        const oldest = knownMessageKeys.values().next().value;
+        if (oldest) knownMessageKeys.delete(oldest);
       }
     }
 
@@ -97,7 +103,7 @@ async function runResourceBenchmark(): Promise<void> {
         stage: `注入 ${i.toLocaleString()} 条`,
         count: i,
         ...currentMem,
-        fingerprintsCount: knownFingerprints.size,
+        messageKeysCount: knownMessageKeys.size,
         durationMs: elapsed,
       });
     }
@@ -107,25 +113,37 @@ async function runResourceBenchmark(): Promise<void> {
   const totalDuration = Number((finalTime - startTime).toFixed(1));
 
   // 输出性能监控表格
-  console.log('-----------------------------------------------------------------------------------------');
-  console.log('| 压测采样阶段        | 消息数量 | 堆已用 (Heap) | 堆总量 (Total) | 常驻内存 (RSS) | 指纹集合 | 累计耗时 |');
-  console.log('-----------------------------------------------------------------------------------------');
+  console.log(
+    '-----------------------------------------------------------------------------------------'
+  );
+  console.log(
+    '| 压测采样阶段        | 消息数量 | 堆已用 (Heap) | 堆总量 (Total) | 常驻内存 (RSS) | 消息键集合 | 累计耗时 |'
+  );
+  console.log(
+    '-----------------------------------------------------------------------------------------'
+  );
   for (const s of samples) {
     console.log(
-      `| ${s.stage.padEnd(19)} | ${String(s.count).padStart(8)} | ${(s.heapUsedMb.toFixed(2) + ' MB').padStart(13)} | ${(s.heapTotalMb.toFixed(2) + ' MB').padStart(14)} | ${(s.rssMb.toFixed(2) + ' MB').padStart(14)} | ${String(s.fingerprintsCount).padStart(8)} | ${(s.durationMs + ' ms').padStart(8)} |`
+      `| ${s.stage.padEnd(19)} | ${String(s.count).padStart(8)} | ${(s.heapUsedMb.toFixed(2) + ' MB').padStart(13)} | ${(s.heapTotalMb.toFixed(2) + ' MB').padStart(14)} | ${(s.rssMb.toFixed(2) + ' MB').padStart(14)} | ${String(s.messageKeysCount).padStart(8)} | ${(s.durationMs + ' ms').padStart(8)} |`
     );
   }
-  console.log('-----------------------------------------------------------------------------------------\n');
+  console.log(
+    '-----------------------------------------------------------------------------------------\n'
+  );
 
   const finalSample = samples[samples.length - 1]!;
   const heapDelta = (finalSample.heapUsedMb - initialMem.heapUsedMb).toFixed(2);
   const throughput = ((totalMessages / totalDuration) * 1000).toFixed(0);
 
-  console.log(`📈 资源监控指标总结:`);
+  console.log('📈 资源监控指标总结:');
   console.log(`  - 吞吐速率: ${throughput} msgs/sec (总耗时: ${totalDuration} ms)`);
   console.log(`  - 内存增量 (Heap Delta): +${heapDelta} MB`);
-  console.log(`  - 指纹上限守卫: 严格锁定在 ${finalSample.fingerprintsCount} / ${maxFingerprints} 容量上限`);
-  console.log(`  - 结论: 内存开销平稳，无悬挂对象与未释放引用泄漏，满足 7x24h 生产长周期运行标准！\n`);
+  console.log(
+    `  - 复合消息键上限守卫: 严格锁定在 ${finalSample.messageKeysCount} / ${maxMessageKeys} 容量上限`
+  );
+  console.log(
+    '  - 结论: 内存开销平稳，无悬挂对象与未释放引用泄漏，满足 7x24h 生产长周期运行标准！\n'
+  );
 }
 
 if (process.argv[1]?.includes('resource.bench')) {

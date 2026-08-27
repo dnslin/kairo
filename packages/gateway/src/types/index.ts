@@ -50,7 +50,7 @@ export interface ConsolidatedMessage {
   firstReceivedAt: number;
   /** 聚合批次内最后一条消息接收时间戳 */
   lastReceivedAt: number;
-  /** 包含的所有消息指纹 ID 列表 */
+  /** 包含的所有 KK9 原生消息 ID 列表 */
   messageIds: string[];
   /** 是否包含 @ 当前机器人 */
   atMe?: boolean;

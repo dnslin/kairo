@@ -1,13 +1,15 @@
 import EventEmitter from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
 import { RequestContext } from '@mastra/core/request-context';
-import type {
-  FormattedText,
-  KK9Driver,
-  KK9Message,
-  KK9RecalledEvent,
-  SendResult,
+import {
+  createMessageIdentityKey,
+  type FormattedText,
+  type KK9Driver,
+  type KK9Message,
+  type KK9RecalledEvent,
+  type SendResult,
 } from '@kkbot/driver';
+
 import type {
   ComplianceDeletionCommand,
   ComplianceDeletionRecord,
@@ -68,7 +70,7 @@ const log = createChildLogger('session-coordinator');
 const DEFAULT_DEBOUNCE_MS = 1500; // 1.5 秒
 const DEFAULT_MAX_WAIT_MS = 5000; // 5 秒
 const DEFAULT_TAKEOVER_DURATION_MS = 10 * 60 * 1000; // 10 分钟 (600,000ms)
-const MAX_BOT_SENT_IDS = 5000;
+const MAX_BOT_SENT_KEYS = 5000;
 
 /**
  * 组装规范化消息的多模态载荷与扩展元数据
@@ -134,11 +136,23 @@ function resolveInboundOrigin(msg: KK9Message): NonNullable<KK9Message['origin']
   if (msg.messageType === 'system') {
     return 'system';
   }
-  if (typeof msg.isMe === 'boolean') {
-    return msg.isMe ? 'operator' : 'external';
+
+  const rawOrigin = msg.raw?.['origin'];
+  if (
+    rawOrigin === 'external' ||
+    rawOrigin === 'operator' ||
+    rawOrigin === 'bot_echo' ||
+    rawOrigin === 'system' ||
+    rawOrigin === 'unknown'
+  ) {
+    return rawOrigin;
   }
-  if (typeof msg.raw?.isMe === 'boolean') {
-    return msg.raw.isMe ? 'operator' : 'external';
+
+  if (typeof msg.isMe === 'boolean') {
+    return msg.isMe ? 'unknown' : 'external';
+  }
+  if (typeof msg.raw?.['isMe'] === 'boolean') {
+    return msg.raw['isMe'] ? 'unknown' : 'external';
   }
   return 'unknown';
 }
@@ -221,8 +235,9 @@ export class SessionCoordinator extends EventEmitter {
   private stopping = false;
   /** 活跃中的大模型在途生成会话锁映射表 (sessionId -> InFlightSession) */
   private readonly inFlightSessions = new Map<string, InFlightSession>();
-  /** 记录 Bot 自身发出的消息 ID (用于回显防抖识别与过滤) */
-  private readonly botSentMessageIds = new Set<string>();
+  /** 记录 Bot 自身发出的消息身份键（sessionId:nativeMessageId），用于回显过滤 */
+  private readonly botSentMessageKeys = new Set<string>();
+
   /** 记录已被撤回的消息 ID 集合 (用于防止消息存储与撤回并发竞争) */
   private readonly recalledMessageIds = new Set<string>();
   /** 记录已知已被墓碑化的消息集合 (sessionId:messageId -> 0ms 同步防复活与防误杀栅栏) */
@@ -697,16 +712,14 @@ export class SessionCoordinator extends EventEmitter {
   ): Promise<void> {
     const sessionId = msg.sessionId;
     const messageId = msg.messageId || msg.id;
-    const tombstoneKey = `${sessionId}:${messageId}`;
+    const messageKey = createMessageIdentityKey(sessionId, messageId);
+    const tombstoneKey = messageKey;
     const origin = resolveInboundOrigin(msg);
 
     // 0. 【优先识别并过滤 Bot 回显】：严禁在过滤回显前 abort，避免回显误杀正在运行的 Run 或触发退避
-    if (this.botSentMessageIds.has(msg.id) || origin === 'bot_echo') {
-      this.botSentMessageIds.delete(msg.id);
-      log.debug(
-        { sessionId, messageId: msg.id },
-        '识别为 Bot 自身发出的消息回显，安全忽略且不触发中断'
-      );
+    if (this.botSentMessageKeys.has(messageKey) || origin === 'bot_echo') {
+      this.botSentMessageKeys.delete(messageKey);
+      log.debug({ sessionId, messageId }, '识别为 Bot 自身发出的消息回显，安全忽略且不触发中断');
       return;
     }
 
@@ -1375,7 +1388,7 @@ export class SessionCoordinator extends EventEmitter {
     });
     // 记录 Bot 发送的消息 ID，防止自身回显触发退避
     if (sendResult.messageId) {
-      this.recordBotSentMessageId(sendResult.messageId);
+      this.recordBotSentMessageId(sessionId, sendResult.messageId);
     }
 
     // 发送成功分支：更新回复时间戳、写入消息历史并执行视觉红点消除
@@ -1649,6 +1662,73 @@ export class SessionCoordinator extends EventEmitter {
   /**
    * 触发防抖合并并将聚合消息传递给处理流水线
    */
+  private async prepareAgentRun(
+    sessionId: string,
+    consolidated: ConsolidatedMessage
+  ): Promise<InFlightSession | null> {
+    const runId = randomUUID();
+    const abortController = new AbortController();
+    const inFlight: InFlightSession = {
+      sessionId,
+      runId,
+      inputMessageIds: consolidated.messages.map(message => message.messageId || message.id),
+      abortController,
+      startedAt: Date.now(),
+      message: consolidated,
+    };
+    this.inFlightSessions.set(sessionId, inFlight);
+
+    if (this.stopping || abortController.signal.aborted) {
+      if (this.inFlightSessions.get(sessionId) === inFlight) {
+        this.inFlightSessions.delete(sessionId);
+      }
+      return null;
+    }
+
+    let claimedMessageIds: string[];
+    try {
+      claimedMessageIds = await this.store.messages.claimMessagesForAgent(
+        sessionId,
+        inFlight.inputMessageIds ?? [],
+        runId
+      );
+    } catch (error) {
+      if (this.inFlightSessions.get(sessionId) === inFlight) {
+        this.inFlightSessions.delete(sessionId);
+      }
+      throw error;
+    }
+
+    if (this.stopping || abortController.signal.aborted) {
+      await this.releaseAgentClaimedMessages(inFlight, runId, claimedMessageIds);
+      return null;
+    }
+    if (claimedMessageIds.length === 0) {
+      if (this.inFlightSessions.get(sessionId) === inFlight) {
+        this.inFlightSessions.delete(sessionId);
+      }
+      log.info({ sessionId, runId }, '本轮输入均已被既有 Agent claim，跳过重复 Agent Run');
+      return null;
+    }
+
+    const claimedConsolidated = restrictConsolidatedToClaimedMessages(
+      consolidated,
+      claimedMessageIds
+    );
+    if (!claimedConsolidated) {
+      await this.releaseAgentClaimedMessages(inFlight, runId, claimedMessageIds);
+      log.warn(
+        { sessionId, runId, claimedMessageIds },
+        'Agent claim 未匹配到当前消息快照，跳过执行'
+      );
+      return null;
+    }
+
+    inFlight.message = claimedConsolidated;
+    inFlight.inputMessageIds = claimedConsolidated.messageIds;
+    return inFlight;
+  }
+
   private async flush(sessionId: string): Promise<void> {
     const bucket = this.buckets.get(sessionId);
     if (!bucket || bucket.messages.length === 0) {
@@ -1747,149 +1827,21 @@ export class SessionCoordinator extends EventEmitter {
       return;
     }
 
-    // 优先使用 Mastra-native KKBotAgent (Issue #174/#176)
-    if (this.agent) {
-      const runId = randomUUID();
-      const abortController = new AbortController();
-      const inFlight: InFlightSession = {
-        sessionId,
-        runId,
-        inputMessageIds: consolidated.messages.map(m => m.messageId || m.id),
-        abortController,
-        startedAt: Date.now(),
-        message: consolidated,
-      };
-      this.inFlightSessions.set(sessionId, inFlight);
-      if (this.stopping || abortController.signal.aborted) {
-        if (this.inFlightSessions.get(sessionId) === inFlight) {
-          this.inFlightSessions.delete(sessionId);
-        }
+    if (this.agent || this.agentRuntime) {
+      const inFlight = await this.prepareAgentRun(sessionId, consolidated);
+      if (!inFlight) {
         return;
       }
-      let claimedMessageIds: string[];
-      try {
-        claimedMessageIds = await this.store.messages.claimMessagesForAgent(
-          sessionId,
-          inFlight.inputMessageIds ?? [],
-          runId
-        );
-      } catch (error) {
-        if (this.inFlightSessions.get(sessionId) === inFlight) {
-          this.inFlightSessions.delete(sessionId);
-        }
-        throw error;
-      }
-      if (this.stopping || abortController.signal.aborted) {
-        await this.releaseAgentClaimedMessages(inFlight, runId, claimedMessageIds);
-        return;
-      }
-      if (claimedMessageIds.length === 0) {
-        if (this.inFlightSessions.get(sessionId) === inFlight) {
-          this.inFlightSessions.delete(sessionId);
-        }
-        log.info({ sessionId, runId }, '本轮输入均已被既有 Agent claim，跳过重复 Agent Run');
-        return;
-      }
-      const claimedConsolidated = restrictConsolidatedToClaimedMessages(
-        consolidated,
-        claimedMessageIds
-      );
-      if (!claimedConsolidated) {
-        await this.releaseAgentClaimedMessages(inFlight, runId, claimedMessageIds);
-        log.warn(
-          { sessionId, runId, claimedMessageIds },
-          'Agent claim 未匹配到当前消息快照，跳过执行'
-        );
-        return;
-      }
-      inFlight.message = claimedConsolidated;
-      inFlight.inputMessageIds = claimedConsolidated.messageIds;
-      this.emit('agent_started', sessionId, claimedConsolidated);
 
-      const execPromise = this.executeMastraAgentPipeline(
-        sessionId,
-        claimedConsolidated,
-        abortController.signal,
-        runId
-      );
-      inFlight.promise = execPromise;
-      try {
-        await execPromise;
-      } catch (err) {
-        log.error({ sessionId, err }, 'Mastra Agent 流水线执行发生异常');
-        this.emitError(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        if (this.inFlightSessions.get(sessionId) === inFlight) {
-          this.inFlightSessions.delete(sessionId);
-        }
-      }
-      return;
-    }
-
-    // 若配置了旧版 Agent 认知微内核 Runtime，执行全链路智能生成
-    if (this.agentRuntime) {
-      const runId = randomUUID();
-      const abortController = new AbortController();
-      const inFlight: InFlightSession = {
-        sessionId,
-        runId,
-        inputMessageIds: consolidated.messages.map(m => m.messageId || m.id),
-        abortController,
-        startedAt: Date.now(),
-        message: consolidated,
-      };
-      this.inFlightSessions.set(sessionId, inFlight);
-      if (this.stopping || abortController.signal.aborted) {
-        if (this.inFlightSessions.get(sessionId) === inFlight) {
-          this.inFlightSessions.delete(sessionId);
-        }
-        return;
-      }
-      let claimedMessageIds: string[];
-      try {
-        claimedMessageIds = await this.store.messages.claimMessagesForAgent(
-          sessionId,
-          inFlight.inputMessageIds ?? [],
-          runId
-        );
-      } catch (error) {
-        if (this.inFlightSessions.get(sessionId) === inFlight) {
-          this.inFlightSessions.delete(sessionId);
-        }
-        throw error;
-      }
-      if (this.stopping || abortController.signal.aborted) {
-        await this.releaseAgentClaimedMessages(inFlight, runId, claimedMessageIds);
-        return;
-      }
-      if (claimedMessageIds.length === 0) {
-        if (this.inFlightSessions.get(sessionId) === inFlight) {
-          this.inFlightSessions.delete(sessionId);
-        }
-        log.info({ sessionId, runId }, '本轮输入均已被既有 Agent claim，跳过重复 Agent Run');
-        return;
-      }
-      const claimedConsolidated = restrictConsolidatedToClaimedMessages(
-        consolidated,
-        claimedMessageIds
-      );
-      if (!claimedConsolidated) {
-        await this.releaseAgentClaimedMessages(inFlight, runId, claimedMessageIds);
-        log.warn(
-          { sessionId, runId, claimedMessageIds },
-          'Agent claim 未匹配到当前消息快照，跳过执行'
-        );
-        return;
-      }
-      inFlight.message = claimedConsolidated;
-      inFlight.inputMessageIds = claimedConsolidated.messageIds;
-      this.emit('agent_started', sessionId, claimedConsolidated);
-
-      const execPromise = this.executeAgentPipeline(
-        sessionId,
-        claimedConsolidated,
-        abortController.signal
-      );
+      this.emit('agent_started', sessionId, inFlight.message);
+      const execPromise = this.agent
+        ? this.executeMastraAgentPipeline(
+            sessionId,
+            inFlight.message,
+            inFlight.abortController.signal,
+            inFlight.runId
+          )
+        : this.executeAgentPipeline(sessionId, inFlight.message, inFlight.abortController.signal);
       inFlight.promise = execPromise;
       try {
         await execPromise;
@@ -1901,6 +1853,7 @@ export class SessionCoordinator extends EventEmitter {
           this.inFlightSessions.delete(sessionId);
         }
       }
+      return;
     }
     if (!this.agent && !this.agentRuntime) {
       await this.store.messages.markMessagesRawOnly(
@@ -2390,7 +2343,7 @@ export class SessionCoordinator extends EventEmitter {
   ): Promise<void> {
     const now = Date.now();
     if (sendMsgId) {
-      this.recordBotSentMessageId(sendMsgId);
+      this.recordBotSentMessageId(sessionId, sendMsgId);
     }
 
     try {
@@ -2959,17 +2912,19 @@ export class SessionCoordinator extends EventEmitter {
     }
   }
   /**
-   * 记录 Bot 发送的消息 ID 并执行有限集合驱逐
+   * 记录 Bot 发送的消息身份并执行有限集合驱逐。
    */
-  private recordBotSentMessageId(messageId?: string | null): void {
-    if (!messageId) {
+  private recordBotSentMessageId(sessionId: string, messageId?: string | null): void {
+    const normalizedSessionId = sessionId.trim();
+    const normalizedMessageId = messageId?.trim();
+    if (!normalizedSessionId || !normalizedMessageId) {
       return;
     }
-    this.botSentMessageIds.add(messageId);
-    if (this.botSentMessageIds.size > MAX_BOT_SENT_IDS) {
-      const firstKey = this.botSentMessageIds.values().next().value;
+    this.botSentMessageKeys.add(createMessageIdentityKey(normalizedSessionId, normalizedMessageId));
+    if (this.botSentMessageKeys.size > MAX_BOT_SENT_KEYS) {
+      const firstKey = this.botSentMessageKeys.values().next().value;
       if (firstKey) {
-        this.botSentMessageIds.delete(firstKey);
+        this.botSentMessageKeys.delete(firstKey);
       }
     }
   }

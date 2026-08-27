@@ -24,7 +24,7 @@ async function main(): Promise<void> {
   const bridge = new KK9EventBridge({
     cdp: cdpConfig,
     bindingName: '__kkbot_native_bridge',
-    maxFingerprints: 10000,
+    maxMessageIds: 10000,
   });
 
   // 2. 初始化用于辅助测试发送的主驱动 (可选配合使用)
@@ -55,10 +55,14 @@ async function main(): Promise<void> {
     console.log(`   ├─ 内容: ${msg.content || '(无纯文本)'}`);
 
     if (msg.images && msg.images.length > 0) {
-      console.log(`   ├─ 包含图片: ${msg.images.length} 张 (${msg.images.map(img => img.filePath || img.url).join(', ')})`);
+      console.log(
+        `   ├─ 包含图片: ${msg.images.length} 张 (${msg.images.map(img => img.filePath || img.url).join(', ')})`
+      );
     }
     if (msg.fileInfo) {
-      console.log(`   ├─ 包含文件: ${msg.fileInfo.fileName} (${msg.fileInfo.fileSize || '未知大小'})`);
+      console.log(
+        `   ├─ 包含文件: ${msg.fileInfo.fileName} (${msg.fileInfo.fileSize || '未知大小'})`
+      );
     }
     if (msg.replyTo) {
       console.log(`   ├─ 引用回复: @${msg.replyTo.replyToSender}: ${msg.replyTo.replyToContent}`);
@@ -103,7 +107,9 @@ async function main(): Promise<void> {
   console.log('========================================================================');
   console.log('📋 手动验证推荐步骤 (可以在 KK9 客户端中进行操作):');
   console.log('   1. 【接收测试】在 KK9 中让好友发消息，或在任意群聊发送消息 -> 观察上方终端打印');
-  console.log('   2. 【@ 提及测试】在群聊中发送包含 @机器人 或 @全体成员 的消息 -> 触发 🎯 艾特事件');
+  console.log(
+    '   2. 【@ 提及测试】在群聊中发送包含 @机器人 或 @全体成员 的消息 -> 触发 🎯 艾特事件'
+  );
   console.log('   3. 【撤回测试】在 KK9 中发送一条消息并点击“撤回” -> 触发 ↩️ 撤回事件');
   console.log('   4. 【跨会话测试】保持在 A 会话界面，让 B 会话发消息 -> 验证无需切换会话即刻捕获');
   console.log('========================================================================\n');
@@ -122,7 +128,7 @@ async function main(): Promise<void> {
   rl.setPrompt('kkbot> ');
   rl.prompt();
 
-  rl.on('line', async (line) => {
+  rl.on('line', async line => {
     const input = line.trim();
     if (!input) {
       rl.prompt();
@@ -144,7 +150,9 @@ async function main(): Promise<void> {
         const sessions = await driver.getSessions();
         console.log(`找到 ${sessions.length} 个会话:`);
         sessions.forEach((s, idx) => {
-          console.log(`  [${idx + 1}] ID: ${s.id.padEnd(10)} | 名称: ${s.name} (${s.type}) | 未读: ${s.unread}`);
+          console.log(
+            `  [${idx + 1}] ID: ${s.id.padEnd(10)} | 名称: ${s.name} (${s.type}) | 未读: ${s.unread}`
+          );
         });
       } else if (cmd === 'send') {
         if (args.length < 2) {
