@@ -1,12 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import EventEmitter from 'node:events';
 import type { KK9Driver } from '@kkbot/driver';
-import { UnifiedBootstrapper } from '../src/bootstrapper.js';
+import { KKBotAgent, MastraModelFactory, createFakeModel } from '@kkbot/agent';
+import { UnifiedBootstrapper, type AgentFactory } from '../src/bootstrapper.js';
 import { createValidTestYaml } from './fixtures.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+function createTestAgentFactory(): AgentFactory {
+  const model = createFakeModel();
+  const modelFactory = new MastraModelFactory({
+    tiers: {
+      FAST: { models: [{ model }] },
+      DEEP: { models: [{ model }] },
+      VISION: { models: [{ model }] },
+    },
+  });
+  return (_config, { memory, tools }) =>
+    new KKBotAgent({
+      modelFactory,
+      memory,
+      tools,
+    });
+}
 describe('UnifiedBootstrapper Composition Root & Harness', () => {
   let tempDir: string;
   let configFile: string;
@@ -191,6 +208,7 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     const boot = new UnifiedBootstrapper({
       configPath: configFile,
       driverFactory: () => driver,
+      agentFactory: createTestAgentFactory(),
     });
     const startPromise = boot.start();
     while (!connectStarted) {
@@ -245,6 +263,7 @@ describe('UnifiedBootstrapper Composition Root & Harness', () => {
     const boot = new UnifiedBootstrapper({
       configPath: configFile,
       driverFactory: () => driver,
+      agentFactory: createTestAgentFactory(),
       shutdownDeadlineMs: 80,
     });
     const startPromise = boot.start();

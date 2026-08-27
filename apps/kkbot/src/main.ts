@@ -2,7 +2,9 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import type { MastraModelConfig } from '@mastra/core/llm';
 import { KK9Driver } from '@kkbot/driver';
+import { KKBotAgent, MastraModelFactory } from '@kkbot/agent';
 import { UnifiedBootstrapper } from './bootstrapper.js';
 import { ConfigValidationError } from './errors.js';
 
@@ -101,6 +103,28 @@ export async function runCli(
           pageMatch: process.env['PAGE_MATCH'] || 'renderer.html',
         },
       }),
+    agentFactory: async (config, { memory, tools }): Promise<KKBotAgent> => {
+      const soulPath = path.resolve(path.dirname(resolvedConfigPath), config.agent.soulPath);
+      const instructions = await fs.readFile(soulPath, 'utf-8');
+      const modelId = process.env['KKBOT_MODEL']?.trim() || 'openai/gpt-4o-mini';
+      const model = modelId as MastraModelConfig;
+      const modelFactory = new MastraModelFactory({
+        tiers: {
+          FAST: { models: [{ model }] },
+          DEEP: { models: [{ model }] },
+          VISION: { models: [{ model }] },
+        },
+      });
+      return new KKBotAgent({
+        id: config.agent.id,
+        name: config.agent.id,
+        instructions,
+        modelFactory,
+        memory,
+        tools,
+        maxSteps: config.agent.maxSteps,
+      });
+    },
   });
 
   try {

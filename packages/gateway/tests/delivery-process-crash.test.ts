@@ -94,6 +94,7 @@ describe('Delivery 跨独立进程强杀与重启恢复 Oracle 测试 (CONCURREN
         encoding: 'utf-8',
         shell: true,
         timeout: 15000,
+        cwd: path.resolve(__dirname, '../../..'),
       }
     );
 

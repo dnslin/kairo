@@ -26,6 +26,12 @@ interface SessionRow {
   created_at: number;
   updated_at: number;
 }
+function parseSessionMode(rawMode: string): SessionMode {
+  if (rawMode === 'auto' || rawMode === 'disabled') {
+    return rawMode;
+  }
+  throw new Error(`会话 mode 无效: ${rawMode}`);
+}
 
 /**
  * 将数据库原始行转换为领域强类型会话实体
@@ -36,7 +42,7 @@ function mapRowToSession(row: SessionRow): SessionRecord {
     name: String(row.name),
     type: row.type as SessionType,
     employeeId: row.employee_id ? String(row.employee_id) : null,
-    mode: row.mode as SessionMode,
+    mode: parseSessionMode(row.mode),
     humanTakeoverUntil: Number(row.human_takeover_until),
     lastMessageAt: Number(row.last_message_at),
     lastReplyAt: Number(row.last_reply_at),

@@ -1,176 +1,11 @@
 import vm from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { buildCanvasCardScript, calculateCardLayout } from '../src/canvas/renderer.js';
-import {
-  createAlertCard,
-  createApprovalCard,
-  createDecisionCard,
-  createReportCard,
-} from '../src/canvas/templates.js';
-import type {
-  AlertCardParams,
-  ApprovalCardParams,
-  DecisionCardParams,
-  ReportCardParams,
-} from '../src/types/index.js';
+import { createAlertCard, createDecisionCard, createReportCard } from '../src/canvas/templates.js';
+import type { AlertCardParams, DecisionCardParams, ReportCardParams } from '../src/types/index.js';
 import { DriverError } from '../src/utils/errors.js';
 
 describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
-  describe('1. 审批决策卡片 (createApprovalCard)', () => {
-    it('缺省参数时应正确填充默认值并映射 P3 中风险为 primary 主题', () => {
-      const params: ApprovalCardParams = {
-        applicant: '张三',
-        item: '申请开通生产数据库只读账号',
-      };
-
-      const card = createApprovalCard(params);
-
-      // 主题与头部断言
-      expect(card.theme).toBe('primary');
-      expect(card.header.title).toBe('审批申请');
-      expect(card.header.subtitle).toBe('审批决策中心');
-      expect(card.header.icon).toBe('🛡️');
-      expect(card.header.tag).toEqual({
-        text: 'P3 中风险',
-        variant: 'primary',
-      });
-
-      // 字段断言
-      expect(card.fields).toBeDefined();
-      const applicantField = card.fields?.find(f => f.label === '申请人');
-      expect(applicantField).toBeDefined();
-      expect(applicantField?.value).toBe('张三');
-
-      const itemField = card.fields?.find(f => f.label === '申请事项');
-      expect(itemField).toBeDefined();
-      expect(itemField?.value).toBe('申请开通生产数据库只读账号');
-      expect(itemField?.highlight).toBe(true);
-      expect(itemField?.span).toBe(2);
-
-      const riskField = card.fields?.find(f => f.label === '风险等级');
-      expect(riskField).toBeDefined();
-      expect(riskField?.value).toContain('P3');
-
-      // 默认操作按钮断言
-      expect(card.actions).toHaveLength(2);
-      expect(card.actions?.[0]).toMatchObject({
-        text: '✔ 同意',
-        variant: 'success',
-        replyCommand: '1',
-      });
-      expect(card.actions?.[1]).toMatchObject({
-        text: '✖ 拒绝',
-        variant: 'danger',
-        replyCommand: '2',
-      });
-
-      // 默认页脚断言
-      expect(card.footer).toBeDefined();
-    });
-
-    it('应正确映射 P1 极高风险至 danger 主题与告警标红', () => {
-      const params: ApprovalCardParams = {
-        orderNo: 'TASK-20260820-001',
-        applicant: '李四',
-        department: '基础架构部',
-        item: '生产核心集群 MySQL 5.7 升级至 8.0 停机维护',
-        riskLevel: 'P1',
-        reason: '修复历史安全漏洞与提升高并发连接池性能',
-        title: '紧急变更审批',
-      };
-
-      const card = createApprovalCard(params);
-
-      expect(card.theme).toBe('danger');
-      expect(card.header.title).toBe('紧急变更审批');
-      expect(card.header.tag).toEqual({
-        text: 'P1 极高风险',
-        variant: 'danger',
-      });
-
-      const riskField = card.fields?.find(f => f.label === '风险等级');
-      expect(riskField?.danger).toBe(true);
-
-      const orderField = card.fields?.find(f => f.label === '工单编号');
-      expect(orderField?.value).toBe('TASK-20260820-001');
-
-      const deptField = card.fields?.find(f => f.label === '所属部门');
-      expect(deptField?.value).toBe('基础架构部');
-
-      const reasonField = card.fields?.find(f => f.label === '申请理由');
-      expect(reasonField?.value).toBe('修复历史安全漏洞与提升高并发连接池性能');
-      expect(reasonField?.span).toBe(2);
-    });
-
-    it('应正确映射 P2 高风险为 warning 主题，P4 低风险为 info 主题', () => {
-      const p2Card = createApprovalCard({
-        applicant: '王五',
-        item: '开放防火墙 8080 端口',
-        riskLevel: 'P2',
-      });
-      expect(p2Card.theme).toBe('warning');
-      expect(p2Card.header.tag?.variant).toBe('warning');
-
-      const p4Card = createApprovalCard({
-        applicant: '赵六',
-        item: '申领研发测试用手机一台',
-        riskLevel: 'P4',
-      });
-      expect(p4Card.theme).toBe('info');
-      expect(p4Card.header.tag?.variant).toBe('info');
-    });
-
-    it('应支持自定义动作配置、附加字段合并与自定义页脚', () => {
-      const params: ApprovalCardParams = {
-        applicant: '张三',
-        item: '海外节点网络调优',
-        approveAction: { text: '批准上线', icon: '🚀', replyCommand: 'pass' },
-        rejectAction: '驳回重提',
-        customFields: [
-          { label: '影响地域', value: '美东区 / 欧洲区', highlight: true, span: 2 },
-          { label: '预估耗时', value: '30 分钟', span: 1 },
-        ],
-        footer: { text: '请在今日 18:00 前完成审批', icon: '⏰' },
-      };
-
-      const card = createApprovalCard(params);
-
-      expect(card.actions?.[0]).toMatchObject({
-        text: '批准上线',
-        icon: '🚀',
-        replyCommand: 'pass',
-        variant: 'success',
-      });
-      expect(card.actions?.[1]).toMatchObject({
-        text: '驳回重提',
-        variant: 'danger',
-        replyCommand: '2',
-      });
-
-      expect(card.fields?.some(f => f.label === '影响地域')).toBe(true);
-      expect(card.fields?.some(f => f.label === '预估耗时')).toBe(true);
-      expect(card.footer).toEqual({ text: '请在今日 18:00 前完成审批', icon: '⏰' });
-    });
-
-    it('当传入 actions 数组时应完全覆盖默认按钮', () => {
-      const card = createApprovalCard({
-        applicant: '张三',
-        item: '自定义按钮测试',
-        actions: [{ text: '转交上级', variant: 'secondary' }],
-      });
-
-      expect(card.actions).toHaveLength(1);
-      expect(card.actions?.[0].text).toBe('转交上级');
-    });
-
-    it('缺失必要参数时应抛出 DriverError', () => {
-      // @ts-expect-error 故意缺省 applicant
-      expect(() => createApprovalCard({ item: '测试事项' })).toThrow(DriverError);
-      // @ts-expect-error 故意缺省 item
-      expect(() => createApprovalCard({ applicant: '张三' })).toThrow(DriverError);
-    });
-  });
-
   describe('2. 监控告警卡片 (createAlertCard)', () => {
     it('应根据 critical / high / medium / low / info 严重度自动映射主题和图标', () => {
       const critical = createAlertCard({
@@ -483,8 +318,7 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
   });
 
   describe('5. 与 Canvas 渲染引擎端到端兼容性 (End-to-End Compatibility)', () => {
-    it('所有 4 种模板生成的 CardData 均能被 calculateCardLayout 计算正确尺寸', () => {
-      const approval = createApprovalCard({ applicant: '张三', item: '开通权限' });
+    it('所有 3 种模板生成的 CardData 均能被 calculateCardLayout 计算正确尺寸', () => {
       const alert = createAlertCard({ title: '高负载告警', severity: 'high' });
       const report = createReportCard({ title: '巡检报告', status: 'success', duration: '12s' });
       const decision = createDecisionCard({
@@ -492,7 +326,7 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
         options: [{ title: '方案一', recommended: true }, { title: '方案二' }],
       });
 
-      for (const card of [approval, alert, report, decision]) {
+      for (const card of [alert, report, decision]) {
         const layout = calculateCardLayout(card);
         expect(layout.width).toBe(460);
         expect(layout.height).toBeGreaterThan(100);
@@ -502,14 +336,7 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
       }
     });
 
-    it('所有 4 种模板生成的 CardData 均能被 buildCanvasCardScript 生成合法脚本并在沙箱执行', () => {
-      const approval = createApprovalCard({
-        applicant: '李四',
-        department: '技术部',
-        item: '代码上线发布申请',
-        riskLevel: 'P1',
-        reason: '发布 2.0 版本',
-      });
+    it('所有 3 种模板生成的 CardData 均能被 buildCanvasCardScript 生成合法脚本并在沙箱执行', () => {
       const alert = createAlertCard({
         title: '集群内存告警',
         severity: 'critical',
@@ -526,7 +353,7 @@ describe('业务卡片预设模板库测试 (Canvas Card Templates)', () => {
         options: [{ title: '金丝雀 10%', recommended: true }, { title: '全量发布' }],
       });
 
-      const cards = [approval, alert, report, decision];
+      const cards = [alert, report, decision];
 
       for (const card of cards) {
         const script = buildCanvasCardScript(card);

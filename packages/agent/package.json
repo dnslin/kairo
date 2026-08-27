@@ -1,7 +1,7 @@
 {
   "name": "@kkbot/agent",
   "version": "2.0.0",
-  "description": "Cognitive microkernel and ReAct agent runtime for KKBot",
+  "description": "KKBot 的 Mastra-native Agent、Tool 与 Processor 定义",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
@@ -20,18 +20,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@kkbot/driver": "workspace:*",
     "@kkbot/store": "workspace:*",
-    "@libsql/client": "^0.17.4",
     "@mastra/core": "catalog:",
-    "@mastra/libsql": "catalog:",
     "@mastra/memory": "catalog:",
     "@modelcontextprotocol/sdk": "1.30.0",
-    "chokidar": "^4.0.3",
     "pino": "^9.6.0",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@mastra/libsql": "catalog:",
     "@types/node": "^22.12.0",
     "pino-pretty": "^13.0.0",
     "typescript": "^5.7.3"

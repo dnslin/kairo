@@ -1,7 +1,5 @@
 import { z } from 'zod';
 import type { OrgRepository, OrgEmployeeWithDepts } from '@kkbot/store';
-import { createAgentTool } from '../registry.js';
-import type { AgentTool } from '../types.js';
 import { createKkTool, type KkMastraTool } from '../create-tool.js';
 import { createChildLogger } from '../../utils/logger.js';
 const log = createChildLogger('tool-search-org');
@@ -84,26 +82,6 @@ export async function executeSearchOrganizationCore(
   };
 }
 
-/**
- * 创建 search_organization 内置工具 (旧 ToolRegistry 兼容)
- */
-export function createSearchOrganizationTool(options: {
-  orgRepo: OrgRepository;
-}): AgentTool<SearchOrganizationInput, SearchOrganizationOutput> {
-  const { orgRepo } = options;
-
-  return createAgentTool<SearchOrganizationInput, SearchOrganizationOutput>({
-    id: 'search_organization',
-    description: '根据工号、中文名、拼音缩写或部门检索企业员工档案、职位与直属汇报链。只读查询。',
-    readOnly: true,
-    inputSchema: SearchOrganizationInputSchema,
-    execute: async input => executeSearchOrganizationCore(orgRepo, input),
-    metadata: {
-      category: 'organization',
-      builtin: true,
-    },
-  });
-}
 
 /**
  * 创建 Mastra-native search_organization 工具

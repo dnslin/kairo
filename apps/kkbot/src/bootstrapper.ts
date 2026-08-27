@@ -5,13 +5,16 @@ import { LibSQLStore } from '@mastra/libsql';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
 import type { KK9Driver, DriverHealthEvent } from '@kkbot/driver';
 import { SessionCoordinator, type SessionCoordinatorOptions } from '@kkbot/gateway';
+import type { ToolsInput } from '@mastra/core/agent';
 import type { Tool } from '@mastra/core/tools';
 import {
+  Memory,
   createMastraSearchOrganizationTool,
   createMastraQueryKnowledgeBaseTool,
   createMastraGenerateFileDeliverableTool,
   decorateKkTool,
 } from '@kkbot/agent';
+import type { KKBotAgent } from '@kkbot/agent';
 import { createClient, type Client, runKKBotMigrations, KKBotStore } from '@kkbot/store';
 import { loadConfigFromYaml, type AppConfig, DEFAULT_ALLOWED_MCP_HOSTS } from './config.js';
 import { resolveDatabaseLocation, type DatabaseLocation } from './path-resolver.js';
@@ -35,6 +38,10 @@ export interface BootstrapperHooks {
 
 export type DriverFactory = (config: AppConfig, startupGenerationId: string) => KK9Driver;
 export type CoordinatorFactory = (options: SessionCoordinatorOptions) => SessionCoordinator;
+export type AgentFactory = (
+  config: AppConfig,
+  dependencies: { memory: Memory; tools: ToolsInput }
+) => KKBotAgent | Promise<KKBotAgent>;
 export interface BootstrapperOptions {
   /** YAML 配置文件路径 */
   configPath: string;
@@ -42,6 +49,8 @@ export interface BootstrapperOptions {
   hooks?: BootstrapperHooks;
   /** 正式运行时提供真实 KK9 Driver；省略时只运行基础设施合同。 */
   driverFactory?: DriverFactory;
+  /** 正式运行时构造 Mastra-native Agent；省略时仅运行基础设施合同。 */
+  agentFactory?: AgentFactory;
   /** 可选 Gateway 工厂；省略时由 Composition Root 构造默认 Coordinator。 */
   coordinatorFactory?: CoordinatorFactory;
   /** 整条 Shutdown（含资源取得等待）的最大预算，默认 10 秒。 */
@@ -53,6 +62,8 @@ export interface PreflightReport {
   dbConnectivity: boolean;
   migrationsApplied: boolean;
   storageReady: boolean;
+  memoryReady: boolean;
+  agentReady: boolean;
   mcpClientReady: boolean;
   driverReady: boolean;
 }
@@ -68,16 +79,19 @@ export interface PreflightReport {
  * 5. 创建唯一 KKBot Client 并提交 KKBot 数据库迁移。
  * 6. 创建唯一 LibSQLStore 及其自有 Client，显式调用 storage.init()。
  * 7. 创建唯一 Mastra 实例并完成 Storage 关闭所有权安全转移。
- * 8. 创建唯一进程级 MCPClient（若配置）。
- * 9. 执行无业务事实副作用的真实 Preflight。
- * 10. Ready Barrier 成功后唯一一次打开 Work Admission Gate。
- * 11. 汇聚启动失败、信号与关键失效至同一条逆拓扑幂等 Shutdown 路径。
+ * 8. 创建唯一进程级 MCPClient（若配置）并完成 Tool discovery。
+ * 9. 构造并注册静态 Tool、Mastra Memory 与 Mastra-native Agent。
+ * 10. 构造 Driver、Coordinator 并接入统一 Gate。
+ * 11. 执行无业务事实副作用的真实 Preflight。
+ * 12. Ready Barrier 成功后唯一一次打开 Work Admission Gate。
+ * 13. 汇聚启动失败、信号与关键失效至同一条逆拓扑幂等 Shutdown 路径。
  */
 export class UnifiedBootstrapper {
   readonly startupGenerationId: string;
   private readonly configPath: string;
   private readonly hooks: BootstrapperHooks;
   private readonly driverFactory?: DriverFactory;
+  private readonly agentFactory?: AgentFactory;
   private readonly coordinatorFactory?: CoordinatorFactory;
   private readonly startedAt = Date.now();
 
@@ -91,6 +105,8 @@ export class UnifiedBootstrapper {
   private kkbotStore: KKBotStore | null = null;
   private libSqlStore: LibSQLStore | null = null;
   private mastra: Mastra | null = null;
+  private mastraMemory: Memory | null = null;
+  private agent: KKBotAgent | null = null;
   private mcpClient: MCPClient | null = null;
   private driver: KK9Driver | null = null;
   private coordinator: SessionCoordinator | null = null;
@@ -122,6 +138,7 @@ export class UnifiedBootstrapper {
     this.configPath = options.configPath;
     this.hooks = options.hooks ?? {};
     this.driverFactory = options.driverFactory;
+    this.agentFactory = options.agentFactory;
     this.coordinatorFactory = options.coordinatorFactory;
     this.gate = new WorkAdmissionGate(this.startupGenerationId);
     this.ledger = new AcquisitionLedger(this.startupGenerationId);
@@ -151,6 +168,9 @@ export class UnifiedBootstrapper {
       // 1. 静态配置校验
       await this.staticValidate();
       const cfg = this.getConfig();
+      if (this.driverFactory && !this.agentFactory) {
+        throw new Error('正式 Driver 启动必须同时配置 Mastra-native AgentFactory');
+      }
 
       // 2. 规范化数据库位置
       const baseDir = path.dirname(path.resolve(this.configPath));
@@ -451,6 +471,24 @@ export class UnifiedBootstrapper {
         ...localTools,
         ...discoveredMcpTools,
       });
+      if (this.agentFactory) {
+        await this.acquireStage('Agent', async () => {
+          const mastraMemory = new Memory({
+            storage: this.libSqlStore!,
+            options: {
+              lastMessages: cfg.agent.memory.lastMessages,
+              observationalMemory: cfg.agent.memory.observationalMemory,
+            },
+          });
+          this.mastraMemory = mastraMemory;
+          this.mastra!.addMemory(mastraMemory, 'kkbot-memory');
+          this.agent = await this.agentFactory!(cfg, {
+            memory: mastraMemory,
+            tools: this.staticTools as ToolsInput,
+          });
+          this.mastra!.addAgent(this.agent.mastraAgent, cfg.agent.id);
+        });
+      }
 
       if (this.driverFactory) {
         await this.acquireStage('Driver', async () => {
@@ -480,6 +518,9 @@ export class UnifiedBootstrapper {
             driver: this.driver,
             store: this.kkbotStore,
             admissionGate: this.gate,
+            agent: this.agent ?? undefined,
+            mastraMemory: this.mastraMemory ?? undefined,
+            mastraStorage: this.libSqlStore ?? undefined,
             config: {
               debounceMs: cfg.kk.debounceMs,
               maxWaitMs: cfg.kk.maxWaitMs,
@@ -500,7 +541,7 @@ export class UnifiedBootstrapper {
         });
       }
 
-      // 9. 执行无业务事实副作用的真实 Preflight
+      // 11. 执行无业务事实副作用的真实 Preflight
       await this.acquireStage('Preflight', async () => {
         await this.preflight();
       });
@@ -534,7 +575,7 @@ export class UnifiedBootstrapper {
       if (this.shutdownPromise) {
         throw new Error('Ready Barrier 在 Shutdown 启动后失效，拒绝开放 Work Admission Gate');
       }
-      // 10. Ready Barrier 判定成功，唯一一次打开 Work Admission Gate
+      // 12. Ready Barrier 判定成功，唯一一次打开 Work Admission Gate
       this.gate.open();
 
       if (this.driver && this.coordinator) {
@@ -602,6 +643,33 @@ export class UnifiedBootstrapper {
 
     // 探针 3：验证 Storage 可用（不产生业务事实）
     const storageReady = Boolean(this.libSqlStore);
+    const infrastructureOnly = !this.driverFactory && !this.agentFactory;
+    if (this.driverFactory && !this.agentFactory) {
+      throw new Error('Agent Preflight 失败: 正式 Driver 启动缺少 Mastra-native AgentFactory');
+    }
+    let memoryReady = infrastructureOnly;
+    let agentReady = infrastructureOnly;
+    if (this.agentFactory) {
+      if (!this.agent || !this.mastraMemory) {
+        throw new Error('Agent Preflight 失败: Mastra Agent 或共享 Memory 尚未装配');
+      }
+      const boundMemory = await this.agent.mastraAgent.getMemory();
+      if (!boundMemory) {
+        throw new Error('Memory Preflight 失败: Mastra Agent 未绑定可用 Memory');
+      }
+      memoryReady = true;
+      try {
+        await this.agent.execute({
+          input: '启动探针：仅验证 Agent 与模型可用性，不执行任何业务操作。',
+          activeTools: [],
+        });
+        agentReady = true;
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        throw new Error(`Agent Preflight 失败: ${err.message}`, { cause: err });
+      }
+    }
+
     // 探针 4：验证 MCPClient 可用性（只读已完成的 discovery 状态，不重复发起 discovery）
     const mcpClientReady = Object.keys(this.degradedMcpServers).length === 0;
 
@@ -631,11 +699,12 @@ export class UnifiedBootstrapper {
       dbConnectivity,
       migrationsApplied,
       storageReady,
+      memoryReady,
+      agentReady,
       mcpClientReady,
       driverReady,
     };
   }
-
   /**
    * 统一逆拓扑幂等优雅关闭
    */

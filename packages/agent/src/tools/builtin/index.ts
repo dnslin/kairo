@@ -1,5 +1,4 @@
 export {
-  createSearchOrganizationTool,
   createMastraSearchOrganizationTool,
   executeSearchOrganizationCore,
   SearchOrganizationInputSchema,
@@ -9,7 +8,6 @@ export {
 } from './search-organization.js';
 
 export {
-  createQueryKnowledgeBaseTool,
   createMastraQueryKnowledgeBaseTool,
   executeQueryKnowledgeBaseCore,
   QueryKnowledgeBaseInputSchema,
@@ -20,18 +18,11 @@ export {
 } from './query-knowledge-base.js';
 
 export {
-  createGenerateFileDeliverableTool,
   createMastraGenerateFileDeliverableTool,
   executeGenerateFileDeliverableCore,
   GenerateFileDeliverableInputSchema,
+  GenerateFileDeliverableOutputSchema,
   type GenerateFileDeliverableInput,
   type GenerateFileDeliverableOutput,
   type GenerateFileDeliverableOptions,
 } from './generate-file-deliverable.js';
-export {
-  createRegisterProactiveScheduleTool,
-  RegisterProactiveScheduleInputSchema,
-  type RegisterProactiveScheduleInput,
-  type RegisterProactiveScheduleOutput,
-  type ProactiveScheduleManagerLike,
-} from './register-proactive-schedule.js';

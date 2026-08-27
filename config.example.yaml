@@ -20,12 +20,14 @@ mcp:
   perServerTimeoutMs: 5000
   servers:
     enterprise-search:
-      url: "http://127.0.0.1:8080/mcp"
+      url: 'http://127.0.0.1:8080/mcp'
       required: true
 agent:
   id: kk-assistant
   soulPath: ./config/soul.md
   maxSteps: 5
+  # Mastra Model Router 模型 ID，可用 KKBOT_MODEL 覆盖；默认 openai/gpt-4o-mini
+  # 会话历史与观察记忆由 Mastra Memory 管理
   memory:
     lastMessages: 20
     observationalMemory: true

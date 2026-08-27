@@ -13,11 +13,11 @@
 | 原生事件桥与消息转换                | `packages/driver/src/bridge/`                                                                                               |
 | 会话、消息、发送和组织读取          | `packages/driver/src/dom/`                                                                                                  |
 | 卡片模板与 Canvas 渲染              | `packages/driver/src/canvas/`                                                                                               |
-| Gateway 会话协调与主动任务          | `packages/gateway/src/coordinator.ts`, `packages/gateway/src/schedule/`                                                     |
-| Agent 当前运行时、模型路由与 Memory | `packages/agent/src/runtime.ts`, `packages/agent/src/routing/`, `packages/agent/src/memory/`                                |
-| Tool、MCP、HITL 与输入输出防护      | `packages/agent/src/tools/`, `packages/agent/src/hitl/`, `packages/agent/src/guardrails/`                                   |
+| Gateway 会话协调与 Delivery | `packages/gateway/src/coordinator.ts`, `packages/gateway/src/recovery/`                                   |
+| Agent、ModelTier 与 Mastra Memory | `packages/agent/src/agent.ts`, `packages/agent/src/models/`, `packages/agent/src/routing/tier-policy.ts` |
+| Tool、MCP 与输入输出 Processor | `packages/agent/src/tools/`, `packages/agent/src/processors/`, `apps/kkbot/src/bootstrapper.ts`         |
 | 数据库、Repository、媒体与导出      | `packages/store/src/database/`, `packages/store/src/repository/`, `packages/store/src/media/`, `packages/store/src/export/` |
-| 公开类型和包出口                    | 各包 `src/types/` 与 `src/index.ts`                                                                                         |
+| 公开类型和包出口                    | 各包 `src` 与 `src/index.ts`                                                                                                  |
 | 行为测试                            | 对应包的 `tests/`                                                                                                           |
 
 需要理解统一领域语言时读取根目录 `CONTEXT.md`；需要判断产品范围时读取 [`kkbot-prd.md`](./kkbot-prd.md)；需要判断目标架构或迁移边界时读取当前总规格与有效 ADR。

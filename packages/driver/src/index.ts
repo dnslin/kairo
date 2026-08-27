@@ -40,12 +40,7 @@ export {
   renderCardToBase64,
   resolveCardTheme,
 } from './canvas/renderer.js';
-export {
-  createAlertCard,
-  createApprovalCard,
-  createDecisionCard,
-  createReportCard,
-} from './canvas/templates.js';
+export { createAlertCard, createDecisionCard, createReportCard } from './canvas/templates.js';
 export { DriverError, CdpError, DomError, SendError } from './utils/errors.js';
 export { logger, createChildLogger } from './utils/logger.js';
 
@@ -59,7 +54,6 @@ export type {
   KK9SessionType,
   KK9MessageType,
   KK9MessageOrigin,
-  InboundMessageOrigin,
   TextStyle,
   TextSegment,
   FormattedText,
@@ -71,7 +65,6 @@ export type {
   KK9ImageInfo,
   KK9Session,
   KK9Message,
-  InboundMessage,
   KK9Employee,
   SelectorsConfig,
   CdpConfig,
@@ -79,7 +72,6 @@ export type {
   CompensationScanOptions,
   DriverConfig,
   EventBridgeConfig,
-  EventBridgeEvents,
   SendResult,
   KK9RecalledEvent,
   PreSendCheckResult,
@@ -102,8 +94,6 @@ export type {
   RenderCanvasOptions,
   ResolvedCardTheme,
   CardLayoutResult,
-  ApprovalRiskLevel,
-  ApprovalCardParams,
   AlertSeverity,
   AlertMetric,
   AlertCardParams,

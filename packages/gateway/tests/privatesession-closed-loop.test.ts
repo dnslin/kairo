@@ -65,7 +65,10 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     fileUrl = `file:${dbPath.replace(/\\/g, '/')}`;
 
     // 1. 初始化 KKBotStore 与 Mastra LibSQLStore (单数据库双 Client)
-    store = await createKKBotStore({ url: fileUrl });
+    store = await createKKBotStore({
+      url: fileUrl,
+      media: { baseDir: path.join(tempDir, 'media') },
+    });
     libSqlStore = new LibSQLStore({
       id: 'test-mastra-storage',
       url: fileUrl,
@@ -196,6 +199,241 @@ describe('PrivateSession Closed Loop & Delivery Happy Path (Issue #176)', () => 
     expect(extractMessageText(memoryMessages[1].content)).toBe(
       '您好！我是企业助手 KKBot，已收到您的请求。'
     );
+  });
+  it('PrivateSession 结构化图片附件进入 Mastra VISION 输入并保留图片内容', async () => {
+    let capturedPrompt: unknown;
+    const fastModel = createFakeModel({
+      modelId: 'fast-text-model',
+      responses: [{ text: '错误地使用了 FAST', finishReason: 'stop' }],
+    });
+    const deepModel = createFakeModel({
+      modelId: 'deep-text-model',
+      responses: [{ text: '错误地使用了 DEEP', finishReason: 'stop' }],
+    });
+    const visionModel = createFakeModel({
+      modelId: 'vision-model',
+      responses: [{ text: '已读取图片附件', finishReason: 'stop' }],
+      onGenerate: (_count, options) => {
+        capturedPrompt = options.prompt;
+      },
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fastModel }] },
+        DEEP: { models: [{ model: deepModel }] },
+        VISION: { models: [{ model: visionModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 50, maxWaitMs: 150 },
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_private_image_101';
+    await coordinator.handleInboundMessage({
+      id: 'native_image_10001',
+      messageId: 'native_image_10001',
+      sessionId,
+      sessionName: '李四',
+      sessionType: 'private',
+      sender: '李四',
+      senderId: 'emp_lisi_001',
+      content: '请处理这个附件',
+      messageType: 'image',
+      images: [{ url: 'data:image/jpeg;base64,AA==' }],
+      isMe: false,
+      timestamp: Date.now(),
+    });
+
+    await coordinator.flushSession(sessionId);
+
+    expect(fastModel.callCount).toBe(0);
+    expect(deepModel.callCount).toBe(0);
+    expect(visionModel.callCount).toBe(1);
+    const promptJson = JSON.stringify(capturedPrompt) ?? '';
+    expect(promptJson).toContain('"type":"file"');
+    expect(promptJson).toContain('"mediaType":"image/jpeg"');
+    expect(promptJson).toContain('"data":"AA=="');
+    expect((await store.deliveries.getDeliveriesBySession(sessionId))[0]?.status).toBe('sent');
+  });
+  it('图片附件优先转存 KK9 本地缓存，不被不可用 URL 遮蔽', async () => {
+    let capturedPrompt: unknown;
+    const model = createFakeModel({
+      responses: [{ text: '已读取本地缓存图片', finishReason: 'stop' }],
+      onGenerate: (_count, options) => {
+        capturedPrompt = options.prompt;
+      },
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model }] },
+        DEEP: { models: [{ model }] },
+        VISION: { models: [{ model }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 50, maxWaitMs: 150 },
+    });
+    await coordinator.start();
+
+    const kkCachePath = path.join(tempDir, 'kk-cache', 'screen.jpg');
+    await fs.promises.mkdir(path.dirname(kkCachePath), { recursive: true });
+    await fs.promises.writeFile(kkCachePath, Buffer.from('managed-image'));
+    const sessionId = 'session_private_managed_image_101';
+    await coordinator.handleInboundMessage({
+      id: 'native_managed_image_10001',
+      messageId: 'native_managed_image_10001',
+      sessionId,
+      sessionName: '王五',
+      sessionType: 'private',
+      sender: '王五',
+      senderId: 'emp_wangwu_001',
+      content: '请处理这个附件',
+      messageType: 'image',
+      images: [{ filePath: kkCachePath, url: 'https://example.invalid/remote.jpg' }],
+      isMe: false,
+      timestamp: Date.now(),
+    });
+
+    await coordinator.flushSession(sessionId);
+
+    const promptJson = JSON.stringify(capturedPrompt) ?? '';
+    expect(model.callCount).toBe(1);
+    expect(promptJson).toContain('"type":"file"');
+    expect(promptJson).toContain('"mediaType":"image/jpeg"');
+    expect(promptJson).toContain(`"data":"${Buffer.from('managed-image').toString('base64')}"`);
+    expect(promptJson).not.toContain(kkCachePath);
+    const managedMediaFiles = await fs.promises.readdir(path.join(tempDir, 'media'), {
+      recursive: true,
+    });
+    expect(managedMediaFiles.some(fileName => String(fileName).endsWith('.jpg'))).toBe(false);
+  });
+
+  it('不可用本地图片路径失败后可回退到合法 Data URI 来源', async () => {
+    let capturedPrompt: unknown;
+    const model = createFakeModel({
+      responses: [{ text: '已读取回退图片', finishReason: 'stop' }],
+      onGenerate: (_count, options) => {
+        capturedPrompt = options.prompt;
+      },
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model }] },
+        DEEP: { models: [{ model }] },
+        VISION: { models: [{ model }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 50, maxWaitMs: 150 },
+    });
+    await coordinator.start();
+
+    const sessionId = 'session_private_fallback_image_101';
+    await coordinator.handleInboundMessage({
+      id: 'native_fallback_image_10001',
+      messageId: 'native_fallback_image_10001',
+      sessionId,
+      sessionName: '赵六',
+      sessionType: 'private',
+      sender: '赵六',
+      senderId: 'emp_zhaoliu_001',
+      content: '请处理这个附件',
+      messageType: 'image',
+      images: [
+        {
+          filePath: path.join(tempDir, 'outside.jpg'),
+          url: 'data:image/webp;base64,AA==',
+        },
+      ],
+      isMe: false,
+      timestamp: Date.now(),
+    });
+
+    await coordinator.flushSession(sessionId);
+
+    const promptJson = JSON.stringify(capturedPrompt) ?? '';
+    expect(model.callCount).toBe(1);
+    expect(promptJson).toContain('"mediaType":"image/webp"');
+    expect(promptJson).toContain('"data":"AA=="');
+  });
+  it('图片文件卡片纳入视觉分类并通过 Mastra 图片片段传入', async () => {
+    let capturedPrompt: unknown;
+    const fastModel = createFakeModel({
+      modelId: 'fast-file-card-model',
+      responses: [{ text: '错误地使用了 FAST', finishReason: 'stop' }],
+    });
+    const deepModel = createFakeModel({
+      modelId: 'deep-file-card-model',
+      responses: [{ text: '错误地使用了 DEEP', finishReason: 'stop' }],
+    });
+    const visionModel = createFakeModel({
+      modelId: 'vision-file-card-model',
+      responses: [{ text: '已读取图片文件卡片', finishReason: 'stop' }],
+      onGenerate: (_count, options) => {
+        capturedPrompt = options.prompt;
+      },
+    });
+    const modelFactory = new MastraModelFactory({
+      tiers: {
+        FAST: { models: [{ model: fastModel }] },
+        DEEP: { models: [{ model: deepModel }] },
+        VISION: { models: [{ model: visionModel }] },
+      },
+    });
+    const agent = new KKBotAgent({ modelFactory, memory: mastraMemory });
+    coordinator = new SessionCoordinator({
+      driver: mockDriver as unknown as KK9Driver,
+      store,
+      agent,
+      mastraMemory,
+      config: { debounceMs: 50, maxWaitMs: 150 },
+    });
+    await coordinator.start();
+
+    const kkCachePath = path.join(tempDir, 'kk-cache', 'card.png');
+    await fs.promises.mkdir(path.dirname(kkCachePath), { recursive: true });
+    await fs.promises.writeFile(kkCachePath, Buffer.from('file-card-image'));
+    const sessionId = 'session_private_file_card_image_101';
+    await coordinator.handleInboundMessage({
+      id: 'native_file_card_image_10001',
+      messageId: 'native_file_card_image_10001',
+      sessionId,
+      sessionName: '钱七',
+      sessionType: 'private',
+      sender: '钱七',
+      senderId: 'emp_qianqi_001',
+      content: '请处理这个文件卡片',
+      messageType: 'file',
+      fileInfo: { fileName: 'card.png', fileExt: ' ', filePath: kkCachePath },
+      isMe: false,
+      timestamp: Date.now(),
+    });
+
+    await coordinator.flushSession(sessionId);
+
+    const promptJson = JSON.stringify(capturedPrompt) ?? '';
+    expect(fastModel.callCount).toBe(0);
+    expect(deepModel.callCount).toBe(0);
+    expect(visionModel.callCount).toBe(1);
+    expect(promptJson).toContain('"mediaType":"image/png"');
+    expect(promptJson).toContain(`"data":"${Buffer.from('file-card-image').toString('base64')}"`);
   });
 
   it('相同原始消息串行与并发重放均不创建第二条 user Memory', async () => {

@@ -499,34 +499,6 @@ describe('SessionCoordinator 业务编排器测试', () => {
       await coordinator.stop();
     });
 
-    it('草稿模式 (mode: draft) 坚决保留红点，不调用 markSessionRead', async () => {
-      const coordinator = new SessionCoordinator({
-        driver: mockDriver as unknown as KK9Driver,
-        store,
-      });
-      await coordinator.start();
-
-      // 初始化会话为 draft 模式
-      await store.sessions.upsertSession({
-        id: 'session_draft',
-        name: '草稿会话',
-        type: 'private',
-        mode: 'draft',
-      });
-
-      const result = await coordinator.dispatchReply('session_draft', '待审核草稿内容');
-
-      expect(result.success).toBe(true);
-      expect(result.action).toBe('draft_created');
-      expect(result.redDotCleared).toBe(false);
-
-      // 绝不能调用 sendText 发送给对方，也不能调用 markSessionRead
-      expect(mockDriver.sendText).not.toHaveBeenCalled();
-      expect(mockDriver.markSessionRead).not.toHaveBeenCalled();
-
-      await coordinator.stop();
-    });
-
     it('人工退避期内坚决保留红点，阻止自动发送', async () => {
       const coordinator = new SessionCoordinator({
         driver: mockDriver as unknown as KK9Driver,

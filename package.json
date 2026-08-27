@@ -33,6 +33,10 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
+    "@kkbot/agent": "workspace:*",
+    "@kkbot/driver": "workspace:*",
+    "@kkbot/gateway": "workspace:*",
+    "@kkbot/store": "workspace:*",
     "@mastra/core": "catalog:",
     "@mastra/libsql": "catalog:",
     "@types/node": "^22.12.0",

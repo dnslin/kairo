@@ -7,7 +7,7 @@ import {
   resetObservationalMemoryScope,
 } from '../src/agent.js';
 import { MastraModelFactory } from '../src/models/factory.js';
-import { createFakeModel } from './fixtures/fake-model.js';
+import { createFakeModel } from '../src/testing/fake-model.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';

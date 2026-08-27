@@ -11,7 +11,7 @@ import { createKkTool, decorateKkTool } from '../../src/tools/create-tool.js';
 import type { Tool } from '@mastra/core/tools';
 import { KKBotAgent } from '../../src/agent.js';
 import { MastraModelFactory } from '../../src/models/factory.js';
-import { createFakeModel } from '../fixtures/fake-model.js';
+import { createFakeModel } from '../../src/testing/fake-model.js';
 describe('createKkTool (Mastra Tool Factory & Contract Guard)', () => {
   it('应成功创建合法的只读 Mastra Tool', async () => {
     const tool = createKkTool({

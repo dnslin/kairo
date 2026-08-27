@@ -1,8 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
 import { z } from 'zod';
-import { createAgentTool } from '../registry.js';
-import type { AgentTool, KnowledgeChunkResult } from '../types.js';
+import type { KnowledgeChunkResult } from '../types.js';
 import { createKkTool, type KkMastraTool } from '../create-tool.js';
 import { createChildLogger } from '../../utils/logger.js';
 const log = createChildLogger('tool-knowledge-base');
@@ -324,28 +323,6 @@ export function executeQueryKnowledgeBaseCore(
   };
 }
 
-/**
- * 创建 query_knowledge_base 内置工具 (旧 ToolRegistry 兼容)
- */
-export function createQueryKnowledgeBaseTool(
-  options: QueryKnowledgeBaseOptions = {}
-): AgentTool<QueryKnowledgeBaseInput, QueryKnowledgeBaseOutput> {
-  return createAgentTool<QueryKnowledgeBaseInput, QueryKnowledgeBaseOutput>({
-    id: 'query_knowledge_base',
-    description:
-      '在企业本地 Markdown 知识库中进行切片语义与关键词检索，获取制度文档、规范指引或业务知识。只读查询。',
-    readOnly: true,
-    inputSchema: QueryKnowledgeBaseInputSchema,
-    execute: async (input): Promise<QueryKnowledgeBaseOutput> => {
-      await Promise.resolve();
-      return executeQueryKnowledgeBaseCore(options, input);
-    },
-    metadata: {
-      category: 'knowledge',
-      builtin: true,
-    },
-  });
-}
 
 /**
  * 创建 Mastra-native query_knowledge_base 工具

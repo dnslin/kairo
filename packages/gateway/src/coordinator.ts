@@ -16,8 +16,8 @@ import type {
   ComplianceDeletionScope,
   DeliveryAdjudicationDecision,
   DeliveryStatus,
+  Delivery,
   KKBotStore,
-  MessageDelivery,
   MessageRawPayload,
   SessionMessage,
   MessageProcessingState,
@@ -31,18 +31,9 @@ import {
   createMastraTextMessage,
   removeMastraMessage,
   resetObservationalMemoryScope,
-  createRegisterProactiveScheduleTool,
-  type AgentMemoryManager,
-  type ApprovalManager,
-  type EmployeeOrgContext,
   type KKBotAgentRunResult,
   type KKBotRequestContextValues,
-  type KkbotAgentRuntime,
-  type LeaderApprovalRouter,
-  type LLMMessage,
   type Memory,
-  type StatefulApprovalMatcher,
-  type UserProfilePreference,
 } from '@kkbot/agent';
 import type {
   ComplianceAuthorizationResult,
@@ -58,12 +49,12 @@ import type {
   SessionCoordinatorOptions,
   WorkAdmission,
 } from './types/index.js';
-import type { ProactiveScheduleManager } from './schedule/index.js';
 import { createChildLogger } from './utils/logger.js';
 import {
   DeliveryRecoveryScanner,
   type DeliveryRecoveryReport,
 } from './recovery/delivery-recovery-scanner.js';
+import { createMastraAgentInput } from './agent-input.js';
 
 const log = createChildLogger('session-coordinator');
 
@@ -195,8 +186,8 @@ export declare interface SessionCoordinator {
 
 /**
  * SessionCoordinator
- * 上层业务会话编排器：深度协同 @kkbot/driver、@kkbot/store 与 @kkbot/agent 认知微内核，
- * 负责智能短消息防抖合并队列、撤回即时熔断、50ms 在途瞬时打断重聚、双通道主管 IM 审批闭环与视觉红点守卫
+ * 上层业务会话编排器：协同 @kkbot/driver、@kkbot/store 与 Mastra-native Agent，
+ * 负责私聊防抖、撤回、人工接管、在途中断、串行发送和 Delivery 事实投影。
  */
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare
 export class SessionCoordinator extends EventEmitter {
@@ -207,23 +198,11 @@ export class SessionCoordinator extends EventEmitter {
   public readonly mastraMemory?: Memory;
   public readonly mastraStorage?: unknown;
   public readonly complianceAuthorizer?: ComplianceDeletionAuthorizer;
-  public readonly agentRuntime?: KkbotAgentRuntime;
-  public readonly memoryManager?: AgentMemoryManager;
-  public readonly approvalManager?: ApprovalManager;
-  public readonly leaderRouter?: LeaderApprovalRouter;
-  public readonly statefulMatcher?: StatefulApprovalMatcher;
-  public readonly scheduleManager?: ProactiveScheduleManager;
   public readonly hooks?: CoordinatorFaultHooks;
-  public readonly config: Required<
-    Omit<CoordinatorConfig, 'onConsolidatedMessage' | 'knowledgeRetriever'>
-  > & {
+  public readonly config: Required<Omit<CoordinatorConfig, 'onConsolidatedMessage'>> & {
     onConsolidatedMessage?: (
       message: ConsolidatedMessage
     ) => Promise<void | CoordinatorDispatchResult> | void;
-    knowledgeRetriever?: (
-      query: string,
-      sessionId: string
-    ) => Promise<string[] | undefined> | string[] | undefined;
   };
 
   /** 各会话防抖队列桶映射表 (sessionId -> PendingBucket) */
@@ -277,12 +256,6 @@ export class SessionCoordinator extends EventEmitter {
     if (this.agent && !this.mastraMemory) {
       throw new Error('装配 Mastra-native Agent 时必须同时传入协同的 mastraMemory 实例');
     }
-    this.agentRuntime = options.agentRuntime;
-    this.memoryManager = options.memoryManager;
-    this.approvalManager = options.approvalManager;
-    this.leaderRouter = options.leaderRouter;
-    this.statefulMatcher = options.statefulMatcher;
-    this.scheduleManager = options.scheduleManager;
     this.hooks = options.hooks;
     this.config = {
       debounceMs: options.config?.debounceMs ?? DEFAULT_DEBOUNCE_MS,
@@ -290,33 +263,8 @@ export class SessionCoordinator extends EventEmitter {
       takeoverDurationMs: options.config?.takeoverDurationMs ?? DEFAULT_TAKEOVER_DURATION_MS,
       maxRetries: options.config?.maxRetries ?? 2,
       autoMarkRead: options.config?.autoMarkRead ?? true,
-      enableHitlRouter: options.config?.enableHitlRouter ?? true,
       onConsolidatedMessage: options.config?.onConsolidatedMessage,
-      knowledgeRetriever: options.config?.knowledgeRetriever,
     };
-
-    // 显式绑定 scheduleManager 的全局串行分发通道 (带 sendMutex 锁、自动会话切换与红点守护)
-    if (this.scheduleManager && typeof this.scheduleManager.bindDispatchReply === 'function') {
-      this.scheduleManager.bindDispatchReply((sid, content, opt) =>
-        this.dispatchReply(sid, content, opt)
-      );
-    }
-
-    // 若同时装配了 scheduleManager 与 agentRuntime，自动在工具中心注册 register_proactive_schedule
-    if (this.scheduleManager && this.agentRuntime) {
-      const registry = this.agentRuntime.getToolRegistry?.();
-      if (registry && typeof registry.register === 'function') {
-        try {
-          const schedTool = createRegisterProactiveScheduleTool({
-            scheduleManager: this.scheduleManager,
-          });
-          registry.register(schedTool, { override: true });
-          log.info('已自动在 Agent 工具注册中心装配 register_proactive_schedule 工具');
-        } catch (regErr) {
-          log.debug({ regErr }, '自动装配 register_proactive_schedule 工具告警');
-        }
-      }
-    }
 
     this.boundHandleMessage = (msg: KK9Message): void => {
       this.trackInbound(this.handleInboundMessage(msg), {
@@ -330,39 +278,10 @@ export class SessionCoordinator extends EventEmitter {
         messageId: evt.messageId,
       });
     };
-    // 自动装配 ApprovalManager 与 AgentRuntime 工具执行器 (显式保留 applicantId -> senderId 鉴权契约)
-    if (this.approvalManager && this.agentRuntime) {
-      const toolRegistry = this.agentRuntime.getToolRegistry();
-      if (toolRegistry) {
-        this.approvalManager.setToolExecutor(async (toolName, toolArgs, ctx) => {
-          const tool = toolRegistry.get(toolName);
-          if (!tool) {
-            throw new Error(`未找到工具: ${toolName}`);
-          }
-          const effectiveSenderId =
-            'applicantId' in ctx && typeof ctx.applicantId === 'string'
-              ? ctx.applicantId
-              : ctx.senderId;
-          return tool.execute(toolArgs, {
-            senderId: effectiveSenderId,
-            threadId: ctx.threadId,
-            approvedTaskId: ctx.approvalTaskId,
-            idempotencyKey: ctx.idempotencyKey,
-          });
-        });
-      }
-    }
-
-    // 绑定 ScheduleManager 事件代理
-    if (this.scheduleManager) {
-      this.scheduleManager.on('triggered', s => this.emit('schedule_triggered', s));
-      this.scheduleManager.on('executed', (s, r) => this.emit('schedule_executed', s, r));
-      this.scheduleManager.on('failed', (s, e) => this.emit('schedule_failed', s, e));
-    }
   }
 
   /**
-   * 启动会话编排器：先执行 Delivery 检查点恢复扫描，再挂载底层 Driver 事件监听并启动主动推送调度器
+   * 启动会话编排器：先执行 Delivery 检查点恢复扫描，再挂载底层 Driver 事件监听。
    */
   public async start(): Promise<void> {
     if (this.isRunning) {
@@ -370,8 +289,6 @@ export class SessionCoordinator extends EventEmitter {
     }
     this.stopping = false;
 
-    // 1. 【启动准入门槛：执行 Delivery 检查点恢复扫描】
-    // 在接收入站消息与开放调度前，恢复断线/强杀遗留的 sending (转为 unknown) 与 sent-but-uncommitted (补交 Memory)
     try {
       const recoveryReport = await this.runDeliveryRecoveryScan();
       if (recoveryReport.errors.length > 0) {
@@ -383,15 +300,10 @@ export class SessionCoordinator extends EventEmitter {
         throw new Error(errMsg);
       }
     } catch (recErr) {
-      log.error(
-        { err: recErr },
-        'SessionCoordinator 启动前执行 Delivery 恢复扫描致命失败，阻止启动'
-      );
+      log.error({ err: recErr }, 'SessionCoordinator 启动前 Delivery 恢复扫描失败，阻止启动');
       throw recErr;
     }
 
-    // 2. 【启动准入门槛：预热内存墓碑栅栏 (Fail-Closed)】
-    // 通过 TombstoneRepository 加载全量墓碑标识，0ms 瞬时同步拦截已撤回与已删除消息
     try {
       const tombKeys = await this.store.tombstones.getAllTombstoneKeys();
       for (const key of tombKeys) {
@@ -399,27 +311,12 @@ export class SessionCoordinator extends EventEmitter {
         this.recalledMessageIds.add(key);
       }
     } catch (tombErr) {
-      log.error(
-        { err: tombErr },
-        'SessionCoordinator 启动前预热内存墓碑栅栏失败，阻止系统启动 (Fail-Closed)'
-      );
+      log.error({ err: tombErr }, 'SessionCoordinator 启动前预热墓碑栅栏失败，阻止系统启动');
       throw tombErr;
     }
+
     this.driver.on('message', this.boundHandleMessage);
     this.driver.on('recalled', this.boundHandleRecalled);
-    if (this.scheduleManager) {
-      try {
-        await this.scheduleManager.start();
-      } catch (err) {
-        // 启动失败安全回滚：解绑 Driver 监听并恢复未运行状态，允许后续重试启动
-        this.driver.off('message', this.boundHandleMessage);
-        this.driver.off('recalled', this.boundHandleRecalled);
-        this.isRunning = false;
-        log.error({ err }, 'SessionCoordinator 启动主动调度管理器失败，已安全回滚');
-        throw err;
-      }
-    }
-
     this.isRunning = true;
 
     log.info(
@@ -427,8 +324,8 @@ export class SessionCoordinator extends EventEmitter {
         debounceMs: this.config.debounceMs,
         maxWaitMs: this.config.maxWaitMs,
         takeoverDurationMs: this.config.takeoverDurationMs,
-        hasAgent: Boolean(this.agentRuntime),
-        hasHitl: Boolean(this.approvalManager && this.statefulMatcher),
+        hasAgent: Boolean(this.agent),
+        hasMastraMemory: Boolean(this.mastraMemory),
       },
       'SessionCoordinator 已成功启动'
     );
@@ -494,13 +391,6 @@ export class SessionCoordinator extends EventEmitter {
     }
     this.inFlightSessions.clear();
 
-    if (this.scheduleManager) {
-      try {
-        await this.scheduleManager.stop();
-      } catch (error) {
-        shutdownErrors.push(error instanceof Error ? error : new Error(String(error)));
-      }
-    }
     if (shutdownErrors.length > 0) {
       throw new AggregateError(shutdownErrors, 'SessionCoordinator Shutdown 活动任务失败');
     }
@@ -949,69 +839,6 @@ export class SessionCoordinator extends EventEmitter {
       return;
     }
 
-    // 4. 检查是否为直属主管在私聊窗口中回复 HITL 审批指令 (严格限制为 private 会话且具有可信 senderId，杜绝群聊越权与身份冒用)
-    if (
-      this.config.enableHitlRouter &&
-      this.statefulMatcher &&
-      this.approvalManager &&
-      msg.sessionType === 'private' &&
-      Boolean(msg.senderId)
-    ) {
-      const deciderId = msg.senderId!;
-      const matchRes = await this.statefulMatcher.match(deciderId, msg.content);
-
-      if (matchRes.matched && matchRes.task) {
-        const task = matchRes.task;
-        const approved = matchRes.action === 'approve';
-        log.info(
-          { deciderId, taskId: task.id, approved, rawInput: msg.content },
-          '主管在私聊中回复审批决议，开始执行跨会话决议流转'
-        );
-
-        // 执行决议并自动触发关联 Mastra Workflow resume (内部自动执行高危工具并记录结果)
-        const resolvedTask = await this.approvalManager.resolveTask({
-          taskId: task.id,
-          approved,
-          deciderId,
-          reason: msg.content,
-        });
-
-        // 1) 主管私聊窗口回复
-        const supervisorReply = approved
-          ? `✅ 已为您批准【${task.applicantName || task.applicantId}】提交的【${task.toolName}】操作。`
-          : `❌ 已为您驳回【${task.applicantName || task.applicantId}】提交的【${task.toolName}】操作。`;
-
-        await this.dispatchReply(msg.sessionId, supervisorReply);
-
-        // 2) 跨会话向申请人员工的原会话 (task.threadId) 推送执行结果 (固定 markRead: false 保护申请人红点)
-        let applicantNotification: string;
-        if (approved) {
-          const rawResult = resolvedTask.toolExecutionResult;
-          let resultSummary = '操作执行成功';
-          if (rawResult !== undefined && rawResult !== null) {
-            resultSummary =
-              typeof rawResult === 'string'
-                ? rawResult
-                : typeof rawResult === 'number' || typeof rawResult === 'boolean'
-                  ? String(rawResult)
-                  : JSON.stringify(rawResult);
-          }
-          applicantNotification = `🎉 您的直属主管【${resolvedTask.leaderName || deciderId}】已批准操作【${task.toolName}】。\n执行结果：${resultSummary}`;
-        } else {
-          applicantNotification = `⚠️ 您的直属主管【${resolvedTask.leaderName || deciderId}】已驳回操作【${task.toolName}】。`;
-        }
-
-        await this.dispatchReply(task.threadId, applicantNotification, { markRead: false });
-
-        this.emit('approval_resolved', deciderId, resolvedTask, approved);
-        return;
-      } else if (matchRes.promptMessage) {
-        log.info({ deciderId }, '主管有多笔待办任务或指令需消歧，回复引导提示');
-        await this.dispatchReply(msg.sessionId, matchRes.promptMessage);
-        return;
-      }
-    }
-
     const persistPromise: Promise<boolean> = compensationSaved
       ? Promise.resolve(true)
       : (async (): Promise<boolean> => {
@@ -1273,34 +1100,7 @@ export class SessionCoordinator extends EventEmitter {
     const sessionRecord = await this.store.sessions.getSession(sessionId);
     const effectiveMode = options.mode ?? memMode ?? sessionRecord?.mode ?? 'auto';
 
-    // 1. 草稿模式守护：保存草稿并坚决保留视觉红点
-    if (effectiveMode === 'draft') {
-      log.info({ sessionId }, '会话处于 draft 草稿模式，保存草稿记录并坚决保留红点');
-      const contentStr =
-        typeof replyContent === 'string' ? replyContent : JSON.stringify(replyContent);
-
-      await this.store.messages.saveMessage({
-        sessionId,
-        sender: '自己',
-        content: contentStr,
-        messageType: typeof replyContent === 'string' ? 'text' : 'rich-text',
-        isFromSelf: true,
-        isRecalled: false,
-        createdAt: Date.now(),
-        processingState: 'raw_only',
-      });
-
-      const result: CoordinatorDispatchResult = {
-        action: 'draft_created',
-        success: true,
-        sessionId,
-        redDotCleared: false,
-      };
-      this.emit('reply_dispatched', sessionId, result);
-      return result;
-    }
-
-    // 2. 人机退避守护：退避期内拦截自动发送并坚决保留红点
+    // 1. 人机退避守护：退避期内拦截自动发送并坚决保留红点
     if (await this.isTakeoverActive(sessionId)) {
       log.warn({ sessionId }, '会话处于人工接管退避期，拦截自动回复发送，坚决保留红点');
       const result: CoordinatorDispatchResult = {
@@ -1314,7 +1114,7 @@ export class SessionCoordinator extends EventEmitter {
       return result;
     }
 
-    // 3. 禁用模式守护
+    // 2. 禁用模式守护
     if (effectiveMode === 'disabled') {
       log.info({ sessionId }, '会话已被禁用，跳过自动回复并保留红点');
       const result: CoordinatorDispatchResult = {
@@ -1827,26 +1627,24 @@ export class SessionCoordinator extends EventEmitter {
       return;
     }
 
-    if (this.agent || this.agentRuntime) {
+    if (this.agent) {
       const inFlight = await this.prepareAgentRun(sessionId, consolidated);
       if (!inFlight) {
         return;
       }
 
       this.emit('agent_started', sessionId, inFlight.message);
-      const execPromise = this.agent
-        ? this.executeMastraAgentPipeline(
-            sessionId,
-            inFlight.message,
-            inFlight.abortController.signal,
-            inFlight.runId
-          )
-        : this.executeAgentPipeline(sessionId, inFlight.message, inFlight.abortController.signal);
+      const execPromise = this.executeMastraAgentPipeline(
+        sessionId,
+        inFlight.message,
+        inFlight.abortController.signal,
+        inFlight.runId
+      );
       inFlight.promise = execPromise;
       try {
         await execPromise;
       } catch (err) {
-        log.error({ sessionId, err }, 'Agent 流水线执行发生异常');
+        log.error({ sessionId, err }, 'Mastra Agent 流水线执行发生异常');
         this.emitError(err instanceof Error ? err : new Error(String(err)));
       } finally {
         if (this.inFlightSessions.get(sessionId) === inFlight) {
@@ -1855,12 +1653,11 @@ export class SessionCoordinator extends EventEmitter {
       }
       return;
     }
-    if (!this.agent && !this.agentRuntime) {
-      await this.store.messages.markMessagesRawOnly(
-        sessionId,
-        consolidated.messages.map(message => message.messageId || message.id)
-      );
-    }
+
+    await this.store.messages.markMessagesRawOnly(
+      sessionId,
+      consolidated.messages.map(message => message.messageId || message.id)
+    );
   }
   /**
    * 执行 Mastra-native Agent 闭环流水线 (Issue #176)
@@ -1912,7 +1709,7 @@ export class SessionCoordinator extends EventEmitter {
     const agentRes = await this.executeMastraModel(
       sessionId,
       resourceId,
-      consolidated.content,
+      consolidated,
       signal,
       traceId,
       runId
@@ -2211,7 +2008,7 @@ export class SessionCoordinator extends EventEmitter {
   private async executeMastraModel(
     sessionId: string,
     resourceId: string,
-    text: string,
+    consolidated: ConsolidatedMessage,
     signal: AbortSignal,
     traceId: string,
     runId: string
@@ -2225,8 +2022,9 @@ export class SessionCoordinator extends EventEmitter {
     reqCtx.set('resourceId', resourceId);
 
     try {
+      const agentInput = await createMastraAgentInput(consolidated, this.store.media);
       return await this.agent!.execute({
-        input: text,
+        input: agentInput,
         sessionId,
         senderId: resourceId,
         abortSignal: signal,
@@ -2253,7 +2051,7 @@ export class SessionCoordinator extends EventEmitter {
     mastraMessageId: string,
     replyText: string,
     inputMessageIds?: string[]
-  ): Promise<MessageDelivery | null> {
+  ): Promise<Delivery | null> {
     const contentHash = createHash('sha256').update(replyText).digest('hex');
     try {
       await this.hooks?.afterAgentBeforeDeliveryCreate?.(sessionId, replyText);
@@ -2504,7 +2302,7 @@ export class SessionCoordinator extends EventEmitter {
     operator: string;
     decision: DeliveryAdjudicationDecision;
     evidenceSummary: string;
-  }): Promise<{ success: boolean; delivery: MessageDelivery; memoryCommitted?: boolean }> {
+  }): Promise<{ success: boolean; delivery: Delivery; memoryCommitted?: boolean }> {
     const updated = await this.store.deliveries.adjudicateDelivery(options.deliveryId, {
       operator: options.operator,
       decision: options.decision,
@@ -2936,165 +2734,6 @@ export class SessionCoordinator extends EventEmitter {
     if (this.listenerCount('error') > 0) {
       this.emit('error', error);
     }
-  }
-
-  /**
-   * 执行 Agent 认知微内核全链路流水线
-   */
-  private async executeAgentPipeline(
-    sessionId: string,
-    consolidated: ConsolidatedMessage,
-    signal: AbortSignal
-  ): Promise<void> {
-    if (signal.aborted) {
-      this.emit('agent_aborted', sessionId);
-      return;
-    }
-
-    // 1. 调取员工组织与岗位上下文
-    let employeeContext: EmployeeOrgContext | undefined = undefined;
-    if (consolidated.senderId) {
-      try {
-        const emp = await this.store.org.getEmployeeById(consolidated.senderId);
-        if (emp) {
-          const primaryDept = emp.departments?.find(d => d.isPrimary) || emp.departments?.[0];
-          employeeContext = {
-            employeeId: String(emp.id),
-            name: emp.name,
-            department: primaryDept?.deptName,
-            jobTitle: primaryDept?.position ?? undefined,
-          };
-        }
-      } catch (err) {
-        log.debug({ err, senderId: consolidated.senderId }, '查询员工档案异常');
-      }
-    }
-
-    // 2. 调取 3-Tier 记忆与 RAG 知识库上下文 (L1 消息历史 / L2 滚动摘要 / L3 实体画像 / RAG 知识切片)
-    let historyMessages: LLMMessage[] | undefined = undefined;
-    let retrievedFacts: string[] | undefined = undefined;
-    let userProfile: UserProfilePreference | undefined = undefined;
-
-    // 知识库 RAG 检索 (注入 Layer 4 事实层)
-    if (this.config.knowledgeRetriever) {
-      try {
-        const kbFacts = await this.config.knowledgeRetriever(consolidated.content, sessionId);
-        if (kbFacts && kbFacts.length > 0) {
-          retrievedFacts = [...(retrievedFacts ?? []), ...kbFacts];
-        }
-      } catch (kbErr) {
-        log.warn({ kbErr, sessionId }, '知识库 RAG 检索异常');
-      }
-    }
-
-    if (this.memoryManager) {
-      try {
-        const memCtx = await this.memoryManager.getContext({
-          threadId: sessionId,
-          resourceId: consolidated.senderId,
-        });
-
-        // L1 短期历史 (排除当前批次 consolidated.messageIds，按 user/assistant 角色格式化)
-        const previousL1 =
-          memCtx.l1Window?.messages.filter(
-            m => !consolidated.messageIds.includes(m.messageId ?? String(m.id))
-          ) ?? [];
-        if (previousL1.length > 0) {
-          historyMessages = previousL1.map(m => ({
-            role: m.isFromSelf ? 'assistant' : 'user',
-            content: m.content,
-          }));
-        }
-
-        // L2 滚动工作摘要 (放入 Layer 4 事实上下文)
-        if (memCtx.l2Summary?.summary?.trim()) {
-          const summaryFact = `【前序对话工作摘要】: ${memCtx.l2Summary.summary.trim()}`;
-          retrievedFacts = retrievedFacts ? [...retrievedFacts, summaryFact] : [summaryFact];
-        }
-
-        // L3 实体画像与偏好 (放入 Layer 2 用户画像)
-        if (memCtx.l3Profile) {
-          userProfile = {
-            nickname: memCtx.l3Profile.name ?? undefined,
-            customPreferences:
-              memCtx.l3Profile.preferences && Object.keys(memCtx.l3Profile.preferences).length > 0
-                ? (memCtx.l3Profile.preferences as Record<string, string>)
-                : undefined,
-          };
-        }
-      } catch (err) {
-        log.warn({ err, sessionId }, '调取 3-Tier 记忆上下文异常');
-      }
-    }
-
-    // 3. 调用 Agent 认知微内核执行
-    const agentRes = await this.agentRuntime!.execute(sessionId, consolidated, {
-      signal,
-      employeeContext,
-      userProfile,
-      historyMessages,
-      retrievedFacts,
-    });
-
-    // 释放当前会话在途生成锁 (CAS 身份校验：仅当当前锁仍属于本次执行时才删除，防止误删新一轮重聚锁)
-    const currentInFlight = this.inFlightSessions.get(sessionId);
-    if (currentInFlight && currentInFlight.abortController.signal === signal) {
-      this.inFlightSessions.delete(sessionId);
-    }
-
-    // 检查是否已被打断
-    if (signal.aborted || agentRes.aborted) {
-      log.info({ sessionId }, '大模型生成已被 50ms 瞬时打断，放弃发送本次回复');
-      this.emit('agent_aborted', sessionId);
-      return;
-    }
-    // 4. 处理高危工具 HITL 审批挂起分支
-    if (
-      agentRes.finishReason === 'tool_calls' &&
-      agentRes.toolCalls.some(t => t.status === 'suspended')
-    ) {
-      log.info({ sessionId }, '工具调用触发 HITL 审批挂起，开始向直属主管推送私聊通知');
-
-      for (const tc of agentRes.toolCalls) {
-        if (tc.status === 'suspended' && tc.approvalTaskId && this.approvalManager) {
-          try {
-            const task = await this.approvalManager.getTaskById(tc.approvalTaskId);
-            if (task) {
-              if (this.leaderRouter && task.leaderId) {
-                const notif = this.leaderRouter.formatApprovalNotification(task);
-                // 统一收口至 dispatchReply 进行串行锁排队、自动会话切换与红点保留
-                await this.dispatchReply(task.leaderId, notif.text, { markRead: false });
-                this.emit('approval_notified', task.leaderId, task);
-                log.info(
-                  { leaderId: task.leaderId, taskId: task.id },
-                  '已向直属主管发送私聊审批通知卡片'
-                );
-              }
-              this.emit('approval_suspended', sessionId, task);
-            }
-          } catch (err) {
-            log.error({ err, taskId: tc.approvalTaskId }, '处理审批挂起通知异常');
-          }
-        }
-      }
-
-      // 向申请人员工会话发送挂起中回复，并且严格保留红点 (markRead: false)！
-      await this.dispatchReply(sessionId, agentRes.content, { markRead: false });
-      this.emit('agent_completed', sessionId, agentRes);
-      return;
-    }
-
-    // 5. 正常回复发送与红点消除
-    if (agentRes.content) {
-      const dispatchRes = await this.dispatchReply(sessionId, agentRes.content);
-      if (dispatchRes.success && this.memoryManager) {
-        // 统一由 Store 持久化消息历史，此处仅异步尝试触发 L2 滚动摘要提炼 (显式 catch 避免未捕获拒绝)
-        void this.memoryManager.maybeTriggerAsyncSummary(sessionId).catch(memErr => {
-          log.warn({ memErr, sessionId }, '触发 3-Tier 异步摘要异常');
-        });
-      }
-    }
-    this.emit('agent_completed', sessionId, agentRes);
   }
 
   /**

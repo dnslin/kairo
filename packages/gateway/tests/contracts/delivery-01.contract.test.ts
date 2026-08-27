@@ -7,8 +7,6 @@ import {
   MastraModelFactory,
   createFakeModel,
   Memory,
-  type AgentReplyResult,
-  type KkbotAgentRuntime,
 } from '@kkbot/agent';
 import { LibSQLStore } from '@mastra/libsql';
 import fs from 'node:fs';
@@ -242,96 +240,6 @@ describe('DELIVERY-01 Contract: 入站身份收敛、群聊短路与数据库级
           sessionType: 'private',
         })
       );
-    });
-  });
-
-  describe('DELIVERY-01.4: 群聊消息不中断已有在途 Agent Run', () => {
-    it('同 sessionId 的在途私聊 Agent Run 不会被后续群聊消息打断', async () => {
-      const targetSessionId = 'session_delivery_01_concurrent';
-      const { promise: waitingAgentPromise, resolve: resolveAgentRun } =
-        Promise.withResolvers<AgentReplyResult>();
-      let capturedSignal: AbortSignal | null = null;
-
-      const fakeAgentRuntime = {
-        execute: vi
-          .fn()
-          .mockImplementation(
-            (
-              _sid: string,
-              _msg: unknown,
-              opts?: { signal?: AbortSignal }
-            ): Promise<AgentReplyResult> => {
-              capturedSignal = opts?.signal ?? null;
-              return waitingAgentPromise;
-            }
-          ),
-      } as unknown as KkbotAgentRuntime;
-
-      const testCoordinator = new SessionCoordinator({
-        driver: mockDriver as unknown as KK9Driver,
-        store,
-        agentRuntime: fakeAgentRuntime,
-        config: {
-          debounceMs: 10,
-          maxWaitMs: 50,
-        },
-      });
-      await testCoordinator.start();
-
-      const inFlightAbortedSpy = vi.fn();
-      testCoordinator.on('in_flight_aborted', inFlightAbortedSpy);
-
-      // 1. 发起私聊在途任务
-      const privateMsg: KK9Message = {
-        id: 'delivery01_priv_1',
-        messageId: 'delivery01_priv_1',
-        sessionId: targetSessionId,
-        sessionName: '私聊在途目标',
-        sessionType: 'private',
-        origin: 'external',
-        sender: '员工',
-        content: '私聊发起耗时任务',
-        time: '14:00',
-        isMe: false,
-        timestamp: Date.now(),
-      };
-
-      const { promise: startedPromise, resolve: resolveStarted } = Promise.withResolvers<void>();
-      testCoordinator.once('agent_started', () => {
-        resolveStarted();
-      });
-      await testCoordinator.handleInboundMessage(privateMsg);
-      const flushPromise = testCoordinator.flushSession(targetSessionId);
-      await startedPromise;
-
-      expect(testCoordinator.hasInFlightSession(targetSessionId)).toBe(true);
-      expect(capturedSignal).not.toBeNull();
-      expect(capturedSignal!.aborted).toBe(false);
-
-      // 2. 发送具有相同 sessionId 的群聊消息
-      const groupMsg: KK9Message = {
-        id: 'delivery01_grp_1',
-        messageId: 'delivery01_grp_1',
-        sessionId: targetSessionId,
-        sessionName: '群聊插入消息',
-        sessionType: 'group',
-        origin: 'external',
-        sender: '群成员',
-        content: '群消息到达，不应打断在途私聊',
-        time: '14:01',
-        isMe: false,
-        timestamp: Date.now(),
-      };
-      await testCoordinator.handleInboundMessage(groupMsg);
-
-      // 3. 断言在途 Run 未被中断
-      expect(capturedSignal!.aborted).toBe(false);
-      expect(inFlightAbortedSpy).not.toHaveBeenCalled();
-      expect(testCoordinator.hasInFlightSession(targetSessionId)).toBe(true);
-
-      resolveAgentRun({ content: '完成', finishReason: 'stop' });
-      await flushPromise;
-      await testCoordinator.stop();
     });
   });
 

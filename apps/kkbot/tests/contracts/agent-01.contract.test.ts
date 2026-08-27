@@ -262,13 +262,16 @@ describe('AGENT-01 Contract: Mastra-native Agent & Model Tier Policy', () => {
         }),
         agent.execute({
           input: {
-            text: '查看附件图',
-            attachments: [
-              {
-                mediaType: 'image/png',
-                hasCompleteTrustedText: false,
-              },
-            ],
+            kind: 'tier',
+            input: {
+              text: '查看附件图',
+              attachments: [
+                {
+                  mediaType: 'image/png',
+                  hasCompleteTrustedText: false,
+                },
+              ],
+            },
           }, // 判定为 VISION
           requestContext: sharedContext,
         }),
@@ -516,7 +519,7 @@ describe('AGENT-01 Contract: Mastra-native Agent & Model Tier Policy', () => {
       expect(executedSteps).toBe(3);
     });
 
-    it('AGENT-01.19: Token Usage 直接来自 Mastra 权威结果，不使用旧 Runtime 估算', async () => {
+    it('AGENT-01.19: Token Usage 直接来自 Mastra 权威结果，不进行本地估算', async () => {
       const explicitUsageModel = createFakeModel({
         modelId: 'exact-usage-model',
         responses: [
@@ -653,6 +656,5 @@ describe('AGENT-01 Contract: Mastra-native Agent & Model Tier Policy', () => {
       await expect(agent.execute({ input: '你好' })).rejects.toThrow(/Unrecoverable fatal error/);
       expect(fatalCallCount).toBe(1);
     });
-
   });
 });

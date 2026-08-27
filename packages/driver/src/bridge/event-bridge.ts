@@ -9,7 +9,7 @@ import type {
   DriverConfig,
   DriverHealthEvent,
   EventBridgeConfig,
-  EventBridgeEvents,
+  DriverEvents,
   KK9Message,
   KK9RecalledEvent,
   KK9Session,
@@ -31,11 +31,8 @@ const DEFAULT_MAX_MESSAGE_IDS = 10000;
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
 export declare interface KK9EventBridge {
-  on<U extends keyof EventBridgeEvents>(event: U, listener: EventBridgeEvents[U]): this;
-  emit<U extends keyof EventBridgeEvents>(
-    event: U,
-    ...args: Parameters<EventBridgeEvents[U]>
-  ): boolean;
+  on<U extends keyof DriverEvents>(event: U, listener: DriverEvents[U]): this;
+  emit<U extends keyof DriverEvents>(event: U, ...args: Parameters<DriverEvents[U]>): boolean;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare

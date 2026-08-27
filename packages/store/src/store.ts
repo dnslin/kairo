@@ -27,11 +27,6 @@ export function isClientInstance(value: unknown): value is Client {
 }
 
 /**
- * 保持向后兼容的别名类型守卫
- */
-export const isDatabaseInstance = isClientInstance;
-
-/**
  * KKBot 统一存储持久化中枢 (Store Facade)
  * 聚合组织架构仓储、会话状态仓储、消息历史仓储与本地媒体存储，提供单点访问与生命周期管理
  */
@@ -100,8 +95,3 @@ export async function createKKBotStore(
   const client = await createDatabaseClient(optionsOrClient as DatabaseOptions | undefined);
   return new KKBotStore(client, (optionsOrClient as StoreOptions | undefined)?.media);
 }
-
-/**
- * 别名导出，支持直接通过 Store 使用
- */
-export { KKBotStore as Store };

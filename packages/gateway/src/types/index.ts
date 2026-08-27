@@ -12,19 +12,7 @@ import type {
   SessionMode,
   ComplianceDeletionCommand,
 } from '@kkbot/store';
-import type {
-  AgentMemoryManager,
-  AgentReplyResult,
-  ApprovalManager,
-  ApprovalTask,
-  KkbotAgentRuntime,
-  KKBotAgent,
-  KKBotAgentRunResult,
-  LeaderApprovalRouter,
-  StatefulApprovalMatcher,
-  Memory,
-} from '@kkbot/agent';
-import type { ProactiveSchedule, ProactiveScheduleManager } from '../schedule/index.js';
+import type { KKBotAgent, KKBotAgentRunResult, Memory } from '@kkbot/agent';
 
 /**
  * 防抖合并后的聚合消息上下文实体
@@ -63,16 +51,14 @@ export interface ConsolidatedMessage {
  */
 export interface CoordinatorDispatchResult {
   /** 执行动作类型 */
-  action: 'message_sent' | 'draft_created' | 'suppressed' | 'send_failed';
+  action: 'message_sent' | 'suppressed' | 'send_failed';
   /** 整体操作是否成功 */
   success: boolean;
   /** 目标会话 ID */
   sessionId: string;
-  /** 发送成功的消息 ID (若有) */
+  /** 发送成功的消息 ID（若有） */
   messageId?: string;
-  /** 生成的草稿 ID (若有) */
-  draftId?: number;
-  /** 异常信息 (若有) */
+  /** 异常信息（若有） */
   error?: string;
   /** 视觉红点是否已被显式清除 */
   redDotCleared: boolean;
@@ -102,27 +88,20 @@ export interface InFlightSession {
  * Coordinator 初始化配置选项
  */
 export interface CoordinatorConfig {
-  /** 短消息防抖合并窗口毫秒数，默认 1500ms (1.5秒) */
+  /** 短消息防抖合并窗口毫秒数，默认 1500ms */
   debounceMs?: number;
-  /** 最长等待时间毫秒数 (防止高频连发无限延迟)，默认 5000ms (5秒) */
+  /** 最长等待时间毫秒数，默认 5000ms */
   maxWaitMs?: number;
-  /** 人机协同退避静默时长毫秒数，默认 10 分钟 (600,000ms) */
+  /** 人工接管退避持续时长毫秒数，默认 10 分钟 */
   takeoverDurationMs?: number;
-  /** 自动回复成功后是否自动显式清除视觉红点，默认 true */
-  autoMarkRead?: boolean;
-  /** 发送前失败自动重试最大次数，默认 2 次 (有界重试) */
+  /** 发送前失败自动重试最大次数，默认 2 次 */
   maxRetries?: number;
-  /** 是否启用主管 IM 私聊 HITL 跨会话审批拦截路由，默认 true */
-  enableHitlRouter?: boolean;
-  /** 聚合消息触发自定义回调处理函数 */
+  /** 自动回复发送成功后是否清除视觉红点 */
+  autoMarkRead?: boolean;
+  /** 聚合消息触发的观察回调；不承担 Agent 执行职责 */
   onConsolidatedMessage?: (
     message: ConsolidatedMessage
   ) => Promise<void | CoordinatorDispatchResult> | void;
-  /** 知识库检索回调函数 (可选，用于在 Agent 执行前检索相关知识切片注入 Layer 4 事实层) */
-  knowledgeRetriever?: (
-    query: string,
-    sessionId: string
-  ) => Promise<string[] | undefined> | string[] | undefined;
 }
 
 export interface WorkAdmission {
@@ -186,30 +165,19 @@ export type ComplianceDeletionAuthorizer = (
 export interface SessionCoordinatorOptions {
   /** 底层事件驱动 CDP 驱动器 */
   driver: KK9Driver;
-  /** 唯一 Composition Root 的工作准入门。 */
+  /** 唯一 Composition Root 的工作准入门 */
   admissionGate?: WorkAdmission;
-  /** 统一持久化存储中枢 (注入单库 LibSQL 实例) */
+  /** 统一持久化存储中枢 */
   store: KKBotStore;
-  /** Mastra-native Agent 核心执行入口 (Issue #174/#176) */
+  /** Mastra-native Agent 执行入口 */
   agent?: KKBotAgent;
-  /** Mastra Memory 记忆中枢 (Issue #176) */
+  /** 与 Agent 协同的 Mastra Memory */
   mastraMemory?: Memory;
-  /** Mastra Storage 存储实例 (用于 Observational Memory scope reset 等底座操作) */
+  /** Mastra Storage（用于 Observational Memory scope reset 等底座操作） */
   mastraStorage?: unknown;
   /** 合规删除独立授权验证器 */
   complianceAuthorizer?: ComplianceDeletionAuthorizer;
-  /** 认知微内核 Runtime (可选向后兼容) */
-  agentRuntime?: KkbotAgentRuntime;
-  memoryManager?: AgentMemoryManager;
-  /** HITL 审批状态机管理器 (可选) */
-  approvalManager?: ApprovalManager;
-  /** 直属主管审批路由器 (可选) */
-  leaderRouter?: LeaderApprovalRouter;
-  /** 状态化主管审批指令匹配器 (可选) */
-  statefulMatcher?: StatefulApprovalMatcher;
-  /** 主动定时推送调度管理器 (可选) */
-  scheduleManager?: ProactiveScheduleManager;
-  /** 故障与崩溃注入钩子 (测试与 Oracle 验证专用) */
+  /** 故障与崩溃注入钩子（测试与 Contract 验证专用） */
   hooks?: CoordinatorFaultHooks;
   /** 会话编排器配置项 */
   config?: CoordinatorConfig;
@@ -231,11 +199,11 @@ export interface CoordinatorEvents {
   message_queued: (sessionId: string, message: KK9Message, queueLength: number) => void;
   /** 消息防抖合并触发事件 */
   consolidated: (message: ConsolidatedMessage) => void;
-  /** 撤回即时熔断事件 (防抖期内消息被撤回) */
+  /** 撤回即时熔断事件 */
   recall_fused: (sessionId: string, recalledMessageId: string, remainingCount: number) => void;
-  /** 人机协同退避触发事件 */
+  /** 人工接管退避触发事件 */
   takeover: (sessionId: string, takeoverUntil: number, message?: KK9Message) => void;
-  /** 消息被静默拦截抑制事件 (处于人工退避、会话禁用、空队列、未知来源或被撤回) */
+  /** 消息被静默拦截抑制事件 */
   suppressed: (
     sessionId: string,
     reason:
@@ -248,31 +216,20 @@ export interface CoordinatorEvents {
       | 'unknown_source',
     message?: KK9Message
   ) => void;
-  /** 在途请求被 50ms 瞬时中断切断事件 */
+  /** 在途请求被中断事件 */
   in_flight_aborted: (sessionId: string, elapsedMs: number, reason: string) => void;
   /** 在途请求打断后消息自动归并重聚事件 */
   in_flight_regrouped: (sessionId: string, totalMessageCount: number) => void;
-  /** Agent 认知微内核开始执行生成事件 */
+  /** Agent 开始执行生成事件 */
   agent_started: (sessionId: string, message: ConsolidatedMessage) => void;
-  /** Agent 认知微内核执行完毕事件 */
-  agent_completed: (sessionId: string, result: AgentReplyResult | KKBotAgentRunResult) => void;
-  /** Agent 认知微内核生成被打断事件 */
+  /** Agent 执行完毕事件 */
+  agent_completed: (sessionId: string, result: KKBotAgentRunResult) => void;
+  /** Agent 被 AbortSignal 中断事件 */
   agent_aborted: (sessionId: string) => void;
   /** Assistant Memory 显式提交失败事件 */
   assistant_memory_save_failed: (sessionId: string, deliveryId: string, error: unknown) => void;
-  approval_suspended: (sessionId: string, task: ApprovalTask) => void;
-  /** 主管审批决议已流转并恢复事件 */
-  approval_resolved: (leaderId: string, task: ApprovalTask, approved: boolean) => void;
-  /** 主管私聊审批卡片已推送通知事件 */
-  approval_notified: (leaderId: string, task: ApprovalTask) => void;
   /** 消息分发完成事件 */
   reply_dispatched: (sessionId: string, result: CoordinatorDispatchResult) => void;
-  /** 主动定时任务触发事件 */
-  schedule_triggered: (schedule: ProactiveSchedule) => void;
-  /** 主动定时任务执行完成事件 */
-  schedule_executed: (schedule: ProactiveSchedule, result: CoordinatorDispatchResult) => void;
-  /** 主动定时任务执行异常事件 */
-  schedule_failed: (schedule: ProactiveSchedule, error: Error) => void;
   /** 异常事件 */
   error: (error: Error) => void;
 }
@@ -304,10 +261,10 @@ export interface PendingBucket {
  * 发送回复选项
  */
 export interface DispatchReplyOptions extends SendOptions {
-  /** 显式指定运行模式 (auto: 自动发送, draft: 保存草稿, disabled: 禁用) */
+  /** 显式指定运行模式（auto: 自动发送，disabled: 禁用） */
   mode?: SessionMode;
-  /** 是否在发送成功后显式消除未读红点 (默认跟随 coordinator 配置) */
+  /** 是否在发送成功后显式消除未读红点 */
   markRead?: boolean;
-  /** 结构化富文本内容载荷 (可选) */
+  /** 结构化富文本内容载荷（可选） */
   formattedPayload?: FormattedText;
 }
