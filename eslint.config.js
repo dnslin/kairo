@@ -6,7 +6,11 @@ import prettier from 'eslint-config-prettier';
 export default [
   eslint.configs.recommended,
   {
-    files: ['packages/*/src/**/*.ts', 'packages/*/tests/**/*.ts', 'packages/*/examples/**/*.ts', 'apps/*/src/**/*.ts', 'apps/*/tests/**/*.ts', 'tests/**/*.ts'],
+    files: [
+      'packages/driver/src/**/*.ts',
+      'packages/driver/tests/**/*.ts',
+      'packages/driver/examples/**/*.ts',
+    ],
     languageOptions: {
       parser: tsparser,
       parserOptions: {
@@ -42,7 +46,7 @@ export default [
     },
   },
   {
-    files: ['packages/*/tests/**/*.ts', 'packages/*/examples/**/*.ts', 'apps/*/tests/**/*.ts', 'tests/**/*.ts'],
+    files: ['packages/driver/tests/**/*.ts', 'packages/driver/examples/**/*.ts'],
     rules: {
       '@typescript-eslint/unbound-method': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',

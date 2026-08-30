@@ -4,6 +4,10 @@
     "rootDir": ".",
     "noEmit": true
   },
-  "include": ["packages/*/src/**/*", "packages/*/tests/**/*", "packages/*/examples/**/*", "apps/*/src/**/*", "apps/*/tests/**/*", "tests/**/*"],
+  "include": [
+    "packages/driver/src/**/*",
+    "packages/driver/tests/**/*",
+    "packages/driver/examples/**/*"
+  ],
   "exclude": ["node_modules", "dist"]
 }
