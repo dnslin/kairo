@@ -1,55 +1,30 @@
 {
-  "name": "kkbot-monorepo",
+  "name": "kkbot-driver-workspace",
   "version": "2.0.0",
   "private": true,
-  "description": "KKBot v2 - Modern Agent & IM Gateway Monorepo",
+  "description": "KK9 desktop client CDP driver workspace",
   "type": "module",
   "engines": {
     "node": ">=22.13.0"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild",
-      "libsql"
-    ]
-  },
   "scripts": {
-    "dev": "pnpm --filter @kkbot/app dev",
-    "start": "pnpm --filter @kkbot/app start",
-    "doctor": "pnpm --filter @kkbot/app doctor",
-    "knowledge:ingest": "pnpm --filter @kkbot/app knowledge:ingest",
-    "knowledge:rebuild": "pnpm --filter @kkbot/app knowledge:rebuild",
-    "build": "pnpm -r run build",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "lint": "eslint \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\" \"apps/*/src/**/*.ts\" \"apps/*/tests/**/*.ts\"",
-    "bench": "tsx scripts/benchmarks/index.ts",
-    "bench:latency": "tsx scripts/benchmarks/latency.bench.ts",
-    "bench:resource": "tsx scripts/benchmarks/resource.bench.ts",
-    "bench:throughput": "tsx scripts/benchmarks/throughput.bench.ts",
-    "verify:bridge": "tsx scripts/verify-event-bridge-live.ts",
-    "format": "prettier --write \"packages/*/src/**/*.ts\" \"packages/*/tests/**/*.ts\" \"apps/*/src/**/*.ts\" \"apps/*/tests/**/*.ts\""
+    "build": "pnpm --filter @kkbot/driver build",
+    "typecheck": "pnpm --filter @kkbot/driver typecheck",
+    "test": "pnpm --filter @kkbot/driver test",
+    "test:watch": "pnpm --filter @kkbot/driver test:watch",
+    "lint": "eslint \"packages/driver/src/**/*.ts\" \"packages/driver/tests/**/*.ts\" \"packages/driver/examples/**/*.ts\"",
+    "format": "prettier --write \"packages/driver/src/**/*.ts\" \"packages/driver/tests/**/*.ts\" \"packages/driver/examples/**/*.ts\"",
+    "verify": "pnpm --filter @kkbot/driver verify",
+    "diagnose": "pnpm --filter @kkbot/driver diagnose",
+    "e2e": "pnpm --filter @kkbot/driver e2e"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
-    "@kkbot/agent": "workspace:*",
-    "@kkbot/driver": "workspace:*",
-    "@kkbot/gateway": "workspace:*",
-    "@kkbot/store": "workspace:*",
-    "@mastra/core": "catalog:",
-    "@mastra/libsql": "catalog:",
-    "@types/node": "^22.12.0",
-    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.22.0",
     "@typescript-eslint/parser": "^8.22.0",
     "eslint": "^9.19.0",
     "eslint-config-prettier": "^10.0.1",
     "prettier": "^3.4.2",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.3",
-    "vitest": "^3.0.4",
-    "yaml": "^2.7.0",
-    "zod": "catalog:"
+    "typescript": "^5.7.3"
   }
 }
