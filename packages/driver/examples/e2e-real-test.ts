@@ -20,6 +20,9 @@ async function runRealDeviceE2ETest() {
   let heartbeatCount = 0;
   driver.on('heartbeat', () => {
     heartbeatCount++;
+    if (heartbeatCount === 1) {
+      console.log('  [心跳] 收到首个心跳事件');
+    }
   });
 
   const capturedMessages: Array<{ origin: string; messageId: string }> = [];

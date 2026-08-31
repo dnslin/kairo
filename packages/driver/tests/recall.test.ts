@@ -35,7 +35,8 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       const mockSendOps = {
         recallMessage: vi.fn().mockResolvedValue(true),
       };
-      (driver as unknown as { sendOps: typeof mockSendOps }).sendOps = mockSendOps;
+      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).bridgeMessageOps = mockSendOps;
+      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).domSendOps = mockSendOps;
 
       const result = await driver.recallMessage('msg_001', 'ses_test');
       expect(result).toBe(true);
@@ -53,7 +54,8 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       const mockSendOps = {
         recallMessage: vi.fn().mockResolvedValue(true),
       };
-      (driver as unknown as { sendOps: typeof mockSendOps }).sendOps = mockSendOps;
+      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).bridgeMessageOps = mockSendOps;
+      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).domSendOps = mockSendOps;
 
       const session: KK9Session = {
         id: 'session_xyz',

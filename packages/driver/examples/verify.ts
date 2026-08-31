@@ -59,10 +59,12 @@ async function main() {
     driver.startPolling();
 
     // 保持进程运行
-    process.on('SIGINT', async () => {
-      console.log('\n正在优雅退出...');
-      await driver.disconnect();
-      process.exit(0);
+    process.on('SIGINT', () => {
+      void (async () => {
+        console.log('\n正在优雅退出...');
+        await driver.disconnect();
+        process.exit(0);
+      })();
     });
   } catch (err) {
     console.error('执行验证失败:', err instanceof Error ? err.message : String(err));

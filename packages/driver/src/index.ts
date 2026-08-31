@@ -3,9 +3,16 @@
  * 纯净事件驱动的 KK9 Electron 客户端 CDP 驱动
  */
 
+// 顶层抽象接口与驱动实现
 export { KK9Driver } from './driver.js';
 export { FakeKK9Driver, type FakeSendBehavior, type RecordedSendCall } from './fake-driver.js';
+
+// Bridge 核心操作与事件总线
 export { KK9EventBridge } from './bridge/event-bridge.js';
+export { BridgeSessionOps } from './bridge/session-ops.js';
+export { BridgeMessageOps } from './bridge/message-ops.js';
+export { BridgeOrgOps } from './bridge/org-ops.js';
+export { callIpcToData, type IpcResponse } from './bridge/rpc.js';
 export {
   createMessageIdentityKey,
   normalizeNativeMessage,
@@ -17,7 +24,11 @@ export type {
   NormalizeNativeMessageContext,
   InboundNormalizationSource,
 } from './bridge/converter.js';
+
+// 底层 CDP 客户端
 export { CdpClient, type CdpClientOptions } from './cdp/client.js';
+
+// 后备 DOM 操作层 (保留以备极窄 UI 场景)
 export { SessionOps } from './dom/session-ops.js';
 export { MessageOps, readImageAsBase64, saveImageToFile } from './dom/message-ops.js';
 export { SendOps } from './dom/send-ops.js';
@@ -32,19 +43,14 @@ export {
   parseFormattedTextToKK,
 } from './dom/rich-text.js';
 export { DEFAULT_SELECTORS, resolveSelectors } from './dom/selectors.js';
-export {
-  CARD_THEMES,
-  DEFAULT_RENDER_OPTIONS,
-  buildCanvasCardScript,
-  calculateCardLayout,
-  renderCardToBase64,
-  resolveCardTheme,
-} from './canvas/renderer.js';
-export { createAlertCard, createDecisionCard, createReportCard } from './canvas/templates.js';
+
+// 异常与日志
 export { DriverError, CdpError, DomError, SendError } from './utils/errors.js';
 export { logger, createChildLogger } from './utils/logger.js';
 
+// 纯净类型系统导出
 export type {
+  IKK9Driver,
   ConnectionStatus,
   DriverHealthKind,
   CdpConnectionIdentity,
@@ -78,29 +84,4 @@ export type {
   SendOptions,
   SendFileOptions,
   DriverEvents,
-  CardThemeType,
-  CardThemeCustom,
-  CardTheme,
-  CardTagVariant,
-  CardTag,
-  CardHeader,
-  CardFieldVariant,
-  CardFieldSpan,
-  CardField,
-  CardActionVariant,
-  CardAction,
-  CardFooter,
-  CardData,
-  RenderCanvasOptions,
-  ResolvedCardTheme,
-  CardLayoutResult,
-  AlertSeverity,
-  AlertMetric,
-  AlertCardParams,
-  ReportStatus,
-  ReportMetric,
-  ReportCardParams,
-  DecisionOption,
-  DecisionCardParams,
-  SendCardOptions,
 } from './types/index.js';

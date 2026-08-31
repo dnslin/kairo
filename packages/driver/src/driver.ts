@@ -2,6 +2,9 @@ import EventEmitter from 'node:events';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { CdpClient } from './cdp/client.js';
 import { KK9EventBridge } from './bridge/event-bridge.js';
+import { BridgeSessionOps } from './bridge/session-ops.js';
+import { BridgeMessageOps } from './bridge/message-ops.js';
+import { BridgeOrgOps } from './bridge/org-ops.js';
 import { createMessageIdentityKey, normalizeRecalledEvent } from './bridge/converter.js';
 
 import { OrgOps } from './dom/org-ops.js';
@@ -9,30 +12,24 @@ import { resolveSelectors } from './dom/selectors.js';
 import { SendOps } from './dom/send-ops.js';
 import { SessionOps } from './dom/session-ops.js';
 import { MessageOps } from './dom/message-ops.js';
-import { renderCardToBase64 as renderCanvasCard } from './canvas/renderer.js';
-import { createAlertCard, createDecisionCard, createReportCard } from './canvas/templates.js';
+
 import type {
-  AlertCardParams,
-  CardData,
   CdpConnectionLostEvent,
   CompensationScanOptions,
   ConnectionStatus,
-  DecisionCardParams,
   DriverConfig,
   DriverEvents,
   DriverHealthEvent,
   DriverHealthSnapshot,
   FormattedText,
+  IKK9Driver,
   KK9Employee,
   KK9Message,
   KK9RecalledEvent,
   KK9ReplyTarget,
   KK9Session,
   PollingConfig,
-  RenderCanvasOptions,
-  ReportCardParams,
   SelectorsConfig,
-  SendCardOptions,
   SendFileOptions,
   SendOptions,
   SendResult,
@@ -49,16 +46,52 @@ export declare interface KK9Driver {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare
-export class KK9Driver extends EventEmitter {
+export class KK9Driver extends EventEmitter implements IKK9Driver {
   private readonly cdp: CdpClient;
   private readonly eventBridge: KK9EventBridge;
   private readonly startupGenerationId: string;
   private invalidated = false;
   private readonly selectors: SelectorsConfig;
-  private readonly sessionOps: SessionOps;
-  private readonly messageOps: MessageOps;
-  private readonly sendOps: SendOps;
-  private readonly orgOps: OrgOps;
+
+  // Bridge 优先操作服务
+  public bridgeSessionOps: BridgeSessionOps;
+  public bridgeMessageOps: BridgeMessageOps;
+  public bridgeOrgOps: BridgeOrgOps;
+
+  // 保留旧版 DOM 操作层（作为后备回退与单元测试兼容）
+  public domSessionOps: SessionOps;
+  public domMessageOps: MessageOps;
+  public domSendOps: SendOps;
+  public domOrgOps: OrgOps;
+
+  public get sessionOps(): SessionOps {
+    return this.domSessionOps;
+  }
+  public set sessionOps(v: SessionOps) {
+    this.domSessionOps = v;
+  }
+
+  public get messageOps(): MessageOps {
+    return this.domMessageOps;
+  }
+  public set messageOps(v: MessageOps) {
+    this.domMessageOps = v;
+  }
+
+  public get sendOps(): SendOps {
+    return this.domSendOps;
+  }
+  public set sendOps(v: SendOps) {
+    this.domSendOps = v;
+  }
+
+  public get orgOps(): OrgOps {
+    return this.domOrgOps;
+  }
+  public set orgOps(v: OrgOps) {
+    this.domOrgOps = v;
+  }
+
   private isPolling = false;
   private pollTimer: NodeJS.Timeout | null = null;
   private cancelBindingAttached = false;
@@ -104,10 +137,18 @@ export class KK9Driver extends EventEmitter {
       },
       this.cdp
     );
-    this.sessionOps = new SessionOps(this.cdp, this.selectors);
-    this.messageOps = new MessageOps(this.cdp, this.selectors);
-    this.sendOps = new SendOps(this.cdp, this.selectors);
-    this.orgOps = new OrgOps(this.cdp);
+
+    // 初始化 Bridge 操作层
+    this.bridgeSessionOps = new BridgeSessionOps(this.cdp);
+    this.bridgeMessageOps = new BridgeMessageOps(this.cdp);
+    this.bridgeOrgOps = new BridgeOrgOps(this.cdp);
+
+    // 初始化 DOM 操作层 (保留)
+    this.domSessionOps = new SessionOps(this.cdp, this.selectors);
+    this.domMessageOps = new MessageOps(this.cdp, this.selectors);
+    this.domSendOps = new SendOps(this.cdp, this.selectors);
+    this.domOrgOps = new OrgOps(this.cdp);
+
     this.wireCdpEvents();
   }
 
@@ -139,6 +180,7 @@ export class KK9Driver extends EventEmitter {
     await this.eventBridge.connect();
     await this.setupCancelMessageHook();
   }
+
   public async disconnect(): Promise<void> {
     this.invalidated = true;
     this.stopPolling();
@@ -149,28 +191,44 @@ export class KK9Driver extends EventEmitter {
     await this.eventBridge.disconnect();
   }
 
+  /**
+   * 优先通过 Bridge / IPC 获取会话列表，失败时回退至 DOM 遍历
+   */
   public async getSessions(): Promise<KK9Session[]> {
-    return this.sessionOps.getSessions();
+    const sessions = await this.bridgeSessionOps.getSessions();
+    if (sessions.length > 0) {
+      return sessions;
+    }
+    return this.domSessionOps.getSessions();
   }
 
   public async getCurrentSession(): Promise<KK9Session | null> {
-    return this.sessionOps.getCurrentSession();
+    const session = await this.bridgeSessionOps.getCurrentSession();
+    if (session) {
+      return session;
+    }
+    return this.domSessionOps.getCurrentSession();
   }
 
   public async selectSession(sessionId: string): Promise<boolean> {
-    return this.sessionOps.selectSession(sessionId);
+    const success = await this.bridgeSessionOps.selectSession(sessionId);
+    if (success) {
+      return true;
+    }
+    return this.domSessionOps.selectSession(sessionId);
   }
 
   /**
-   * 显式消除指定会话的未读红点（遵循视觉红点守卫原则）
-   * 仅在自动回复发送成功等确定性动作后调用
+   * 显式消除指定会话的未读红点（优先通过 IPC readMessage 同步到服务端）
    */
   public async markSessionRead(sessionId: string): Promise<boolean> {
-    return this.sessionOps.markSessionRead(sessionId);
+    const success = await this.bridgeSessionOps.markSessionRead(sessionId);
+    if (success) {
+      return true;
+    }
+    return this.domSessionOps.markSessionRead(sessionId);
   }
-  /**
-   * 记录由 Bot 自身发出的消息身份（sessionId:nativeMessageId）。
-   */
+
   public recordBotSentMessageId(sessionId: string, messageId: string): void {
     const normalizedSessionId = sessionId.trim();
     const normalizedMessageId = messageId.trim();
@@ -184,9 +242,6 @@ export class KK9Driver extends EventEmitter {
     }
   }
 
-  /**
-   * 判断指定会话中的消息 ID 是否为 Bot 自身发出。
-   */
   public isBotSentMessageId(sessionId: string, messageId: string): boolean {
     const normalizedSessionId = sessionId.trim();
     const normalizedMessageId = messageId.trim();
@@ -203,16 +258,30 @@ export class KK9Driver extends EventEmitter {
     this.recordBotSentMessageId(sessionId, result.messageId);
   }
 
+  /**
+   * 优先通过 Bridge / IPC getMessages 获取会话历史，失败时回退至 DOM 提取
+   */
   public async getRecentMessages(limit = 20, session?: KK9Session): Promise<KK9Message[]> {
     const targetSession = session || (await this.getCurrentSession()) || undefined;
-    return this.messageOps.getRecentMessages(
+    const messages = await this.bridgeMessageOps.getRecentMessages(
       limit,
       targetSession,
       this.knownBotSentMessageKeys,
+      this.config.currentUserId
+    );
 
+    if (messages.length > 0) {
+      return messages;
+    }
+
+    return this.domMessageOps.getRecentMessages(
+      limit,
+      targetSession,
+      this.knownBotSentMessageKeys,
       this.config.currentUserId
     );
   }
+
   public async scanCompensationWindow(options: CompensationScanOptions): Promise<KK9Message[]> {
     const toTimestamp = options.toTimestamp ?? Date.now();
     if (options.fromTimestamp > toTimestamp) {
@@ -281,99 +350,91 @@ export class KK9Driver extends EventEmitter {
    * 发送纯文本消息
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
-    const res = await this.sendOps.sendText(text, options);
+    const res = await this.bridgeMessageOps.sendText(text, options);
+    if (!res.success && res.isPreTrigger) {
+      const domRes = await this.domSendOps.sendText(text, options);
+      this.rememberBotSentMessage(domRes, options.targetSessionId);
+      return domRes;
+    }
     this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
+  /**
+   * 发送富文本与带 @ 提及的消息
+   */
   public async sendRichText(
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
-    const res = await this.sendOps.sendRichText(content, options);
+    const res = await this.bridgeMessageOps.sendRichText(content, options);
+    if (!res.success && res.isPreTrigger) {
+      const domRes = await this.domSendOps.sendRichText(content, options);
+      this.rememberBotSentMessage(domRes, options.targetSessionId);
+      return domRes;
+    }
     this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
+  /**
+   * 发送引用/回复消息
+   */
   public async sendReply(
     replyTo: string | KK9ReplyTarget,
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
-    const res = await this.sendOps.sendReply(replyTo, content, options);
+    const res = await this.bridgeMessageOps.sendReply(replyTo, content, options);
+    if (!res.success && res.isPreTrigger) {
+      const domRes = await this.domSendOps.sendReply(replyTo, content, options);
+      this.rememberBotSentMessage(domRes, options.targetSessionId);
+      return domRes;
+    }
     this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
+  /**
+   * 发送文件
+   */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
-    const res = await this.sendOps.sendFile(filePath, options);
+    const res = await this.bridgeMessageOps.sendFile(filePath, options);
+    if (!res.success && res.isPreTrigger) {
+      const domRes = await this.domSendOps.sendFile(filePath, options);
+      this.rememberBotSentMessage(domRes, options.targetSessionId);
+      return domRes;
+    }
     this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
+  /**
+   * 发送本地图片
+   */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
-    const res = await this.sendOps.sendImage(imagePath, options);
+    const res = await this.bridgeMessageOps.sendImage(imagePath, options);
+    if (!res.success && res.isPreTrigger) {
+      const domRes = await this.domSendOps.sendImage(imagePath, options);
+      this.rememberBotSentMessage(domRes, options.targetSessionId);
+      return domRes;
+    }
     this.rememberBotSentMessage(res, options.targetSessionId);
     return res;
   }
 
-  public async sendCard(cardData: CardData, options?: SendCardOptions): Promise<SendResult> {
-    const res = await this.sendOps.sendCard(cardData, options);
-    this.rememberBotSentMessage(res, options?.targetSessionId);
-    return res;
-  }
-
   /**
-   * 绘制 Canvas 2D 视觉卡片并返回 Base64 PNG 图片 DataURL
-   */
-  public async renderCardToBase64(card: CardData, options?: RenderCanvasOptions): Promise<string> {
-    return renderCanvasCard(this.cdp, card, options);
-  }
-
-  /**
-   * 快捷发送监控告警卡片
-   */
-  public async sendAlertCard(
-    params: AlertCardParams,
-    options?: SendCardOptions
-  ): Promise<SendResult> {
-    const cardData = createAlertCard(params);
-    return this.sendCard(cardData, options);
-  }
-
-  /**
-   * 快捷发送汇总报告卡片
-   */
-  public async sendReportCard(
-    params: ReportCardParams,
-    options?: SendCardOptions
-  ): Promise<SendResult> {
-    const cardData = createReportCard(params);
-    return this.sendCard(cardData, options);
-  }
-
-  /**
-   * 快捷发送多选决策卡片
-   */
-  public async sendDecisionCard(
-    params: DecisionCardParams,
-    options?: SendCardOptions
-  ): Promise<SendResult> {
-    const cardData = createDecisionCard(params);
-    return this.sendCard(cardData, options);
-  }
-
-  /**
-   * 消息撤回 (Recall / CancelMessage) 全局 API
+   * 消息撤回 (Recall / CancelMessage)
    */
   public async recallMessage(messageId: string, session?: KK9Session | string): Promise<boolean> {
     const sessionId = typeof session === 'string' ? session : session?.id;
-    return this.sendOps.recallMessage(messageId, sessionId);
+    const success = await this.bridgeMessageOps.recallMessage(messageId, sessionId);
+    if (success) {
+      return true;
+    }
+    return this.domSendOps.recallMessage(messageId, sessionId);
   }
 
-  /**
-   * 处理并派发消息撤回事件 (自动去重)
-   */
   public handleRecalledEvent(event: KK9RecalledEvent): void {
     if (!event.messageId || !event.sessionId) {
       log.warn(
@@ -398,22 +459,27 @@ export class KK9Driver extends EventEmitter {
   }
 
   /**
-   * 从 KK9 客户端抽取企业全量员工档案名录
+   * 优先通过 Bridge / IPC 递归遍历企业全量员工档案
    */
   public async getOrgEmployees(timeoutMs?: number): Promise<KK9Employee[]> {
-    return this.orgOps.getEmployees(timeoutMs);
+    const employees = await this.bridgeOrgOps.getOrgEmployees(timeoutMs);
+    if (employees.length > 0) {
+      return employees;
+    }
+    return this.domOrgOps.getEmployees(timeoutMs);
   }
 
   /**
    * 按 UID 精确单点查询员工档案
    */
   public async getUserProfile(userId: number | string): Promise<KK9Employee | null> {
-    return this.orgOps.getUserProfile(userId);
+    const profile = await this.bridgeOrgOps.getUserProfile(userId);
+    if (profile) {
+      return profile;
+    }
+    return this.domOrgOps.getUserProfile(userId);
   }
 
-  /**
-   * 启动智能轮询监听器（未读会话/@优先 + 当前会话回退）
-   */
   public startPolling(customPolling?: Partial<PollingConfig>): void {
     if (this.isPolling) return;
 
@@ -462,7 +528,6 @@ export class KK9Driver extends EventEmitter {
   }
 
   private async executePollCycle(config: PollingConfig): Promise<void> {
-    // 若禁用自动切换会话，仅在当前激活会话提取增量消息与撤回事件
     if (config.autoSwitchSession === false) {
       const current = await this.getCurrentSession();
       if (current) {
@@ -472,7 +537,6 @@ export class KK9Driver extends EventEmitter {
     }
 
     const sessions = await this.getSessions();
-    // 排序：包含未读 @ 的会话最优先处理，其次是普通未读会话
     const unreadSessions = sessions
       .filter(s => s.unread || s.unreadAt)
       .sort((a, b) => {
@@ -493,7 +557,6 @@ export class KK9Driver extends EventEmitter {
         }
       }
     } else {
-      // 无未读会话时，回退到当前激活会话提取
       const current = await this.getCurrentSession();
       if (current) {
         await this.collectAndEmitMessages(current, config.maxMessagesPerSession);
@@ -533,7 +596,7 @@ export class KK9Driver extends EventEmitter {
         }
       }
     } catch {
-      // 忽略临时执行异常
+      // 忽略临时异常
     }
   }
 
@@ -637,7 +700,6 @@ export class KK9Driver extends EventEmitter {
 
       if (!this.knownMessageKeys.has(messageKey)) {
         this.knownMessageKeys.add(messageKey);
-        // 限制内存消息 ID 集合大小，防止无限内存增长
         if (this.knownMessageKeys.size > 10000) {
           const firstKey = this.knownMessageKeys.values().next().value;
           if (firstKey) this.knownMessageKeys.delete(firstKey);
@@ -646,7 +708,6 @@ export class KK9Driver extends EventEmitter {
         log.debug({ id: msg.id, sender: msg.sender, content: msg.content }, '捕获新消息并触发事件');
         this.emit('message', msg);
 
-        // 如果是 @ 提及消息，派发专用 at 事件
         if (msg.atMe || msg.atAll || msg.mentions?.isAtMe || msg.mentions?.isAtAll) {
           log.info({ id: msg.id, sender: msg.sender, mentions: msg.mentions }, '捕获到 @ 提及事件');
           this.emit('at', msg);

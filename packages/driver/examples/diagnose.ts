@@ -102,10 +102,12 @@ async function main() {
       console.log('✅ 已连接 KK9，启动实时轮询监听 (按 Ctrl+C 退出)...');
       driver.startPolling();
 
-      process.on('SIGINT', async () => {
-        console.log('\n退出监听...');
-        await driver.disconnect();
-        process.exit(0);
+      process.on('SIGINT', () => {
+        void (async () => {
+          console.log('\n退出监听...');
+          await driver.disconnect();
+          process.exit(0);
+        })();
       });
       break;
     }

@@ -259,21 +259,4 @@ describe('KK9Driver 端到端事件驱动测试', () => {
     expect(res).toBe(true);
     expect(mockSessionOps.markSessionRead).toHaveBeenCalledWith('ses_123');
   });
-
-  it('renderCardToBase64 应调用底层 CDP 执行 Canvas 绘制并返回 DataURL', async () => {
-    const driver = new KK9Driver({
-      cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
-    });
-    const internal = driver as unknown as {
-      cdp: { evaluate: (script: string) => Promise<string> };
-    };
-    internal.cdp.evaluate = vi.fn().mockResolvedValue('data:image/png;base64,CARD_PNG_BASE64_DATA');
-
-    const result = await driver.renderCardToBase64({
-      header: { title: '测试卡片' },
-    });
-
-    expect(result).toBe('data:image/png;base64,CARD_PNG_BASE64_DATA');
-    expect(internal.cdp.evaluate).toHaveBeenCalledOnce();
-  });
 });
