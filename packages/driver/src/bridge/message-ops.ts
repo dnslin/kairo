@@ -14,7 +14,6 @@ import type {
   KK9Message,
   KK9ReplyTarget,
   KK9Session,
-  PreSendCheckResult,
   SendFileOptions,
   SendOptions,
   SendResult,
@@ -177,58 +176,6 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 自动对齐会话上下文
-   */
-  public async ensureTargetSessionContext(targetSessionId: string): Promise<boolean> {
-    const target = targetSessionId.trim();
-    if (!target) return true;
-
-    const script = `
-      (() => {
-        const target = ${JSON.stringify(target)};
-        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
-        const active = editor?.activedSes;
-        if (active && (active.sesUUID === target || String(active.id) === target || active.name === target || active.typeName === target)) {
-          return true;
-        }
-
-        if (editor?.sortedSessions) {
-          const found = editor.sortedSessions.find(s =>
-            s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
-          );
-          if (found) {
-            return true;
-          }
-        }
-        return false;
-      })()
-    `;
-
-    try {
-      const ok = await this.cdp.evaluate<boolean>(script);
-      return Boolean(ok);
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * 发送前原子状态校验
-   */
-  public async checkPreSendState(expectedSessionId: string): Promise<PreSendCheckResult> {
-    const target = expectedSessionId.trim();
-    const aligned = await this.ensureTargetSessionContext(target);
-    if (!aligned) {
-      return {
-        canSend: false,
-        reason: 'session_switched',
-        details: `未在会话列表中找到目标会话 [${target}]`,
-      };
-    }
-    return { canSend: true };
-  }
-
-  /**
    * 发送纯文本消息
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
@@ -236,7 +183,8 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 发送富文本与带 @ 提及的消息 (支持无 UI 切换的静默后台发送)
+   * 通过纯底层 IPC (insertSendBefoeMsg + sendMessageNew) 发送富文本与带 @ 提及消息
+   * 完全脱离 UI 与 DOM，零焦点干扰，支持多会话静默并发
    */
   public async sendRichText(
     content: FormattedText,
@@ -247,80 +195,163 @@ export class BridgeMessageOps {
       return { success: false, error: '富文本内容不能为空', isPreTrigger: true };
     }
 
-    if (options.targetSessionId) {
-      const check = await this.checkPreSendState(options.targetSessionId);
-      if (!check.canSend) {
-        return {
-          success: false,
-          error: `发送前检查未通过: ${check.reason} (${check.details})`,
-          isPreTrigger: true,
-        };
-      }
-    }
     if (options.replyTo) {
       return this.sendReply(options.replyTo, content, options);
     }
 
     const mentionNodes = buildMentionNodes(options.mentions);
+    const contentNodes: Array<Record<string, unknown>> = [];
+    for (const mn of mentionNodes) {
+      contentNodes.push(mn);
+      contentNodes.push({ type: 0, text: ' ' });
+    }
+    if (parsed.plainText) {
+      contentNodes.push({ type: 0, text: parsed.plainText });
+    }
+
     const startTime = Date.now();
+    const targetSessionId = options.targetSessionId || '';
 
     const script = `
-      (() => {
-        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
-        if (!editor || typeof editor.sendMessage !== 'function') {
-          return { success: false, error: '未找到编辑器实例' };
+      (async () => {
+        const electron = window.require ? window.require('electron') : null;
+        const ipc = window.ipcRenderer || electron?.ipcRenderer;
+        const app = document.querySelector('#app')?.__vue__;
+        const main = document.querySelector('.main-page')?.__vue__;
+        const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
+        const bus = main?.$bus || app?.$bus || window.vueBus;
+        const store = app?.$store || window.$store;
+
+        let reqId = 1100000 + Math.floor(Math.random() * 100000);
+        function callIpc(channel, ...args) {
+          return new Promise((resolve) => {
+            if (!ipc) return resolve({ error: 'no ipc' });
+            const curId = ++reqId;
+            const reply = 'data-' + curId;
+            const timer = setTimeout(() => resolve({ timeout: true }), 4000);
+            ipc.once(reply, (event, payload) => {
+              clearTimeout(timer);
+              resolve(payload);
+            });
+            ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+          });
         }
 
-        const prevSession = editor.activedSes;
-        const target = ${JSON.stringify(options.targetSessionId || '')};
-        if (target && editor.sortedSessions) {
+        // 1. 精确解析目标会话
+        const target = ${JSON.stringify(targetSessionId)};
+        let targetSes = editor?.activedSes;
+        if (target && editor?.sortedSessions) {
           const found = editor.sortedSessions.find(s =>
             s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
           );
           if (found) {
-            editor.activedSes = found;
+            targetSes = found;
+          } else {
+            return { success: false, error: '未在会话列表中找到目标会话 [' + target + ']', isPreTrigger: true };
           }
         }
 
-        const contentNodes = [];
-        const mentionNodes = ${JSON.stringify(mentionNodes)};
-        for (const mn of mentionNodes) {
-          contentNodes.push(mn);
-          contentNodes.push({ type: 0, text: ' ' });
-        }
-        if (${JSON.stringify(parsed.plainText)}) {
-          contentNodes.push({ type: 0, text: ${JSON.stringify(parsed.plainText)} });
+        if (!targetSes) {
+          return { success: false, error: '未指定目标会话且当前无激活会话', isPreTrigger: true };
         }
 
-        const payload = {
-          type: 'PicText',
-          content: contentNodes,
-          font: ${JSON.stringify(parsed.font)}
+        const myUid = main?.userID || editor?.userID || 5761;
+        const myName = main?.userName || editor?.userName || '我';
+
+        const atMembers = ${JSON.stringify(mentionNodes.map(m => m['replyMemberID']))};
+        const atState = ${mentionNodes.length > 0 ? 2 : 1};
+
+        const msgObj = {
+          contentType: 4, // PicText
+          content: {
+            content: ${JSON.stringify(contentNodes)},
+            font: ${JSON.stringify(parsed.font)}
+          },
+          sender: myUid,
+          senderName: myName,
+          senderNameEN: myName,
+          senderNameTC: myName,
+          receiver: targetSes.typeID || targetSes.sesTypeID,
+          sendTime: Math.floor(Date.now() / 1000),
+          sessionType: targetSes.type,
+          sessionID: targetSes.id,
+          atState: atState,
+          atMemberIDList: atMembers,
+          status: 1,
+          type: 0,
+          msgFlag: '',
+          deviceID: main?.deviceID || editor?.deviceID || ''
         };
-        editor.sendMessage(payload);
 
-        if (prevSession && prevSession !== editor.activedSes) {
-          editor.activedSes = prevSession;
+        // 2. 写入本地 SQLite 并分配 Native ID
+        const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
+        if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
+          return { success: false, error: 'insertSendBefoeMsg 写入失败', isPreTrigger: true };
         }
 
-        return { success: true };
+        const nativeId = insertRes.data.id;
+        const nativeMsgIdx = insertRes.data.msgIdx;
+        msgObj.id = nativeId;
+        msgObj.msgIdx = nativeMsgIdx;
+
+        // 3. 投递到主进程通信引擎发往服务器
+        const sendRes = await callIpc('sendMessageNew', {
+          id: nativeId,
+          content: msgObj.content,
+          contentType: msgObj.contentType,
+          sender: msgObj.sender,
+          senderName: msgObj.senderName,
+          senderNameEN: msgObj.senderNameEN,
+          senderNameTC: msgObj.senderNameTC,
+          receiver: msgObj.receiver,
+          sessionType: msgObj.sessionType,
+          sessionID: msgObj.sessionID,
+          atState: msgObj.atState,
+          msgFlag: msgObj.msgFlag,
+          atMemberIDList: msgObj.atMemberIDList,
+          type: msgObj.type
+        });
+
+        // 4. 静默更新客户端本地状态
+        if (store) {
+          store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+        }
+        if (bus) {
+          bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
+        }
+
+        return {
+          success: sendRes?.code === 0 || sendRes?.code === undefined,
+          messageId: String(nativeId)
+        };
       })()
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
+      const res = await this.cdp.evaluate<{
+        success: boolean;
+        messageId?: string;
+        error?: string;
+        isPreTrigger?: boolean;
+      }>(script);
+
       if (!res?.success) {
-        return { success: false, error: res?.error || '注入富文本失败', isPreTrigger: true };
+        return {
+          success: false,
+          error: res?.error || '底层 IPC 发送失败',
+          isPreTrigger: res?.isPreTrigger ?? false,
+        };
       }
 
       return {
         success: true,
+        messageId: res.messageId,
         verifyLatencyMs: Date.now() - startTime,
       };
     } catch (err) {
       return {
         success: false,
-        error: `发送富文本异常: ${err instanceof Error ? err.message : String(err)}`,
+        error: `底层 IPC 发送异常: ${err instanceof Error ? err.message : String(err)}`,
         isPreTrigger: true,
         verifyLatencyMs: Date.now() - startTime,
       };
@@ -328,7 +359,7 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 发送引用/回复消息
+   * 通过纯底层 IPC 发送引用/回复消息
    */
   public async sendReply(
     replyTo: string | KK9ReplyTarget,
@@ -340,107 +371,138 @@ export class BridgeMessageOps {
       return { success: false, error: '回复内容不能为空', isPreTrigger: true };
     }
 
-    if (options.targetSessionId) {
-      const check = await this.checkPreSendState(options.targetSessionId);
-      if (!check.canSend) {
-        return {
-          success: false,
-          error: `发送前检查未通过: ${check.reason} (${check.details})`,
-          isPreTrigger: true,
-        };
-      }
-    }
-
     const targetObj =
       typeof replyTo === 'string' ? { content: replyTo, messageId: replyTo } : replyTo;
     const mentionNodes = buildMentionNodes(options.mentions);
+    const replyContentNodes: Array<Record<string, unknown>> = [];
+    for (const mn of mentionNodes) {
+      replyContentNodes.push(mn);
+      replyContentNodes.push({ type: 0, text: ' ' });
+    }
+    replyContentNodes.push({ type: 0, text: parsed.plainText });
+
     const startTime = Date.now();
+    const targetSessionId = options.targetSessionId || '';
 
     const script = `
-      (() => {
-        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
-        if (!editor || typeof editor.sendMessage !== 'function') {
-          return { success: false, error: '未找到编辑器实例' };
+      (async () => {
+        const electron = window.require ? window.require('electron') : null;
+        const ipc = window.ipcRenderer || electron?.ipcRenderer;
+        const app = document.querySelector('#app')?.__vue__;
+        const main = document.querySelector('.main-page')?.__vue__;
+        const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
+        const bus = main?.$bus || app?.$bus || window.vueBus;
+        const store = app?.$store || window.$store;
+
+        let reqId = 1200000 + Math.floor(Math.random() * 100000);
+        function callIpc(channel, ...args) {
+          return new Promise((resolve) => {
+            if (!ipc) return resolve({ error: 'no ipc' });
+            const curId = ++reqId;
+            const reply = 'data-' + curId;
+            const timer = setTimeout(() => resolve({ timeout: true }), 4000);
+            ipc.once(reply, (event, payload) => {
+              clearTimeout(timer);
+              resolve(payload);
+            });
+            ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+          });
         }
 
-        const prevSession = editor.activedSes;
-        const target = ${JSON.stringify(options.targetSessionId || '')};
-        if (target && editor.sortedSessions) {
+        const target = ${JSON.stringify(targetSessionId)};
+        let targetSes = editor?.activedSes;
+        if (target && editor?.sortedSessions) {
           const found = editor.sortedSessions.find(s =>
             s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
           );
-          if (found) {
-            editor.activedSes = found;
-          }
+          if (found) targetSes = found;
+          else return { success: false, error: '未找到目标会话 [' + target + ']', isPreTrigger: true };
         }
+
+        if (!targetSes) return { success: false, error: '当前无目标会话', isPreTrigger: true };
 
         const targetRef = ${JSON.stringify(targetObj)};
-        const mentionNodes = ${JSON.stringify(mentionNodes)};
+        const myUid = main?.userID || editor?.userID || 5761;
+        const myName = main?.userName || editor?.userName || '我';
 
-        let targetMsg = null;
-        const msgItems = Array.from(document.querySelectorAll('.rcd-item, .message-item, .msg-item'));
-        for (let i = msgItems.length - 1; i >= 0; i--) {
-          const item = msgItems[i];
-          const vMsg = item.__vue__?.msgitem || item.__vue__?.message;
-          const text = item.textContent || '';
-          if (vMsg && (vMsg.id == targetRef.messageId || (targetRef.content && text.includes(targetRef.content)))) {
-            targetMsg = vMsg;
-            break;
-          }
-        }
-
-        if (!targetMsg && editor.activedSes?.lastMessage) {
-          targetMsg = editor.activedSes.lastMessage;
-        }
-
-        const replyContentNodes = [];
-        for (const mn of mentionNodes) {
-          replyContentNodes.push(mn);
-          replyContentNodes.push({ type: 0, text: ' ' });
-        }
-        replyContentNodes.push({ type: 0, text: ${JSON.stringify(parsed.plainText)} });
-
-        if (targetMsg) {
-          const replyPayload = {
-            type: 'Reply',
-            replyedID: targetMsg.sender || 0,
-            replyedName: targetMsg.senderName || '',
-            replyedNameEN: targetMsg.senderNameEN || targetMsg.senderName || '',
-            replyedNameTC: targetMsg.senderNameTC || targetMsg.senderName || '',
-            replyedMsgId: targetMsg.id || 0,
-            replyedMsgIndex: targetMsg.msgIdx || 0,
-            replyedContentType: targetMsg.contentType || 4,
-            replyedContent: targetMsg.content?.replyContent || targetMsg.content || '',
-            replyContent: {
-              content: replyContentNodes,
-              font: ${JSON.stringify(parsed.font)}
-            }
-          };
-          editor.sendMessage(replyPayload);
-          if (typeof editor.cancelReply === 'function') editor.cancelReply();
-        } else {
-          const payload = {
-            type: 'PicText',
-            content: replyContentNodes,
+        const replyPayload = {
+          type: 'Reply',
+          replyedID: Number(targetRef.sender) || targetRef.sender || 0,
+          replyedName: targetRef.sender || '',
+          replyedNameEN: targetRef.sender || '',
+          replyedNameTC: targetRef.sender || '',
+          replyedMsgId: Number(targetRef.messageId) || 0,
+          replyedMsgIndex: targetRef.msgIdx || 0,
+          replyedContentType: 4,
+          replyedContent: targetRef.content || '',
+          replyContent: {
+            content: ${JSON.stringify(replyContentNodes)},
             font: ${JSON.stringify(parsed.font)}
-          };
-          editor.sendMessage(payload);
+          }
+        };
+
+        const msgObj = {
+          contentType: 13, // Reply
+          content: replyPayload,
+          sender: myUid,
+          senderName: myName,
+          senderNameEN: myName,
+          senderNameTC: myName,
+          receiver: targetSes.typeID || targetSes.sesTypeID,
+          sendTime: Math.floor(Date.now() / 1000),
+          sessionType: targetSes.type,
+          sessionID: targetSes.id,
+          atState: 1,
+          atMemberIDList: [],
+          status: 1,
+          type: 0,
+          msgFlag: '',
+          deviceID: main?.deviceID || editor?.deviceID || ''
+        };
+
+        const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
+        if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
+          return { success: false, error: 'insertSendBefoeMsg 失败', isPreTrigger: true };
         }
 
-        if (prevSession && prevSession !== editor.activedSes) {
-          editor.activedSes = prevSession;
+        const nativeId = insertRes.data.id;
+        msgObj.id = nativeId;
+        msgObj.msgIdx = insertRes.data.msgIdx;
+
+        const sendRes = await callIpc('sendMessageNew', {
+          id: nativeId,
+          content: msgObj.content,
+          contentType: msgObj.contentType,
+          sender: msgObj.sender,
+          senderName: msgObj.senderName,
+          senderNameEN: msgObj.senderNameEN,
+          senderNameTC: msgObj.senderNameTC,
+          receiver: msgObj.receiver,
+          sessionType: msgObj.sessionType,
+          sessionID: msgObj.sessionID,
+          atState: msgObj.atState,
+          msgFlag: msgObj.msgFlag,
+          atMemberIDList: msgObj.atMemberIDList,
+          type: msgObj.type
+        });
+
+        if (store) {
+          store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+        }
+        if (bus) {
+          bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
         }
 
-        return { success: true };
+        return { success: sendRes?.code === 0 || sendRes?.code === undefined, messageId: String(nativeId) };
       })()
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
+      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script);
       if (!res?.success) {
-        return { success: false, error: res?.error || '发送回复失败', isPreTrigger: true };
+        return { success: false, error: res?.error || '底层回复发送失败', isPreTrigger: res?.isPreTrigger ?? false };
       }
-      return { success: true, verifyLatencyMs: Date.now() - startTime };
+      return { success: true, messageId: res.messageId, verifyLatencyMs: Date.now() - startTime };
     } catch (err) {
       return {
         success: false,
@@ -452,7 +514,7 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 发送文件（通过 Vue File 协议原生分发）
+   * 通过纯底层 IPC 发送文件
    */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(filePath);
@@ -472,34 +534,50 @@ export class BridgeMessageOps {
       };
     }
 
-    if (options.targetSessionId) {
-      const check = await this.checkPreSendState(options.targetSessionId);
-      if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason}`, isPreTrigger: true };
-      }
-    }
-
     const fileName = path.basename(fullPath);
     const mimeType = mime.lookup(fullPath) || 'application/octet-stream';
     const startTime = Date.now();
+    const targetSessionId = options.targetSessionId || '';
 
     const script = `
-      (() => {
-        const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
-        if (!editor || typeof editor.sendMessage !== 'function') {
-          return { success: false, error: '未找到编辑器实例' };
+      (async () => {
+        const electron = window.require ? window.require('electron') : null;
+        const ipc = window.ipcRenderer || electron?.ipcRenderer;
+        const app = document.querySelector('#app')?.__vue__;
+        const main = document.querySelector('.main-page')?.__vue__;
+        const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
+        const bus = main?.$bus || app?.$bus || window.vueBus;
+        const store = app?.$store || window.$store;
+
+        let reqId = 1300000 + Math.floor(Math.random() * 100000);
+        function callIpc(channel, ...args) {
+          return new Promise((resolve) => {
+            if (!ipc) return resolve({ error: 'no ipc' });
+            const curId = ++reqId;
+            const reply = 'data-' + curId;
+            const timer = setTimeout(() => resolve({ timeout: true }), 4000);
+            ipc.once(reply, (event, payload) => {
+              clearTimeout(timer);
+              resolve(payload);
+            });
+            ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+          });
         }
 
-        const prevSession = editor.activedSes;
-        const target = ${JSON.stringify(options.targetSessionId || '')};
-        if (target && editor.sortedSessions) {
+        const target = ${JSON.stringify(targetSessionId)};
+        let targetSes = editor?.activedSes;
+        if (target && editor?.sortedSessions) {
           const found = editor.sortedSessions.find(s =>
             s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
           );
-          if (found) {
-            editor.activedSes = found;
-          }
+          if (found) targetSes = found;
+          else return { success: false, error: '未找到目标会话 [' + target + ']', isPreTrigger: true };
         }
+
+        if (!targetSes) return { success: false, error: '当前无目标会话', isPreTrigger: true };
+
+        const myUid = main?.userID || editor?.userID || 5761;
+        const myName = main?.userName || editor?.userName || '我';
 
         const filePayload = {
           type: 'File',
@@ -509,22 +587,70 @@ export class BridgeMessageOps {
           isValid: true,
           filename: ${JSON.stringify(fileName)}
         };
-        editor.sendMessage(filePayload);
 
-        if (prevSession && prevSession !== editor.activedSes) {
-          editor.activedSes = prevSession;
+        const msgObj = {
+          contentType: 3, // File
+          content: filePayload,
+          sender: myUid,
+          senderName: myName,
+          senderNameEN: myName,
+          senderNameTC: myName,
+          receiver: targetSes.typeID || targetSes.sesTypeID,
+          sendTime: Math.floor(Date.now() / 1000),
+          sessionType: targetSes.type,
+          sessionID: targetSes.id,
+          atState: 1,
+          atMemberIDList: [],
+          status: 1,
+          type: 0,
+          msgFlag: '',
+          filepath: ${JSON.stringify(fullPath)},
+          deviceID: main?.deviceID || editor?.deviceID || ''
+        };
+
+        const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
+        if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
+          return { success: false, error: 'insertSendBefoeMsg 写入失败', isPreTrigger: true };
         }
 
-        return { success: true };
+        const nativeId = insertRes.data.id;
+        msgObj.id = nativeId;
+        msgObj.msgIdx = insertRes.data.msgIdx;
+
+        const sendRes = await callIpc('sendMessageNew', {
+          id: nativeId,
+          content: msgObj.content,
+          contentType: msgObj.contentType,
+          sender: msgObj.sender,
+          senderName: msgObj.senderName,
+          senderNameEN: msgObj.senderNameEN,
+          senderNameTC: msgObj.senderNameTC,
+          receiver: msgObj.receiver,
+          sessionType: msgObj.sessionType,
+          sessionID: msgObj.sessionID,
+          atState: msgObj.atState,
+          msgFlag: msgObj.msgFlag,
+          atMemberIDList: msgObj.atMemberIDList,
+          type: msgObj.type
+        });
+
+        if (store) {
+          store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+        }
+        if (bus) {
+          bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
+        }
+
+        return { success: sendRes?.code === 0 || sendRes?.code === undefined, messageId: String(nativeId) };
       })()
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
+      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script);
       if (!res?.success) {
-        return { success: false, error: res?.error || '文件发送初始化失败', isPreTrigger: true };
+        return { success: false, error: res?.error || '文件底层发送失败', isPreTrigger: res?.isPreTrigger ?? false };
       }
-      return { success: true, verifyLatencyMs: Date.now() - startTime };
+      return { success: true, messageId: res.messageId, verifyLatencyMs: Date.now() - startTime };
     } catch (err) {
       return {
         success: false,
@@ -536,7 +662,7 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 发送本地图片（剪贴板注入 + 按键粘贴）
+   * 发送本地图片
    */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(imagePath);
@@ -558,13 +684,7 @@ export class BridgeMessageOps {
       return { success: false, error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
     }
 
-    if (options.targetSessionId) {
-      const check = await this.checkPreSendState(options.targetSessionId);
-      if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason}`, isPreTrigger: true };
-      }
-    }
-
+    const targetSessionId = options.targetSessionId || '';
     const base64Data = fs.readFileSync(fullPath).toString('base64');
     const startTime = Date.now();
 
@@ -575,6 +695,15 @@ export class BridgeMessageOps {
         (async () => {
           try {
             window.focus();
+            const target = ${JSON.stringify(targetSessionId)};
+            const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
+            if (target && editor?.sortedSessions) {
+              const found = editor.sortedSessions.find(s =>
+                s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target
+              );
+              if (found) editor.activedSes = found;
+            }
+
             const input = document.querySelector('.chat-sendArea, .chat-editor, [contenteditable]');
             if (input) input.focus();
 

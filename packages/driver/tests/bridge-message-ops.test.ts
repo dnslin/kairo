@@ -165,13 +165,12 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       expect(res.success).toBe(true);
     });
 
-    it('当会话发生切换时应被防串线安全拦截 (Fail-Closed)', async () => {
+    it('当指定目标会话不存在时应被防串线安全拦截 (Fail-Closed)', async () => {
       const mockCdp = {
-        evaluate: vi.fn().mockImplementation((script: string) => {
-          if (script.includes('active.sesUUID === target') || script.includes('editor.activedSes')) {
-            return Promise.resolve(false);
-          }
-          return Promise.resolve({ success: false, error: '注入富文本失败' });
+        evaluate: vi.fn().mockResolvedValue({
+          success: false,
+          error: '未在会话列表中找到目标会话 [0-3585]',
+          isPreTrigger: true,
         }),
       } as unknown as CdpClient;
 
@@ -180,7 +179,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
       expect(res.success).toBe(false);
       expect(res.isPreTrigger).toBe(true);
-      expect(res.error).toContain('发送前检查未通过');
+      expect(res.error).toContain('未在会话列表中找到目标会话');
     });
 
     it('向群聊 测试123 发送引用回复 (Reply)', async () => {
