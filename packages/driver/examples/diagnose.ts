@@ -10,16 +10,16 @@
  *   sessions                    读取全量会话列表 (Bridge IPC 驱动)
  *   messages [count=10] [target]读取指定会话最近消息列表 (默认: int2024)
  *   switch <target>             切换至指定会话 (私聊 "int2024" / 群聊 "测试123")
- *   send [target=int2024] <text>向目标发送纯文本
- *   rich [target=测试123] <md>  向目标发送富文本/Markdown
- *   at [target=测试123] <text>  向群聊发送带 @全体成员 的消息
+ *   send [target=int2024] <text>向目标后台发送纯文本 (不切换UI)
+ *   rich [target=测试123] <md>  向目标后台发送富文本/Markdown (不切换UI)
+ *   at [target=测试123] <text>  向群聊后台发送带 @全体成员 的消息 (不切换UI)
  *   reply <target> <msgId> <text>向指定消息发送引用回复
  *   image [target=int2024] <imgPath>向目标发送图片
  *   file [target=int2024] <filePath>向目标发送文件
  *   recall <msgId> [sessionId]  通过原生 IPC 撤回消息
  *   user <uid>                  按 UID 单点查询员工档案
- *   org [timeoutMs=5000]        递归抽取企业组织架构全量员工
- *   listen                      启动实时事件监听 (message, at, recalled)
+ *   org [timeoutMs=10000]       递归抽取企业组织架构全量员工
+ *   listen                      启动实时事件监听 (message, at, recalled, 含图片与文件路径输出)
  */
 
 import { KK9Driver } from '../src/index.js';
@@ -85,17 +85,19 @@ async function main() {
       const count = parseInt(args[0] || '10', 10);
       const target = args[1] || DEFAULT_PRIVATE_TARGET;
       await driver.connect();
-      console.log(`正在确保切换至目标会话: ${target} ...`);
-      await driver.selectSession(target);
-      const current = await driver.getCurrentSession();
-      console.log(`当前会话: ${current ? `${current.name} (${current.id})` : '无'}`);
-      console.log(`正在读取最近 ${count} 条消息...\n`);
-      const msgs = await driver.getRecentMessages(count);
+      console.log(`正在后台读取会话 [${target}] 最近 ${count} 条消息 (无需切换UI)...\n`);
+      const msgs = await driver.getRecentMessages(count, { id: target, name: target, type: 'private', unread: false });
       msgs.forEach((m, i) => {
         const who = m.isMe ? '我 (发送)' : `${m.sender} (接收)`;
         console.log(`[${i + 1}] ${m.time} | ${who} [${m.origin || 'unknown'}]`);
-        console.log(`    指纹: ${m.id}`);
-        console.log(`    内容: ${m.content}\n`);
+        console.log(`    内容: ${m.content}`);
+        if (m.images && m.images.length > 0) {
+          console.log(`    图片附件 (${m.images.length}张): ${m.images.map(img => img.filePath || img.url).join(', ')}`);
+        }
+        if (m.fileInfo) {
+          console.log(`    文件卡片: ${m.fileInfo.fileName} (${m.fileInfo.fileSize || ''}) -> ${m.fileInfo.filePath || '云端/未下载'}`);
+        }
+        console.log(`    NativeID: ${m.id}\n`);
       });
       await driver.disconnect();
       break;
@@ -132,11 +134,10 @@ async function main() {
       }
 
       await driver.connect();
-      console.log(`正在向 [${target}] 发送纯文本: "${text}" ...`);
-      await driver.selectSession(target);
+      console.log(`正在向 [${target}] 后台静默发送纯文本: "${text}" ...`);
       const res = await driver.sendText(text, { targetSessionId: target });
       if (res.success) {
-        console.log(`✅ 发送成功！耗时: ${res.verifyLatencyMs || 0}ms`);
+        console.log(`✅ 发送成功！耗时: ${res.verifyLatencyMs || 0}ms (UI保持原状)`);
       } else {
         console.error(`❌ 发送失败: ${res.error}`);
       }
@@ -155,11 +156,10 @@ async function main() {
       }
 
       await driver.connect();
-      console.log(`正在向 [${target}] 发送富文本/Markdown...`);
-      await driver.selectSession(target);
+      console.log(`正在向 [${target}] 后台静默发送富文本/Markdown...`);
       const res = await driver.sendRichText(md, { targetSessionId: target });
       if (res.success) {
-        console.log(`✅ 富文本发送成功！耗时: ${res.verifyLatencyMs || 0}ms`);
+        console.log(`✅ 富文本发送成功！耗时: ${res.verifyLatencyMs || 0}ms (UI保持原状)`);
       } else {
         console.error(`❌ 发送失败: ${res.error}`);
       }
@@ -171,14 +171,13 @@ async function main() {
       const target = args[0] || DEFAULT_GROUP_TARGET;
       const text = args[1] || '请各位关注当前工单进展';
       await driver.connect();
-      console.log(`正在向群聊 [${target}] 发送 @全体成员 消息...`);
-      await driver.selectSession(target);
+      console.log(`正在向群聊 [${target}] 后台发送 @全体成员 消息...`);
       const res = await driver.sendRichText(text, {
         targetSessionId: target,
         mentions: ['all'],
       });
       if (res.success) {
-        console.log(`✅ @ 提及消息发送成功！`);
+        console.log(`✅ @ 提及消息发送成功！(UI保持原状)`);
       } else {
         console.error(`❌ 发送失败: ${res.error}`);
       }
@@ -197,7 +196,6 @@ async function main() {
 
       await driver.connect();
       console.log(`正在向 [${target}] 的消息 ${replyMsgId} 发送回复...`);
-      await driver.selectSession(target);
       const res = await driver.sendReply(replyMsgId, text, { targetSessionId: target });
       if (res.success) {
         console.log(`✅ 引用回复发送成功！`);
@@ -218,12 +216,11 @@ async function main() {
 
       await driver.connect();
       console.log(`正在向 [${target}] 发送图片: ${imgPath} ...`);
-      await driver.selectSession(target);
       const res = await driver.sendImage(imgPath, { targetSessionId: target });
       if (res.success) {
         console.log(`✅ 图片发送成功！耗时: ${res.verifyLatencyMs || 0}ms`);
       } else {
-        console.error(`❌ 发送失败: ${res.error}`);
+        console.error(`❌ 发送图片失败: ${res.error}`);
       }
       await driver.disconnect();
       break;
@@ -239,7 +236,6 @@ async function main() {
 
       await driver.connect();
       console.log(`正在向 [${target}] 发送文件: ${filePath} ...`);
-      await driver.selectSession(target);
       const res = await driver.sendFile(filePath, { targetSessionId: target });
       if (res.success) {
         console.log(`✅ 文件发送成功！`);
@@ -291,9 +287,9 @@ async function main() {
     }
 
     case 'org': {
-      const timeoutMs = parseInt(args[0] || '5000', 10);
+      const timeoutMs = parseInt(args[0] || '10000', 10);
       await driver.connect();
-      console.log(`正在通过 Bridge IPC 抽取企业全量组织树成员 (限时 ${timeoutMs}ms)...`);
+      console.log(`正在通过 Bridge IPC 递归抽取企业全量组织树成员 (限时 ${timeoutMs}ms)...`);
       const emps = await driver.getOrgEmployees(timeoutMs);
       console.log(`\n🏢 共抽取到 ${emps.length} 名员工档案:`);
       emps.slice(0, 15).forEach((e, idx) => {
@@ -314,6 +310,12 @@ async function main() {
         console.log(`   会话: [${m.sessionType}] ${m.sessionName} (${m.sessionId})`);
         console.log(`   发送人: ${m.sender} @ ${m.time} (来源: ${m.origin || 'unknown'})`);
         console.log(`   内容: ${m.content}`);
+        if (m.images && m.images.length > 0) {
+          console.log(`   🖼️ 图片附件 (${m.images.length}张): ${m.images.map(img => img.filePath || img.url).join(', ')}`);
+        }
+        if (m.fileInfo) {
+          console.log(`   📎 文件卡片: ${m.fileInfo.fileName} (${m.fileInfo.fileSize || ''}) -> ${m.fileInfo.filePath || '未下载/云端'}`);
+        }
         console.log(`   NativeID: ${m.id}\n`);
       });
       driver.on('at', m => {
@@ -351,9 +353,9 @@ async function main() {
   sessions                        读取全量会话列表 (Bridge IPC 驱动)
   messages [count=10] [target]    读取指定会话最近消息列表 (默认: ${DEFAULT_PRIVATE_TARGET})
   switch <target>                 切换至指定会话 (私聊 "${DEFAULT_PRIVATE_TARGET}" / 群聊 "${DEFAULT_GROUP_TARGET}")
-  send [target] <text>            向目标会话发送纯文本
-  rich [target] <markdown>        向目标会话发送富文本/Markdown
-  at [target] <text>              向目标群聊发送带 @全体成员 消息
+  send [target] <text>            向目标会话发送纯文本 (静默后台发送，不切换UI)
+  rich [target] <markdown>        向目标会话发送富文本/Markdown (静默后台发送)
+  at [target] <text>              向目标群聊发送带 @全体成员 消息 (静默后台发送)
   reply <target> <msgId> <text>   向目标消息发送引用回复
   image [target] <path>           向目标会话发送图片
   file [target] <path>            向目标会话发送本地文件
@@ -361,10 +363,10 @@ async function main() {
 
 【组织架构与通讯录】
   user <uid>                      单点查询员工详细档案
-  org [timeoutMs=5000]            递归抽取企业组织架构全量员工列表
+  org [timeoutMs=10000]           递归抽取企业组织架构全量员工列表
 
 【实时监听】
-  listen                          启动实时事件监听 (message, at, recalled)
+  listen                          启动实时事件监听 (message, at, recalled, 含图片与文件路径输出)
 `);
       break;
     }

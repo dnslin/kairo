@@ -72,7 +72,6 @@ export class BridgeMessageOps {
     currentUserId?: string | number
   ): Promise<KK9Message[]> {
     try {
-      // 1. 获取目标会话 ID
       let targetSessionID: number | string | undefined;
       let targetSesUUID = '';
       let targetSessionName = '未知会话';
@@ -132,7 +131,6 @@ export class BridgeMessageOps {
         return [];
       }
 
-      // 2. 调用底层 IPC getMessages (纯后台查询，不改变任何可见 UI)
       const res = await callIpcToData<unknown[]>(this.cdp, 'getMessages', [
         {
           sessionID: targetSessionID,
@@ -146,7 +144,6 @@ export class BridgeMessageOps {
         return [];
       }
 
-      // 3. 规范化消息
       const isGroup = targetType === 1 || targetType === 2;
       return normalizeNativeMessage(
         {
@@ -180,7 +177,7 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 自动对齐会话上下文 (若传入 targetSessionId 与当前激活不一致，自动在内存中对齐)
+   * 自动对齐会话上下文
    */
   public async ensureTargetSessionContext(targetSessionId: string): Promise<boolean> {
     const target = targetSessionId.trim();
@@ -200,10 +197,6 @@ export class BridgeMessageOps {
             s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
           );
           if (found) {
-            editor.activedSes = found;
-            if (typeof editor.onActivedSesChanged === 'function') {
-              editor.onActivedSesChanged(found);
-            }
             return true;
           }
         }
@@ -243,7 +236,7 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 发送富文本与带 @ 提及的消息
+   * 发送富文本与带 @ 提及的消息 (支持无 UI 切换的静默后台发送)
    */
   public async sendRichText(
     content: FormattedText,
@@ -274,27 +267,43 @@ export class BridgeMessageOps {
     const script = `
       (() => {
         const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
-        if (editor && typeof editor.sendMessage === 'function') {
-          const contentNodes = [];
-          const mentionNodes = ${JSON.stringify(mentionNodes)};
-          for (const mn of mentionNodes) {
-            contentNodes.push(mn);
-            contentNodes.push({ type: 0, text: ' ' });
-          }
-          if (${JSON.stringify(parsed.plainText)}) {
-            contentNodes.push({ type: 0, text: ${JSON.stringify(parsed.plainText)} });
-          }
-
-          const payload = {
-            type: 'PicText',
-            content: contentNodes,
-            font: ${JSON.stringify(parsed.font)}
-          };
-          editor.sendMessage(payload);
-          return { success: true };
+        if (!editor || typeof editor.sendMessage !== 'function') {
+          return { success: false, error: '未找到编辑器实例' };
         }
 
-        return { success: false, error: '未找到编辑器实例' };
+        const prevSession = editor.activedSes;
+        const target = ${JSON.stringify(options.targetSessionId || '')};
+        if (target && editor.sortedSessions) {
+          const found = editor.sortedSessions.find(s =>
+            s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
+          );
+          if (found) {
+            editor.activedSes = found;
+          }
+        }
+
+        const contentNodes = [];
+        const mentionNodes = ${JSON.stringify(mentionNodes)};
+        for (const mn of mentionNodes) {
+          contentNodes.push(mn);
+          contentNodes.push({ type: 0, text: ' ' });
+        }
+        if (${JSON.stringify(parsed.plainText)}) {
+          contentNodes.push({ type: 0, text: ${JSON.stringify(parsed.plainText)} });
+        }
+
+        const payload = {
+          type: 'PicText',
+          content: contentNodes,
+          font: ${JSON.stringify(parsed.font)}
+        };
+        editor.sendMessage(payload);
+
+        if (prevSession && prevSession !== editor.activedSes) {
+          editor.activedSes = prevSession;
+        }
+
+        return { success: true };
       })()
     `;
 
@@ -354,7 +363,18 @@ export class BridgeMessageOps {
           return { success: false, error: '未找到编辑器实例' };
         }
 
-        const target = ${JSON.stringify(targetObj)};
+        const prevSession = editor.activedSes;
+        const target = ${JSON.stringify(options.targetSessionId || '')};
+        if (target && editor.sortedSessions) {
+          const found = editor.sortedSessions.find(s =>
+            s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
+          );
+          if (found) {
+            editor.activedSes = found;
+          }
+        }
+
+        const targetRef = ${JSON.stringify(targetObj)};
         const mentionNodes = ${JSON.stringify(mentionNodes)};
 
         let targetMsg = null;
@@ -363,7 +383,7 @@ export class BridgeMessageOps {
           const item = msgItems[i];
           const vMsg = item.__vue__?.msgitem || item.__vue__?.message;
           const text = item.textContent || '';
-          if (vMsg && (vMsg.id == target.messageId || (target.content && text.includes(target.content)))) {
+          if (vMsg && (vMsg.id == targetRef.messageId || (targetRef.content && text.includes(targetRef.content)))) {
             targetMsg = vMsg;
             break;
           }
@@ -398,7 +418,6 @@ export class BridgeMessageOps {
           };
           editor.sendMessage(replyPayload);
           if (typeof editor.cancelReply === 'function') editor.cancelReply();
-          return { success: true, method: 'vue_native_reply' };
         } else {
           const payload = {
             type: 'PicText',
@@ -406,8 +425,13 @@ export class BridgeMessageOps {
             font: ${JSON.stringify(parsed.font)}
           };
           editor.sendMessage(payload);
-          return { success: true, method: 'vue_pictext_fallback' };
         }
+
+        if (prevSession && prevSession !== editor.activedSes) {
+          editor.activedSes = prevSession;
+        }
+
+        return { success: true };
       })()
     `;
 
@@ -462,19 +486,36 @@ export class BridgeMessageOps {
     const script = `
       (() => {
         const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
-        if (editor && typeof editor.sendMessage === 'function') {
-          const filePayload = {
-            type: 'File',
-            mimetype: ${JSON.stringify(mimeType)},
-            filepath: ${JSON.stringify(fullPath)},
-            size: ${JSON.stringify(String(stats.size))},
-            isValid: true,
-            filename: ${JSON.stringify(fileName)}
-          };
-          editor.sendMessage(filePayload);
-          return { success: true };
+        if (!editor || typeof editor.sendMessage !== 'function') {
+          return { success: false, error: '未找到编辑器实例' };
         }
-        return { success: false, error: '未找到编辑器实例' };
+
+        const prevSession = editor.activedSes;
+        const target = ${JSON.stringify(options.targetSessionId || '')};
+        if (target && editor.sortedSessions) {
+          const found = editor.sortedSessions.find(s =>
+            s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
+          );
+          if (found) {
+            editor.activedSes = found;
+          }
+        }
+
+        const filePayload = {
+          type: 'File',
+          mimetype: ${JSON.stringify(mimeType)},
+          filepath: ${JSON.stringify(fullPath)},
+          size: ${JSON.stringify(String(stats.size))},
+          isValid: true,
+          filename: ${JSON.stringify(fileName)}
+        };
+        editor.sendMessage(filePayload);
+
+        if (prevSession && prevSession !== editor.activedSes) {
+          editor.activedSes = prevSession;
+        }
+
+        return { success: true };
       })()
     `;
 
@@ -528,15 +569,13 @@ export class BridgeMessageOps {
     const startTime = Date.now();
 
     try {
-      // 1. 激活前台
       await this.cdp.bringToFront();
 
-      // 2. 写入剪贴板
       const clipScript = `
         (async () => {
           try {
             window.focus();
-            const input = document.querySelector('${this.cdp ? '.chat-sendArea, .chat-editor, [contenteditable]' : ''}');
+            const input = document.querySelector('.chat-sendArea, .chat-editor, [contenteditable]');
             if (input) input.focus();
 
             const byteCharacters = atob('${base64Data}');
@@ -564,7 +603,6 @@ export class BridgeMessageOps {
 
       await sleep(300);
 
-      // 3. 模拟粘贴
       const isMac = process.platform === 'darwin';
       await this.cdp.dispatchKeyEvent({
         type: 'keyDown',
@@ -583,7 +621,6 @@ export class BridgeMessageOps {
 
       await sleep(400);
 
-      // 4. 点击发送按钮
       const sendScript = `
         (() => {
           const sendBtn = document.querySelector('.sendMsg-btn a.button') ||

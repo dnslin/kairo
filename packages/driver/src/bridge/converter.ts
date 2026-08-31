@@ -10,9 +10,6 @@ import type {
   KK9Session,
 } from '../types/index.js';
 
-/**
- * 安全转为字符串，防止 [object Object] 隐式序列化
- */
 export function toSafeString(val: unknown, defaultVal = ''): string {
   if (typeof val === 'string') return val;
   if (typeof val === 'number' || typeof val === 'boolean' || typeof val === 'bigint') {
@@ -20,19 +17,14 @@ export function toSafeString(val: unknown, defaultVal = ''): string {
   }
   return defaultVal;
 }
-/**
- * 创建跨 EventBridge、Polling 与 Gateway 共享的消息身份键。
- */
+
 export function createMessageIdentityKey(sessionId: string, nativeMessageId: string): string {
-  return `${sessionId}:${nativeMessageId}`;
+  return `${sessionId.trim()}:${nativeMessageId.trim()}`;
 }
 
-/**
- * 尝试解析 JSON 字符串
- */
-function tryParseJson(val: unknown): Record<string, unknown> | null {
+export function tryParseJson(val: unknown): Record<string, unknown> | null {
   if (!val) return null;
-  if (typeof val === 'object') return val as Record<string, unknown>;
+  if (typeof val === 'object' && !Array.isArray(val)) return val as Record<string, unknown>;
   if (typeof val === 'string') {
     const trimmed = val.trim();
     if (
@@ -50,9 +42,6 @@ function tryParseJson(val: unknown): Record<string, unknown> | null {
   return null;
 }
 
-/**
- * 提取文本内容辅助函数
- */
 function extractTextContent(content: unknown, notifyMsg?: unknown): string {
   if (typeof content === 'string') {
     const parsed = tryParseJson(content);
@@ -61,6 +50,10 @@ function extractTextContent(content: unknown, notifyMsg?: unknown): string {
   }
   if (content && typeof content === 'object') {
     const obj = content as Record<string, unknown>;
+    if (obj['filename'] || obj['fileName']) {
+      const fn = toSafeString(obj['filename'] || obj['fileName']);
+      return `[文件: ${fn}]`;
+    }
     if (Array.isArray(obj['content'])) {
       const text = obj['content']
         .map((c: unknown) => {
@@ -77,7 +70,7 @@ function extractTextContent(content: unknown, notifyMsg?: unknown): string {
     }
     if (typeof obj['text'] === 'string') return obj['text'];
     if (typeof obj['msg'] === 'string') return obj['msg'];
-    if (typeof obj['content'] === 'string') return obj['content'];
+    if (typeof obj['content'] === 'string') return extractTextContent(obj['content']);
     try {
       return JSON.stringify(content);
     } catch {
@@ -90,9 +83,6 @@ function extractTextContent(content: unknown, notifyMsg?: unknown): string {
   return '';
 }
 
-/**
- * 判断消息类型
- */
 function determineMessageType(
   raw: Record<string, unknown>,
   images?: KK9ImageInfo[],
@@ -102,11 +92,15 @@ function determineMessageType(
   if (typeof raw['messageType'] === 'string') {
     return raw['messageType'] as KK9MessageType;
   }
-  if (raw['contentType'] === 2 || raw['contentType'] === 'image' || (images && images.length > 0)) {
-    return 'image';
-  }
-  if (raw['contentType'] === 3 || raw['contentType'] === 'file' || fileInfo) {
+  if (fileInfo || raw['contentType'] === 3 || raw['contentType'] === 'file') {
     return 'file';
+  }
+  if (
+    (images && images.length > 0) ||
+    raw['contentType'] === 2 ||
+    raw['contentType'] === 'image'
+  ) {
+    return 'image';
   }
   if (replyTo || raw['replyMsg']) {
     return 'quote';
@@ -119,10 +113,7 @@ function determineMessageType(
   }
   return 'text';
 }
-/**
- * 确定性判定消息来源身份 (origin)
- * 严格基于可观测 KK Payload、本地登录身份与已发送状态，不使用模型或概率推理
- */
+
 export function determineOrigin(
   raw: Record<string, unknown>,
   isMe: boolean,
@@ -174,7 +165,6 @@ export function determineOrigin(
     return 'bot_echo';
   }
 
-  // isMe 只能证明消息来自当前账号，无法区分人工操作员和 Bot 回显。
   if (isMe) {
     return 'unknown';
   }
@@ -183,7 +173,19 @@ export function determineOrigin(
     return 'unknown';
   }
 
-  return 'external';
+  if (raw['isMe'] === false || raw['fromMe'] === false) {
+    return 'external';
+  }
+
+  if (
+    typeof raw['sender'] === 'string' &&
+    raw['sender'] !== '未知' &&
+    raw['sender'] !== '未知用户'
+  ) {
+    return 'external';
+  }
+
+  return 'unknown';
 }
 
 export type InboundNormalizationSource = 'event_bridge' | 'polling' | 'unknown';
@@ -206,9 +208,6 @@ export interface NormalizeNativeMessageContext {
   onDiagnostic?: (diagnostic: InboundNormalizationDiagnostic) => void;
 }
 
-/**
- * 检查单条消息是否属于撤回事件载荷
- */
 function isCancelMessageItem(item: Record<string, unknown>): boolean {
   if (
     item['event'] === 'CancelMessage' ||
@@ -228,9 +227,6 @@ function isCancelMessageItem(item: Record<string, unknown>): boolean {
   return false;
 }
 
-/**
- * 将原生/底层事件载荷转换为标准的 KK9Message 数组
- */
 export function normalizeNativeMessage(
   payload: unknown,
   context?: NormalizeNativeMessageContext
@@ -241,7 +237,6 @@ export function normalizeNativeMessage(
 
   const rawObj = payload as Record<string, unknown>;
 
-  // 1. 解析嵌套的会话信息
   const sessionObj = (
     rawObj['session'] && typeof rawObj['session'] === 'object' ? rawObj['session'] : {}
   ) as Record<string, unknown>;
@@ -272,7 +267,6 @@ export function normalizeNativeMessage(
 
   const sessionType = isGroup ? 'group' : 'private';
 
-  // 2. 提取消息列表（可能是单条对象或消息数组）
   let rawList: Array<Record<string, unknown>> = [];
   if (Array.isArray(rawObj['messages'])) {
     rawList = rawObj['messages'] as Array<Record<string, unknown>>;
@@ -307,9 +301,18 @@ export function normalizeNativeMessage(
         (item['isMe'] ? '我' : '未知用户');
       const sender = toSafeString(rawSender, '未知用户');
 
-      const rawSenderId = item['senderId'] ?? item['senderID'] ?? item['fromUID'] ?? (typeof item['sender'] === 'number' ? item['sender'] : undefined);
+      const rawSenderId =
+        item['senderId'] ??
+        item['senderID'] ??
+        item['fromUID'] ??
+        (typeof item['sender'] === 'number' ? item['sender'] : undefined);
       const senderId = rawSenderId !== undefined ? toSafeString(rawSenderId) : undefined;
 
+      const contentObj =
+        tryParseJson(item['content']) ||
+        (typeof item['content'] === 'object'
+          ? (item['content'] as Record<string, unknown>)
+          : null);
       const content = extractTextContent(item['content'], item['notifyMsg']);
       const rawTime = item['time'] ?? item['sendTime'];
       const time = toSafeString(rawTime, new Date(now).toLocaleTimeString());
@@ -324,15 +327,25 @@ export function normalizeNativeMessage(
           Boolean(currentUserId && senderId));
       const isMe = Boolean(item['isMe'] === true || item['fromMe'] === true || matchesCurrentUser);
 
-      // 时间戳处理（秒级转毫秒级兼容）
       let timestamp = now;
-      if (typeof item['timestamp'] === 'number') {
-        timestamp = item['timestamp'] < 10000000000 ? item['timestamp'] * 1000 : item['timestamp'];
-      } else if (typeof item['sendTime'] === 'number') {
-        timestamp = item['sendTime'] < 10000000000 ? item['sendTime'] * 1000 : item['sendTime'];
+      const rawTs =
+        item['timestamp'] ??
+        item['sendTime'] ??
+        item['msgTime'] ??
+        item['createTime'] ??
+        item['time'];
+      if (typeof rawTs === 'number') {
+        timestamp = rawTs < 10000000000 ? rawTs * 1000 : rawTs;
+      } else if (typeof rawTs === 'string') {
+        const parsed = Number(rawTs);
+        if (!isNaN(parsed) && parsed > 0) {
+          timestamp = parsed < 10000000000 ? parsed * 1000 : parsed;
+        } else {
+          const dateParsed = new Date(rawTs).getTime();
+          if (!isNaN(dateParsed)) timestamp = dateParsed;
+        }
       }
 
-      // @ 提及信息解析
       const rawMentionsRecord =
         item['mentions'] && typeof item['mentions'] === 'object'
           ? (item['mentions'] as Record<string, unknown>)
@@ -391,7 +404,6 @@ export function normalizeNativeMessage(
         };
       }
 
-      // 引用回复解析
       let replyTo: KK9ReplyInfo | undefined;
       if (item['replyTo'] && typeof item['replyTo'] === 'object') {
         replyTo = item['replyTo'] as KK9ReplyInfo;
@@ -405,42 +417,72 @@ export function normalizeNativeMessage(
         };
       }
 
-      // 图片附件解析
       let images: KK9ImageInfo[] | undefined;
       if (Array.isArray(item['images'])) {
         images = item['images'] as KK9ImageInfo[];
-      } else if (item['content'] && typeof item['content'] === 'object' && Array.isArray((item['content'] as Record<string, unknown>)['content'])) {
-        const list = (item['content'] as Record<string, unknown>)['content'] as Array<Record<string, unknown>>;
-        const imgNodes = list.filter(c => c && (c['type'] === 1 || c['filepath'] || c['uri']));
+      } else if (contentObj && Array.isArray(contentObj['content'])) {
+        const list = contentObj['content'] as Array<Record<string, unknown>>;
+        const imgNodes = list.filter(
+          c => c && (c['type'] === 1 || c['filepath'] || c['filepath_h'] || c['uri'])
+        );
         if (imgNodes.length > 0) {
-          images = imgNodes.map(c => ({
-            filePath: c['filepath'] ? toSafeString(c['filepath']) : undefined,
-            url: c['url'] ? toSafeString(c['url']) : undefined,
-            uri: c['uri'] ? toSafeString(c['uri']) : undefined,
-            mimeType: c['mimetype'] ? toSafeString(c['mimetype']) : undefined,
-            width: typeof c['width'] === 'number' ? c['width'] : undefined,
-            height: typeof c['height'] === 'number' ? c['height'] : undefined,
-          }));
+          images = imgNodes.map(c => {
+            const fp = toSafeString(c['filepath'] || c['filepath_h']);
+            return {
+              filePath: fp || undefined,
+              url: c['url']
+                ? toSafeString(c['url'])
+                : fp
+                  ? 'file:///' + fp.replace(/\\/g, '/')
+                  : undefined,
+              uri: c['uri'] || c['uri_h'] ? toSafeString(c['uri'] || c['uri_h']) : undefined,
+              mimeType: c['mimetype'] ? toSafeString(c['mimetype']) : 'image/png',
+              width: typeof c['width'] === 'number' ? c['width'] : undefined,
+              height: typeof c['height'] === 'number' ? c['height'] : undefined,
+              size: typeof c['size'] === 'number' ? c['size'] : undefined,
+            };
+          });
         }
       } else if (item['picPath'] || item['imgUrl'] || item['picUrl']) {
+        const fp = item['picPath'] ? toSafeString(item['picPath']) : undefined;
         images = [
           {
-            filePath: item['picPath'] ? toSafeString(item['picPath']) : undefined,
+            filePath: fp,
             url: item['imgUrl']
               ? toSafeString(item['imgUrl'])
               : item['picUrl']
                 ? toSafeString(item['picUrl'])
-                : undefined,
+                : fp
+                  ? 'file:///' + fp.replace(/\\/g, '/')
+                  : undefined,
             width: typeof item['width'] === 'number' ? item['width'] : undefined,
             height: typeof item['height'] === 'number' ? item['height'] : undefined,
           },
         ];
       }
 
-      // 文件附件解析
       let fileInfo: KK9FileInfo | undefined;
       if (item['fileInfo'] && typeof item['fileInfo'] === 'object') {
         fileInfo = item['fileInfo'] as KK9FileInfo;
+      } else if (
+        contentObj &&
+        (contentObj['filename'] ||
+          contentObj['fileName'] ||
+          contentObj['filepath'] ||
+          contentObj['filePath'])
+      ) {
+        const fileName = toSafeString(
+          contentObj['filename'] || contentObj['fileName'],
+          '未知文件'
+        );
+        const extMatch =
+          fileName.lastIndexOf('.') !== -1 ? fileName.slice(fileName.lastIndexOf('.')) : undefined;
+        fileInfo = {
+          fileName,
+          filePath: toSafeString(contentObj['filepath'] || contentObj['filePath']) || undefined,
+          fileSize: toSafeString(contentObj['size'] || contentObj['fileSize']) || undefined,
+          fileExt: extMatch,
+        };
       } else if (item['fileName'] || item['filePath']) {
         const fileName = toSafeString(item['fileName'], '未知文件');
         const extMatch =
@@ -479,6 +521,7 @@ export function normalizeNativeMessage(
         ]
           .map(value => toSafeString(value).trim())
           .find(Boolean) ?? '';
+
       const missingFields: Array<'sessionId' | 'nativeMessageId'> = [];
       if (!sessionId) {
         missingFields.push('sessionId');
@@ -486,6 +529,7 @@ export function normalizeNativeMessage(
       if (!nativeMessageId) {
         missingFields.push('nativeMessageId');
       }
+
       if (missingFields.length > 0) {
         context?.onDiagnostic?.({
           kind: 'missing_inbound_identity',
@@ -528,11 +572,9 @@ export function normalizeNativeMessage(
         raw: item,
       };
     })
-    .filter((message): message is KK9Message => message !== null);
+    .filter((msg): msg is KK9Message => msg !== null);
 }
-/**
- * 从任何事件载荷（receive-message, session-msg, direct payload）中提取所有撤回事件
- */
+
 export function extractRecalledEventsFromPayload(
   payload: unknown,
   sessionContext?: Partial<KK9Session>
@@ -553,7 +595,6 @@ export function extractRecalledEventsFromPayload(
     sessionContext?.id;
   const defaultSessionId = toSafeString(rawSessionId, '');
 
-  // 1. 顶层直接包含 CancelMessage / recalled / messageId 载荷
   if (
     rawObj['messageId'] ||
     rawObj['msgID'] ||
@@ -578,7 +619,6 @@ export function extractRecalledEventsFromPayload(
     }
   }
 
-  // 2. 检查 payload 中的 messages / message 数组或内部字段
   let rawList: Array<Record<string, unknown>> = [];
   if (Array.isArray(rawObj['messages'])) {
     rawList = rawObj['messages'] as Array<Record<string, unknown>>;
@@ -634,9 +674,6 @@ export function extractRecalledEventsFromPayload(
   return events;
 }
 
-/**
- * 将原生撤回载荷解析为标准的 KK9RecalledEvent
- */
 export function normalizeRecalledEvent(payload: unknown): KK9RecalledEvent | null {
   const events = extractRecalledEventsFromPayload(payload);
   return events[0] ?? null;
