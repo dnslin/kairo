@@ -25,6 +25,10 @@ const log = createChildLogger('bridge-message-ops');
 const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
 
+function encodePayload(data: unknown): string {
+  return JSON.stringify(encodeURIComponent(JSON.stringify(data)));
+}
+
 function buildMentionNodes(mentions?: SendOptions['mentions']): Array<Record<string, unknown>> {
   if (!mentions) return [];
   const list = Array.isArray(mentions) ? mentions : [mentions];
@@ -83,6 +87,7 @@ export class BridgeMessageOps {
         targetType = session.type === 'group' ? 1 : 0;
       }
 
+      const encodedSession = encodePayload(session || null);
       const sessionContext = await this.cdp.evaluate<{
         sessionID: number | string;
         maxMsgIdx: number;
@@ -91,8 +96,8 @@ export class BridgeMessageOps {
         type: number;
       } | null>(`
         (() => {
+          const targetSession = JSON.parse(decodeURIComponent(${encodedSession}));
           const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
-          const targetSession = ${JSON.stringify(session || null)};
           let matched = editor?.activedSes;
 
           if (targetSession && editor?.sortedSessions) {
@@ -210,7 +215,15 @@ export class BridgeMessageOps {
     }
 
     const startTime = Date.now();
-    const targetSessionId = options.targetSessionId || '';
+    const payloadData = {
+      target: options.targetSessionId || '',
+      contentNodes,
+      font: parsed.font,
+      mentionMemberIds: mentionNodes.map(m => m['replyMemberID']),
+      hasMentions: mentionNodes.length > 0,
+    };
+
+    const encoded = encodePayload(payloadData);
 
     const script = `
       (async () => {
@@ -237,8 +250,9 @@ export class BridgeMessageOps {
           });
         }
 
-        // 1. 精确解析目标会话
-        const target = ${JSON.stringify(targetSessionId)};
+        const data = JSON.parse(decodeURIComponent(${encoded}));
+        const target = data.target;
+
         let targetSes = editor?.activedSes;
         if (target && editor?.sortedSessions) {
           const found = editor.sortedSessions.find(s =>
@@ -258,14 +272,11 @@ export class BridgeMessageOps {
         const myUid = main?.userID || editor?.userID || 5761;
         const myName = main?.userName || editor?.userName || '我';
 
-        const atMembers = ${JSON.stringify(mentionNodes.map(m => m['replyMemberID']))};
-        const atState = ${mentionNodes.length > 0 ? 2 : 1};
-
         const msgObj = {
           contentType: 4, // PicText
           content: {
-            content: ${JSON.stringify(contentNodes)},
-            font: ${JSON.stringify(parsed.font)}
+            content: data.contentNodes,
+            font: data.font
           },
           sender: myUid,
           senderName: myName,
@@ -275,15 +286,14 @@ export class BridgeMessageOps {
           sendTime: Math.floor(Date.now() / 1000),
           sessionType: targetSes.type,
           sessionID: targetSes.id,
-          atState: atState,
-          atMemberIDList: atMembers,
+          atState: data.hasMentions ? 2 : 1,
+          atMemberIDList: data.mentionMemberIds || [],
           status: 1,
           type: 0,
           msgFlag: '',
           deviceID: main?.deviceID || editor?.deviceID || ''
         };
 
-        // 2. 写入本地 SQLite 并分配 Native ID
         const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
         if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
           return { success: false, error: 'insertSendBefoeMsg 写入失败', isPreTrigger: true };
@@ -294,7 +304,6 @@ export class BridgeMessageOps {
         msgObj.id = nativeId;
         msgObj.msgIdx = nativeMsgIdx;
 
-        // 3. 投递到主进程通信引擎发往服务器
         const sendRes = await callIpc('sendMessageNew', {
           id: nativeId,
           content: msgObj.content,
@@ -312,7 +321,6 @@ export class BridgeMessageOps {
           type: msgObj.type
         });
 
-        // 4. 静默更新客户端本地状态
         if (store) {
           store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
         }
@@ -382,7 +390,14 @@ export class BridgeMessageOps {
     replyContentNodes.push({ type: 0, text: parsed.plainText });
 
     const startTime = Date.now();
-    const targetSessionId = options.targetSessionId || '';
+    const payloadData = {
+      target: options.targetSessionId || '',
+      targetRef: targetObj,
+      replyContentNodes,
+      font: parsed.font,
+    };
+
+    const encoded = encodePayload(payloadData);
 
     const script = `
       (async () => {
@@ -409,7 +424,9 @@ export class BridgeMessageOps {
           });
         }
 
-        const target = ${JSON.stringify(targetSessionId)};
+        const data = JSON.parse(decodeURIComponent(${encoded}));
+        const target = data.target;
+
         let targetSes = editor?.activedSes;
         if (target && editor?.sortedSessions) {
           const found = editor.sortedSessions.find(s =>
@@ -421,7 +438,7 @@ export class BridgeMessageOps {
 
         if (!targetSes) return { success: false, error: '当前无目标会话', isPreTrigger: true };
 
-        const targetRef = ${JSON.stringify(targetObj)};
+        const targetRef = data.targetRef;
         const myUid = main?.userID || editor?.userID || 5761;
         const myName = main?.userName || editor?.userName || '我';
 
@@ -436,8 +453,8 @@ export class BridgeMessageOps {
           replyedContentType: 4,
           replyedContent: targetRef.content || '',
           replyContent: {
-            content: ${JSON.stringify(replyContentNodes)},
-            font: ${JSON.stringify(parsed.font)}
+            content: data.replyContentNodes,
+            font: data.font
           }
         };
 
@@ -537,7 +554,15 @@ export class BridgeMessageOps {
     const fileName = path.basename(fullPath);
     const mimeType = mime.lookup(fullPath) || 'application/octet-stream';
     const startTime = Date.now();
-    const targetSessionId = options.targetSessionId || '';
+    const payloadData = {
+      target: options.targetSessionId || '',
+      fullPath,
+      fileName,
+      mimeType,
+      sizeStr: String(stats.size),
+    };
+
+    const encoded = encodePayload(payloadData);
 
     const script = `
       (async () => {
@@ -564,7 +589,9 @@ export class BridgeMessageOps {
           });
         }
 
-        const target = ${JSON.stringify(targetSessionId)};
+        const data = JSON.parse(decodeURIComponent(${encoded}));
+        const target = data.target;
+
         let targetSes = editor?.activedSes;
         if (target && editor?.sortedSessions) {
           const found = editor.sortedSessions.find(s =>
@@ -581,11 +608,11 @@ export class BridgeMessageOps {
 
         const filePayload = {
           type: 'File',
-          mimetype: ${JSON.stringify(mimeType)},
-          filepath: ${JSON.stringify(fullPath)},
-          size: ${JSON.stringify(String(stats.size))},
+          mimetype: data.mimeType,
+          filepath: data.fullPath,
+          size: data.sizeStr,
           isValid: true,
-          filename: ${JSON.stringify(fileName)}
+          filename: data.fileName
         };
 
         const msgObj = {
@@ -604,7 +631,7 @@ export class BridgeMessageOps {
           status: 1,
           type: 0,
           msgFlag: '',
-          filepath: ${JSON.stringify(fullPath)},
+          filepath: data.fullPath,
           deviceID: main?.deviceID || editor?.deviceID || ''
         };
 
@@ -684,9 +711,15 @@ export class BridgeMessageOps {
       return { success: false, error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
     }
 
-    const targetSessionId = options.targetSessionId || '';
     const base64Data = fs.readFileSync(fullPath).toString('base64');
     const startTime = Date.now();
+    const payloadData = {
+      target: options.targetSessionId || '',
+      base64Data,
+      mimeType,
+    };
+
+    const encoded = encodePayload(payloadData);
 
     try {
       await this.cdp.bringToFront();
@@ -695,7 +728,9 @@ export class BridgeMessageOps {
         (async () => {
           try {
             window.focus();
-            const target = ${JSON.stringify(targetSessionId)};
+            const data = JSON.parse(decodeURIComponent(${encoded}));
+            const target = data.target;
+
             const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
             if (target && editor?.sortedSessions) {
               const found = editor.sortedSessions.find(s =>
@@ -707,16 +742,16 @@ export class BridgeMessageOps {
             const input = document.querySelector('.chat-sendArea, .chat-editor, [contenteditable]');
             if (input) input.focus();
 
-            const byteCharacters = atob('${base64Data}');
+            const byteCharacters = atob(data.base64Data);
             const byteNumbers = new Array(byteCharacters.length);
             for (let i = 0; i < byteCharacters.length; i++) {
               byteNumbers[i] = byteCharacters.charCodeAt(i);
             }
             const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: '${mimeType}' });
+            const blob = new Blob([byteArray], { type: data.mimeType });
 
             await navigator.clipboard.write([
-              new ClipboardItem({ ['${mimeType}']: blob })
+              new ClipboardItem({ [data.mimeType]: blob })
             ]);
             return { success: true };
           } catch (e) {
@@ -792,11 +827,18 @@ export class BridgeMessageOps {
   public async recallMessage(messageId: string, sessionId?: string): Promise<boolean> {
     if (!messageId) return false;
 
+    const payloadData = {
+      targetId: messageId,
+      targetSessionId: sessionId || '',
+    };
+    const encoded = encodePayload(payloadData);
+
     try {
       const script = `
         (async () => {
-          const targetId = ${JSON.stringify(messageId)};
-          const targetSessionId = ${JSON.stringify(sessionId || '')};
+          const data = JSON.parse(decodeURIComponent(${encoded}));
+          const targetId = data.targetId;
+          const targetSessionId = data.targetSessionId;
           const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
           const main = document.querySelector('.main-page')?.__vue__;
           const bus = main?.$bus;
