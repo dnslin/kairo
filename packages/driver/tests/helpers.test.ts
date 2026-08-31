@@ -11,7 +11,7 @@ describe('DOM Helpers 测试', () => {
     const mockItems = [
       { sesUUID: 'ses_001', typeName: '技术交流群', name: '技术交流群' },
       { sesUUID: 'ses_002', typeName: '张三', name: '张三' },
-      { id: 12345, typeName: '李四 (VIP)', name: '李四' },
+      { id: 12345, typeName: '李四 (VIP)', name: '李四（正式）' },
     ];
 
     // 按 sesUUID 查找
@@ -24,10 +24,26 @@ describe('DOM Helpers 测试', () => {
     expect(match2.index).toBe(1);
     expect(match2.item?.sesUUID).toBe('ses_002');
 
-    // 模糊包含查找
+    // 禁止模糊包含查找
     const match3 = findVueSessionItem(mockItems, '李四');
-    expect(match3.index).toBe(2);
-    expect(match3.item?.id).toBe(12345);
+    expect(match3.index).toBe(-1);
+    expect(match3.item).toBeNull();
+
+    // ID 命中优先于更早出现的同名会话
+    const shadowedItems = [
+      { id: 7, sesUUID: 'shadow', typeName: '1-29467', name: '1-29467' },
+      { id: 8, sesUUID: '1-29467', typeName: '真实目标', name: '真实目标' },
+    ];
+    const idMatch = findVueSessionItem(shadowedItems, '1-29467');
+    expect(idMatch.index).toBe(1);
+    expect(idMatch.item?.id).toBe(8);
+
+    // 重名且无 ID 命中时拒绝
+    const duplicateNames = [
+      { id: 7, sesUUID: 'first', typeName: '重复会话', name: '重复会话' },
+      { id: 8, sesUUID: 'second', typeName: '重复会话', name: '重复会话' },
+    ];
+    expect(findVueSessionItem(duplicateNames, '重复会话')).toEqual({ index: -1, item: null });
 
     // 未找到
     const match4 = findVueSessionItem(mockItems, '王五');

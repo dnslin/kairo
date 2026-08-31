@@ -16,10 +16,10 @@
    - **致命缺陷**：向非当前激活会话发送消息时必须物理切换 UI 视图（`selectSession`），导致前台用户操作被打断，且在并发请求时产生严重的会话串线与竞争冒险（Race Condition）。
 3. **未读状态伪消除**：通过 `badge.style.display = 'none'` 隐藏红点，未与服务端及移动端状态同步。
 
-### 1.2 重构目标
-- **纯粹化**：剥离 Canvas 渲染引擎及业务模板，将 Driver 收敛为纯粹的 KK IM 客户端操作驱动器。
-- **Bridge 一等公民化**：全面逆向 Electron 主进程与渲染进程 IPC，建立基于数据层（`toData` / `callIce`）与 Vue 运行时（`$bus`）的通信机制，彻底取代 DOM 层。
-- **接口契约抽象**：对外仅暴露 `IKK9Driver` 纯净接口，隐藏所有底层 CDP、IPC 与 DOM 回退细节。
+### 1.2 重构目标与明确边界
+- **纯粹化**：Canvas 渲染引擎、卡片类型和业务模板从 Driver 中直接剥离。本次迁移明确不保留 Card API 兼容层；仍需该能力时应由独立模块重新实现。
+- **Bridge 优先**：文本、富文本、回复、文件、会话数据、已读和组织架构优先使用 Electron IPC / Vue 数据层；图片发送仍保留 UI、剪贴板和按键路径。
+- **接口契约抽象**：`IKK9Driver` 是推荐的顶层业务契约。包当前仍导出 Bridge、CDP 与 DOM 类供诊断和高级调用，因此尚未形成物理上的完全隐藏。
 
 ---
 
@@ -50,23 +50,24 @@
 
 ## 3. 核心功能改造与底层 IPC 规范对照
 
-| 功能模块 | 历史实现（DOM / 伪状态） | 新版实现（纯 Bridge / IPC 协议） | 底层 IPC / 运行时方法 | 性能与稳定性对比 |
-| :--- | :--- | :--- | :--- | :--- |
-| **会话列表** | 遍历 `.session-item` 节点或穿透虚拟 Scroller | 纯数据拉取全量会话 Map，计算 `maxMessageIndex - userReadIndex` 得到精确未读数 | `toData('getConversations')` | 耗时从 ~400ms 降至 **~15ms**，零 UI 依赖 |
-| **历史消息** | 抓取 DOM 文本，正则匹配富文本 | 读取本地 SQLite 消息窗口，原生结构化 JSON 规范化 | `toData('getMessages', { sessionID, count, endIdx, sendTime })` | 无需滚动视口，任意后台会话毫秒级提取 |
-| **出站发送 (文本/富文本/@)** | 填充输入框 DOM 节点 + 模拟按钮点击 | 本地 SQLite 落盘分配 ID + 网络引擎直接发送 | `insertSendBefoeMsg` ➔ `sendMessageNew` | **100% 静默后台并发发送**，前台 0 焦点切换 |
-| **引用回复** | 查找 DOM 右键或模拟点击回复条 | 构造 `contentType: 13` 原生引用对象，原子投递 | `insertSendBefoeMsg` ➔ `sendMessageNew` | 精确绑定被引用消息 ID 与被引用人 |
-| **文件发送** | 模拟拖拽/DOM 事件 | 构造 `contentType: 3` 原生文件载荷直接投递 | `insertSendBefoeMsg` ➔ `sendMessageNew` | 支持任意路径与 MIME 类型无感知投递 |
-| **消息撤回** | 查找 DOM 右键菜单或模拟点击 | 原生撤回信令直发服务端并广播本地撤回事件 | `toData('cancelMessage', { type: 'own', sessionID, msgID, msgIdx })` | 支持任意历史消息精确秒级撤回 |
-| **已读消除** | 修改 DOM `badge.style.display='none'` 伪消除 | 真正向服务器上报阅读索引，多端同步 | `toData('readMessage', { type, sessionID, maxMsgIdx })` | 消除假已读缺陷，服务端与移动端实时同步 |
-| **组织架构** | 遍历点击展开 UI 部门树 (BFS 模拟点击 500 次) | 根部门自动嗅探 + 纯 IPC 递归拉取 | `toData('getChildDeptsAndMembers')` + `getMemberDetail` | **341 个部门、1321 名员工抽取耗时从 >30s 缩短至 3.3s** |
+| 功能模块 | 历史实现 | 当前实现 | 已验证边界 |
+| :--- | :--- | :--- | :--- |
+| **会话列表** | 遍历 DOM / 虚拟列表 | `toData('getConversations')` 读取会话 Map 并计算未读数 | Bridge 失败时仍可能回退 DOM |
+| **历史消息** | 抓取可视 DOM 文本 | `toData('getMessages')` 读取原生结构化消息 | 目标会话需先解析为 native session ID |
+| **文本 / 富文本 / @** | 输入框与按钮模拟 | `insertSendBefoeMsg` ➔ `sendMessageNew` | 仅 `sendMessageNew` 明确返回 `code: 0` 才成功；超时属于未知结果且不得 DOM 重发；指定目标时 Bridge 安全拒绝也不得被 DOM fallback 绕过 |
+| **引用回复** | DOM 回复条 | 构造 `contentType: 13` 后走 native sender | 与文本发送共享相同 ack 规则 |
+| **文件发送** | 模拟拖拽或 DOM 事件 | 构造 `contentType: 3` 后走 native sender | 路径、大小与 native ack 均需验证 |
+| **图片发送** | 剪贴板、按键与发送按钮 | 当前仍使用相同 UI 路径 | 目标未命中时在剪贴板和按键操作前 Fail-Closed；该路径会获取前台焦点 |
+| **消息撤回** | DOM 菜单 | 精确 `messageId` 与目标会话组装 `cancelMessage` | 仅 native `code: 0` 成功；`$bus` 只用于 ack 后更新本地 UI |
+| **已读消除** | 仅隐藏本地红点 | `readMessage` native RPC | ack 成功后才更新本地状态；多端效果仍需实机验证 |
+| **组织架构** | DOM 展开部门树 | `getChildDeptsAndMembers` 分页 BFS | 已覆盖首页恰好 200 人且同时返回子部门的边界 |
 
 ---
 
 ## 4. 架构设计与接口抽象
 
-### 4.1 顶层接口契约 (`IKK9Driver`)
-对外仅暴露操作 IM 所需的纯净接口，所有依赖完全面向接口编程：
+### 4.1 推荐顶层接口契约 (`IKK9Driver`)
+业务调用应优先依赖 `IKK9Driver`；当前包为诊断与高级场景仍保留底层类导出：
 
 ```typescript
 export interface IKK9Driver extends EventEmitter {
@@ -77,7 +78,7 @@ export interface IKK9Driver extends EventEmitter {
   getStartupGenerationId(): string;
   getHealthSnapshot(): DriverHealthSnapshot;
 
-  // 2. 会话管理 (全部走 Bridge 数据层)
+  // 2. 会话管理 (Bridge 优先，必要时回退)
   getSessions(): Promise<KK9Session[]>;
   getCurrentSession(): Promise<KK9Session | null>;
   selectSession(sessionId: string): Promise<boolean>;
@@ -87,7 +88,7 @@ export interface IKK9Driver extends EventEmitter {
   getRecentMessages(limit?: number, session?: KK9Session): Promise<KK9Message[]>;
   scanCompensationWindow(options: CompensationScanOptions): Promise<KK9Message[]>;
 
-  // 4. 静默并发消息发送与撤回
+  // 4. 消息发送与撤回
   sendText(text: string, options?: SendOptions): Promise<SendResult>;
   sendRichText(content: FormattedText, options?: SendOptions): Promise<SendResult>;
   sendReply(replyTo: string | KK9ReplyTarget, content: FormattedText, options?: SendOptions): Promise<SendResult>;
@@ -131,16 +132,20 @@ packages/driver/src/
 
 ---
 
-## 5. 安全机制与健壮性保障
+## 5. 安全机制与健壮性边界
 
-1. **URI 安全编码隔离 (`encodePayload`)**：
-   在向 CDP 注入参数时，全面采用 `JSON.stringify(encodeURIComponent(JSON.stringify(data)))` 并在浏览器端 `JSON.parse(decodeURIComponent(...))`，彻底根除模板字符串插值导致的多层反斜杠转义与换行符丢失问题。
-2. **来源身份（`origin`）确定性分类**：
-   不依赖任何概率或大模型猜测，依据本地账号 ID（`currentUserId`）、已记录发送指纹（`knownBotSentMessageKeys`）与消息载荷，严格判定为 `external`（外部成员）、`operator`（人工打字）、`bot_echo`（机器人自身回显）或 `system`（系统消息）。
-3. **启动代次（`startupGenerationId`）与健康快照守卫**：
-   在连接断开、重连或上下文漂移时，自动派发结构化 `DriverHealthEvent`，防止过期的闭包执行引发脑裂。
-4. **防串线安全拦截 (Fail-Closed)**：
-   每次执行发送前，严格比对目标会话与生成数据包中的 `sessionID` / `sesUUID`，一旦未命中目标会话立即拒绝发送（`isPreTrigger: true`），绝不向错误会话投递。
+1. **CDP 参数编码 (`encodePayload`)**：
+   注入参数使用 JSON + URI 编码，避免把用户内容直接拼入脚本。核心 `FormattedText` 解析保留字面反斜杠；只有诊断 CLI 在明确边界解码转义换行。
+2. **来源与 @ 状态分类**：
+   `origin` 依据账号 ID、已记录发送身份和原生载荷分类。`atState: 1` 视为普通消息，`atState: 2` 或明确包含当前账号的成员列表才判定为 `@我`。
+3. **发送结果三态**：
+   发送结果区分“native ack 成功”“可证明脚本未提交”和“提交后结果未知”。只有第一种成功；第三种不得自动进入 DOM 重试。
+4. **变更性操作的 IPC 请求 ID**：
+   文本、回复、文件、撤回和已读路径使用 renderer 单调计数器分配唯一 reply channel；组织根部门探测仍有独立内部请求序列，不在此保证范围内。
+5. **目标与撤回 Fail-Closed**：
+   Bridge 与 DOM 解析会话时均优先匹配 `sesUUID/id`；仅在没有 ID 命中且名称唯一时接受名称。指定目标的 Bridge 拒绝不会再进入 DOM fallback；只有未指定目标、明确发送当前会话时保留该 fallback。图片目标未命中时在剪贴板和键盘动作前拒绝；撤回只使用精确消息 ID，并且仅 native ack 成功后更新本地事件总线。
+6. **启动代次与健康事实**：
+   `startupGenerationId` 和结构化健康事件用于识别连接身份变化；单次业务失败不会自动升级为 Driver 身份失效。
 
 ---
 
@@ -148,18 +153,17 @@ packages/driver/src/
 
 ### 6.1 自动化测试覆盖
 - **测试套件总数**：19 个测试文件
-- **测试用例总数**：148 个测试用例（覆盖 Happy Path、边界值、网络超时、故障注入、消息撤回、防串线）
-- **通过率**：**100% PASS**（0 错误、0 警告）
-- **类型检查**：`pnpm typecheck` 0 错误
-- **代码规范**：`pnpm lint` 0 警告
+- **测试用例总数**：190 个测试用例
+- **新增关键场景**：发送超时与未知状态、并发 IPC ID、listener 精确清理、目标列表缺失、ID 优先与名称歧义拒绝、指定目标禁止 DOM 绕过、图片目标未命中、撤回精确身份与 ack、已读 ack、200 人分页边界、普通 `atState: 1`、字面反斜杠与 CLI 解码边界
+- **验证命令**：`pnpm test`、`pnpm typecheck`、`pnpm lint`、`pnpm build`
 
-### 6.2 实机测试基准 (E2E)
-- 私聊测试对象：`int2024`（会话 ID: `0-3585`）
-- 群聊测试对象：`测试123`（会话 ID: `1-29467`）
-- 组织架构全量抽取：**1321 名员工在 3.3 秒内抽取完成**（341 个部门递归全覆盖）。
+### 6.2 实机 E2E 边界
+- `pnpm e2e` 会向真实 KK9 会话发送文本、富文本和图片，不能作为无副作用的默认 CI 门禁。
+- 本轮修复未运行真实发送 E2E；生产环境中的多端已读效果、图片 UI 行为和性能指标仍需在授权测试会话中验证。
+- 仓库当前没有可重复执行的性能基准，因此本文不再把特定毫秒数、员工数或部门数作为自动化通过结论。
 
 ---
 
 ## 7. 架构评审总结与结论
 
-本次重构彻底解决了 `@kkbot/driver` 依赖 DOM 脆弱性、UI 焦点冲突及非 IM 业务耦合的历史技术债务，将底层通信全面下沉至 KK9 原生 IPC 与数据层，实现了 **100% 确定性、无感知后台并发收发与高性能组织架构抽取**，接口契约设计完备，已具备生产就绪水平。
+本次重构完成了 Canvas/Card 职责剥离，并将文本、回复、文件、会话、已读和组织架构的主路径迁移到 Bridge / IPC。自动化测试已经覆盖本轮审计发现的确定性缺陷，但图片发送仍依赖 UI，部分读取与轮询仍保留 DOM 回退，真实 KK9 的跨端效果与性能也尚未纳入可重复 E2E。因此当前结论是“代码级迁移与回归门禁完成，等待授权实机验收”，而不是无条件的生产就绪声明。

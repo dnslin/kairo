@@ -23,6 +23,7 @@
  */
 
 import { KK9Driver } from '../src/index.js';
+import { decodeCliEscapedLineBreaks } from '../src/dom/rich-text.js';
 
 const cdpUrl = process.env['CDP_URL'] || 'http://127.0.0.1:9222';
 const pageMatch = process.env['PAGE_MATCH'] || 'renderer.html';
@@ -128,6 +129,7 @@ async function main() {
         text = args[0] || '';
       }
 
+      text = decodeCliEscapedLineBreaks(text);
       if (!text) {
         console.error(`用法: pnpm diagnose send [目标会话=${DEFAULT_PRIVATE_TARGET}] <发送文本>`);
         process.exit(1);
@@ -155,6 +157,7 @@ async function main() {
         md = args[0] || '**加粗富文本**\n- 状态: 正常';
       }
 
+      md = decodeCliEscapedLineBreaks(md);
       await driver.connect();
       console.log(`正在向 [${target}] 后台静默发送富文本/Markdown...`);
       const res = await driver.sendRichText(md, { targetSessionId: target });
@@ -169,7 +172,7 @@ async function main() {
 
     case 'at': {
       const target = args[0] || DEFAULT_GROUP_TARGET;
-      const text = args[1] || '请各位关注当前工单进展';
+      const text = decodeCliEscapedLineBreaks(args[1] || '请各位关注当前工单进展');
       await driver.connect();
       console.log(`正在向群聊 [${target}] 后台发送 @全体成员 消息...`);
       const res = await driver.sendRichText(text, {
@@ -188,7 +191,7 @@ async function main() {
     case 'reply': {
       const target = args[0] || DEFAULT_GROUP_TARGET;
       const replyMsgId = args[1];
-      const text = args[2] || '已收到，正在跟进中';
+      const text = decodeCliEscapedLineBreaks(args[2] || '已收到，正在跟进中');
       if (!replyMsgId) {
         console.error(`用法: pnpm diagnose reply <目标会话> <被回复MsgID> [回复内容]`);
         process.exit(1);

@@ -222,11 +222,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    * 显式消除指定会话的未读红点（优先通过 IPC readMessage 同步到服务端）
    */
   public async markSessionRead(sessionId: string): Promise<boolean> {
-    const success = await this.bridgeSessionOps.markSessionRead(sessionId);
-    if (success) {
-      return true;
-    }
-    return this.domSessionOps.markSessionRead(sessionId);
+    return this.bridgeSessionOps.markSessionRead(sessionId);
   }
 
   public recordBotSentMessageId(sessionId: string, messageId: string): void {
@@ -351,7 +347,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
     const res = await this.bridgeMessageOps.sendText(text, options);
-    if (!res.success && res.isPreTrigger) {
+    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
       const domRes = await this.domSendOps.sendText(text, options);
       this.rememberBotSentMessage(domRes, options.targetSessionId);
       return domRes;
@@ -368,7 +364,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     options: SendOptions = {}
   ): Promise<SendResult> {
     const res = await this.bridgeMessageOps.sendRichText(content, options);
-    if (!res.success && res.isPreTrigger) {
+    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
       const domRes = await this.domSendOps.sendRichText(content, options);
       this.rememberBotSentMessage(domRes, options.targetSessionId);
       return domRes;
@@ -386,7 +382,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     options: SendOptions = {}
   ): Promise<SendResult> {
     const res = await this.bridgeMessageOps.sendReply(replyTo, content, options);
-    if (!res.success && res.isPreTrigger) {
+    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
       const domRes = await this.domSendOps.sendReply(replyTo, content, options);
       this.rememberBotSentMessage(domRes, options.targetSessionId);
       return domRes;
@@ -400,7 +396,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const res = await this.bridgeMessageOps.sendFile(filePath, options);
-    if (!res.success && res.isPreTrigger) {
+    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
       const domRes = await this.domSendOps.sendFile(filePath, options);
       this.rememberBotSentMessage(domRes, options.targetSessionId);
       return domRes;
@@ -414,7 +410,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     const res = await this.bridgeMessageOps.sendImage(imagePath, options);
-    if (!res.success && res.isPreTrigger) {
+    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
       const domRes = await this.domSendOps.sendImage(imagePath, options);
       this.rememberBotSentMessage(domRes, options.targetSessionId);
       return domRes;
@@ -428,11 +424,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    */
   public async recallMessage(messageId: string, session?: KK9Session | string): Promise<boolean> {
     const sessionId = typeof session === 'string' ? session : session?.id;
-    const success = await this.bridgeMessageOps.recallMessage(messageId, sessionId);
-    if (success) {
-      return true;
-    }
-    return this.domSendOps.recallMessage(messageId, sessionId);
+    return this.bridgeMessageOps.recallMessage(messageId, sessionId);
   }
 
   public handleRecalledEvent(event: KK9RecalledEvent): void {

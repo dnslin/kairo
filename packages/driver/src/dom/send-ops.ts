@@ -78,25 +78,22 @@ export class SendOps {
           activeItem?.getAttribute('id') ||
           '';
 
-        // 2. 检查右侧聊天面板标题栏
-        const headerTitle = document.querySelector('.chat-header, .chat-title, .head-title')?.textContent?.trim() || '';
-
-        // 3. 尝试从 Vue 实例获取目标信息
+        // 2. 从 Vue 会话列表唯一解析目标身份
         const scrollerItems = getVueScrollerItems('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
         const { item: matchedItem } = findVueSessionItem(scrollerItems, expected);
-        const expectedName = matchedItem?.typeName || matchedItem?.name || expected;
-        const expectedUuid = matchedItem?.sesUUID || expected;
+        if (!matchedItem) {
+          return {
+            canSend: false,
+            reason: 'target_ambiguous_or_missing',
+            details: '目标会话 [' + expected + '] 无法唯一解析',
+          };
+        }
 
-        // 4. 多重综合比对
-        const isMatch =
-          activeId === expected ||
-          activeId === expectedUuid ||
-          activeTitle === expected ||
-          activeTitle === expectedName ||
-          (activeTitle && expectedName && activeTitle.includes(expectedName)) ||
-          (activeTitle && expected && activeTitle.includes(expected)) ||
-          headerTitle.includes(expected) ||
-          headerTitle.includes(expectedName);
+        // 3. 当前 DOM 必须暴露与目标一致的原生身份，标题不能替代身份
+        const expectedIds = [matchedItem.sesUUID, matchedItem.id]
+          .filter(value => value !== undefined && value !== null)
+          .map(value => String(value));
+        const isMatch = Boolean(activeId && expectedIds.includes(String(activeId)));
 
         if (!isMatch) {
           return {
@@ -642,7 +639,9 @@ export class SendOps {
               if (!isNaN(p)) sendTime = p;
             }
 
-            if (targetId && (rawId === targetId || item.id === targetId || String(targetId).includes(String(rawId)) || (rawId && String(rawId).includes(String(targetId))))) {
+            const cleanRawId = rawId ? String(rawId).replace(/^msg-/, '') : '';
+            const cleanTargetId = String(targetId).replace(/^msg-/, '');
+            if (targetId && cleanRawId && cleanRawId === cleanTargetId) {
               return {
                 isMe,
                 sender,
@@ -686,6 +685,7 @@ export class SendOps {
 
       const recallScript = `
         (async () => {
+          ${VUE_SCROLLER_HELPERS_SCRIPT}
           const targetId = ${JSON.stringify(messageId)};
           const targetSessionId = ${JSON.stringify(sessionId || '')};
 
@@ -707,25 +707,51 @@ export class SendOps {
             }
           }
 
+          if (!matchedItem || !matchedVueMsg || matchedVueMsg.sessionID === undefined) {
+            return { success: false, error: '未找到具有原生身份的目标消息' };
+          }
+
           const app = document.querySelector('#app')?.__vue__;
           const main = document.querySelector('.main-page')?.__vue__;
           const bus = main?.$bus || app?.$bus;
           const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
-          const sesUUID = editor?.activedSes?.sesUUID || targetSessionId;
-          const sessionID = matchedVueMsg?.sessionID || editor?.activedSes?.id || targetSessionId;
-          const msgID = matchedVueMsg?.id || matchedVueMsg?.msgID || Number(targetId) || targetId;
-          const msgIdx = matchedVueMsg?.msgIdx || 0;
+          let targetSession = editor?.activedSes || null;
+          if (targetSessionId) {
+            if (!Array.isArray(editor?.sortedSessions)) {
+              return { success: false, error: '当前会话列表不可用' };
+            }
+            targetSession = findVueSessionItem(editor.sortedSessions, targetSessionId).item;
+          }
+          if (!targetSession || String(matchedVueMsg.sessionID) !== String(targetSession.id)) {
+            return { success: false, error: '目标消息不属于指定会话' };
+          }
 
+          const sesUUID = targetSession.sesUUID || targetSessionId;
+          const sessionID = targetSession.id;
+          const msgID = matchedVueMsg.id || matchedVueMsg.msgID;
+          const msgIdx = matchedVueMsg.msgIdx || 0;
           const ipc = window.ipcRenderer || (window.require ? window.require('electron')?.ipcRenderer : null);
-          if (ipc && typeof ipc.send === 'function') {
-            const key = '__kkbotRecallReqId';
-            const current = typeof window[key] === 'number' ? window[key] : 900000;
-            window[key] = current + 1;
-            const requestId = current + 1;
-            const replyChannel = 'data-' + requestId;
+          if (!ipc || typeof ipc.send !== 'function' || typeof ipc.once !== 'function') {
+            return { success: false, error: '未找到 native IPC 撤回通道' };
+          }
 
-            const ipcPromise = new Promise(resolve => {
-              ipc.once(replyChannel, (_event, payload) => resolve(payload));
+          const key = '__kkbot_rpc_id';
+          const current = typeof window[key] === 'number' ? window[key] : 800000;
+          window[key] = current + 1;
+          const requestId = current + 1;
+          const replyChannel = 'data-' + requestId;
+          const ipcRes = await new Promise(resolve => {
+            const onReply = (_event, payload) => {
+              clearTimeout(timer);
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve(payload);
+            };
+            const timer = setTimeout(() => {
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve({ code: -2 });
+            }, 4000);
+            ipc.once(replyChannel, onReply);
+            try {
               ipc.send('data', {
                 id: requestId,
                 args: ['cancelMessage', {
@@ -736,45 +762,26 @@ export class SendOps {
                 }],
                 progress: false
               });
-            });
-
-            const ipcRes = await ipcPromise;
-            if (ipcRes && (ipcRes.code === 0 || ipcRes.code === undefined)) {
-              if (bus && sesUUID) {
-                bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
-              }
-              return { success: true, method: 'ipc_cancelMessage' };
+            } catch (sendErr) {
+              clearTimeout(timer);
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve({ code: -3 });
             }
-          }
+          });
 
-          function findChatContentVm(vm) {
-            if (!vm) return null;
-            if (vm.$options?._componentTag === 'chat-content' || vm.$options?.name === 'chat-content') return vm;
-            if (vm.$children) {
-              for (const c of vm.$children) {
-                const res = findChatContentVm(c);
-                if (res) return res;
-              }
-            }
-            return null;
+          if (!ipcRes || ipcRes.code !== 0) {
+            return { success: false, error: 'native 撤回未返回成功 ack' };
           }
-          const chatContent = findChatContentVm(app);
-          if (chatContent && typeof chatContent.addRevokeMsg === 'function') {
-            await chatContent.addRevokeMsg({ byAdmin: 0, msgID, msgIdex: msgIdx });
-            return { success: true, method: 'chat_content_addRevokeMsg' };
-          }
-
           if (bus && sesUUID) {
-            bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
-            bus.$emit('CancelMessage', { byAdmin: 0, event: 'CancelMessage', msgID, msgIdex: msgIdx });
-            return { success: true, method: 'bus_revokeMsg' };
+            try {
+              bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
+            } catch (eventErr) {}
           }
-
-          return { success: false, error: '未找到可用的底层撤回通道' };
+          return { success: true, method: 'ipc_cancelMessage' };
         })()
       `;
 
-      const res = await this.cdp.evaluate<{ success: boolean; error?: string }>(recallScript);
+      const res = await this.cdp.evaluate<{ success: boolean; error?: string }>(recallScript, 6000);
       return Boolean(res?.success);
     } catch (err) {
       log.error({ err: String(err), messageId }, '执行消息撤回异常');

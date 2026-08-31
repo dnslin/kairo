@@ -29,6 +29,21 @@ function encodePayload(data: unknown): string {
   return JSON.stringify(encodeURIComponent(JSON.stringify(data)));
 }
 
+function isCdpUnavailableBeforeSend(cdp: CdpClient): boolean {
+  const getStatus = (cdp as Partial<CdpClient>).getStatus;
+  return typeof getStatus === 'function' && getStatus.call(cdp) !== 'connected';
+}
+
+const RESOLVE_RENDERER_SESSION_SCRIPT = `
+  function resolveRendererSession(sessions, target) {
+    if (!Array.isArray(sessions)) return null;
+    const idMatch = sessions.find(s => s.sesUUID === target || String(s.id) === target);
+    if (idMatch) return idMatch;
+    const nameMatches = sessions.filter(s => s.typeName === target || s.name === target);
+    return nameMatches.length === 1 ? nameMatches[0] : null;
+  }
+`;
+
 function buildMentionNodes(mentions?: SendOptions['mentions']): Array<Record<string, unknown>> {
   if (!mentions) return [];
   const list = Array.isArray(mentions) ? mentions : [mentions];
@@ -215,6 +230,7 @@ export class BridgeMessageOps {
     }
 
     const startTime = Date.now();
+    const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
       contentNodes,
@@ -234,19 +250,35 @@ export class BridgeMessageOps {
         const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
         const bus = main?.$bus || app?.$bus || window.vueBus;
         const store = app?.$store || window.$store;
-
-        let reqId = 1100000 + Math.floor(Math.random() * 100000);
+        ${RESOLVE_RENDERER_SESSION_SCRIPT}
+        function nextRequestId() {
+          const key = '__kkbot_rpc_id';
+          const currentId = typeof window[key] === 'number' ? window[key] : 800000;
+          window[key] = currentId + 1;
+          return currentId + 1;
+        }
         function callIpc(channel, ...args) {
           return new Promise((resolve) => {
             if (!ipc) return resolve({ error: 'no ipc' });
-            const curId = ++reqId;
+            const curId = nextRequestId();
             const reply = 'data-' + curId;
-            const timer = setTimeout(() => resolve({ timeout: true }), 4000);
-            ipc.once(reply, (event, payload) => {
+            const onReply = (event, payload) => {
               clearTimeout(timer);
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
               resolve(payload);
-            });
-            ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+            };
+            const timer = setTimeout(() => {
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
+              resolve({ code: -2, error: 'IPC 请求超时' });
+            }, 4000);
+            ipc.once(reply, onReply);
+            try {
+              ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+            } catch (sendErr) {
+              clearTimeout(timer);
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
+              resolve({ code: -3, error: String(sendErr) });
+            }
           });
         }
 
@@ -254,15 +286,15 @@ export class BridgeMessageOps {
         const target = data.target;
 
         let targetSes = editor?.activedSes;
-        if (target && editor?.sortedSessions) {
-          const found = editor.sortedSessions.find(s =>
-            s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
-          );
-          if (found) {
-            targetSes = found;
-          } else {
+        if (target) {
+          if (!Array.isArray(editor?.sortedSessions)) {
+            return { success: false, error: '当前会话列表不可用', isPreTrigger: true };
+          }
+          const found = resolveRendererSession(editor.sortedSessions, target);
+          if (!found) {
             return { success: false, error: '未在会话列表中找到目标会话 [' + target + ']', isPreTrigger: true };
           }
+          targetSes = found;
         }
 
         if (!targetSes) {
@@ -321,17 +353,25 @@ export class BridgeMessageOps {
           type: msgObj.type
         });
 
-        if (store) {
-          store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
-        }
-        if (bus) {
-          bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
+        if (!sendRes || sendRes.code !== 0) {
+          return {
+            success: false,
+            error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
+            isPreTrigger: false,
+            messageId: String(nativeId)
+          };
         }
 
-        return {
-          success: sendRes?.code === 0 || sendRes?.code === undefined,
-          messageId: String(nativeId)
-        };
+        try {
+          if (store) {
+            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+          }
+          if (bus) {
+            bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
+          }
+        } catch (updateErr) {}
+
+        return { success: true, messageId: String(nativeId) };
       })()
     `;
 
@@ -341,7 +381,7 @@ export class BridgeMessageOps {
         messageId?: string;
         error?: string;
         isPreTrigger?: boolean;
-      }>(script);
+      }>(script, 10000);
 
       if (!res?.success) {
         return {
@@ -360,7 +400,7 @@ export class BridgeMessageOps {
       return {
         success: false,
         error: `底层 IPC 发送异常: ${err instanceof Error ? err.message : String(err)}`,
-        isPreTrigger: true,
+        isPreTrigger: cdpWasUnavailable,
         verifyLatencyMs: Date.now() - startTime,
       };
     }
@@ -390,6 +430,7 @@ export class BridgeMessageOps {
     replyContentNodes.push({ type: 0, text: parsed.plainText });
 
     const startTime = Date.now();
+    const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
       targetRef: targetObj,
@@ -408,19 +449,35 @@ export class BridgeMessageOps {
         const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
         const bus = main?.$bus || app?.$bus || window.vueBus;
         const store = app?.$store || window.$store;
-
-        let reqId = 1200000 + Math.floor(Math.random() * 100000);
+        ${RESOLVE_RENDERER_SESSION_SCRIPT}
+        function nextRequestId() {
+          const key = '__kkbot_rpc_id';
+          const currentId = typeof window[key] === 'number' ? window[key] : 800000;
+          window[key] = currentId + 1;
+          return currentId + 1;
+        }
         function callIpc(channel, ...args) {
           return new Promise((resolve) => {
             if (!ipc) return resolve({ error: 'no ipc' });
-            const curId = ++reqId;
+            const curId = nextRequestId();
             const reply = 'data-' + curId;
-            const timer = setTimeout(() => resolve({ timeout: true }), 4000);
-            ipc.once(reply, (event, payload) => {
+            const onReply = (event, payload) => {
               clearTimeout(timer);
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
               resolve(payload);
-            });
-            ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+            };
+            const timer = setTimeout(() => {
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
+              resolve({ code: -2, error: 'IPC 请求超时' });
+            }, 4000);
+            ipc.once(reply, onReply);
+            try {
+              ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+            } catch (sendErr) {
+              clearTimeout(timer);
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
+              resolve({ code: -3, error: String(sendErr) });
+            }
           });
         }
 
@@ -428,12 +485,15 @@ export class BridgeMessageOps {
         const target = data.target;
 
         let targetSes = editor?.activedSes;
-        if (target && editor?.sortedSessions) {
-          const found = editor.sortedSessions.find(s =>
-            s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
-          );
-          if (found) targetSes = found;
-          else return { success: false, error: '未找到目标会话 [' + target + ']', isPreTrigger: true };
+        if (target) {
+          if (!Array.isArray(editor?.sortedSessions)) {
+            return { success: false, error: '当前会话列表不可用', isPreTrigger: true };
+          }
+          const found = resolveRendererSession(editor.sortedSessions, target);
+          if (!found) {
+            return { success: false, error: '未找到目标会话 [' + target + ']', isPreTrigger: true };
+          }
+          targetSes = found;
         }
 
         if (!targetSes) return { success: false, error: '当前无目标会话', isPreTrigger: true };
@@ -503,19 +563,30 @@ export class BridgeMessageOps {
           type: msgObj.type
         });
 
-        if (store) {
-          store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
-        }
-        if (bus) {
-          bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
+        if (!sendRes || sendRes.code !== 0) {
+          return {
+            success: false,
+            error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
+            isPreTrigger: false,
+            messageId: String(nativeId)
+          };
         }
 
-        return { success: sendRes?.code === 0 || sendRes?.code === undefined, messageId: String(nativeId) };
+        try {
+          if (store) {
+            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+          }
+          if (bus) {
+            bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
+          }
+        } catch (updateErr) {}
+
+        return { success: true, messageId: String(nativeId) };
       })()
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script);
+      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script, 10000);
       if (!res?.success) {
         return { success: false, error: res?.error || '底层回复发送失败', isPreTrigger: res?.isPreTrigger ?? false };
       }
@@ -524,7 +595,7 @@ export class BridgeMessageOps {
       return {
         success: false,
         error: `发送回复异常: ${err instanceof Error ? err.message : String(err)}`,
-        isPreTrigger: true,
+        isPreTrigger: cdpWasUnavailable,
         verifyLatencyMs: Date.now() - startTime,
       };
     }
@@ -554,6 +625,7 @@ export class BridgeMessageOps {
     const fileName = path.basename(fullPath);
     const mimeType = mime.lookup(fullPath) || 'application/octet-stream';
     const startTime = Date.now();
+    const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
       fullPath,
@@ -573,19 +645,35 @@ export class BridgeMessageOps {
         const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
         const bus = main?.$bus || app?.$bus || window.vueBus;
         const store = app?.$store || window.$store;
-
-        let reqId = 1300000 + Math.floor(Math.random() * 100000);
+        ${RESOLVE_RENDERER_SESSION_SCRIPT}
+        function nextRequestId() {
+          const key = '__kkbot_rpc_id';
+          const currentId = typeof window[key] === 'number' ? window[key] : 800000;
+          window[key] = currentId + 1;
+          return currentId + 1;
+        }
         function callIpc(channel, ...args) {
           return new Promise((resolve) => {
             if (!ipc) return resolve({ error: 'no ipc' });
-            const curId = ++reqId;
+            const curId = nextRequestId();
             const reply = 'data-' + curId;
-            const timer = setTimeout(() => resolve({ timeout: true }), 4000);
-            ipc.once(reply, (event, payload) => {
+            const onReply = (event, payload) => {
               clearTimeout(timer);
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
               resolve(payload);
-            });
-            ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+            };
+            const timer = setTimeout(() => {
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
+              resolve({ code: -2, error: 'IPC 请求超时' });
+            }, 4000);
+            ipc.once(reply, onReply);
+            try {
+              ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+            } catch (sendErr) {
+              clearTimeout(timer);
+              try { ipc.removeListener(reply, onReply); } catch (e) {}
+              resolve({ code: -3, error: String(sendErr) });
+            }
           });
         }
 
@@ -593,12 +681,15 @@ export class BridgeMessageOps {
         const target = data.target;
 
         let targetSes = editor?.activedSes;
-        if (target && editor?.sortedSessions) {
-          const found = editor.sortedSessions.find(s =>
-            s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
-          );
-          if (found) targetSes = found;
-          else return { success: false, error: '未找到目标会话 [' + target + ']', isPreTrigger: true };
+        if (target) {
+          if (!Array.isArray(editor?.sortedSessions)) {
+            return { success: false, error: '当前会话列表不可用', isPreTrigger: true };
+          }
+          const found = resolveRendererSession(editor.sortedSessions, target);
+          if (!found) {
+            return { success: false, error: '未找到目标会话 [' + target + ']', isPreTrigger: true };
+          }
+          targetSes = found;
         }
 
         if (!targetSes) return { success: false, error: '当前无目标会话', isPreTrigger: true };
@@ -661,19 +752,30 @@ export class BridgeMessageOps {
           type: msgObj.type
         });
 
-        if (store) {
-          store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
-        }
-        if (bus) {
-          bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
+        if (!sendRes || sendRes.code !== 0) {
+          return {
+            success: false,
+            error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
+            isPreTrigger: false,
+            messageId: String(nativeId)
+          };
         }
 
-        return { success: sendRes?.code === 0 || sendRes?.code === undefined, messageId: String(nativeId) };
+        try {
+          if (store) {
+            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+          }
+          if (bus) {
+            bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
+          }
+        } catch (updateErr) {}
+
+        return { success: true, messageId: String(nativeId) };
       })()
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script);
+      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script, 10000);
       if (!res?.success) {
         return { success: false, error: res?.error || '文件底层发送失败', isPreTrigger: res?.isPreTrigger ?? false };
       }
@@ -682,7 +784,7 @@ export class BridgeMessageOps {
       return {
         success: false,
         error: `文件发送异常: ${err instanceof Error ? err.message : String(err)}`,
-        isPreTrigger: true,
+        isPreTrigger: cdpWasUnavailable,
         verifyLatencyMs: Date.now() - startTime,
       };
     }
@@ -720,6 +822,7 @@ export class BridgeMessageOps {
     };
 
     const encoded = encodePayload(payloadData);
+    let sendMayHaveTriggered = false;
 
     try {
       await this.cdp.bringToFront();
@@ -730,13 +833,17 @@ export class BridgeMessageOps {
             window.focus();
             const data = JSON.parse(decodeURIComponent(${encoded}));
             const target = data.target;
-
+            ${RESOLVE_RENDERER_SESSION_SCRIPT}
             const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
-            if (target && editor?.sortedSessions) {
-              const found = editor.sortedSessions.find(s =>
-                s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target
-              );
-              if (found) editor.activedSes = found;
+            if (target) {
+              if (!Array.isArray(editor?.sortedSessions)) {
+                return { success: false, error: '当前会话列表不可用' };
+              }
+              const found = resolveRendererSession(editor.sortedSessions, target);
+              if (!found) {
+                return { success: false, error: '未找到目标会话 [' + target + ']' };
+              }
+              editor.activedSes = found;
             }
 
             const input = document.querySelector('.chat-sendArea, .chat-editor, [contenteditable]');
@@ -805,6 +912,7 @@ export class BridgeMessageOps {
         })()
       `;
 
+      sendMayHaveTriggered = true;
       const sendRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(sendScript);
       if (!sendRes?.success) {
         return { success: false, error: `点击发送图片失败: ${sendRes?.error}`, isPreTrigger: true };
@@ -815,7 +923,7 @@ export class BridgeMessageOps {
       return {
         success: false,
         error: `发送图片异常: ${err instanceof Error ? err.message : String(err)}`,
-        isPreTrigger: true,
+        isPreTrigger: !sendMayHaveTriggered,
         verifyLatencyMs: Date.now() - startTime,
       };
     }
@@ -839,9 +947,24 @@ export class BridgeMessageOps {
           const data = JSON.parse(decodeURIComponent(${encoded}));
           const targetId = data.targetId;
           const targetSessionId = data.targetSessionId;
+          ${RESOLVE_RENDERER_SESSION_SCRIPT}
           const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
           const main = document.querySelector('.main-page')?.__vue__;
           const bus = main?.$bus;
+
+          let targetSession = editor?.activedSes || null;
+          if (targetSessionId) {
+            if (!Array.isArray(editor?.sortedSessions)) {
+              return { success: false };
+            }
+            targetSession = resolveRendererSession(editor.sortedSessions, targetSessionId);
+            if (!targetSession) {
+              return { success: false };
+            }
+          }
+          if (!targetSession) {
+            return { success: false };
+          }
 
           let matchedVueMsg = null;
           const items = document.querySelectorAll('.rcd-item, .message-item, .msg-item');
@@ -849,25 +972,46 @@ export class BridgeMessageOps {
             const item = items[i];
             const vMsg = item.__vue__?.msgitem || item.__vue__?.message;
             const rawId = vMsg?.id || vMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id');
-            if (rawId && (String(rawId) === String(targetId) || String(targetId).includes(String(rawId)))) {
+            if (rawId && String(rawId) === String(targetId)) {
               matchedVueMsg = vMsg;
               break;
             }
           }
 
-          const sesUUID = editor?.activedSes?.sesUUID || targetSessionId;
-          const sessionID = matchedVueMsg?.sessionID || editor?.activedSes?.id || targetSessionId;
+          const sessionID = targetSession.id;
+          if (
+            matchedVueMsg?.sessionID !== undefined &&
+            String(matchedVueMsg.sessionID) !== String(sessionID)
+          ) {
+            return { success: false };
+          }
+          const sesUUID = targetSession.sesUUID || targetSessionId;
           const msgID = matchedVueMsg?.id || matchedVueMsg?.msgID || Number(targetId) || targetId;
           const msgIdx = matchedVueMsg?.msgIdx || 0;
 
           const electron = window.require ? window.require('electron') : null;
           const ipc = window.ipcRenderer || electron?.ipcRenderer;
+          if (!ipc || typeof ipc.send !== 'function' || typeof ipc.once !== 'function') {
+            return { success: false };
+          }
 
-          if (ipc) {
-            const reqId = 960000 + Math.floor(Math.random() * 10000);
-            const replyChannel = 'data-' + reqId;
-            const ipcPromise = new Promise(resolve => {
-              ipc.once(replyChannel, (_e, payload) => resolve(payload));
+          const key = '__kkbot_rpc_id';
+          const currentId = typeof window[key] === 'number' ? window[key] : 800000;
+          window[key] = currentId + 1;
+          const reqId = currentId + 1;
+          const replyChannel = 'data-' + reqId;
+          const res = await new Promise(resolve => {
+            const onReply = (_event, payload) => {
+              clearTimeout(timer);
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve(payload);
+            };
+            const timer = setTimeout(() => {
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve({ code: -2 });
+            }, 4000);
+            ipc.once(replyChannel, onReply);
+            try {
               ipc.send('data', {
                 id: reqId,
                 args: ['cancelMessage', {
@@ -878,28 +1022,27 @@ export class BridgeMessageOps {
                 }],
                 progress: false
               });
-            });
-
-            const res = await ipcPromise;
-            if (res && (res.code === 0 || res.code === undefined)) {
-              if (bus && sesUUID) {
-                bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
-              }
-              return { success: true };
+            } catch (sendErr) {
+              clearTimeout(timer);
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve({ code: -3 });
             }
+          });
+
+          if (!res || res.code !== 0) {
+            return { success: false };
           }
 
           if (bus && sesUUID) {
-            bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
-            bus.$emit('CancelMessage', { byAdmin: 0, event: 'CancelMessage', msgID, msgIdex: msgIdx });
-            return { success: true };
+            try {
+              bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
+            } catch (eventErr) {}
           }
-
-          return { success: false };
+          return { success: true };
         })()
       `;
 
-      const res = await this.cdp.evaluate<{ success: boolean }>(script);
+      const res = await this.cdp.evaluate<{ success: boolean }>(script, 6000);
       return Boolean(res?.success);
     } catch (err) {
       log.warn({ messageId, err: String(err) }, 'Bridge 撤回消息失败');

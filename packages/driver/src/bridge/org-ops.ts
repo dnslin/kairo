@@ -127,6 +127,7 @@ export class BridgeOrgOps {
           }
 
           const { members, depts } = res.data;
+          const isFirstPage = pageNo === 1;
 
           if (Array.isArray(members) && members.length > 0) {
             for (const rawUser of members) {
@@ -144,7 +145,7 @@ export class BridgeOrgOps {
             hasMore = false;
           }
 
-          if (pageNo === 1 && Array.isArray(depts)) {
+          if (isFirstPage && Array.isArray(depts)) {
             for (const subDept of depts) {
               if (subDept && typeof subDept.id === 'number' && !visitedDepts.has(subDept.id)) {
                 queue.push(subDept.id);

@@ -300,16 +300,44 @@ export class BridgeSessionOps {
 
             const electron = window.require ? window.require('electron') : null;
             const ipc = window.ipcRenderer || electron?.ipcRenderer;
-
-            if (ipc) {
-              ipc.send('data', {
-                id: 890000 + Math.floor(Math.random() * 10000),
-                args: ['readMessage', { type, sessionID, maxMsgIdx }],
-                progress: false
-              });
+            if (!ipc || typeof ipc.send !== 'function' || typeof ipc.once !== 'function') {
+              return { success: false };
             }
 
-            // 更新客户端 Vuex 与本地状态
+            const key = '__kkbot_rpc_id';
+            const currentId = typeof window[key] === 'number' ? window[key] : 800000;
+            window[key] = currentId + 1;
+            const reqId = currentId + 1;
+            const replyChannel = 'data-' + reqId;
+            const readRes = await new Promise(resolve => {
+              const onReply = (_event, payload) => {
+                clearTimeout(timer);
+                try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+                resolve(payload);
+              };
+              const timer = setTimeout(() => {
+                try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+                resolve({ code: -2 });
+              }, 4000);
+              ipc.once(replyChannel, onReply);
+              try {
+                ipc.send('data', {
+                  id: reqId,
+                  args: ['readMessage', { type, sessionID, maxMsgIdx }],
+                  progress: false
+                });
+              } catch (sendErr) {
+                clearTimeout(timer);
+                try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+                resolve({ code: -3 });
+              }
+            });
+
+            if (!readRes || readRes.code !== 0) {
+              return { success: false };
+            }
+
+            // native ack 成功后再更新客户端 Vuex 与本地状态
             targetSession.userReadIndex = maxMsgIdx;
             targetSession.atState = 0;
             if (bus) {
@@ -324,7 +352,7 @@ export class BridgeSessionOps {
         })()
       `;
 
-      const res = await this.cdp.evaluate<{ success: boolean }>(script);
+      const res = await this.cdp.evaluate<{ success: boolean }>(script, 6000);
       return Boolean(res?.success);
     } catch (err) {
       log.warn({ targetId, err: String(err) }, 'Bridge 标记已读失败');

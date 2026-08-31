@@ -188,7 +188,7 @@ async function runRealDeviceE2ETest() {
     // ----------------------------------------------------
     console.log('【7/7】测试收尾与清理...');
     console.log('================================================================');
-    console.log('🎉 KKBot Driver 真机全功能 E2E 集成测试执行完毕，全部功能验证通过！');
+    console.log('KKBot Driver 真机 E2E 脚本执行完毕，请核对上方各步骤结果。');
     console.log('================================================================');
   } finally {
     await driver.disconnect();

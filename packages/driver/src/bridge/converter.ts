@@ -366,7 +366,6 @@ export function normalizeNativeMessage(
         item['atMe'] ||
         item['isAtMe'] ||
         rawMentions?.isAtMe ||
-        item['atState'] === 1 ||
         item['atState'] === 2
       );
       let atAll = Boolean(

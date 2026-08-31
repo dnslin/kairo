@@ -14,20 +14,20 @@ export function findVueSessionItem<T extends ScrollerItemLike>(
   target: string
 ): { index: number; item: T | null } {
   if (!Array.isArray(items) || !target) return { index: -1, item: null };
-  const index = items.findIndex(it => {
-    if (!it) return false;
-    return (
-      it.sesUUID === target ||
-      it.typeName === target ||
-      it.name === target ||
-      String(it.id) === target ||
-      (typeof it.typeName === 'string' && it.typeName.includes(target))
-    );
-  });
-  return {
-    index,
-    item: index >= 0 ? (items[index] ?? null) : null,
-  };
+  const idIndex = items.findIndex(
+    item => item?.sesUUID === target || String(item?.id) === target
+  );
+  if (idIndex >= 0) {
+    return { index: idIndex, item: items[idIndex] ?? null };
+  }
+
+  const nameMatches = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item?.typeName === target || item?.name === target);
+  if (nameMatches.length !== 1) return { index: -1, item: null };
+
+  const match = nameMatches[0];
+  return { index: match?.index ?? -1, item: match?.item ?? null };
 }
 
 /**
@@ -44,19 +44,17 @@ export const VUE_SCROLLER_HELPERS_SCRIPT = `
 
   function findVueSessionItem(items, target) {
     if (!Array.isArray(items) || !target) return { index: -1, item: null };
-    const index = items.findIndex(function(it) {
-      if (!it) return false;
-      return (
-        it.sesUUID === target ||
-        it.typeName === target ||
-        it.name === target ||
-        String(it.id) === target ||
-        (typeof it.typeName === 'string' && it.typeName.includes(target))
-      );
+    const idIndex = items.findIndex(function(item) {
+      return item && (item.sesUUID === target || String(item.id) === target);
     });
-    return {
-      index: index,
-      item: index >= 0 ? items[index] : null
-    };
+    if (idIndex >= 0) return { index: idIndex, item: items[idIndex] };
+
+    const nameMatches = items
+      .map(function(item, index) { return { item: item, index: index }; })
+      .filter(function(entry) {
+        return entry.item && (entry.item.typeName === target || entry.item.name === target);
+      });
+    if (nameMatches.length !== 1) return { index: -1, item: null };
+    return { index: nameMatches[0].index, item: nameMatches[0].item };
   }
 `;

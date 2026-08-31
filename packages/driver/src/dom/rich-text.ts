@@ -180,11 +180,18 @@ export function formattedTextToHtml(formatted: FormattedText): string {
 }
 
 /**
+ * 解码 CLI 参数转发产生的字面换行序列。
+ */
+export function decodeCliEscapedLineBreaks(text: string): string {
+  return text.replace(/\\+n/g, '\n').replace(/\\+r/g, '\r');
+}
+
+/**
  * 将 FormattedText 转换为 KK9 原生消息渲染所需的 plainText 与 fontPayload 结构
  */
 export function parseFormattedTextToKK(formatted: FormattedText): KK9ParsedRichText {
   if (typeof formatted === 'string') {
-    let raw = formatted.replace(/\\+n/g, '\n').replace(/\\+r/g, '\r');
+    let raw = formatted;
     let bold = 0;
     let italic = 0;
     let underline = 0;

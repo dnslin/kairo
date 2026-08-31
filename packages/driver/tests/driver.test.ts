@@ -148,6 +148,59 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
     expect(resImg.success).toBe(true);
   });
 
+  it('指定目标的 Bridge pre-trigger 拒绝不得被 DOM fallback 绕过', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
+    });
+    const bridgeFailure: SendResult = {
+      success: false,
+      error: '目标会话不唯一',
+      isPreTrigger: true,
+    };
+    const domSuccess: SendResult = { success: true, messageId: 'wrong-session' };
+    driver.bridgeMessageOps.sendText = vi.fn().mockResolvedValue(bridgeFailure);
+    driver.bridgeMessageOps.sendRichText = vi.fn().mockResolvedValue(bridgeFailure);
+    driver.bridgeMessageOps.sendReply = vi.fn().mockResolvedValue(bridgeFailure);
+    driver.bridgeMessageOps.sendFile = vi.fn().mockResolvedValue(bridgeFailure);
+    driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue(bridgeFailure);
+    driver.domSendOps.sendText = vi.fn().mockResolvedValue(domSuccess);
+    driver.domSendOps.sendRichText = vi.fn().mockResolvedValue(domSuccess);
+    driver.domSendOps.sendReply = vi.fn().mockResolvedValue(domSuccess);
+    driver.domSendOps.sendFile = vi.fn().mockResolvedValue(domSuccess);
+    driver.domSendOps.sendImage = vi.fn().mockResolvedValue(domSuccess);
+
+    const results = await Promise.all([
+      driver.sendText('文本', { targetSessionId: '重复会话' }),
+      driver.sendRichText('富文本', { targetSessionId: '重复会话' }),
+      driver.sendReply('msg-1', '回复', { targetSessionId: '重复会话' }),
+      driver.sendFile('file.txt', { targetSessionId: '重复会话' }),
+      driver.sendImage('image.png', { targetSessionId: '重复会话' }),
+    ]);
+
+    expect(results.every(result => result.success === false)).toBe(true);
+    expect(driver.domSendOps.sendText).not.toHaveBeenCalled();
+    expect(driver.domSendOps.sendRichText).not.toHaveBeenCalled();
+    expect(driver.domSendOps.sendReply).not.toHaveBeenCalled();
+    expect(driver.domSendOps.sendFile).not.toHaveBeenCalled();
+    expect(driver.domSendOps.sendImage).not.toHaveBeenCalled();
+  });
+
+  it('未指定目标的 pre-trigger 失败仍可回退当前 DOM 会话', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
+    });
+    driver.bridgeMessageOps.sendText = vi.fn().mockResolvedValue({
+      success: false,
+      isPreTrigger: true,
+    });
+    driver.domSendOps.sendText = vi.fn().mockResolvedValue({ success: true });
+
+    const result = await driver.sendText('当前会话文本');
+
+    expect(result.success).toBe(true);
+    expect(driver.domSendOps.sendText).toHaveBeenCalledOnce();
+  });
+
   it('会话管理应优先调用 Bridge 会话服务', async () => {
     const driver = new KK9Driver({
       cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
@@ -175,6 +228,19 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
 
     const markRes = await driver.markSessionRead('测试123');
     expect(markRes).toBe(true);
+  });
+
+  it('Bridge 已读失败时不得通过 DOM 隐藏红点并伪报成功', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+    });
+    driver.bridgeSessionOps.markSessionRead = vi.fn().mockResolvedValue(false);
+    driver.domSessionOps.markSessionRead = vi.fn().mockResolvedValue(true);
+
+    const result = await driver.markSessionRead('0-3585');
+
+    expect(result).toBe(false);
+    expect(driver.domSessionOps.markSessionRead).not.toHaveBeenCalled();
   });
 
   it('组织架构查询应优先调用 Bridge 组织架构服务', async () => {

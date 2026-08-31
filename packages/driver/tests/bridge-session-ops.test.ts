@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CdpClient } from '../src/cdp/client.js';
 import { BridgeSessionOps } from '../src/bridge/session-ops.js';
+import {
+  createRendererRuntime,
+  FakeIpcRenderer,
+  runRendererScript,
+} from './helpers/renderer-runtime.js';
 
 describe('BridgeSessionOps 纯数据会话管理测试', () => {
   it('getSessions 应通过 IPC getConversations 解析私聊(int2024)与群聊(测试123)会话列表与未读数', async () => {
@@ -120,14 +125,99 @@ describe('BridgeSessionOps 纯数据会话管理测试', () => {
     expect(unknownSwitch).toBe(false);
   });
 
-  it('markSessionRead 应触发 IPC readMessage 消除会话未读红点', async () => {
+  it('markSessionRead 仅在 native ack 成功后更新本地未读状态', async () => {
+    const session = {
+      id: 602475,
+      sesUUID: '0-3585',
+      typeName: 'int2024',
+      type: 0,
+      maxMessageIndex: 10,
+      userReadIndex: 4,
+      atState: 2,
+    };
+    const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+    const runtime = createRendererRuntime({ ipc, sessions: [session], activeSession: session });
     const mockCdp = {
-      evaluate: vi.fn().mockResolvedValue({ success: true }),
+      evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
     } as unknown as CdpClient;
 
-    const ops = new BridgeSessionOps(mockCdp);
-    const res = await ops.markSessionRead('0-3585');
-    expect(res).toBe(true);
-    expect(mockCdp.evaluate).toHaveBeenCalledOnce();
+    const result = await new BridgeSessionOps(mockCdp).markSessionRead('0-3585');
+
+    expect(result).toBe(true);
+    expect(session.userReadIndex).toBe(10);
+    expect(session.atState).toBe(0);
+  });
+
+  it('markSessionRead 缺少 ipcRenderer 时不得伪造本地已读成功', async () => {
+    const session = {
+      id: 602475,
+      sesUUID: '0-3585',
+      typeName: 'int2024',
+      type: 0,
+      maxMessageIndex: 10,
+      userReadIndex: 4,
+      atState: 2,
+    };
+    const runtime = createRendererRuntime({ sessions: [session], activeSession: session });
+    const mockCdp = {
+      evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+    } as unknown as CdpClient;
+
+    const result = await new BridgeSessionOps(mockCdp).markSessionRead('0-3585');
+
+    expect(result).toBe(false);
+    expect(session.userReadIndex).toBe(4);
+    expect(session.atState).toBe(2);
+    expect(runtime.events).toHaveLength(0);
+  });
+
+  it('markSessionRead 收到业务失败 ack 时不得更新本地状态', async () => {
+    const session = {
+      id: 602475,
+      sesUUID: '0-3585',
+      typeName: 'int2024',
+      type: 0,
+      maxMessageIndex: 10,
+      userReadIndex: 4,
+      atState: 2,
+    };
+    const ipc = new FakeIpcRenderer(() => ({ code: 1, message: 'read rejected' }));
+    const runtime = createRendererRuntime({ ipc, sessions: [session], activeSession: session });
+    const mockCdp = {
+      evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+    } as unknown as CdpClient;
+
+    const result = await new BridgeSessionOps(mockCdp).markSessionRead('0-3585');
+
+    expect(result).toBe(false);
+    expect(session.userReadIndex).toBe(4);
+    expect(session.atState).toBe(2);
+    expect(runtime.events).toHaveLength(0);
+  });
+
+  it('markSessionRead 的 ipc.send 抛错后必须移除本次 listener', async () => {
+    const session = {
+      id: 602475,
+      sesUUID: '0-3585',
+      typeName: 'int2024',
+      type: 0,
+      maxMessageIndex: 10,
+      userReadIndex: 4,
+      atState: 2,
+    };
+    const ipc = new FakeIpcRenderer(() => {
+      throw new Error('read send failed');
+    });
+    const runtime = createRendererRuntime({ ipc, sessions: [session], activeSession: session });
+    const mockCdp = {
+      evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+    } as unknown as CdpClient;
+
+    const result = await new BridgeSessionOps(mockCdp).markSessionRead('0-3585');
+    const request = ipc.sent[0];
+
+    expect(result).toBe(false);
+    expect(request).toBeDefined();
+    expect(ipc.listenerCount(`data-${request?.id}`)).toBe(0);
   });
 });

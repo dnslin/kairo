@@ -52,6 +52,53 @@ describe('BridgeOrgOps 纯数据组织架构与员工档案测试', () => {
     expect(dsl?.position).toBe('IT开发工程师');
   });
 
+  it('首页恰好 200 名成员时仍应遍历该响应返回的子部门', async () => {
+    const firstPageMembers = Array.from({ length: 200 }, (_, index) => ({
+      id: index + 1,
+      name: `根部门成员${index + 1}`,
+      login_name: String(index + 1),
+    }));
+    const mockCdp = {
+      evaluate: vi.fn().mockImplementation((script: string) => {
+        if (script.includes('getMyDepts')) {
+          return Promise.resolve([0]);
+        }
+        if (script.includes('getChildDeptsAndMembers')) {
+          const isChildDept = script.includes('"deptID":15');
+          const isFirstPage = script.includes('"pageNo":1');
+          if (isChildDept) {
+            return Promise.resolve({
+              code: 0,
+              data: {
+                depts: [],
+                members: [{ id: 201, name: '子部门成员', login_name: '201' }],
+              },
+            });
+          }
+          if (isFirstPage) {
+            return Promise.resolve({
+              code: 0,
+              data: {
+                depts: [{ id: 15, name: '子部门' }],
+                members: firstPageMembers,
+              },
+            });
+          }
+          return Promise.resolve({ code: 0, data: { depts: [], members: [] } });
+        }
+        if (script.includes('usersInfo')) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve(null);
+      }),
+    } as unknown as CdpClient;
+
+    const employees = await new BridgeOrgOps(mockCdp).getOrgEmployees(5000);
+
+    expect(employees).toHaveLength(201);
+    expect(employees.some(employee => employee.id === 201)).toBe(true);
+  });
+
   it('getUserProfile 应通过 getMemberDetail 查询单人完整档案并解析部门路径', async () => {
     const mockCdp = {
       evaluate: vi.fn().mockImplementation((script: string) => {

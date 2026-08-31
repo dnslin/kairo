@@ -266,6 +266,24 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
   });
 
   describe('4. 群聊 @ 提及、引用、附件与原始诊断信息无损保留测试', () => {
+    it('普通 atState=1 消息不得被误判为 @我', () => {
+      const [message] = normalizeNativeMessage(
+        {
+          sessionId: 'group-normal',
+          sessionType: 'group',
+          id: 'native-normal-at-state',
+          sender: '普通成员',
+          content: '普通群聊消息',
+          atState: 1,
+          atMemberIDList: [],
+        },
+        { currentUserId }
+      );
+
+      expect(message.atMe).toBe(false);
+      expect(message.mentions).toBeUndefined();
+    });
+
     it('应完整保留群聊 @我 与 @全体 元数据', () => {
       const payload = {
         sessionId: 'group_dev',
@@ -340,7 +358,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
     it('EventBridge 真实派发 external, operator, bot_echo, system 全部四类来源', async () => {
       const mockCdp = new MockCdpClient();
       const bridge = new KK9EventBridge(
-        { cdp: { url: 'http://127.0.0.1:9222' }, currentUserId },
+        { cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' }, currentUserId },
         mockCdp as unknown as CdpClient
       );
       await bridge.connect();
@@ -421,7 +439,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
     it('Driver Polling 真实通过 MessageOps 解析 DOM 数据并派发 external, operator, bot_echo, system', async () => {
       const mockCdp = new MockCdpClient();
       const driver = new KK9Driver({
-        cdp: { url: 'http://127.0.0.1:9222' },
+        cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
         currentUserId,
       });
 
@@ -509,7 +527,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
     it('Polling 按 sessionId 隔离相同 native messageId', async () => {
       const mockCdp = new MockCdpClient();
       const driver = new KK9Driver({
-        cdp: { url: 'http://127.0.0.1:9222' },
+        cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
         currentUserId,
       });
 
