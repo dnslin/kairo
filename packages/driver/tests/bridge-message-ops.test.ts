@@ -167,10 +167,11 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('当会话发生切换时应被防串线安全拦截 (Fail-Closed)', async () => {
       const mockCdp = {
-        evaluate: vi.fn().mockResolvedValue({
-          canSend: false,
-          reason: 'session_switched',
-          details: '会话已切离',
+        evaluate: vi.fn().mockImplementation((script: string) => {
+          if (script.includes('active.sesUUID === target') || script.includes('editor.activedSes')) {
+            return Promise.resolve(false);
+          }
+          return Promise.resolve({ success: false, error: '注入富文本失败' });
         }),
       } as unknown as CdpClient;
 

@@ -63,7 +63,7 @@ export class BridgeMessageOps {
   constructor(private readonly cdp: CdpClient) {}
 
   /**
-   * 优先通过底层 IPC toData('getMessages') 读取目标会话的最近消息列表
+   * 优先通过底层 IPC toData('getMessages') 读取指定会话最近消息（无需切换 UI）
    */
   public async getRecentMessages(
     limit = 20,
@@ -72,7 +72,19 @@ export class BridgeMessageOps {
     currentUserId?: string | number
   ): Promise<KK9Message[]> {
     try {
-      // 1. 获取会话元信息与最大 msgIdx
+      // 1. 获取目标会话 ID
+      let targetSessionID: number | string | undefined;
+      let targetSesUUID = '';
+      let targetSessionName = '未知会话';
+      let targetType = 0;
+      let targetMaxMsgIdx = 999999;
+
+      if (session) {
+        targetSesUUID = session.id;
+        targetSessionName = session.name;
+        targetType = session.type === 'group' ? 1 : 0;
+      }
+
       const sessionContext = await this.cdp.evaluate<{
         sessionID: number | string;
         maxMsgIdx: number;
@@ -83,36 +95,49 @@ export class BridgeMessageOps {
         (() => {
           const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
           const targetSession = ${JSON.stringify(session || null)};
-          let actived = editor?.activedSes;
+          let matched = editor?.activedSes;
 
           if (targetSession && editor?.sortedSessions) {
-            const matched = editor.sortedSessions.find(s =>
-              s.sesUUID === targetSession.id || String(s.id) === targetSession.id || s.typeName === targetSession.name
+            const found = editor.sortedSessions.find(s =>
+              s.sesUUID === targetSession.id ||
+              String(s.id) === targetSession.id ||
+              s.typeName === targetSession.name ||
+              s.name === targetSession.name
             );
-            if (matched) actived = matched;
+            if (found) matched = found;
           }
 
-          if (!actived) return null;
+          if (!matched) return null;
           return {
-            sessionID: actived.id,
-            maxMsgIdx: actived.maxMessageIndex || 999999,
-            sesUUID: actived.sesUUID || String(actived.id),
-            name: actived.typeName || actived.name || actived.createrName || '未知会话',
-            type: actived.type || 0
+            sessionID: matched.id,
+            maxMsgIdx: matched.maxMessageIndex || 999999,
+            sesUUID: matched.sesUUID || String(matched.id),
+            name: matched.typeName || matched.name || matched.createrName || '未知会话',
+            type: matched.type || 0
           };
         })()
       `);
 
-      if (!sessionContext?.sessionID) {
+      if (sessionContext?.sessionID) {
+        targetSessionID = sessionContext.sessionID;
+        targetMaxMsgIdx = sessionContext.maxMsgIdx;
+        targetSesUUID = sessionContext.sesUUID;
+        targetSessionName = sessionContext.name;
+        targetType = sessionContext.type;
+      } else if (session) {
+        targetSessionID = parseInt(session.id.replace(/^[0-9]+-/, ''), 10) || session.id;
+      }
+
+      if (!targetSessionID) {
         return [];
       }
 
-      // 2. 调用底层 IPC getMessages
+      // 2. 调用底层 IPC getMessages (纯后台查询，不改变任何可见 UI)
       const res = await callIpcToData<unknown[]>(this.cdp, 'getMessages', [
         {
-          sessionID: sessionContext.sessionID,
+          sessionID: targetSessionID,
           count: Math.max(1, limit),
-          endIdx: sessionContext.maxMsgIdx,
+          endIdx: targetMaxMsgIdx,
           sendTime: 0,
         },
       ]);
@@ -121,14 +146,14 @@ export class BridgeMessageOps {
         return [];
       }
 
-      // 3. 将原生消息数组通过统一转换器规范化
-      const isGroup = sessionContext.type === 1 || sessionContext.type === 2;
+      // 3. 规范化消息
+      const isGroup = targetType === 1 || targetType === 2;
       return normalizeNativeMessage(
         {
           messages: res.data,
           session: {
-            id: sessionContext.sesUUID,
-            name: sessionContext.name,
+            id: targetSesUUID || String(targetSessionID),
+            name: targetSessionName,
             type: isGroup ? 'group' : 'private',
           },
         },
@@ -155,43 +180,59 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 发送前原子状态校验（防串线）
+   * 自动对齐会话上下文 (若传入 targetSessionId 与当前激活不一致，自动在内存中对齐)
    */
-  public async checkPreSendState(expectedSessionId: string): Promise<PreSendCheckResult> {
+  public async ensureTargetSessionContext(targetSessionId: string): Promise<boolean> {
+    const target = targetSessionId.trim();
+    if (!target) return true;
+
     const script = `
       (() => {
-        const expected = ${JSON.stringify(expectedSessionId)};
+        const target = ${JSON.stringify(target)};
         const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
         const active = editor?.activedSes;
-        if (!active) {
-          return { canSend: false, reason: 'unknown', details: '当前未激活任何会话' };
+        if (active && (active.sesUUID === target || String(active.id) === target || active.name === target || active.typeName === target)) {
+          return true;
         }
 
-        const isMatch =
-          active.sesUUID === expected ||
-          String(active.id) === expected ||
-          active.name === expected ||
-          active.typeName === expected ||
-          (active.name && active.name.includes(expected));
-
-        if (!isMatch) {
-          return {
-            canSend: false,
-            reason: 'session_switched',
-            details: '当前活跃会话 [' + (active.name || active.sesUUID || '未知') + '] 与期望 [' + expected + '] 不一致'
-          };
+        if (editor?.sortedSessions) {
+          const found = editor.sortedSessions.find(s =>
+            s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target || (s.name && s.name.includes(target))
+          );
+          if (found) {
+            editor.activedSes = found;
+            if (typeof editor.onActivedSesChanged === 'function') {
+              editor.onActivedSesChanged(found);
+            }
+            return true;
+          }
         }
-
-        return { canSend: true };
+        return false;
       })()
     `;
 
     try {
-      const res = await this.cdp.evaluate<PreSendCheckResult>(script);
-      return res || { canSend: false, reason: 'unknown', details: '校验无响应' };
-    } catch (err) {
-      return { canSend: false, reason: 'unknown', details: String(err) };
+      const ok = await this.cdp.evaluate<boolean>(script);
+      return Boolean(ok);
+    } catch {
+      return false;
     }
+  }
+
+  /**
+   * 发送前原子状态校验
+   */
+  public async checkPreSendState(expectedSessionId: string): Promise<PreSendCheckResult> {
+    const target = expectedSessionId.trim();
+    const aligned = await this.ensureTargetSessionContext(target);
+    if (!aligned) {
+      return {
+        canSend: false,
+        reason: 'session_switched',
+        details: `未在会话列表中找到目标会话 [${target}]`,
+      };
+    }
+    return { canSend: true };
   }
 
   /**
