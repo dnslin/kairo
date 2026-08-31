@@ -284,6 +284,24 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       expect(message.mentions).toBeUndefined();
     });
 
+    it('普通文本包含“@全体”字样时不得伪造原生 @全体 状态', () => {
+      const [message] = normalizeNativeMessage(
+        {
+          sessionId: 'group-plain-text',
+          sessionType: 'group',
+          id: 'native-plain-at-all-text',
+          sender: '普通成员',
+          content: '说明：本消息不使用@全体功能',
+          atState: 1,
+          atMemberIDList: [],
+        },
+        { currentUserId }
+      );
+
+      expect(message.atAll).toBe(false);
+      expect(message.mentions).toBeUndefined();
+    });
+
     it('应完整保留群聊 @我 与 @全体 元数据', () => {
       const payload = {
         sessionId: 'group_dev',

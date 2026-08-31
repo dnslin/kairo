@@ -332,6 +332,21 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     it('引用回复的 sendMessageNew 超时不得报告成功', async () => {
       vi.useFakeTimers();
       const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'getMessages') {
+          return {
+            code: 0,
+            data: [
+              {
+                id: 900,
+                msgIdx: 9,
+                sender: 3705,
+                senderName: '员工',
+                contentType: 4,
+                content: { content: [{ type: 0, text: '原消息' }] },
+              },
+            ],
+          };
+        }
         if (request.args[0] === 'insertSendBefoeMsg') {
           return { code: 0, data: { id: 1002, msgIdx: 11 } };
         }
@@ -408,11 +423,20 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     });
 
     it('并发发送的 IPC 请求 ID 必须全局唯一', async () => {
+      const persisted: Array<Record<string, unknown>> = [];
       const ipc = new FakeIpcRenderer(request => {
         if (request.args[0] === 'insertSendBefoeMsg') {
-          return { code: 0, data: { id: request.id, msgIdx: request.id } };
+          const message = request.args[1] as Record<string, unknown>;
+          persisted.push({
+            id: 135000100 + persisted.length,
+            msgIdx: 100 + persisted.length,
+            msgFlag: message['msgFlag'],
+          });
+          return { code: 0, data: { ...message, id: -22, msgIdx: '1.001' } };
         }
-        return { code: 0 };
+        if (request.args[0] === 'sendMessageNew') return { code: 0 };
+        if (request.args[0] === 'getMessages') return { code: 0, data: persisted };
+        return { code: 1 };
       });
       const deterministicMath = Object.assign(Object.create(Math) as Math, {
         random: () => 0,
@@ -436,7 +460,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       const requestIds = ipc.sent.map(request => request.id);
 
       expect(results.every(result => result.success)).toBe(true);
-      expect(requestIds).toHaveLength(4);
+      expect(requestIds).toHaveLength(6);
       expect(new Set(requestIds).size).toBe(requestIds.length);
     });
 
@@ -589,18 +613,174 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     });
   });
 
+  describe('真实 native 消息身份确认', () => {
+    const session = {
+      id: 602475,
+      sesUUID: '0-3585',
+      typeName: 'int2024',
+      name: 'int2024',
+      type: 0,
+      typeID: 3585,
+    };
+
+    it('文本发送必须通过 msgFlag 返回落库后的真实正 ID', async () => {
+      let msgFlag = '';
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'insertSendBefoeMsg') {
+          const message = request.args[1] as Record<string, unknown>;
+          const rawMsgFlag = message['msgFlag'];
+          msgFlag = typeof rawMsgFlag === 'string' ? rawMsgFlag : '';
+          return { code: 0, data: { ...message, id: -22, msgIdx: '1.001' } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000001, msgIdx: 2, msgFlag }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp).sendText('真实 ID', {
+        targetSessionId: session.sesUUID,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.messageId).toBe('135000001');
+      expect(msgFlag).not.toBe('');
+    });
+
+    it('回复发送必须读取目标原始元数据并返回真实正 ID', async () => {
+      let inserted = false;
+      let msgFlag = '';
+      let insertedMessage: Record<string, unknown> | undefined;
+      const targetMessage = {
+        id: 135000010,
+        msgIdx: 9,
+        sender: 3705,
+        senderName: 'int2024',
+        senderNameEN: 'int2024',
+        senderNameTC: 'int2024',
+        contentType: 4,
+        content: { content: [{ type: 0, text: '原消息' }] },
+      };
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'getMessages' && !inserted) return { code: 0, data: [targetMessage] };
+        if (method === 'insertSendBefoeMsg') {
+          inserted = true;
+          insertedMessage = request.args[1] as Record<string, unknown>;
+          const rawMsgFlag = insertedMessage['msgFlag'];
+          msgFlag = typeof rawMsgFlag === 'string' ? rawMsgFlag : '';
+          return { code: 0, data: { ...insertedMessage, id: -22, msgIdx: '10.001' } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000011, msgIdx: 11, msgFlag }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp).sendReply(
+        { messageId: String(targetMessage.id) },
+        '真实回复',
+        { targetSessionId: session.sesUUID }
+      );
+      const replyContent = insertedMessage?.['content'] as Record<string, unknown> | undefined;
+
+      expect(result.success).toBe(true);
+      expect(result.messageId).toBe('135000011');
+      expect(replyContent).toMatchObject({
+        replyedID: 3705,
+        replyedMsgId: 135000010,
+        replyedMsgIndex: 9,
+        replyedContentType: 4,
+      });
+    });
+
+    it('文件发送必须等待落库并返回真实正 ID', async () => {
+      const tmpFile = path.resolve('tmp', 'test-confirmed-file-id.txt');
+      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      fs.writeFileSync(tmpFile, 'confirmed file id');
+      let msgFlag = '';
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'insertSendBefoeMsg') {
+          const message = request.args[1] as Record<string, unknown>;
+          const rawMsgFlag = message['msgFlag'];
+          msgFlag = typeof rawMsgFlag === 'string' ? rawMsgFlag : '';
+          return { code: 0, data: { ...message, id: -22, msgIdx: '12.001' } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000013, msgIdx: 13, msgFlag }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      try {
+        const result = await new BridgeMessageOps(mockCdp).sendFile(tmpFile, {
+          targetSessionId: session.sesUUID,
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.messageId).toBe('135000013');
+        expect(msgFlag).not.toBe('');
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+  });
+
   describe('目标会话身份优先级', () => {
     const targetSessionId = '1-29467';
     const createShadowedSessions = () => [
       { id: 7, sesUUID: 'shadow', typeName: targetSessionId, name: targetSessionId, type: 1 },
       { id: 8, sesUUID: targetSessionId, typeName: '真实目标', name: '真实目标', type: 1 },
     ];
-    const createSuccessfulIpc = () =>
-      new FakeIpcRenderer(request =>
-        request.args[0] === 'insertSendBefoeMsg'
-          ? { code: 0, data: { id: request.id, msgIdx: request.id } }
-          : { code: 0 }
-      );
+    const createSuccessfulIpc = () => {
+      const persisted: Array<Record<string, unknown>> = [];
+      return new FakeIpcRenderer(request => {
+        if (request.args[0] === 'insertSendBefoeMsg') {
+          const message = request.args[1] as Record<string, unknown>;
+          persisted.push({
+            id: 135100000 + persisted.length,
+            msgIdx: 100 + persisted.length,
+            msgFlag: message['msgFlag'],
+          });
+          return { code: 0, data: { ...message, id: -22, msgIdx: '1.001' } };
+        }
+        if (request.args[0] === 'sendMessageNew') return { code: 0 };
+        if (request.args[0] === 'getMessages') {
+          return {
+            code: 0,
+            data: [
+              {
+                id: 900,
+                msgIdx: 9,
+                sender: 3705,
+                senderName: '员工',
+                contentType: 4,
+                content: { content: [{ type: 0, text: '原消息' }] },
+              },
+              ...persisted,
+            ],
+          };
+        }
+        return { code: 1 };
+      });
+    };
 
     it('文本发送必须让 sesUUID/id 命中优先于更早出现的同名会话', async () => {
       const ipc = createSuccessfulIpc();
@@ -655,7 +835,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       }
     });
 
-    it('图片发送必须让 sesUUID/id 命中优先于更早出现的同名会话', async () => {
+    it('图片目标未真实激活时不得仅赋值 activedSes 后继续发送', async () => {
       vi.useFakeTimers();
       const tmpFile = path.resolve('tmp', 'test-image-id-priority.png');
       if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
@@ -667,10 +847,11 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         )
       );
       const runtime = createRendererRuntime({ sessions: createShadowedSessions() });
+      const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
       const mockCdp = {
         bringToFront: vi.fn().mockResolvedValue(undefined),
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
-        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        dispatchKeyEvent,
       } as unknown as CdpClient;
 
       try {
@@ -679,8 +860,10 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         await vi.runAllTimersAsync();
         const result = await pending;
 
-        expect(result.success).toBe(true);
-        expect(runtime.editor.activedSes?.id).toBe(8);
+        expect(result.success).toBe(false);
+        expect(result.isPreTrigger).toBe(true);
+        expect(runtime.editor.activedSes?.id).toBe(7);
+        expect(dispatchKeyEvent).not.toHaveBeenCalled();
       } finally {
         fs.unlinkSync(tmpFile);
       }

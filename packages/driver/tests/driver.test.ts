@@ -120,6 +120,17 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
     driver.bridgeMessageOps.sendReply = vi.fn().mockResolvedValue(mockSendResult);
     driver.bridgeMessageOps.sendFile = vi.fn().mockResolvedValue(mockSendResult);
     driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue(mockSendResult);
+    driver.getSessions = vi.fn().mockResolvedValue([
+      { id: 'int2024', name: 'int2024', type: 'private', unread: false },
+    ]);
+    driver.selectSession = vi.fn().mockResolvedValue(true);
+    driver.getCurrentSession = vi.fn().mockResolvedValue({
+      id: 'int2024',
+      name: 'int2024',
+      type: 'private',
+      unread: false,
+      active: true,
+    });
 
     // 1. 私聊发送文本
     const resText = await driver.sendText('私聊测试', { targetSessionId: 'int2024' });
@@ -163,6 +174,10 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
     driver.bridgeMessageOps.sendReply = vi.fn().mockResolvedValue(bridgeFailure);
     driver.bridgeMessageOps.sendFile = vi.fn().mockResolvedValue(bridgeFailure);
     driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue(bridgeFailure);
+    driver.getSessions = vi.fn().mockResolvedValue([
+      { id: 'first', name: '重复会话', type: 'group', unread: false },
+      { id: 'second', name: '重复会话', type: 'group', unread: false },
+    ]);
     driver.domSendOps.sendText = vi.fn().mockResolvedValue(domSuccess);
     driver.domSendOps.sendRichText = vi.fn().mockResolvedValue(domSuccess);
     driver.domSendOps.sendReply = vi.fn().mockResolvedValue(domSuccess);
@@ -199,6 +214,50 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
 
     expect(result.success).toBe(true);
     expect(driver.domSendOps.sendText).toHaveBeenCalledOnce();
+  });
+
+  it('指定图片目标时必须先切换并确认当前会话', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
+    });
+    driver.getSessions = vi.fn().mockResolvedValue([
+      { id: '0-3585', name: 'int2024', type: 'private', unread: false },
+    ]);
+    driver.selectSession = vi.fn().mockResolvedValue(true);
+    driver.getCurrentSession = vi.fn().mockResolvedValue({
+      id: '0-3585',
+      name: 'int2024',
+      type: 'private',
+      unread: false,
+      active: true,
+    });
+    driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue({ success: true });
+
+    const result = await driver.sendImage('image.png', { targetSessionId: '0-3585' });
+
+    expect(result.success).toBe(true);
+    expect(driver.selectSession).toHaveBeenCalledWith('0-3585');
+    expect(driver.getCurrentSession).toHaveBeenCalledOnce();
+    expect(driver.bridgeMessageOps.sendImage).toHaveBeenCalledWith('image.png', {
+      targetSessionId: '0-3585',
+    });
+  });
+
+  it('图片目标切换失败时不得继续发送', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
+    });
+    driver.getSessions = vi.fn().mockResolvedValue([
+      { id: '0-3585', name: 'int2024', type: 'private', unread: false },
+    ]);
+    driver.selectSession = vi.fn().mockResolvedValue(false);
+    driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue({ success: true });
+
+    const result = await driver.sendImage('image.png', { targetSessionId: '0-3585' });
+
+    expect(result.success).toBe(false);
+    expect(result.isPreTrigger).toBe(true);
+    expect(driver.bridgeMessageOps.sendImage).not.toHaveBeenCalled();
   });
 
   it('会话管理应优先调用 Bridge 会话服务', async () => {

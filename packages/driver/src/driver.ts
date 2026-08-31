@@ -409,13 +409,48 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    * 发送本地图片
    */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
-    const res = await this.bridgeMessageOps.sendImage(imagePath, options);
-    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
-      const domRes = await this.domSendOps.sendImage(imagePath, options);
-      this.rememberBotSentMessage(domRes, options.targetSessionId);
+    let resolvedOptions = options;
+    if (options.targetSessionId) {
+      const sessions = await this.getSessions();
+      const idMatch = sessions.find(session => session.id === options.targetSessionId);
+      const nameMatches = sessions.filter(session => session.name === options.targetSessionId);
+      const targetSession = idMatch ?? (nameMatches.length === 1 ? nameMatches[0] : undefined);
+      if (!targetSession) {
+        return {
+          success: false,
+          error: `图片目标会话无法唯一解析 [${options.targetSessionId}]`,
+          isPreTrigger: true,
+        };
+      }
+
+      const switched = await this.selectSession(targetSession.id);
+      if (!switched) {
+        return {
+          success: false,
+          error: `图片目标会话切换失败 [${targetSession.id}]`,
+          isPreTrigger: true,
+        };
+      }
+      await sleep(300);
+
+      const current = await this.getCurrentSession();
+      if (!current || current.id !== targetSession.id) {
+        return {
+          success: false,
+          error: `图片目标会话未激活 [${targetSession.id}]`,
+          isPreTrigger: true,
+        };
+      }
+      resolvedOptions = { ...options, targetSessionId: targetSession.id };
+    }
+
+    const res = await this.bridgeMessageOps.sendImage(imagePath, resolvedOptions);
+    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+      const domRes = await this.domSendOps.sendImage(imagePath, resolvedOptions);
+      this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
-    this.rememberBotSentMessage(res, options.targetSessionId);
+    this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
     return res;
   }
 

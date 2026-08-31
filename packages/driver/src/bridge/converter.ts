@@ -372,9 +372,7 @@ export function normalizeNativeMessage(
         item['atAll'] ||
         item['isAtAll'] ||
         rawMentions?.isAtAll ||
-        item['atState'] === 3 ||
-        content.includes('@全体') ||
-        content.includes('@所有人')
+        item['atState'] === 3
       );
 
       const atMemberList = Array.isArray(item['atMemberIDList'])

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -43,6 +44,33 @@ const RESOLVE_RENDERER_SESSION_SCRIPT = `
     return nameMatches.length === 1 ? nameMatches[0] : null;
   }
 `;
+
+const CONFIRM_SENT_MESSAGE_SCRIPT = `
+  async function waitForPersistedMessage(sessionID, msgFlag) {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const messagesRes = await callIpc('getMessages', {
+        sessionID,
+        count: 100,
+        endIdx: 2147483647,
+        sendTime: 0
+      });
+      if (messagesRes?.code === 0 && Array.isArray(messagesRes.data)) {
+        const found = messagesRes.data.find(message =>
+          message && message.msgFlag === msgFlag && Number(message.id) > 0
+        );
+        if (found) return found;
+      }
+      if (attempt < 11) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+    return null;
+  }
+`;
+
+function createMessageFlag(kind: string): string {
+  return `kkbot:${kind}:${randomUUID()}`;
+}
 
 function buildMentionNodes(mentions?: SendOptions['mentions']): Array<Record<string, unknown>> {
   if (!mentions) return [];
@@ -233,6 +261,7 @@ export class BridgeMessageOps {
     const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
+      msgFlag: createMessageFlag('text'),
       contentNodes,
       font: parsed.font,
       mentionMemberIds: mentionNodes.map(m => m['replyMemberID']),
@@ -281,7 +310,7 @@ export class BridgeMessageOps {
             }
           });
         }
-
+        ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
 
@@ -322,7 +351,7 @@ export class BridgeMessageOps {
           atMemberIDList: data.mentionMemberIds || [],
           status: 1,
           type: 0,
-          msgFlag: '',
+          msgFlag: data.msgFlag,
           deviceID: main?.deviceID || editor?.deviceID || ''
         };
 
@@ -357,21 +386,31 @@ export class BridgeMessageOps {
           return {
             success: false,
             error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
-            isPreTrigger: false,
-            messageId: String(nativeId)
+            isPreTrigger: false
           };
         }
 
+        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag);
+        if (!confirmedMessage) {
+          return {
+            success: false,
+            error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
+            isPreTrigger: false
+          };
+        }
+        msgObj.id = confirmedMessage.id;
+        msgObj.msgIdx = confirmedMessage.msgIdx;
+
         try {
           if (store) {
-            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: confirmedMessage });
           }
           if (bus) {
             bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
           }
         } catch (updateErr) {}
 
-        return { success: true, messageId: String(nativeId) };
+        return { success: true, messageId: String(confirmedMessage.id) };
       })()
     `;
 
@@ -381,7 +420,7 @@ export class BridgeMessageOps {
         messageId?: string;
         error?: string;
         isPreTrigger?: boolean;
-      }>(script, 10000);
+      }>(script, 15000);
 
       if (!res?.success) {
         return {
@@ -433,6 +472,7 @@ export class BridgeMessageOps {
     const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
+      msgFlag: createMessageFlag('reply'),
       targetRef: targetObj,
       replyContentNodes,
       font: parsed.font,
@@ -480,7 +520,7 @@ export class BridgeMessageOps {
             }
           });
         }
-
+        ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
 
@@ -499,19 +539,34 @@ export class BridgeMessageOps {
         if (!targetSes) return { success: false, error: '当前无目标会话', isPreTrigger: true };
 
         const targetRef = data.targetRef;
+        if (!targetRef?.messageId) {
+          return { success: false, error: '被回复消息缺少原生 messageId', isPreTrigger: true };
+        }
+        const targetMessagesRes = await callIpc('getMessages', {
+          sessionID: targetSes.id,
+          count: 200,
+          endIdx: 2147483647,
+          sendTime: 0
+        });
+        const targetMessage = targetMessagesRes?.code === 0 && Array.isArray(targetMessagesRes.data)
+          ? targetMessagesRes.data.find(message => String(message?.id) === String(targetRef.messageId))
+          : null;
+        if (!targetMessage) {
+          return { success: false, error: '未在目标会话历史中找到被回复消息', isPreTrigger: true };
+        }
+
         const myUid = main?.userID || editor?.userID || 5761;
         const myName = main?.userName || editor?.userName || '我';
-
         const replyPayload = {
           type: 'Reply',
-          replyedID: Number(targetRef.sender) || targetRef.sender || 0,
-          replyedName: targetRef.sender || '',
-          replyedNameEN: targetRef.sender || '',
-          replyedNameTC: targetRef.sender || '',
-          replyedMsgId: Number(targetRef.messageId) || 0,
-          replyedMsgIndex: targetRef.msgIdx || 0,
-          replyedContentType: 4,
-          replyedContent: targetRef.content || '',
+          replyedID: targetMessage.sender || 0,
+          replyedName: targetMessage.senderName || '',
+          replyedNameEN: targetMessage.senderNameEN || targetMessage.senderName || '',
+          replyedNameTC: targetMessage.senderNameTC || targetMessage.senderName || '',
+          replyedMsgId: targetMessage.id,
+          replyedMsgIndex: targetMessage.msgIdx || 0,
+          replyedContentType: targetMessage.contentType || 4,
+          replyedContent: targetMessage.content?.replyContent || targetMessage.content || '',
           replyContent: {
             content: data.replyContentNodes,
             font: data.font
@@ -533,7 +588,7 @@ export class BridgeMessageOps {
           atMemberIDList: [],
           status: 1,
           type: 0,
-          msgFlag: '',
+          msgFlag: data.msgFlag,
           deviceID: main?.deviceID || editor?.deviceID || ''
         };
 
@@ -567,26 +622,36 @@ export class BridgeMessageOps {
           return {
             success: false,
             error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
-            isPreTrigger: false,
-            messageId: String(nativeId)
+            isPreTrigger: false
           };
         }
 
+        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag);
+        if (!confirmedMessage) {
+          return {
+            success: false,
+            error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
+            isPreTrigger: false
+          };
+        }
+        msgObj.id = confirmedMessage.id;
+        msgObj.msgIdx = confirmedMessage.msgIdx;
+
         try {
           if (store) {
-            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: confirmedMessage });
           }
           if (bus) {
             bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
           }
         } catch (updateErr) {}
 
-        return { success: true, messageId: String(nativeId) };
+        return { success: true, messageId: String(confirmedMessage.id) };
       })()
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script, 10000);
+      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script, 15000);
       if (!res?.success) {
         return { success: false, error: res?.error || '底层回复发送失败', isPreTrigger: res?.isPreTrigger ?? false };
       }
@@ -628,6 +693,7 @@ export class BridgeMessageOps {
     const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
+      msgFlag: createMessageFlag('file'),
       fullPath,
       fileName,
       mimeType,
@@ -676,7 +742,7 @@ export class BridgeMessageOps {
             }
           });
         }
-
+        ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
 
@@ -721,7 +787,7 @@ export class BridgeMessageOps {
           atMemberIDList: [],
           status: 1,
           type: 0,
-          msgFlag: '',
+          msgFlag: data.msgFlag,
           filepath: data.fullPath,
           deviceID: main?.deviceID || editor?.deviceID || ''
         };
@@ -756,26 +822,36 @@ export class BridgeMessageOps {
           return {
             success: false,
             error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
-            isPreTrigger: false,
-            messageId: String(nativeId)
+            isPreTrigger: false
           };
         }
 
+        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag);
+        if (!confirmedMessage) {
+          return {
+            success: false,
+            error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
+            isPreTrigger: false
+          };
+        }
+        msgObj.id = confirmedMessage.id;
+        msgObj.msgIdx = confirmedMessage.msgIdx;
+
         try {
           if (store) {
-            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: insertRes.data });
+            store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: confirmedMessage });
           }
           if (bus) {
             bus.$emit(targetSes.sesUUID + '-msg', [msgObj]);
           }
         } catch (updateErr) {}
 
-        return { success: true, messageId: String(nativeId) };
+        return { success: true, messageId: String(confirmedMessage.id) };
       })()
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script, 10000);
+      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script, 15000);
       if (!res?.success) {
         return { success: false, error: res?.error || '文件底层发送失败', isPreTrigger: res?.isPreTrigger ?? false };
       }
@@ -843,7 +919,14 @@ export class BridgeMessageOps {
               if (!found) {
                 return { success: false, error: '未找到目标会话 [' + target + ']' };
               }
-              editor.activedSes = found;
+              const active = editor?.activedSes;
+              const isActive = Boolean(
+                active &&
+                (active.sesUUID === found.sesUUID || String(active.id) === String(found.id))
+              );
+              if (!isActive) {
+                return { success: false, error: '目标会话尚未真实激活 [' + target + ']' };
+              }
             }
 
             const input = document.querySelector('.chat-sendArea, .chat-editor, [contenteditable]');
