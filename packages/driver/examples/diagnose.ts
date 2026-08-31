@@ -1,22 +1,33 @@
 #!/usr/bin/env tsx
 /**
- * KK9 Driver 综合实机诊断与测试套件
+ * KK9 Driver 全功能实机诊断与测试套件 (Bridge 优先)
+ *
  * 使用方式:
  *   pnpm --filter @kkbot/driver run diagnose [command] [args...]
- * 命令:
- *   status           探测 CDP 端口与 Target 状态
- *   sessions         读取会话列表 (Vue 虚拟滚动穿透与 DOM 状态)
- *   messages [count] 读取当前会话最近消息 (默认 10 条)
- *   listen           启动实时轮询监听
- *   send <text>      向当前激活会话发送文本
- *   image <path>     向当前激活会话发送图片
- *   switch <id>      切换到指定会话
+ *
+ * 命令清单:
+ *   status                      探测 CDP 端口与 Target 状态
+ *   sessions                    读取全量会话列表 (Bridge IPC 驱动)
+ *   messages [count=10] [target]读取指定会话最近消息列表 (默认: int2024)
+ *   switch <target>             切换至指定会话 (私聊 "int2024" / 群聊 "测试123")
+ *   send [target=int2024] <text>向目标发送纯文本
+ *   rich [target=测试123] <md>  向目标发送富文本/Markdown
+ *   at [target=测试123] <text>  向群聊发送带 @全体成员 的消息
+ *   reply <target> <msgId> <text>向指定消息发送引用回复
+ *   image [target=int2024] <imgPath>向目标发送图片
+ *   file [target=int2024] <filePath>向目标发送文件
+ *   recall <msgId> [sessionId]  通过原生 IPC 撤回消息
+ *   user <uid>                  按 UID 单点查询员工档案
+ *   org [timeoutMs=5000]        递归抽取企业组织架构全量员工
+ *   listen                      启动实时事件监听 (message, at, recalled)
  */
 
 import { KK9Driver } from '../src/index.js';
 
 const cdpUrl = process.env['CDP_URL'] || 'http://127.0.0.1:9222';
 const pageMatch = process.env['PAGE_MATCH'] || 'renderer.html';
+const DEFAULT_PRIVATE_TARGET = 'int2024';
+const DEFAULT_GROUP_TARGET = '测试123';
 
 const driver = new KK9Driver({
   cdp: {
@@ -54,13 +65,14 @@ async function main() {
 
     case 'sessions': {
       await driver.connect();
-      console.log('✅ 已连接 CDP，正在获取会话列表...');
+      console.log('✅ 已连接 CDP，正在通过 Bridge 获取全量会话...');
       const sessions = await driver.getSessions();
       console.log(`\n📋 共检索到 ${sessions.length} 个会话:`);
       sessions.forEach((s, i) => {
         const unreadTag = s.unread ? ` [未读${s.unreadCount ? ` (${s.unreadCount})` : ''}]` : '';
+        const unreadAtTag = s.unreadAt ? ' [@提及未读]' : '';
         const activeTag = s.active ? ' [当前激活]' : '';
-        console.log(`${(i + 1).toString().padStart(3)}. [${s.type.padEnd(7)}] ${s.name} (id: ${s.id})${unreadTag}${activeTag}`);
+        console.log(`${(i + 1).toString().padStart(3)}. [${s.type.padEnd(7)}] ${s.name} (id: ${s.id})${unreadTag}${unreadAtTag}${activeTag}`);
         if (s.lastMessage) {
           console.log(`     └─ 最新消息: ${s.lastMessage} (${s.lastMessageTime || '无时间'})`);
         }
@@ -71,14 +83,17 @@ async function main() {
 
     case 'messages': {
       const count = parseInt(args[0] || '10', 10);
+      const target = args[1] || DEFAULT_PRIVATE_TARGET;
       await driver.connect();
+      console.log(`正在确保切换至目标会话: ${target} ...`);
+      await driver.selectSession(target);
       const current = await driver.getCurrentSession();
-      console.log(`当前激活会话: ${current ? `${current.name} (${current.id})` : '无'}`);
+      console.log(`当前会话: ${current ? `${current.name} (${current.id})` : '无'}`);
       console.log(`正在读取最近 ${count} 条消息...\n`);
       const msgs = await driver.getRecentMessages(count);
       msgs.forEach((m, i) => {
         const who = m.isMe ? '我 (发送)' : `${m.sender} (接收)`;
-        console.log(`[${i + 1}] ${m.time} | ${who}`);
+        console.log(`[${i + 1}] ${m.time} | ${who} [${m.origin || 'unknown'}]`);
         console.log(`    指纹: ${m.id}`);
         console.log(`    内容: ${m.content}\n`);
       });
@@ -86,20 +101,231 @@ async function main() {
       break;
     }
 
-    case 'listen': {
-      driver.on('status', (s) => console.log(`[状态变迁] => ${s}`));
-      driver.on('heartbeat', (up) => console.log(`[心跳保活] 在线时长: ${(up / 1000).toFixed(0)}s`));
-      driver.on('message', (m) => {
-        console.log('\n🔔 [收到新消息]');
-        console.log(`   会话: [${m.sessionType}] ${m.sessionName} (${m.sessionId})`);
-        console.log(`   发送: ${m.sender} @ ${m.time}`);
-        console.log(`   内容: ${m.content}`);
-        console.log(`   指纹: ${m.id}\n`);
-      });
-      driver.on('error', (e) => console.error(`[错误]`, e));
+    case 'switch': {
+      const sessionId = args[0] || DEFAULT_PRIVATE_TARGET;
+      await driver.connect();
+      console.log(`正在切换到会话: ${sessionId} ...`);
+      const success = await driver.selectSession(sessionId);
+      if (success) {
+        const cur = await driver.getCurrentSession();
+        console.log(`✅ 切换成功！当前激活: ${cur?.name} (${cur?.id})`);
+      } else {
+        console.error(`❌ 切换失败，未检索到目标会话`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'send': {
+      let target = DEFAULT_PRIVATE_TARGET;
+      let text = '';
+      if (args.length >= 2) {
+        target = args[0] || DEFAULT_PRIVATE_TARGET;
+        text = args.slice(1).join(' ');
+      } else {
+        text = args[0] || '';
+      }
+
+      if (!text) {
+        console.error(`用法: pnpm diagnose send [目标会话=${DEFAULT_PRIVATE_TARGET}] <发送文本>`);
+        process.exit(1);
+      }
 
       await driver.connect();
-      console.log('✅ 已连接 KK9，启动实时轮询监听 (按 Ctrl+C 退出)...');
+      console.log(`正在向 [${target}] 发送纯文本: "${text}" ...`);
+      await driver.selectSession(target);
+      const res = await driver.sendText(text, { targetSessionId: target });
+      if (res.success) {
+        console.log(`✅ 发送成功！耗时: ${res.verifyLatencyMs || 0}ms`);
+      } else {
+        console.error(`❌ 发送失败: ${res.error}`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'rich': {
+      let target = DEFAULT_GROUP_TARGET;
+      let md = '';
+      if (args.length >= 2) {
+        target = args[0] || DEFAULT_GROUP_TARGET;
+        md = args.slice(1).join(' ');
+      } else {
+        md = args[0] || '**加粗富文本**\n- 状态: 正常';
+      }
+
+      await driver.connect();
+      console.log(`正在向 [${target}] 发送富文本/Markdown...`);
+      await driver.selectSession(target);
+      const res = await driver.sendRichText(md, { targetSessionId: target });
+      if (res.success) {
+        console.log(`✅ 富文本发送成功！耗时: ${res.verifyLatencyMs || 0}ms`);
+      } else {
+        console.error(`❌ 发送失败: ${res.error}`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'at': {
+      const target = args[0] || DEFAULT_GROUP_TARGET;
+      const text = args[1] || '请各位关注当前工单进展';
+      await driver.connect();
+      console.log(`正在向群聊 [${target}] 发送 @全体成员 消息...`);
+      await driver.selectSession(target);
+      const res = await driver.sendRichText(text, {
+        targetSessionId: target,
+        mentions: ['all'],
+      });
+      if (res.success) {
+        console.log(`✅ @ 提及消息发送成功！`);
+      } else {
+        console.error(`❌ 发送失败: ${res.error}`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'reply': {
+      const target = args[0] || DEFAULT_GROUP_TARGET;
+      const replyMsgId = args[1];
+      const text = args[2] || '已收到，正在跟进中';
+      if (!replyMsgId) {
+        console.error(`用法: pnpm diagnose reply <目标会话> <被回复MsgID> [回复内容]`);
+        process.exit(1);
+      }
+
+      await driver.connect();
+      console.log(`正在向 [${target}] 的消息 ${replyMsgId} 发送回复...`);
+      await driver.selectSession(target);
+      const res = await driver.sendReply(replyMsgId, text, { targetSessionId: target });
+      if (res.success) {
+        console.log(`✅ 引用回复发送成功！`);
+      } else {
+        console.error(`❌ 发送失败: ${res.error}`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'image': {
+      const target = args[0] || DEFAULT_PRIVATE_TARGET;
+      const imgPath = args[1];
+      if (!imgPath) {
+        console.error(`用法: pnpm diagnose image [目标会话=${DEFAULT_PRIVATE_TARGET}] <图片文件路径>`);
+        process.exit(1);
+      }
+
+      await driver.connect();
+      console.log(`正在向 [${target}] 发送图片: ${imgPath} ...`);
+      await driver.selectSession(target);
+      const res = await driver.sendImage(imgPath, { targetSessionId: target });
+      if (res.success) {
+        console.log(`✅ 图片发送成功！耗时: ${res.verifyLatencyMs || 0}ms`);
+      } else {
+        console.error(`❌ 发送失败: ${res.error}`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'file': {
+      const target = args[0] || DEFAULT_PRIVATE_TARGET;
+      const filePath = args[1];
+      if (!filePath) {
+        console.error(`用法: pnpm diagnose file [目标会话=${DEFAULT_PRIVATE_TARGET}] <文件路径>`);
+        process.exit(1);
+      }
+
+      await driver.connect();
+      console.log(`正在向 [${target}] 发送文件: ${filePath} ...`);
+      await driver.selectSession(target);
+      const res = await driver.sendFile(filePath, { targetSessionId: target });
+      if (res.success) {
+        console.log(`✅ 文件发送成功！`);
+      } else {
+        console.error(`❌ 发送失败: ${res.error}`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'recall': {
+      const msgId = args[0];
+      const target = args[1] || DEFAULT_PRIVATE_TARGET;
+      if (!msgId) {
+        console.error('用法: pnpm diagnose recall <消息ID> [会话ID/会话名]');
+        process.exit(1);
+      }
+
+      await driver.connect();
+      console.log(`正在通过底层 IPC 撤回消息 ${msgId} (会话: ${target})...`);
+      const ok = await driver.recallMessage(msgId, target);
+      if (ok) {
+        console.log('✅ 消息撤回指令执行成功！');
+      } else {
+        console.error('❌ 消息撤回失败');
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'user': {
+      const uid = args[0] || '5761';
+      await driver.connect();
+      console.log(`正在查询员工档案 (UID: ${uid})...`);
+      const profile = await driver.getUserProfile(uid);
+      if (profile) {
+        console.log('\n👤 员工档案详情:');
+        console.log(`   姓名: ${profile.name}`);
+        console.log(`   工号: ${profile.loginName}`);
+        console.log(`   岗位: ${profile.position || '无'}`);
+        console.log(`   办公区: ${profile.region || '无'}`);
+        console.log(`   签名: ${profile.signature || '无'}`);
+        console.log(`   部门: ${profile.deptPaths?.map((d: { name: string }) => d.name).join(' > ') || '无'}\n`);
+      } else {
+        console.log('❌ 未检索到该员工档案');
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'org': {
+      const timeoutMs = parseInt(args[0] || '5000', 10);
+      await driver.connect();
+      console.log(`正在通过 Bridge IPC 抽取企业全量组织树成员 (限时 ${timeoutMs}ms)...`);
+      const emps = await driver.getOrgEmployees(timeoutMs);
+      console.log(`\n🏢 共抽取到 ${emps.length} 名员工档案:`);
+      emps.slice(0, 15).forEach((e, idx) => {
+        console.log(`   [${idx + 1}] ${e.name} (${e.loginName}) - ${e.position || '未设置岗位'}`);
+      });
+      if (emps.length > 15) {
+        console.log(`   ... 剩余 ${emps.length - 15} 名员工已全部提取到内存`);
+      }
+      await driver.disconnect();
+      break;
+    }
+
+    case 'listen': {
+      driver.on('status', s => console.log(`[状态变迁] => ${s}`));
+      driver.on('heartbeat', up => console.log(`[心跳保活] 在线: ${(up / 1000).toFixed(0)}s`));
+      driver.on('message', m => {
+        console.log('\n🔔 [收到消息]');
+        console.log(`   会话: [${m.sessionType}] ${m.sessionName} (${m.sessionId})`);
+        console.log(`   发送人: ${m.sender} @ ${m.time} (来源: ${m.origin || 'unknown'})`);
+        console.log(`   内容: ${m.content}`);
+        console.log(`   NativeID: ${m.id}\n`);
+      });
+      driver.on('at', m => {
+        console.log(`\n📢 [@ 提及] 收到 @ 消息: [${m.sender}] -> ${m.content}`);
+      });
+      driver.on('recalled', evt => {
+        console.log(`\n↩️ [撤回事件] 消息 ${evt.messageId} 已被撤回 (会话: ${evt.sessionId})`);
+      });
+      driver.on('error', e => console.error(`[错误]`, e));
+
+      await driver.connect();
+      console.log('✅ 已连接 KK9，启动实时 Bridge 监听 (按 Ctrl+C 退出)...');
       driver.startPolling();
 
       process.on('SIGINT', () => {
@@ -112,229 +338,40 @@ async function main() {
       break;
     }
 
-    case 'send': {
-      let target = 'int2024';
-      let text = '';
-      if (args.length >= 2) {
-        target = args[0] || 'int2024';
-        text = args.slice(1).join(' ');
-      } else {
-        text = args[0] || '';
-      }
-
-      if (!text) {
-        console.error('用法: pnpm diagnose send [目标会话=int2024] <发送文本>');
-        process.exit(1);
-      }
-
-      await driver.connect();
-      console.log(`正在确保切换到目标会话: ${target} ...`);
-      const switched = await driver.selectSession(target);
-      if (!switched) {
-        console.error(`❌ 切换到目标会话 ${target} 失败，为防误发已安全中止！`);
-        await driver.disconnect();
-        process.exit(1);
-      }
-
-      const current = await driver.getCurrentSession();
-      console.log(`当前激活会话: ${current?.name} (${current?.id})`);
-      console.log(`正在发送文本: "${text}" ...`);
-      const res = await driver.sendText(text);
-      if (res.success) {
-        console.log(`✅ 发送成功！DOM 回读确认耗时: ${res.verifyLatencyMs || 0}ms`);
-      } else {
-        console.error(`❌ 发送失败: ${res.error}`);
-      }
-      await driver.disconnect();
-      break;
-    }
-
-    case 'image': {
-      let target = 'int2024';
-      let imgPath = '';
-      if (args.length >= 2) {
-        target = args[0] || 'int2024';
-        imgPath = args[1] || '';
-      } else {
-        imgPath = args[0] || '';
-      }
-
-      if (!imgPath) {
-        console.error('用法: pnpm diagnose image [目标会话=int2024] <图片文件路径>');
-        process.exit(1);
-      }
-
-      await driver.connect();
-      console.log(`正在确保切换到目标会话: ${target} ...`);
-      const switched = await driver.selectSession(target);
-      if (!switched) {
-        console.error(`❌ 切换到目标会话 ${target} 失败，为防误发已安全中止！`);
-        await driver.disconnect();
-        process.exit(1);
-      }
-
-      const current = await driver.getCurrentSession();
-      console.log(`当前激活会话: ${current?.name} (${current?.id})`);
-      console.log(`正在发送图片: ${imgPath} ...`);
-      const res = await driver.sendImage(imgPath);
-      if (res.success) {
-        console.log(`✅ 发送图片成功！耗时: ${res.verifyLatencyMs || 0}ms`);
-      } else {
-        console.error(`❌ 发送图片失败: ${res.error}`);
-      }
-      await driver.disconnect();
-      break;
-    }
-
-    case 'switch': {
-      const sessionId = args[0];
-      if (!sessionId) {
-        console.error('用法: pnpm diagnose switch <会话ID或会话名>');
-        process.exit(1);
-      }
-      await driver.connect();
-      console.log(`正在切换到会话: ${sessionId} ...`);
-      const success = await driver.selectSession(sessionId);
-      if (success) {
-        console.log(`✅ 切换成功！`);
-      } else {
-        console.error(`❌ 切换失败，未在视口或虚拟滚动列表中找到该会话`);
-      }
-      await driver.disconnect();
-      break;
-    }
-    case 'special': {
-      const target = 'int2024';
-      const specialText = `【特殊符号测试】
-换行 1
-换行 2: <script>alert("xss")</script> & 'single' "double"
-Emoji: 👍🎉🚀🤖🔥
-特殊公式: a < b && b > c || x & y`;
-
-      await driver.connect();
-      console.log(`正在确保切换到目标会话: ${target} ...`);
-      await driver.selectSession(target);
-      console.log('正在发送特殊符号与多行富文本...');
-      const res = await driver.sendText(specialText, { targetSessionId: '0-3585' });
-      if (res.success) {
-        console.log(`✅ 特殊字符文本发送并确认成功！耗时: ${res.verifyLatencyMs}ms`);
-      } else {
-        console.error(`❌ 发送失败: ${res.error}`);
-      }
-      await driver.disconnect();
-      break;
-    }
-
-    case 'presend-guard': {
-      await driver.connect();
-      console.log('=== 开始测试防串线安全拦截 (PreSendCheck) ===');
-      console.log('💡 说明: 此测试会临时将窗口切离目标以模拟串线场景，测试完毕后会自动切回！\n');
-
-      const initialSession = await driver.getCurrentSession();
-      const initialTarget = initialSession?.name || 'int2024';
-      console.log(`0. 记录当前原始会话: ${initialTarget} (${initialSession?.id})`);
-
-      try {
-        console.log('1. [模拟误操作] 故意临时切换到其他会话 (如: 工单异常联络群)...');
-        await driver.selectSession('工单异常联络群');
-        const tempCur = await driver.getCurrentSession();
-        console.log(`   当前临时处于: ${tempCur?.name} (${tempCur?.id})`);
-
-        console.log('2. [触发安全红线] 尝试向 int2024 (0-3585) 发送敏感文本 (期望被拦截)...');
-        const res = await driver.sendText('【绝密内容】这是一条绝对不应该发给其他人的敏感消息', {
-          targetSessionId: '0-3585',
-        });
-
-        if (!res.success && res.error?.includes('发送前检查未通过')) {
-          console.log(`\n🛡️ 拦截成功！系统安全拒绝发送: "${res.error}"`);
-          console.log('✅ 防串线安全校验测试 100% 成功！绝密内容未发生泄露！');
-        } else {
-          console.error('❌ 安全校验失效！消息被异常放行！', res);
-        }
-      } finally {
-        console.log(`\n3. [自动恢复] 正在自动切回原会话: ${initialTarget} ...`);
-        await driver.selectSession(initialTarget);
-        const restored = await driver.getCurrentSession();
-        console.log(`   ✅ 恢复完成！当前会话已还原为: ${restored?.name} (${restored?.id})`);
-        await driver.disconnect();
-      }
-      break;
-    }
-
-    case 'stress': {
-      const count = parseInt(args[0] || '5', 10);
-      const target = 'int2024';
-      await driver.connect();
-      console.log(`正在切换到目标会话: ${target} ...`);
-      await driver.selectSession(target);
-      console.log(`\n🚀 开始连续高频发送 ${count} 条消息...`);
-
-      let successCount = 0;
-      const start = Date.now();
-      for (let i = 1; i <= count; i++) {
-        const msg = `[高频压测 #${i}/${count}] 时序测试 ${Date.now()}`;
-        process.stdout.write(`- 发送第 ${i} 条... `);
-        const res = await driver.sendText(msg, { targetSessionId: '0-3585' });
-        if (res.success) {
-          console.log(`✅ 成功 (${res.verifyLatencyMs}ms)`);
-          successCount++;
-        } else {
-          console.log(`❌ 失败: ${res.error}`);
-        }
-        await new Promise((r) => setTimeout(r, 200));
-      }
-      const totalTime = Date.now() - start;
-      console.log(`\n📊 压测总结: 成功 ${successCount}/${count} 条，总耗时: ${(totalTime / 1000).toFixed(2)}s`);
-      await driver.disconnect();
-      break;
-    }
-
-    case 'heartbeat': {
-      let count = 0;
-      driver.on('status', (s) => console.log(`[状态] => ${s}`));
-      driver.on('heartbeat', (uptime) => {
-        count++;
-        console.log(`[心跳 #${count}] 连接正常保活，累计在线: ${(uptime / 1000).toFixed(1)}s`);
-      });
-      await driver.connect();
-      console.log('✅ 已连接，正在连续观察 15 秒心跳保活机制...');
-      await new Promise((r) => setTimeout(r, 15000));
-      await driver.disconnect();
-      console.log(`✅ 心跳测试完成，共收到 ${count} 次心跳事件`);
-      break;
-    }
-
     case 'help':
     default: {
       console.log(`
-=== KK9 Driver 综合实机诊断与测试套件 ===
+=== KK9 Driver 综合实机诊断与测试套件 (Bridge 优先) ===
 
 使用方式:
   pnpm --filter @kkbot/driver run diagnose <command> [args...]
 
-【基础探测与会话】
-  status                探测本地 CDP 端口与 Target 状态
-  sessions              读取并打印 128+ 全量会话列表 (Vue 虚拟滚动穿透)
-  messages [count=10]   读取当前会话最近消息列表
-  switch <id/name>      精准切换到指定会话 (支持虚拟滚动自动定位)
+【会话与消息】
+  status                          探测 CDP 端口与 Target 状态
+  sessions                        读取全量会话列表 (Bridge IPC 驱动)
+  messages [count=10] [target]    读取指定会话最近消息列表 (默认: ${DEFAULT_PRIVATE_TARGET})
+  switch <target>                 切换至指定会话 (私聊 "${DEFAULT_PRIVATE_TARGET}" / 群聊 "${DEFAULT_GROUP_TARGET}")
+  send [target] <text>            向目标会话发送纯文本
+  rich [target] <markdown>        向目标会话发送富文本/Markdown
+  at [target] <text>              向目标群聊发送带 @全体成员 消息
+  reply <target> <msgId> <text>   向目标消息发送引用回复
+  image [target] <path>           向目标会话发送图片
+  file [target] <path>            向目标会话发送本地文件
+  recall <msgId> [target]         撤回指定已发送消息
 
-【消息收发与监听】
-  send [target] <text>  向目标会话发送文本 (默认: int2024, 带 DOM 回读)
-  image [target] <path> 向目标会话发送图片 (默认: int2024, 剪贴板注入 + 按键粘贴)
-  listen                启动实时消息轮询与自消息过滤监听
+【组织架构与通讯录】
+  user <uid>                      单点查询员工详细档案
+  org [timeoutMs=5000]            递归抽取企业组织架构全量员工列表
 
-【高级专项与安全测试】
-  special               特殊字符/多行排版/HTML/Emoji 富文本发送测试
-  presend-guard         防串线原子校验测试 (验证会话不一致时 100% 拦截)
-  stress [count=5]      高频连续发送稳定性与时序压测
-  heartbeat             连续观察 15 秒 CDP 心跳保活状态
+【实时监听】
+  listen                          启动实时事件监听 (message, at, recalled)
 `);
       break;
     }
   }
 }
 
-void main().catch((err) => {
+void main().catch(err => {
   console.error('运行异常:', err);
   process.exit(1);
 });

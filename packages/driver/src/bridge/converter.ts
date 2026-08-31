@@ -55,10 +55,26 @@ function tryParseJson(val: unknown): Record<string, unknown> | null {
  */
 function extractTextContent(content: unknown, notifyMsg?: unknown): string {
   if (typeof content === 'string') {
+    const parsed = tryParseJson(content);
+    if (parsed) return extractTextContent(parsed, notifyMsg);
     return content;
   }
   if (content && typeof content === 'object') {
     const obj = content as Record<string, unknown>;
+    if (Array.isArray(obj['content'])) {
+      const text = obj['content']
+        .map((c: unknown) => {
+          if (c && typeof c === 'object') {
+            const co = c as Record<string, unknown>;
+            if (typeof co['text'] === 'string') return co['text'];
+            if (co['type'] === 1) return '[图片]';
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('');
+      if (text) return text;
+    }
     if (typeof obj['text'] === 'string') return obj['text'];
     if (typeof obj['msg'] === 'string') return obj['msg'];
     if (typeof obj['content'] === 'string') return obj['content'];
@@ -284,14 +300,14 @@ export function normalizeNativeMessage(
     )
     .map((item): KK9Message | null => {
       const rawSender =
-        item['sender'] ??
         item['senderName'] ??
         item['sendName'] ??
         item['fromUserName'] ??
+        item['sender'] ??
         (item['isMe'] ? '我' : '未知用户');
       const sender = toSafeString(rawSender, '未知用户');
 
-      const rawSenderId = item['senderId'] ?? item['senderID'] ?? item['fromUID'];
+      const rawSenderId = item['senderId'] ?? item['senderID'] ?? item['fromUID'] ?? (typeof item['sender'] === 'number' ? item['sender'] : undefined);
       const senderId = rawSenderId !== undefined ? toSafeString(rawSenderId) : undefined;
 
       const content = extractTextContent(item['content'], item['notifyMsg']);
@@ -393,6 +409,19 @@ export function normalizeNativeMessage(
       let images: KK9ImageInfo[] | undefined;
       if (Array.isArray(item['images'])) {
         images = item['images'] as KK9ImageInfo[];
+      } else if (item['content'] && typeof item['content'] === 'object' && Array.isArray((item['content'] as Record<string, unknown>)['content'])) {
+        const list = (item['content'] as Record<string, unknown>)['content'] as Array<Record<string, unknown>>;
+        const imgNodes = list.filter(c => c && (c['type'] === 1 || c['filepath'] || c['uri']));
+        if (imgNodes.length > 0) {
+          images = imgNodes.map(c => ({
+            filePath: c['filepath'] ? toSafeString(c['filepath']) : undefined,
+            url: c['url'] ? toSafeString(c['url']) : undefined,
+            uri: c['uri'] ? toSafeString(c['uri']) : undefined,
+            mimeType: c['mimetype'] ? toSafeString(c['mimetype']) : undefined,
+            width: typeof c['width'] === 'number' ? c['width'] : undefined,
+            height: typeof c['height'] === 'number' ? c['height'] : undefined,
+          }));
+        }
       } else if (item['picPath'] || item['imgUrl'] || item['picUrl']) {
         images = [
           {
