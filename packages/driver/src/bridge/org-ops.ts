@@ -29,16 +29,71 @@ export class BridgeOrgOps {
   constructor(private readonly cdp: CdpClient) {}
 
   /**
-   * 通过底层 IPC toData('getChildDeptsAndMembers') 遍历企业全量员工档案
+   * 通过底层 IPC toData('getChildDeptsAndMembers') 递归全量遍历企业员工档案
    */
   public async getOrgEmployees(timeoutMs = 30000): Promise<KK9Employee[]> {
     const startTime = Date.now();
     const allEmployees = new Map<string | number, KK9Employee>();
     const visitedDepts = new Set<number>();
-    const queue: number[] = [0]; // 从根部门 0 开始 BFS 遍历
+    const queue: number[] = [0];
 
     try {
-      while (queue.length > 0) {
+      // 1. 自动发现企业顶层根部门 ID (如联合光电 deptID: 15)
+      const rootDeptIds = await this.cdp.evaluate<number[]>(`
+        (async () => {
+          const electron = window.require ? window.require('electron') : null;
+          const ipc = window.ipcRenderer || electron?.ipcRenderer;
+          let reqId = 998000;
+          function callIpc(channel, ...args) {
+            return new Promise((resolve) => {
+              if (!ipc) return resolve({ error: 'no ipc' });
+              const curId = ++reqId;
+              const reply = 'data-' + curId;
+              const timer = setTimeout(() => resolve({ timeout: true }), 2000);
+              ipc.once(reply, (event, payload) => {
+                clearTimeout(timer);
+                resolve(payload);
+              });
+              ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
+            });
+          }
+
+          const discovered = new Set([0]);
+          const main = document.querySelector('.main-page')?.__vue__;
+          const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
+          const myUid = main?.userID || editor?.userID || 5761;
+
+          const myDetail = await callIpc('getMemberDetail', myUid);
+          if (myDetail?.data?.deptPaths) {
+            for (const p of myDetail.data.deptPaths) {
+              if (p && typeof p.id === 'number') discovered.add(p.id);
+            }
+          }
+
+          const myDepts = await callIpc('getMyDepts');
+          if (Array.isArray(myDepts?.data)) {
+            for (const d of myDepts.data) {
+              if (d && typeof d.id === 'number') discovered.add(d.id);
+            }
+          }
+
+          return Array.from(discovered);
+        })()
+      `);
+
+      if (Array.isArray(rootDeptIds)) {
+        for (const id of rootDeptIds) {
+          if (typeof id === 'number' && !queue.includes(id)) {
+            queue.push(id);
+          }
+        }
+      }
+
+      // 2. BFS 遍历所有部门
+      let deptScannedCount = 0;
+      const MAX_DEPTS = 1500;
+
+      while (queue.length > 0 && deptScannedCount < MAX_DEPTS) {
         if (Date.now() - startTime > timeoutMs) {
           log.warn({ count: allEmployees.size }, '组织架构遍历超时，返回已收集部分');
           break;
@@ -47,6 +102,7 @@ export class BridgeOrgOps {
         const deptId = queue.shift()!;
         if (visitedDepts.has(deptId)) continue;
         visitedDepts.add(deptId);
+        deptScannedCount++;
 
         let pageNo = 1;
         let hasMore = true;
@@ -58,12 +114,12 @@ export class BridgeOrgOps {
             [
               {
                 deptID: deptId,
-                pageSize: 100,
+                pageSize: 200,
                 pageNo,
                 needDeptPath: true,
               },
             ],
-            5000
+            4000
           );
 
           if (res.code !== 0 || !res.data) {
@@ -75,11 +131,11 @@ export class BridgeOrgOps {
           if (Array.isArray(members) && members.length > 0) {
             for (const rawUser of members) {
               const emp = parseEmployee(rawUser);
-              if (emp) {
+              if (emp && !allEmployees.has(emp.id)) {
                 allEmployees.set(emp.id, emp);
               }
             }
-            if (members.length < 100) {
+            if (members.length < 200) {
               hasMore = false;
             } else {
               pageNo++;
@@ -98,7 +154,7 @@ export class BridgeOrgOps {
         }
       }
 
-      // 补充 Vuex store 已缓存的用户
+      // 3. 补充 Vuex store 已缓存的用户
       const storeUsers = await this.cdp.evaluate<Array<Record<string, unknown>>>(`
         (() => {
           const app = document.querySelector('#app')?.__vue__;
@@ -116,7 +172,10 @@ export class BridgeOrgOps {
         }
       }
 
-      log.info({ count: allEmployees.size }, '通过 Bridge 抽取全量员工档案完成');
+      log.info(
+        { count: allEmployees.size, deptsScanned: deptScannedCount, durationMs: Date.now() - startTime },
+        '通过 Bridge 抽取企业全量员工档案完成'
+      );
       return Array.from(allEmployees.values());
     } catch (err) {
       log.warn({ err: String(err) }, 'Bridge 抽取组织架构异常');
