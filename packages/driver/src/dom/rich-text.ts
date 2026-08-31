@@ -184,7 +184,7 @@ export function formattedTextToHtml(formatted: FormattedText): string {
  */
 export function parseFormattedTextToKK(formatted: FormattedText): KK9ParsedRichText {
   if (typeof formatted === 'string') {
-    let raw = formatted.replace(/\\n/g, '\n');
+    let raw = formatted.replace(/\\+n/g, '\n').replace(/\\+r/g, '\r');
     let bold = 0;
     let italic = 0;
     let underline = 0;
