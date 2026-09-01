@@ -125,6 +125,82 @@ describe('BridgeSessionOps 纯数据会话管理测试', () => {
     expect(unknownSwitch).toBe(false);
   });
 
+  it('selectSession 对同名会话必须 Fail-Closed，精确 ID 仍可切换', async () => {
+    const privateSession = {
+      id: 602475,
+      sesUUID: '0-3585',
+      typeName: 'int2024',
+      type: 0,
+    };
+    const firstGroup = {
+      id: 793803,
+      sesUUID: '1-29467',
+      typeName: '测试123',
+      name: '测试123',
+      type: 1,
+    };
+    const secondGroup = {
+      id: 765432,
+      sesUUID: '1-26519',
+      typeName: '测试123',
+      name: '测试123',
+      type: 1,
+    };
+    const runtime = createRendererRuntime({
+      sessions: [privateSession, firstGroup, secondGroup],
+      activeSession: privateSession,
+    });
+    const mockCdp = {
+      evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+    } as unknown as CdpClient;
+    const ops = new BridgeSessionOps(mockCdp);
+
+    expect(await ops.selectSession('测试123')).toBe(false);
+    expect(runtime.editor.activedSes?.sesUUID).toBe('0-3585');
+
+    expect(await ops.selectSession('1-29467')).toBe(true);
+    expect(runtime.editor.activedSes?.sesUUID).toBe('1-29467');
+  });
+
+  it('markSessionRead 对同名名称必须拒绝且不得调用 native IPC', async () => {
+    const firstGroup = {
+      id: 793803,
+      sesUUID: '1-29467',
+      typeName: '测试123',
+      name: '测试123',
+      type: 1,
+      maxMessageIndex: 20,
+      userReadIndex: 10,
+      atState: 2,
+    };
+    const secondGroup = {
+      id: 765432,
+      sesUUID: '1-26519',
+      typeName: '测试123',
+      name: '测试123',
+      type: 1,
+      maxMessageIndex: 30,
+      userReadIndex: 15,
+      atState: 2,
+    };
+    const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+    const runtime = createRendererRuntime({
+      ipc,
+      sessions: [firstGroup, secondGroup],
+      activeSession: firstGroup,
+    });
+    const mockCdp = {
+      evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+    } as unknown as CdpClient;
+
+    const result = await new BridgeSessionOps(mockCdp).markSessionRead('测试123');
+
+    expect(result).toBe(false);
+    expect(ipc.sent).toHaveLength(0);
+    expect(firstGroup.userReadIndex).toBe(10);
+    expect(secondGroup.userReadIndex).toBe(15);
+  });
+
   it('markSessionRead 仅在 native ack 成功后更新本地未读状态', async () => {
     const session = {
       id: 602475,

@@ -2,6 +2,10 @@ import type { CdpClient } from '../cdp/client.js';
 import type { KK9Session } from '../types/index.js';
 import { createChildLogger } from '../utils/logger.js';
 import { callIpcToData } from './rpc.js';
+import {
+  RENDERER_IPC_HELPERS_SCRIPT,
+  RENDERER_SESSION_RESOLVER_SCRIPT,
+} from './renderer-script.js';
 
 const log = createChildLogger('bridge-session-ops');
 
@@ -207,51 +211,37 @@ export class BridgeSessionOps {
         const main = document.querySelector('.main-page')?.__vue__;
         const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
         const bus = main?.$bus || app?.$bus;
+        ${RENDERER_SESSION_RESOLVER_SCRIPT}
 
-        // 1. 检查是否已经是当前激活会话
-        if (editor?.activedSes) {
-          const cur = editor.activedSes;
-          if (cur.sesUUID === target || String(cur.id) === target || cur.typeName === target || cur.name === target) {
-            return { success: true, method: 'already_active' };
-          }
+        const targetSession = resolveRendererSession(editor?.sortedSessions, target);
+        if (!targetSession) {
+          return { success: false, method: 'target_not_unique' };
         }
 
-        // 2. 尝试从 sortedSessions 中查找目标并触发切换
-        if (editor && Array.isArray(editor.sortedSessions)) {
-          const found = editor.sortedSessions.find(s =>
-            s.sesUUID === target ||
-            String(s.id) === target ||
-            s.typeName === target ||
-            s.name === target ||
-            (s.name && s.name.includes(target))
-          );
-          if (found) {
-            // 通过 Vuex commit 或 $bus 触发切换
-            if (bus) {
-              bus.$emit('session-click', found);
-              bus.$emit('store', { type: 'commit', method: 'saveActiveSes', payload: found });
-            }
-            if (typeof editor.onActivedSesChanged === 'function') {
-              editor.onActivedSesChanged(found);
-            }
-            editor.activedSes = found;
-            return { success: true, method: 'vue_session_switch' };
-          }
+        const active = editor?.activedSes;
+        const isActive = Boolean(
+          active &&
+          (
+            active.sesUUID === targetSession.sesUUID ||
+            String(active.id) === String(targetSession.id)
+          )
+        );
+        if (isActive) {
+          return { success: true, method: 'already_active' };
         }
 
-        // 3. 降级：点击可视 DOM
-        const items = document.querySelectorAll('.chat-item, .session-item');
-        for (const el of items) {
-          const uid = el.getAttribute('data-sesuuid') || el.getAttribute('data-session-id') || el.getAttribute('id');
-          const title = el.querySelector('.chat-title, .title, .name')?.textContent?.trim();
-          if (uid === target || title === target || (title && title.includes(target))) {
-            if (typeof el.click === 'function') el.click();
-            else el.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-            return { success: true, method: 'dom_click_fallback' };
-          }
+        if (bus) {
+          bus.$emit('session-click', targetSession);
+          bus.$emit('store', { type: 'commit', method: 'saveActiveSes', payload: targetSession });
         }
-
-        return { success: false };
+        if (typeof editor?.onActivedSesChanged === 'function') {
+          editor.onActivedSesChanged(targetSession);
+        }
+        if (!editor) {
+          return { success: false, method: 'editor_unavailable' };
+        }
+        editor.activedSes = targetSession;
+        return { success: true, method: 'vue_session_switch' };
       })()
     `;
 
@@ -280,57 +270,22 @@ export class BridgeSessionOps {
           const app = document.querySelector('#app')?.__vue__;
           const main = document.querySelector('.main-page')?.__vue__;
           const bus = main?.$bus || app?.$bus;
+          const electron = window.require ? window.require('electron') : null;
+          const ipc = window.ipcRenderer || electron?.ipcRenderer;
+          ${RENDERER_SESSION_RESOLVER_SCRIPT}
+          ${RENDERER_IPC_HELPERS_SCRIPT}
 
-          let targetSession = null;
-          if (editor?.sortedSessions) {
-            targetSession = editor.sortedSessions.find(s =>
-              s.sesUUID === target || String(s.id) === target || s.typeName === target || s.name === target
-            );
-          }
-          if (!targetSession && editor?.activedSes) {
-            if (editor.activedSes.sesUUID === target || String(editor.activedSes.id) === target) {
-              targetSession = editor.activedSes;
-            }
-          }
+          const targetSession = resolveRendererSession(editor?.sortedSessions, target);
 
           if (targetSession) {
             const sessionID = targetSession.id;
             const maxMsgIdx = targetSession.maxMessageIndex || 0;
             const type = targetSession.type || 0;
 
-            const electron = window.require ? window.require('electron') : null;
-            const ipc = window.ipcRenderer || electron?.ipcRenderer;
-            if (!ipc || typeof ipc.send !== 'function' || typeof ipc.once !== 'function') {
-              return { success: false };
-            }
-
-            const key = '__kkbot_rpc_id';
-            const currentId = typeof window[key] === 'number' ? window[key] : 800000;
-            window[key] = currentId + 1;
-            const reqId = currentId + 1;
-            const replyChannel = 'data-' + reqId;
-            const readRes = await new Promise(resolve => {
-              const onReply = (_event, payload) => {
-                clearTimeout(timer);
-                try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
-                resolve(payload);
-              };
-              const timer = setTimeout(() => {
-                try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
-                resolve({ code: -2 });
-              }, 4000);
-              ipc.once(replyChannel, onReply);
-              try {
-                ipc.send('data', {
-                  id: reqId,
-                  args: ['readMessage', { type, sessionID, maxMsgIdx }],
-                  progress: false
-                });
-              } catch (sendErr) {
-                clearTimeout(timer);
-                try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
-                resolve({ code: -3 });
-              }
+            const readRes = await callKkbotIpc('readMessage', {
+              type,
+              sessionID,
+              maxMsgIdx
             });
 
             if (!readRes || readRes.code !== 0) {

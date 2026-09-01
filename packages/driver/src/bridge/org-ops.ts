@@ -2,6 +2,7 @@ import type { CdpClient } from '../cdp/client.js';
 import type { KK9Employee } from '../types/index.js';
 import { parseEmployee } from '../dom/org-ops.js';
 import { callIpcToData } from './rpc.js';
+import { RENDERER_IPC_HELPERS_SCRIPT } from './renderer-script.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('bridge-org-ops');
@@ -43,20 +44,9 @@ export class BridgeOrgOps {
         (async () => {
           const electron = window.require ? window.require('electron') : null;
           const ipc = window.ipcRenderer || electron?.ipcRenderer;
-          let reqId = 998000;
-          function callIpc(channel, ...args) {
-            return new Promise((resolve) => {
-              if (!ipc) return resolve({ error: 'no ipc' });
-              const curId = ++reqId;
-              const reply = 'data-' + curId;
-              const timer = setTimeout(() => resolve({ timeout: true }), 2000);
-              ipc.once(reply, (event, payload) => {
-                clearTimeout(timer);
-                resolve(payload);
-              });
-              ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
-            });
-          }
+          ${RENDERER_IPC_HELPERS_SCRIPT}
+          const callIpc = (channel, ...args) =>
+            callKkbotIpcWithTimeout(2000, channel, ...args);
 
           const discovered = new Set([0]);
           const main = document.querySelector('.main-page')?.__vue__;

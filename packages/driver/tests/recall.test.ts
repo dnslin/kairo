@@ -40,6 +40,9 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       const mockSendOps = {
         recallMessage: vi.fn().mockResolvedValue(true),
       };
+      driver.getSessions = vi.fn().mockResolvedValue([
+        { id: 'ses_test', name: '测试会话', type: 'private', unread: false },
+      ]);
       (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).bridgeMessageOps = mockSendOps;
       (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).domSendOps = mockSendOps;
 
@@ -83,6 +86,9 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       });
       const bridgeOps = { recallMessage: vi.fn().mockResolvedValue(false) };
       const domOps = { recallMessage: vi.fn().mockResolvedValue(true) };
+      driver.getSessions = vi.fn().mockResolvedValue([
+        { id: 'session-a', name: '会话 A', type: 'private', unread: false },
+      ]);
       (driver as unknown as { bridgeMessageOps: typeof bridgeOps }).bridgeMessageOps = bridgeOps;
       (driver as unknown as { domSendOps: typeof domOps }).domSendOps = domOps;
 

@@ -5,7 +5,7 @@ import { KK9EventBridge } from './bridge/event-bridge.js';
 import { BridgeSessionOps } from './bridge/session-ops.js';
 import { BridgeMessageOps } from './bridge/message-ops.js';
 import { BridgeOrgOps } from './bridge/org-ops.js';
-import { createMessageIdentityKey, normalizeRecalledEvent } from './bridge/converter.js';
+import { createMessageIdentityKey } from './bridge/converter.js';
 
 import { OrgOps } from './dom/org-ops.js';
 import { resolveSelectors } from './dom/selectors.js';
@@ -94,32 +94,9 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
 
   private isPolling = false;
   private pollTimer: NodeJS.Timeout | null = null;
-  private cancelBindingAttached = false;
   private readonly knownMessageKeys = new Set<string>();
   private readonly knownRecalledMessageKeys = new Set<string>();
   private readonly knownBotSentMessageKeys = new Set<string>();
-
-  private readonly handleCancelBinding = (rawParams: unknown): void => {
-    if (
-      !rawParams ||
-      typeof rawParams !== 'object' ||
-      !('name' in rawParams) ||
-      !('payload' in rawParams) ||
-      rawParams.name !== '__kkbot_on_recalled' ||
-      typeof rawParams.payload !== 'string'
-    ) {
-      return;
-    }
-    try {
-      const parsed: unknown = JSON.parse(rawParams.payload);
-      const event = normalizeRecalledEvent(parsed);
-      if (event) {
-        this.handleRecalledEvent(event);
-      }
-    } catch {
-      log.warn('解析撤回 binding 载荷失败');
-    }
-  };
 
   constructor(private readonly config: DriverConfig) {
     super();
@@ -178,16 +155,11 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
       );
     }
     await this.eventBridge.connect();
-    await this.setupCancelMessageHook();
   }
 
   public async disconnect(): Promise<void> {
     this.invalidated = true;
     this.stopPolling();
-    if (this.cancelBindingAttached) {
-      this.cdp.off('Runtime.bindingCalled', this.handleCancelBinding);
-      this.cancelBindingAttached = false;
-    }
     await this.eventBridge.disconnect();
   }
 
@@ -202,6 +174,32 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     return this.domSessionOps.getSessions();
   }
 
+  private async resolveSessionTarget(target: string): Promise<KK9Session | null> {
+    const normalizedTarget = target.trim();
+    if (!normalizedTarget) return null;
+
+    const sessions = await this.getSessions();
+    const idMatch = sessions.find(session => session.id === normalizedTarget);
+    if (idMatch) return idMatch;
+
+    const nameMatches = sessions.filter(session => session.name === normalizedTarget);
+    return nameMatches.length === 1 ? nameMatches[0]! : null;
+  }
+
+  private async resolveTargetOptions<T extends SendOptions>(options: T): Promise<T | null> {
+    if (!options.targetSessionId) return options;
+    const targetSession = await this.resolveSessionTarget(options.targetSessionId);
+    return targetSession ? { ...options, targetSessionId: targetSession.id } : null;
+  }
+
+  private unresolvedTargetResult(target: string): SendResult {
+    return {
+      success: false,
+      error: `目标会话无法唯一解析 [${target}]`,
+      isPreTrigger: true,
+    };
+  }
+
   public async getCurrentSession(): Promise<KK9Session | null> {
     const session = await this.bridgeSessionOps.getCurrentSession();
     if (session) {
@@ -211,18 +209,20 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
   }
 
   public async selectSession(sessionId: string): Promise<boolean> {
-    const success = await this.bridgeSessionOps.selectSession(sessionId);
-    if (success) {
-      return true;
-    }
-    return this.domSessionOps.selectSession(sessionId);
+    const targetSession = await this.resolveSessionTarget(sessionId);
+    if (!targetSession) return false;
+
+    const success = await this.bridgeSessionOps.selectSession(targetSession.id);
+    if (success) return true;
+    return this.domSessionOps.selectSession(targetSession.id);
   }
 
   /**
    * 显式消除指定会话的未读红点（优先通过 IPC readMessage 同步到服务端）
    */
   public async markSessionRead(sessionId: string): Promise<boolean> {
-    return this.bridgeSessionOps.markSessionRead(sessionId);
+    const targetSession = await this.resolveSessionTarget(sessionId);
+    return targetSession ? this.bridgeSessionOps.markSessionRead(targetSession.id) : false;
   }
 
   public recordBotSentMessageId(sessionId: string, messageId: string): void {
@@ -259,15 +259,30 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    */
   public async getRecentMessages(limit = 20, session?: KK9Session): Promise<KK9Message[]> {
     const targetSession = session || (await this.getCurrentSession()) || undefined;
-    const messages = await this.bridgeMessageOps.getRecentMessages(
+    const bridgeResult = await this.bridgeMessageOps.getRecentMessagesResult(
       limit,
       targetSession,
       this.knownBotSentMessageKeys,
       this.config.currentUserId
     );
 
-    if (messages.length > 0) {
-      return messages;
+    if (bridgeResult.kind === 'ok') {
+      return bridgeResult.value;
+    }
+
+    if (targetSession) {
+      const activeSessionId = await this.domSessionOps.getActiveSessionId();
+      if (activeSessionId !== targetSession.id) {
+        log.warn(
+          {
+            targetSessionId: targetSession.id,
+            activeSessionId,
+            bridgeError: bridgeResult.error,
+          },
+          '显式目标不是当前 DOM 会话，拒绝历史消息 fallback'
+        );
+        return [];
+      }
     }
 
     return this.domMessageOps.getRecentMessages(
@@ -346,13 +361,16 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    * 发送纯文本消息
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
-    const res = await this.bridgeMessageOps.sendText(text, options);
-    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
-      const domRes = await this.domSendOps.sendText(text, options);
-      this.rememberBotSentMessage(domRes, options.targetSessionId);
+    const resolvedOptions = await this.resolveTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+
+    const res = await this.bridgeMessageOps.sendText(text, resolvedOptions);
+    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+      const domRes = await this.domSendOps.sendText(text, resolvedOptions);
+      this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
-    this.rememberBotSentMessage(res, options.targetSessionId);
+    this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
     return res;
   }
 
@@ -363,13 +381,16 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
-    const res = await this.bridgeMessageOps.sendRichText(content, options);
-    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
-      const domRes = await this.domSendOps.sendRichText(content, options);
-      this.rememberBotSentMessage(domRes, options.targetSessionId);
+    const resolvedOptions = await this.resolveTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+
+    const res = await this.bridgeMessageOps.sendRichText(content, resolvedOptions);
+    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+      const domRes = await this.domSendOps.sendRichText(content, resolvedOptions);
+      this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
-    this.rememberBotSentMessage(res, options.targetSessionId);
+    this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
     return res;
   }
 
@@ -381,13 +402,16 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
-    const res = await this.bridgeMessageOps.sendReply(replyTo, content, options);
-    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
-      const domRes = await this.domSendOps.sendReply(replyTo, content, options);
-      this.rememberBotSentMessage(domRes, options.targetSessionId);
+    const resolvedOptions = await this.resolveTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+
+    const res = await this.bridgeMessageOps.sendReply(replyTo, content, resolvedOptions);
+    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+      const domRes = await this.domSendOps.sendReply(replyTo, content, resolvedOptions);
+      this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
-    this.rememberBotSentMessage(res, options.targetSessionId);
+    this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
     return res;
   }
 
@@ -395,13 +419,16 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    * 发送文件
    */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
-    const res = await this.bridgeMessageOps.sendFile(filePath, options);
-    if (!res.success && res.isPreTrigger && !options.targetSessionId) {
-      const domRes = await this.domSendOps.sendFile(filePath, options);
-      this.rememberBotSentMessage(domRes, options.targetSessionId);
+    const resolvedOptions = await this.resolveTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+
+    const res = await this.bridgeMessageOps.sendFile(filePath, resolvedOptions);
+    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+      const domRes = await this.domSendOps.sendFile(filePath, resolvedOptions);
+      this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
-    this.rememberBotSentMessage(res, options.targetSessionId);
+    this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
     return res;
   }
 
@@ -409,39 +436,28 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    * 发送本地图片
    */
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
-    let resolvedOptions = options;
-    if (options.targetSessionId) {
-      const sessions = await this.getSessions();
-      const idMatch = sessions.find(session => session.id === options.targetSessionId);
-      const nameMatches = sessions.filter(session => session.name === options.targetSessionId);
-      const targetSession = idMatch ?? (nameMatches.length === 1 ? nameMatches[0] : undefined);
-      if (!targetSession) {
-        return {
-          success: false,
-          error: `图片目标会话无法唯一解析 [${options.targetSessionId}]`,
-          isPreTrigger: true,
-        };
-      }
+    const resolvedOptions = await this.resolveTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
 
-      const switched = await this.selectSession(targetSession.id);
+    if (resolvedOptions.targetSessionId) {
+      const switched = await this.selectSession(resolvedOptions.targetSessionId);
       if (!switched) {
         return {
           success: false,
-          error: `图片目标会话切换失败 [${targetSession.id}]`,
+          error: `图片目标会话切换失败 [${resolvedOptions.targetSessionId}]`,
           isPreTrigger: true,
         };
       }
       await sleep(300);
 
       const current = await this.getCurrentSession();
-      if (!current || current.id !== targetSession.id) {
+      if (!current || current.id !== resolvedOptions.targetSessionId) {
         return {
           success: false,
-          error: `图片目标会话未激活 [${targetSession.id}]`,
+          error: `图片目标会话未激活 [${resolvedOptions.targetSessionId}]`,
           isPreTrigger: true,
         };
       }
-      resolvedOptions = { ...options, targetSessionId: targetSession.id };
     }
 
     const res = await this.bridgeMessageOps.sendImage(imagePath, resolvedOptions);
@@ -458,8 +474,13 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
    * 消息撤回 (Recall / CancelMessage)
    */
   public async recallMessage(messageId: string, session?: KK9Session | string): Promise<boolean> {
-    const sessionId = typeof session === 'string' ? session : session?.id;
-    return this.bridgeMessageOps.recallMessage(messageId, sessionId);
+    if (typeof session === 'string') {
+      const targetSession = await this.resolveSessionTarget(session);
+      return targetSession
+        ? this.bridgeMessageOps.recallMessage(messageId, targetSession.id)
+        : false;
+    }
+    return this.bridgeMessageOps.recallMessage(messageId, session?.id);
   }
 
   public handleRecalledEvent(event: KK9RecalledEvent): void {
@@ -591,136 +612,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     }
   }
 
-  private async collectRecalledEvents(sessionId: string): Promise<void> {
-    const script = `
-      (() => {
-        const events = [];
-        if (Array.isArray(window.__kkbot_recalled_events) && window.__kkbot_recalled_events.length > 0) {
-          events.push(...window.__kkbot_recalled_events.splice(0, window.__kkbot_recalled_events.length));
-        }
-        const recallNodes = document.querySelectorAll('.rcd-item.system-msg, .message-item.system-msg, .rcd-recall-msg, .system-recall');
-        for (const node of recallNodes) {
-          const text = node.textContent?.trim() || '';
-          const nativeId = node.getAttribute('data-msgid');
-          if (text.includes('撤回了一条消息') && nativeId) {
-            events.push({
-              messageId: nativeId,
-              sessionId: ${JSON.stringify(sessionId)},
-              sender: 'unknown',
-              time: new Date().toLocaleTimeString(),
-              timestamp: Date.now()
-            });
-          }
-        }
-        return events;
-      })()
-    `;
-    try {
-      const events = await this.cdp.evaluate<KK9RecalledEvent[]>(script);
-      if (Array.isArray(events)) {
-        for (const evt of events) {
-          this.handleRecalledEvent(evt);
-        }
-      }
-    } catch {
-      // 忽略临时异常
-    }
-  }
-
-  private async setupCancelMessageHook(): Promise<void> {
-    if (!this.cancelBindingAttached) {
-      try {
-        await this.cdp.sendCommand('Runtime.enable');
-        await this.cdp.sendCommand('Runtime.addBinding', { name: '__kkbot_on_recalled' });
-        this.cdp.on('Runtime.bindingCalled', this.handleCancelBinding);
-        this.cancelBindingAttached = true;
-      } catch (err) {
-        log.warn({ err: String(err) }, '撤回 binding 注入失败，保留 EventBridge 原生撤回路径');
-      }
-    }
-
-    const hookScript = `
-        if (typeof window.__kkbot_cancel_cleanup === 'function') {
-          try { window.__kkbot_cancel_cleanup(); } catch (e) {}
-        }
-        window.__kkbot_recalled_events = window.__kkbot_recalled_events || [];
-
-        function notifyRecalled(evt) {
-          window.__kkbot_recalled_events.push(evt);
-          if (typeof window.__kkbot_on_recalled === 'function') {
-            try {
-              window.__kkbot_on_recalled(JSON.stringify(evt));
-            } catch {}
-          }
-        }
-
-        const getMainPageVm = () => document.querySelector('.main-page, #app, .app-container')?.__vue__;
-        const getEditorVm = () => document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
-        const getChatContentVm = () => document.querySelector('.chat-content, .message-content-box')?.__vue__;
-
-        const bus = getMainPageVm()?.$bus || getEditorVm()?.$bus || getChatContentVm()?.$bus || (window.vueBus || window.$bus);
-
-        function parseRecall(m, defaultSessionId) {
-          if (!m) return null;
-          let c = m.content;
-          if (typeof c === 'string' && c.includes('CancelMessage')) {
-            try { c = JSON.parse(c); } catch {}
-          }
-          if (c && (c.event === 'CancelMessage' || c.type === 'CancelMessage')) {
-            return {
-              messageId: String(c.msgID || c.msgId || c.id || m.msgID || m.id || ''),
-              sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
-              sender: String(m.sender || m.senderName || c.sender || ''),
-              time: new Date().toLocaleTimeString(),
-              timestamp: Date.now()
-            };
-          }
-          if (m.event === 'CancelMessage' || m.type === 'CancelMessage') {
-            return {
-              messageId: String(m.msgID || m.msgId || m.id || ''),
-              sessionId: String(m.sessionID || m.sessionId || defaultSessionId || ''),
-              sender: String(m.sender || m.senderName || ''),
-              time: new Date().toLocaleTimeString(),
-              timestamp: Date.now()
-            };
-          }
-          return null;
-        }
-
-        if (bus && typeof bus.$on === 'function') {
-          bus.$on('CancelMessage', (data) => {
-            if (data && (data.msgID || data.msgId || data.id)) {
-              notifyRecalled({
-                messageId: String(data.msgID || data.msgId || data.id),
-                sessionId: String(data.sessionID || data.sessionId || ''),
-                sender: String(data.sender || data.senderName || ''),
-                time: new Date().toLocaleTimeString(),
-                timestamp: Date.now()
-              });
-            }
-          });
-          bus.$on('receive-message', (data) => {
-            if (!data) return;
-            const msgs = Array.isArray(data.message) ? data.message : Array.isArray(data.messages) ? data.messages : [data];
-            for (const m of msgs) {
-              const evt = parseRecall(m, data.session?.sesUUID || data.session?.id);
-              if (evt && evt.messageId) {
-                notifyRecalled(evt);
-              }
-            }
-          });
-        }
-      })()
-    `;
-    try {
-      await this.cdp.evaluate(hookScript);
-    } catch {
-      // 忽略初始注入异常
-    }
-  }
-
   private async collectAndEmitMessages(session: KK9Session, limit: number): Promise<void> {
-    await this.collectRecalledEvents(session.id);
     const messages = await this.getRecentMessages(limit, session);
     for (const msg of messages) {
       const messageKey = createMessageIdentityKey(msg.sessionId, msg.id);

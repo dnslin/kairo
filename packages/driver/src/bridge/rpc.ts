@@ -1,6 +1,7 @@
 import type { CdpClient } from '../cdp/client.js';
 import { DriverError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
+import { RENDERER_IPC_HELPERS_SCRIPT } from './renderer-script.js';
 
 const log = createChildLogger('bridge-rpc');
 
@@ -29,38 +30,19 @@ export async function callIpcToData<T = unknown>(
     (async () => {
       const electron = window.require ? window.require('electron') : null;
       const ipc = window.ipcRenderer || electron?.ipcRenderer;
-      if (!ipc || typeof ipc.send !== 'function') {
-        return { code: -1, error: '当前环境未找到有效的 ipcRenderer 对象' };
+      ${RENDERER_IPC_HELPERS_SCRIPT}
+      const result = await callKkbotIpcWithTimeout(
+        ${timeoutMs},
+        ${JSON.stringify(method)},
+        ...${JSON.stringify(args)}
+      );
+      if (result?.code === -2) {
+        return {
+          ...result,
+          error: 'IPC toData [${method}] 请求超时 (${timeoutMs}ms)'
+        };
       }
-
-      const key = '__kkbot_rpc_id';
-      const currentId = typeof window[key] === 'number' ? window[key] : 800000;
-      window[key] = currentId + 1;
-      const reqId = currentId + 1;
-      const replyChannel = 'data-' + reqId;
-
-      return new Promise((resolve) => {
-        const timer = setTimeout(() => {
-          try { ipc.removeAllListeners(replyChannel); } catch (e) {}
-          resolve({ code: -2, error: 'IPC toData [${method}] 请求超时 (${timeoutMs}ms)' });
-        }, ${timeoutMs});
-
-        ipc.once(replyChannel, (_event, payload) => {
-          clearTimeout(timer);
-          resolve(payload || { code: 0 });
-        });
-
-        try {
-          ipc.send('data', {
-            id: reqId,
-            args: [${JSON.stringify(method)}, ...${JSON.stringify(args)}],
-            progress: false
-          });
-        } catch (sendErr) {
-          clearTimeout(timer);
-          resolve({ code: -3, error: 'ipc.send 失败: ' + String(sendErr) });
-        }
-      });
+      return result;
     })()
   `;
 

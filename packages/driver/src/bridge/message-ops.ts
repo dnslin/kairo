@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
 import mime from 'mime-types';
 import type { CdpClient } from '../cdp/client.js';
 import {
@@ -9,6 +8,13 @@ import {
   type InboundNormalizationDiagnostic,
 } from './converter.js';
 import { callIpcToData } from './rpc.js';
+import {
+  encodeRendererPayload,
+  RENDERER_IPC_HELPERS_SCRIPT,
+  RENDERER_SESSION_RESOLVER_SCRIPT,
+} from './renderer-script.js';
+import { recallNativeMessage } from './recall-ops.js';
+import { sendUiImage } from './ui-image-ops.js';
 import { parseFormattedTextToKK } from '../dom/rich-text.js';
 import type {
   FormattedText,
@@ -23,25 +29,70 @@ import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('bridge-message-ops');
 
-const MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024; // 10MB
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
-
-function encodePayload(data: unknown): string {
-  return JSON.stringify(encodeURIComponent(JSON.stringify(data)));
-}
 
 function isCdpUnavailableBeforeSend(cdp: CdpClient): boolean {
   const getStatus = (cdp as Partial<CdpClient>).getStatus;
   return typeof getStatus === 'function' && getStatus.call(cdp) !== 'connected';
 }
 
-const RESOLVE_RENDERER_SESSION_SCRIPT = `
-  function resolveRendererSession(sessions, target) {
-    if (!Array.isArray(sessions)) return null;
-    const idMatch = sessions.find(s => s.sesUUID === target || String(s.id) === target);
-    if (idMatch) return idMatch;
-    const nameMatches = sessions.filter(s => s.typeName === target || s.name === target);
-    return nameMatches.length === 1 ? nameMatches[0] : null;
+const FIND_REPLY_TARGET_SCRIPT = `
+  function normalizeReplyTargetMessage(message) {
+    if (!message || typeof message !== 'object') return null;
+    const normalized = { ...message };
+    if (typeof normalized.content === 'string') {
+      try {
+        normalized.content = JSON.parse(normalized.content);
+      } catch (error) {}
+    }
+    return normalized;
+  }
+
+  async function findReplyTargetMessage(sessionID, targetRef) {
+    const targetMessageId = String(targetRef.messageId);
+    const targetMsgIdx = Number(targetRef.msgIdx);
+    if (Number.isFinite(targetMsgIdx) && targetMsgIdx > 0) {
+      const exactResponse = await callIpc(
+        'getMessageBySessionIDAndMsgIdx',
+        sessionID,
+        targetMsgIdx
+      );
+      const exactMessages = Array.isArray(exactResponse?.data)
+        ? exactResponse.data
+        : exactResponse?.data
+          ? [exactResponse.data]
+          : [];
+      const exactMatch = exactMessages.find(
+        message => String(message?.id) === targetMessageId
+      );
+      if (exactMatch) return normalizeReplyTargetMessage(exactMatch);
+    }
+
+    let endIdx = 2147483647;
+    for (let page = 0; page < 10; page++) {
+      const response = await callIpc('getMessages', {
+        sessionID,
+        count: 200,
+        endIdx,
+        sendTime: 0
+      });
+      if (response?.code !== 0 || !Array.isArray(response.data)) return null;
+
+      const match = response.data.find(
+        message => String(message?.id) === targetMessageId
+      );
+      if (match) return normalizeReplyTargetMessage(match);
+      if (response.data.length < 200) return null;
+
+      const indices = response.data
+        .map(message => Number(message?.msgIdx))
+        .filter(index => Number.isFinite(index) && index > 0);
+      if (indices.length === 0) return null;
+      const nextEndIdx = Math.min(...indices) - 1;
+      if (nextEndIdx >= endIdx) return null;
+      endIdx = nextEndIdx;
+    }
+    return null;
   }
 `;
 
@@ -105,6 +156,10 @@ function buildMentionNodes(mentions?: SendOptions['mentions']): Array<Record<str
   return nodes;
 }
 
+export type BridgeMessageReadResult =
+  | { kind: 'ok'; value: KK9Message[] }
+  | { kind: 'unavailable'; error: string };
+
 export class BridgeMessageOps {
   constructor(private readonly cdp: CdpClient) {}
 
@@ -117,20 +172,23 @@ export class BridgeMessageOps {
     knownBotSentMessageKeys?: Set<string>,
     currentUserId?: string | number
   ): Promise<KK9Message[]> {
+    const result = await this.getRecentMessagesResult(
+      limit,
+      session,
+      knownBotSentMessageKeys,
+      currentUserId
+    );
+    return result.kind === 'ok' ? result.value : [];
+  }
+
+  public async getRecentMessagesResult(
+    limit = 20,
+    session?: KK9Session,
+    knownBotSentMessageKeys?: Set<string>,
+    currentUserId?: string | number
+  ): Promise<BridgeMessageReadResult> {
     try {
-      let targetSessionID: number | string | undefined;
-      let targetSesUUID = '';
-      let targetSessionName = '未知会话';
-      let targetType = 0;
-      let targetMaxMsgIdx = 999999;
-
-      if (session) {
-        targetSesUUID = session.id;
-        targetSessionName = session.name;
-        targetType = session.type === 'group' ? 1 : 0;
-      }
-
-      const encodedSession = encodePayload(session || null);
+      const encodedSession = encodeRendererPayload(session || null);
       const sessionContext = await this.cdp.evaluate<{
         sessionID: number | string;
         maxMsgIdx: number;
@@ -141,22 +199,19 @@ export class BridgeMessageOps {
         (() => {
           const targetSession = JSON.parse(decodeURIComponent(${encodedSession}));
           const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
-          let matched = editor?.activedSes;
-
-          if (targetSession && editor?.sortedSessions) {
-            const found = editor.sortedSessions.find(s =>
-              s.sesUUID === targetSession.id ||
-              String(s.id) === targetSession.id ||
-              s.typeName === targetSession.name ||
-              s.name === targetSession.name
-            );
-            if (found) matched = found;
-          }
+          ${RENDERER_SESSION_RESOLVER_SCRIPT}
+          const matched = targetSession
+            ? resolveRendererSessionIdentity(
+                editor?.sortedSessions,
+                targetSession.id,
+                targetSession.name
+              )
+            : editor?.activedSes;
 
           if (!matched) return null;
           return {
             sessionID: matched.id,
-            maxMsgIdx: matched.maxMessageIndex || 999999,
+            maxMsgIdx: matched.maxMessageIndex ?? 2147483647,
             sesUUID: matched.sesUUID || String(matched.id),
             name: matched.typeName || matched.name || matched.createrName || '未知会话',
             type: matched.type || 0
@@ -164,40 +219,36 @@ export class BridgeMessageOps {
         })()
       `);
 
-      if (sessionContext?.sessionID) {
-        targetSessionID = sessionContext.sessionID;
-        targetMaxMsgIdx = sessionContext.maxMsgIdx;
-        targetSesUUID = sessionContext.sesUUID;
-        targetSessionName = sessionContext.name;
-        targetType = sessionContext.type;
-      } else if (session) {
-        targetSessionID = parseInt(session.id.replace(/^[0-9]+-/, ''), 10) || session.id;
+      if (!sessionContext) {
+        return {
+          kind: 'unavailable',
+          error: session ? `目标会话无法唯一解析 [${session.id}]` : '当前无激活会话',
+        };
       }
 
-      if (!targetSessionID) {
-        return [];
-      }
-
-      const res = await callIpcToData<unknown[]>(this.cdp, 'getMessages', [
+      const response = await callIpcToData<unknown[]>(this.cdp, 'getMessages', [
         {
-          sessionID: targetSessionID,
+          sessionID: sessionContext.sessionID,
           count: Math.max(1, limit),
-          endIdx: targetMaxMsgIdx,
+          endIdx: sessionContext.maxMsgIdx,
           sendTime: 0,
         },
       ]);
 
-      if (res.code !== 0 || !Array.isArray(res.data)) {
-        return [];
+      if (response.code !== 0 || !Array.isArray(response.data)) {
+        return {
+          kind: 'unavailable',
+          error: response.error || response.message || 'getMessages 未返回有效数组',
+        };
       }
 
-      const isGroup = targetType === 1 || targetType === 2;
-      return normalizeNativeMessage(
+      const isGroup = sessionContext.type === 1 || sessionContext.type === 2;
+      const messages = normalizeNativeMessage(
         {
-          messages: res.data,
+          messages: response.data,
           session: {
-            id: targetSesUUID || String(targetSessionID),
-            name: targetSessionName,
+            id: sessionContext.sesUUID,
+            name: sessionContext.name,
             type: isGroup ? 'group' : 'private',
           },
         },
@@ -217,9 +268,11 @@ export class BridgeMessageOps {
           },
         }
       );
+      return { kind: 'ok', value: messages };
     } catch (err) {
-      log.warn({ err: String(err) }, 'Bridge 获取历史消息异常');
-      return [];
+      const error = String(err);
+      log.warn({ err: error }, 'Bridge 获取历史消息异常');
+      return { kind: 'unavailable', error };
     }
   }
 
@@ -268,7 +321,7 @@ export class BridgeMessageOps {
       hasMentions: mentionNodes.length > 0,
     };
 
-    const encoded = encodePayload(payloadData);
+    const encoded = encodeRendererPayload(payloadData);
 
     const script = `
       (async () => {
@@ -279,37 +332,9 @@ export class BridgeMessageOps {
         const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
         const bus = main?.$bus || app?.$bus || window.vueBus;
         const store = app?.$store || window.$store;
-        ${RESOLVE_RENDERER_SESSION_SCRIPT}
-        function nextRequestId() {
-          const key = '__kkbot_rpc_id';
-          const currentId = typeof window[key] === 'number' ? window[key] : 800000;
-          window[key] = currentId + 1;
-          return currentId + 1;
-        }
-        function callIpc(channel, ...args) {
-          return new Promise((resolve) => {
-            if (!ipc) return resolve({ error: 'no ipc' });
-            const curId = nextRequestId();
-            const reply = 'data-' + curId;
-            const onReply = (event, payload) => {
-              clearTimeout(timer);
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve(payload);
-            };
-            const timer = setTimeout(() => {
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve({ code: -2, error: 'IPC 请求超时' });
-            }, 4000);
-            ipc.once(reply, onReply);
-            try {
-              ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
-            } catch (sendErr) {
-              clearTimeout(timer);
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve({ code: -3, error: String(sendErr) });
-            }
-          });
-        }
+        ${RENDERER_SESSION_RESOLVER_SCRIPT}
+        ${RENDERER_IPC_HELPERS_SCRIPT}
+        const callIpc = callKkbotIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
@@ -478,7 +503,7 @@ export class BridgeMessageOps {
       font: parsed.font,
     };
 
-    const encoded = encodePayload(payloadData);
+    const encoded = encodeRendererPayload(payloadData);
 
     const script = `
       (async () => {
@@ -489,37 +514,9 @@ export class BridgeMessageOps {
         const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
         const bus = main?.$bus || app?.$bus || window.vueBus;
         const store = app?.$store || window.$store;
-        ${RESOLVE_RENDERER_SESSION_SCRIPT}
-        function nextRequestId() {
-          const key = '__kkbot_rpc_id';
-          const currentId = typeof window[key] === 'number' ? window[key] : 800000;
-          window[key] = currentId + 1;
-          return currentId + 1;
-        }
-        function callIpc(channel, ...args) {
-          return new Promise((resolve) => {
-            if (!ipc) return resolve({ error: 'no ipc' });
-            const curId = nextRequestId();
-            const reply = 'data-' + curId;
-            const onReply = (event, payload) => {
-              clearTimeout(timer);
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve(payload);
-            };
-            const timer = setTimeout(() => {
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve({ code: -2, error: 'IPC 请求超时' });
-            }, 4000);
-            ipc.once(reply, onReply);
-            try {
-              ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
-            } catch (sendErr) {
-              clearTimeout(timer);
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve({ code: -3, error: String(sendErr) });
-            }
-          });
-        }
+        ${RENDERER_SESSION_RESOLVER_SCRIPT}
+        ${RENDERER_IPC_HELPERS_SCRIPT}
+        const callIpc = callKkbotIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
@@ -542,15 +539,8 @@ export class BridgeMessageOps {
         if (!targetRef?.messageId) {
           return { success: false, error: '被回复消息缺少原生 messageId', isPreTrigger: true };
         }
-        const targetMessagesRes = await callIpc('getMessages', {
-          sessionID: targetSes.id,
-          count: 200,
-          endIdx: 2147483647,
-          sendTime: 0
-        });
-        const targetMessage = targetMessagesRes?.code === 0 && Array.isArray(targetMessagesRes.data)
-          ? targetMessagesRes.data.find(message => String(message?.id) === String(targetRef.messageId))
-          : null;
+        ${FIND_REPLY_TARGET_SCRIPT}
+        const targetMessage = await findReplyTargetMessage(targetSes.id, targetRef);
         if (!targetMessage) {
           return { success: false, error: '未在目标会话历史中找到被回复消息', isPreTrigger: true };
         }
@@ -700,7 +690,7 @@ export class BridgeMessageOps {
       sizeStr: String(stats.size),
     };
 
-    const encoded = encodePayload(payloadData);
+    const encoded = encodeRendererPayload(payloadData);
 
     const script = `
       (async () => {
@@ -711,37 +701,9 @@ export class BridgeMessageOps {
         const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
         const bus = main?.$bus || app?.$bus || window.vueBus;
         const store = app?.$store || window.$store;
-        ${RESOLVE_RENDERER_SESSION_SCRIPT}
-        function nextRequestId() {
-          const key = '__kkbot_rpc_id';
-          const currentId = typeof window[key] === 'number' ? window[key] : 800000;
-          window[key] = currentId + 1;
-          return currentId + 1;
-        }
-        function callIpc(channel, ...args) {
-          return new Promise((resolve) => {
-            if (!ipc) return resolve({ error: 'no ipc' });
-            const curId = nextRequestId();
-            const reply = 'data-' + curId;
-            const onReply = (event, payload) => {
-              clearTimeout(timer);
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve(payload);
-            };
-            const timer = setTimeout(() => {
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve({ code: -2, error: 'IPC 请求超时' });
-            }, 4000);
-            ipc.once(reply, onReply);
-            try {
-              ipc.send('data', { id: curId, args: [channel, ...args], progress: false });
-            } catch (sendErr) {
-              clearTimeout(timer);
-              try { ipc.removeListener(reply, onReply); } catch (e) {}
-              resolve({ code: -3, error: String(sendErr) });
-            }
-          });
-        }
+        ${RENDERER_SESSION_RESOLVER_SCRIPT}
+        ${RENDERER_IPC_HELPERS_SCRIPT}
+        const callIpc = callKkbotIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
@@ -869,267 +831,14 @@ export class BridgeMessageOps {
   /**
    * 发送本地图片
    */
-  public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
-    const fullPath = path.resolve(imagePath);
-    if (!fs.existsSync(fullPath)) {
-      return { success: false, error: `图片文件不存在: ${fullPath}`, isPreTrigger: true };
-    }
-
-    const stats = fs.statSync(fullPath);
-    if (stats.size > MAX_IMAGE_SIZE_BYTES) {
-      return {
-        success: false,
-        error: `图片大小超出限制 (10MB): ${stats.size} bytes`,
-        isPreTrigger: true,
-      };
-    }
-
-    const mimeType = mime.lookup(fullPath) || 'image/png';
-    if (!mimeType.startsWith('image/')) {
-      return { success: false, error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
-    }
-
-    const base64Data = fs.readFileSync(fullPath).toString('base64');
-    const startTime = Date.now();
-    const payloadData = {
-      target: options.targetSessionId || '',
-      base64Data,
-      mimeType,
-    };
-
-    const encoded = encodePayload(payloadData);
-    let sendMayHaveTriggered = false;
-
-    try {
-      await this.cdp.bringToFront();
-
-      const clipScript = `
-        (async () => {
-          try {
-            window.focus();
-            const data = JSON.parse(decodeURIComponent(${encoded}));
-            const target = data.target;
-            ${RESOLVE_RENDERER_SESSION_SCRIPT}
-            const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
-            if (target) {
-              if (!Array.isArray(editor?.sortedSessions)) {
-                return { success: false, error: '当前会话列表不可用' };
-              }
-              const found = resolveRendererSession(editor.sortedSessions, target);
-              if (!found) {
-                return { success: false, error: '未找到目标会话 [' + target + ']' };
-              }
-              const active = editor?.activedSes;
-              const isActive = Boolean(
-                active &&
-                (active.sesUUID === found.sesUUID || String(active.id) === String(found.id))
-              );
-              if (!isActive) {
-                return { success: false, error: '目标会话尚未真实激活 [' + target + ']' };
-              }
-            }
-
-            const input = document.querySelector('.chat-sendArea, .chat-editor, [contenteditable]');
-            if (input) input.focus();
-
-            const byteCharacters = atob(data.base64Data);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-              byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: data.mimeType });
-
-            await navigator.clipboard.write([
-              new ClipboardItem({ [data.mimeType]: blob })
-            ]);
-            return { success: true };
-          } catch (e) {
-            return { success: false, error: String(e) };
-          }
-        })()
-      `;
-
-      const clipRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(clipScript);
-      if (!clipRes?.success) {
-        return { success: false, error: `剪贴板写入失败: ${clipRes?.error}`, isPreTrigger: true };
-      }
-
-      await sleep(300);
-
-      const isMac = process.platform === 'darwin';
-      await this.cdp.dispatchKeyEvent({
-        type: 'keyDown',
-        modifiers: isMac ? 8 : 2,
-        windowsVirtualKeyCode: 86,
-        key: 'v',
-        code: 'KeyV',
-      });
-      await this.cdp.dispatchKeyEvent({
-        type: 'keyUp',
-        modifiers: isMac ? 8 : 2,
-        windowsVirtualKeyCode: 86,
-        key: 'v',
-        code: 'KeyV',
-      });
-
-      await sleep(400);
-
-      const sendScript = `
-        (() => {
-          const sendBtn = document.querySelector('.sendMsg-btn a.button') ||
-            document.querySelector('.sendMsg-btn a') ||
-            document.querySelector('.sendMsg-btn .button') ||
-            document.querySelector('.sendMsg-btn');
-
-          if (!sendBtn) return { success: false, error: '未找到发送按钮' };
-
-          sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-          sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-          if (typeof sendBtn.click === 'function') {
-            sendBtn.click();
-          } else {
-            sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-          }
-          return { success: true };
-        })()
-      `;
-
-      sendMayHaveTriggered = true;
-      const sendRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(sendScript);
-      if (!sendRes?.success) {
-        return { success: false, error: `点击发送图片失败: ${sendRes?.error}`, isPreTrigger: true };
-      }
-
-      return { success: true, verifyLatencyMs: Date.now() - startTime };
-    } catch (err) {
-      return {
-        success: false,
-        error: `发送图片异常: ${err instanceof Error ? err.message : String(err)}`,
-        isPreTrigger: !sendMayHaveTriggered,
-        verifyLatencyMs: Date.now() - startTime,
-      };
-    }
+  public sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
+    return sendUiImage(this.cdp, imagePath, options);
   }
 
   /**
    * 优先通过原生 IPC toData('cancelMessage') 撤回消息
    */
-  public async recallMessage(messageId: string, sessionId?: string): Promise<boolean> {
-    if (!messageId) return false;
-
-    const payloadData = {
-      targetId: messageId,
-      targetSessionId: sessionId || '',
-    };
-    const encoded = encodePayload(payloadData);
-
-    try {
-      const script = `
-        (async () => {
-          const data = JSON.parse(decodeURIComponent(${encoded}));
-          const targetId = data.targetId;
-          const targetSessionId = data.targetSessionId;
-          ${RESOLVE_RENDERER_SESSION_SCRIPT}
-          const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
-          const main = document.querySelector('.main-page')?.__vue__;
-          const bus = main?.$bus;
-
-          let targetSession = editor?.activedSes || null;
-          if (targetSessionId) {
-            if (!Array.isArray(editor?.sortedSessions)) {
-              return { success: false };
-            }
-            targetSession = resolveRendererSession(editor.sortedSessions, targetSessionId);
-            if (!targetSession) {
-              return { success: false };
-            }
-          }
-          if (!targetSession) {
-            return { success: false };
-          }
-
-          let matchedVueMsg = null;
-          const items = document.querySelectorAll('.rcd-item, .message-item, .msg-item');
-          for (let i = items.length - 1; i >= 0; i--) {
-            const item = items[i];
-            const vMsg = item.__vue__?.msgitem || item.__vue__?.message;
-            const rawId = vMsg?.id || vMsg?.msgID || item.getAttribute('id') || item.getAttribute('data-msg-id');
-            if (rawId && String(rawId) === String(targetId)) {
-              matchedVueMsg = vMsg;
-              break;
-            }
-          }
-
-          const sessionID = targetSession.id;
-          if (
-            matchedVueMsg?.sessionID !== undefined &&
-            String(matchedVueMsg.sessionID) !== String(sessionID)
-          ) {
-            return { success: false };
-          }
-          const sesUUID = targetSession.sesUUID || targetSessionId;
-          const msgID = matchedVueMsg?.id || matchedVueMsg?.msgID || Number(targetId) || targetId;
-          const msgIdx = matchedVueMsg?.msgIdx || 0;
-
-          const electron = window.require ? window.require('electron') : null;
-          const ipc = window.ipcRenderer || electron?.ipcRenderer;
-          if (!ipc || typeof ipc.send !== 'function' || typeof ipc.once !== 'function') {
-            return { success: false };
-          }
-
-          const key = '__kkbot_rpc_id';
-          const currentId = typeof window[key] === 'number' ? window[key] : 800000;
-          window[key] = currentId + 1;
-          const reqId = currentId + 1;
-          const replyChannel = 'data-' + reqId;
-          const res = await new Promise(resolve => {
-            const onReply = (_event, payload) => {
-              clearTimeout(timer);
-              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
-              resolve(payload);
-            };
-            const timer = setTimeout(() => {
-              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
-              resolve({ code: -2 });
-            }, 4000);
-            ipc.once(replyChannel, onReply);
-            try {
-              ipc.send('data', {
-                id: reqId,
-                args: ['cancelMessage', {
-                  type: 'own',
-                  sessionID,
-                  msgID,
-                  msgIdx
-                }],
-                progress: false
-              });
-            } catch (sendErr) {
-              clearTimeout(timer);
-              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
-              resolve({ code: -3 });
-            }
-          });
-
-          if (!res || res.code !== 0) {
-            return { success: false };
-          }
-
-          if (bus && sesUUID) {
-            try {
-              bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
-            } catch (eventErr) {}
-          }
-          return { success: true };
-        })()
-      `;
-
-      const res = await this.cdp.evaluate<{ success: boolean }>(script, 6000);
-      return Boolean(res?.success);
-    } catch (err) {
-      log.warn({ messageId, err: String(err) }, 'Bridge 撤回消息失败');
-      return false;
-    }
+  public recallMessage(messageId: string, sessionId?: string): Promise<boolean> {
+    return recallNativeMessage(this.cdp, messageId, sessionId);
   }
 }

@@ -146,6 +146,27 @@ export class SessionOps {
     }
   }
 
+  public async getActiveSessionId(): Promise<string | null> {
+    const script = `
+      (() => {
+        const selected = document.querySelector('.chat-item.chat-selected') ||
+          document.querySelector('${this.selectors.activeSession}');
+        if (!selected) return null;
+        return selected.getAttribute('data-sesuuid') ||
+          selected.getAttribute('data-session-id') ||
+          selected.getAttribute('id') ||
+          null;
+      })()
+    `;
+
+    try {
+      const sessionId = await this.cdp.evaluate<string | null>(script);
+      return sessionId?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * 获取当前处于激活状态的会话
    */
@@ -202,42 +223,51 @@ export class SessionOps {
         const scroller = document.querySelector('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
         const scrollerItems = getVueScrollerItems('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
         const { index: targetIndex, item: targetItem } = findVueSessionItem(scrollerItems, id);
+        if (Array.isArray(scrollerItems) && !targetItem) {
+          return { success: false, method: 'target_not_unique' };
+        }
 
-        let targetSesUUID = targetItem?.sesUUID || id;
-        let targetName = targetItem?.typeName || targetItem?.name || id;
+        const targetSesUUID = targetItem?.sesUUID || id;
+        const targetName = targetItem?.typeName || targetItem?.name || id;
 
-        // 2. 辅助函数: 在当前 DOM 查找并点击匹配项
-        function tryClickVisibleDom() {
-          const domItems = document.querySelectorAll('${this.selectors.sessionItem}');
-          for (const item of domItems) {
+        function findVisibleTarget() {
+          const domItems = Array.from(document.querySelectorAll('${this.selectors.sessionItem}'));
+          const idMatches = domItems.filter(item => {
             const matchId = item.getAttribute('data-sesuuid') || item.getAttribute('data-session-id') || item.getAttribute('id');
+            return matchId === targetSesUUID || matchId === id;
+          });
+          if (idMatches.length === 1) return idMatches[0];
+          if (idMatches.length > 1) return null;
+
+          const nameMatches = domItems.filter(item => {
             const title = item.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
-            if (matchId === targetSesUUID || matchId === id || title === targetName || title === id || (title && title.includes(id))) {
-              item.scrollIntoView({ block: 'nearest' });
-              if (typeof item.click === 'function') {
-                item.click();
-              } else {
-                item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-              }
-              return true;
-            }
+            return title === targetName || title === id;
+          });
+          return nameMatches.length === 1 ? nameMatches[0] : null;
+        }
+
+        // 2. 辅助函数: 在当前 DOM 查找并点击唯一精确匹配项
+        function tryClickVisibleDom() {
+          const item = findVisibleTarget();
+          if (!item) return false;
+          item.scrollIntoView({ block: 'nearest' });
+          if (typeof item.click === 'function') {
+            item.click();
+          } else {
+            item.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
           }
-          return false;
+          return true;
         }
 
         // 3. 辅助函数: 验证当前高亮会话是否已是目标会话
         function isTargetActive() {
           const selected = document.querySelector('${this.selectors.activeSession}') || document.querySelector('.chat-item.chat-selected');
           if (!selected) return false;
-          const selectedUuid = selected.getAttribute('data-sesuuid');
-          const selectedName = selected.querySelector('${this.selectors.sessionTitle}')?.textContent?.trim();
-          return (
-            selectedUuid === targetSesUUID ||
-            selectedUuid === id ||
-            selectedName === targetName ||
-            selectedName === id ||
-            (selectedName && selectedName.includes(id))
-          );
+          const selectedUuid = selected.getAttribute('data-sesuuid') || selected.getAttribute('data-session-id') || selected.getAttribute('id');
+          if (selectedUuid) {
+            return selectedUuid === targetSesUUID || selectedUuid === id;
+          }
+          return findVisibleTarget() === selected;
         }
 
         // 先检查当前是否已经处于该会话

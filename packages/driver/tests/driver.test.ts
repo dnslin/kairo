@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { KK9Driver } from '../src/driver.js';
 import type { KK9Employee, KK9Message, KK9Session, SendResult } from '../src/types/index.js';
 
-describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
+describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
   it('初始化时状态应为 disconnected 且生成唯一 startupGenerationId', () => {
     const driver = new KK9Driver({
       cdp: {
@@ -16,6 +16,32 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
     const health = driver.getHealthSnapshot();
     expect(health.cdpStatus).toBe('disconnected');
     expect(health.eventBridgeAttached).toBe(false);
+  });
+
+  it('connect 只能由 EventBridge 拥有 binding 与注入生命周期', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
+    });
+    const internals = driver as unknown as {
+      eventBridge: { connect: () => Promise<void> };
+      cdp: {
+        sendCommand: ReturnType<typeof vi.fn>;
+        on: ReturnType<typeof vi.fn>;
+        evaluate: ReturnType<typeof vi.fn>;
+      };
+    };
+    const eventBridgeConnect = vi.fn().mockResolvedValue(undefined);
+    internals.eventBridge.connect = eventBridgeConnect;
+    internals.cdp.sendCommand = vi.fn().mockResolvedValue(undefined);
+    internals.cdp.on = vi.fn();
+    internals.cdp.evaluate = vi.fn().mockResolvedValue(undefined);
+
+    await driver.connect();
+
+    expect(eventBridgeConnect).toHaveBeenCalledOnce();
+    expect(internals.cdp.sendCommand).not.toHaveBeenCalled();
+    expect(internals.cdp.on).not.toHaveBeenCalled();
+    expect(internals.cdp.evaluate).not.toHaveBeenCalled();
   });
 
   it('startPolling 与 stopPolling 应正确切换轮询状态', () => {
@@ -87,7 +113,9 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
       },
     ];
 
-    driver.bridgeMessageOps.getRecentMessages = vi.fn().mockResolvedValue(mockMessages);
+    Object.assign(driver.bridgeMessageOps, {
+      getRecentMessagesResult: vi.fn().mockResolvedValue({ kind: 'ok', value: mockMessages }),
+    });
 
     // @ts-expect-error 访问私有方法 collectAndEmitMessages 测试
     await driver.collectAndEmitMessages(
@@ -122,6 +150,7 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
     driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue(mockSendResult);
     driver.getSessions = vi.fn().mockResolvedValue([
       { id: 'int2024', name: 'int2024', type: 'private', unread: false },
+      { id: '1-29467', name: '测试123', type: 'group', unread: false },
     ]);
     driver.selectSession = vi.fn().mockResolvedValue(true);
     driver.getCurrentSession = vi.fn().mockResolvedValue({
@@ -157,6 +186,106 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
     // 5. 发送图片
     const resImg = await driver.sendImage('test.png', { targetSessionId: 'int2024' });
     expect(resImg.success).toBe(true);
+  });
+
+  it('Bridge 成功返回空历史时不得触发 DOM fallback', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
+    });
+    const bridgeResult = vi.fn().mockResolvedValue({ kind: 'ok', value: [] });
+    Object.assign(driver.bridgeMessageOps, { getRecentMessagesResult: bridgeResult });
+    driver.bridgeMessageOps.getRecentMessages = vi.fn().mockResolvedValue([]);
+    driver.domMessageOps.getRecentMessages = vi.fn().mockResolvedValue([
+      {
+        id: 'wrong-dom-message',
+        sessionId: '0-3585',
+        sessionName: 'int2024',
+        sessionType: 'private',
+        sender: '错误会话',
+        content: '不应返回',
+        time: '12:00',
+        isMe: false,
+        timestamp: Date.now(),
+      },
+    ]);
+
+    const result = await driver.getRecentMessages(20, {
+      id: '0-3585',
+      name: 'int2024',
+      type: 'private',
+      unread: false,
+    });
+
+    expect(result).toEqual([]);
+    expect(driver.domMessageOps.getRecentMessages).not.toHaveBeenCalled();
+  });
+
+  it('Bridge 不可用且显式目标不是当前 DOM 会话时必须 Fail-Closed', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
+    });
+    const bridgeResult = vi.fn().mockResolvedValue({ kind: 'unavailable', error: 'IPC failed' });
+    Object.assign(driver.bridgeMessageOps, { getRecentMessagesResult: bridgeResult });
+    driver.bridgeMessageOps.getRecentMessages = vi.fn().mockResolvedValue([]);
+    const getActiveSessionId = vi.fn().mockResolvedValue('1-29467');
+    Object.assign(driver.domSessionOps, { getActiveSessionId });
+    driver.domMessageOps.getRecentMessages = vi.fn().mockResolvedValue([
+      {
+        id: 'group-message',
+        sessionId: '0-3585',
+        sessionName: 'int2024',
+        sessionType: 'private',
+        sender: '群成员',
+        content: '当前群消息',
+        time: '12:00',
+        isMe: false,
+        timestamp: Date.now(),
+      },
+    ]);
+
+    const result = await driver.getRecentMessages(20, {
+      id: '0-3585',
+      name: 'int2024',
+      type: 'private',
+      unread: false,
+    });
+
+    expect(result).toEqual([]);
+    expect(driver.domMessageOps.getRecentMessages).not.toHaveBeenCalled();
+  });
+
+  it('Bridge 不可用时仅允许对当前精确 DOM 会话执行 fallback', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
+    });
+    const bridgeResult = vi.fn().mockResolvedValue({ kind: 'unavailable', error: 'IPC failed' });
+    Object.assign(driver.bridgeMessageOps, { getRecentMessagesResult: bridgeResult });
+    driver.bridgeMessageOps.getRecentMessages = vi.fn().mockResolvedValue([]);
+    Object.assign(driver.domSessionOps, {
+      getActiveSessionId: vi.fn().mockResolvedValue('0-3585'),
+    });
+    const domMessage: KK9Message = {
+      id: 'current-dom-message',
+      sessionId: '0-3585',
+      sessionName: 'int2024',
+      sessionType: 'private',
+      sender: 'int2024',
+      content: '当前会话消息',
+      time: '12:00',
+      isMe: false,
+      timestamp: Date.now(),
+    };
+    driver.domMessageOps.getRecentMessages = vi.fn().mockResolvedValue([domMessage]);
+
+    const result = await driver.getRecentMessages(20, {
+      id: '0-3585',
+      name: 'int2024',
+      type: 'private',
+      unread: false,
+    });
+
+    expect(result).toEqual([domMessage]);
+    expect(driver.domMessageOps.getRecentMessages).toHaveBeenCalledOnce();
   });
 
   it('指定目标的 Bridge pre-trigger 拒绝不得被 DOM fallback 绕过', async () => {
@@ -260,6 +389,25 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
     expect(driver.bridgeMessageOps.sendImage).not.toHaveBeenCalled();
   });
 
+  it('Driver 顶层必须拒绝全局重名会话的 select 与 markRead', async () => {
+    const driver = new KK9Driver({
+      cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+    });
+    driver.getSessions = vi.fn().mockResolvedValue([
+      { id: '1-29467', name: '测试123', type: 'group', unread: false },
+      { id: '1-26519', name: '测试123', type: 'group', unread: false },
+    ]);
+    driver.bridgeSessionOps.selectSession = vi.fn().mockResolvedValue(true);
+    driver.domSessionOps.selectSession = vi.fn().mockResolvedValue(true);
+    driver.bridgeSessionOps.markSessionRead = vi.fn().mockResolvedValue(true);
+
+    expect(await driver.selectSession('测试123')).toBe(false);
+    expect(await driver.markSessionRead('测试123')).toBe(false);
+    expect(driver.bridgeSessionOps.selectSession).not.toHaveBeenCalled();
+    expect(driver.domSessionOps.selectSession).not.toHaveBeenCalled();
+    expect(driver.bridgeSessionOps.markSessionRead).not.toHaveBeenCalled();
+  });
+
   it('会话管理应优先调用 Bridge 会话服务', async () => {
     const driver = new KK9Driver({
       cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
@@ -283,7 +431,7 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
 
     const switched = await driver.selectSession('测试123');
     expect(switched).toBe(true);
-    expect(driver.bridgeSessionOps.selectSession).toHaveBeenCalledWith('测试123');
+    expect(driver.bridgeSessionOps.selectSession).toHaveBeenCalledWith('1-29467');
 
     const markRes = await driver.markSessionRead('测试123');
     expect(markRes).toBe(true);
@@ -293,6 +441,9 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
     const driver = new KK9Driver({
       cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
     });
+    driver.getSessions = vi.fn().mockResolvedValue([
+      { id: '0-3585', name: 'int2024', type: 'private', unread: false },
+    ]);
     driver.bridgeSessionOps.markSessionRead = vi.fn().mockResolvedValue(false);
     driver.domSessionOps.markSessionRead = vi.fn().mockResolvedValue(true);
 
@@ -333,11 +484,14 @@ describe('KK9Driver 顶层契约与端到端测试 (IKK9Driver)', () => {
       cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
     });
 
+    driver.getSessions = vi.fn().mockResolvedValue([
+      { id: '0-3585', name: 'int2024', type: 'private', unread: false },
+    ]);
     driver.bridgeMessageOps.recallMessage = vi.fn().mockResolvedValue(true);
 
     const ok = await driver.recallMessage('msg_1001', 'int2024');
     expect(ok).toBe(true);
-    expect(driver.bridgeMessageOps.recallMessage).toHaveBeenCalledWith('msg_1001', 'int2024');
+    expect(driver.bridgeMessageOps.recallMessage).toHaveBeenCalledWith('msg_1001', '0-3585');
 
     const recalledEvents: unknown[] = [];
     driver.on('recalled', evt => recalledEvents.push(evt));

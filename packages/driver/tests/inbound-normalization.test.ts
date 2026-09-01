@@ -372,7 +372,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
     });
   });
 
-  describe('5. EventBridge 与 Polling 真实 emit 派发与全身份覆盖测试', () => {
+  describe('5. EventBridge 与 Polling 离线 emit 派发与全身份覆盖测试', () => {
     it('EventBridge 真实派发 external, operator, bot_echo, system 全部四类来源', async () => {
       const mockCdp = new MockCdpClient();
       const bridge = new KK9EventBridge(
@@ -454,7 +454,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       expect(emittedMessages[3].origin).toBe('system');
     });
 
-    it('Driver Polling 真实通过 MessageOps 解析 DOM 数据并派发 external, operator, bot_echo, system', async () => {
+    it('Driver Polling 离线通过 MessageOps 解析 DOM 数据并派发 external, operator, bot_echo, system', async () => {
       const mockCdp = new MockCdpClient();
       const driver = new KK9Driver({
         cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
@@ -520,11 +520,26 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         return Promise.resolve([]);
       });
 
-      // @ts-expect-error 访问私有方法 collectAndEmitMessages 验证轮询派发
-      await driver.collectAndEmitMessages(
-        { id: 'ses_poll_all', name: '轮询综合会话', type: 'private', unread: true },
-        10
+      const pollingSession = {
+        id: 'ses_poll_all',
+        name: '轮询综合会话',
+        type: 'private' as const,
+        unread: true,
+      };
+      const parsedMessages = await driver.messageOps.getRecentMessages(
+        10,
+        pollingSession,
+        new Set(['ses_poll_all:poll_bot_echo_1']),
+        currentUserId
       );
+      Object.assign(driver.bridgeMessageOps, {
+        getRecentMessagesResult: vi
+          .fn()
+          .mockResolvedValue({ kind: 'ok', value: parsedMessages }),
+      });
+
+      // @ts-expect-error 访问私有方法 collectAndEmitMessages 验证轮询派发
+      await driver.collectAndEmitMessages(pollingSession, 10);
 
       expect(emittedMessages).toHaveLength(4);
       expect(emittedMessages[0].origin).toBe('external');
@@ -571,17 +586,21 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
 
       const emittedMessages: KK9Message[] = [];
       driver.on('message', message => emittedMessages.push(message));
+      const sessionA = { id: 'session-a', name: '会话 A', type: 'private' as const, unread: true };
+      const sessionB = { id: 'session-b', name: '会话 B', type: 'private' as const, unread: true };
+      const messagesA = await driver.messageOps.getRecentMessages(10, sessionA, undefined, currentUserId);
+      const messagesB = await driver.messageOps.getRecentMessages(10, sessionB, undefined, currentUserId);
+      Object.assign(driver.bridgeMessageOps, {
+        getRecentMessagesResult: vi
+          .fn()
+          .mockResolvedValueOnce({ kind: 'ok', value: messagesA })
+          .mockResolvedValueOnce({ kind: 'ok', value: messagesB }),
+      });
 
       // @ts-expect-error 访问私有方法验证轮询去重边界
-      await driver.collectAndEmitMessages(
-        { id: 'session-a', name: '会话 A', type: 'private', unread: true },
-        10
-      );
+      await driver.collectAndEmitMessages(sessionA, 10);
       // @ts-expect-error 访问私有方法验证轮询去重边界
-      await driver.collectAndEmitMessages(
-        { id: 'session-b', name: '会话 B', type: 'private', unread: true },
-        10
-      );
+      await driver.collectAndEmitMessages(sessionB, 10);
 
       expect(emittedMessages).toHaveLength(2);
       expect(emittedMessages.map(message => message.sessionId)).toEqual(['session-a', 'session-b']);

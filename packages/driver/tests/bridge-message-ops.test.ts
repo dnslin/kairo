@@ -210,6 +210,47 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       expect(res.success).toBe(true);
     });
 
+    it('图片剪贴板因窗口未聚焦失败时应重新前置并重试一次', async () => {
+      vi.useFakeTimers();
+      const tmpFile = path.resolve('tmp', 'test-bridge-img-focus-retry.png');
+      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          'base64'
+        )
+      );
+      const bringToFront = vi.fn().mockResolvedValue(undefined);
+      const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
+      const evaluate = vi
+        .fn()
+        .mockResolvedValueOnce({
+          success: false,
+          error: 'NotAllowedError: Document is not focused.',
+        })
+        .mockResolvedValueOnce({ success: true })
+        .mockResolvedValueOnce({ success: true });
+      const mockCdp = {
+        bringToFront,
+        evaluate,
+        dispatchKeyEvent,
+      } as unknown as CdpClient;
+
+      try {
+        const pending = new BridgeMessageOps(mockCdp).sendImage(tmpFile);
+        await vi.runAllTimersAsync();
+        const result = await pending;
+
+        expect(result.success).toBe(true);
+        expect(bringToFront).toHaveBeenCalledTimes(2);
+        expect(dispatchKeyEvent).toHaveBeenCalledTimes(2);
+      } finally {
+        fs.unlinkSync(tmpFile);
+        vi.useRealTimers();
+      }
+    });
+
     it('发送文件时校验不存在的路径应立即返回 pre-trigger 失败', async () => {
       const mockCdp = { evaluate: vi.fn() } as unknown as CdpClient;
       const ops = new BridgeMessageOps(mockCdp);
@@ -703,6 +744,117 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         replyedMsgIndex: 9,
         replyedContentType: 4,
       });
+    });
+
+    it('回复带 msgIdx 时必须精确查询窗口外原消息', async () => {
+      let inserted = false;
+      let msgFlag = '';
+      let exactQueryArgs: unknown[] | undefined;
+      let insertedMessage: Record<string, unknown> | undefined;
+      const targetMessage = {
+        id: 123307983,
+        msgIdx: 1,
+        sender: 3705,
+        senderName: 'int2024',
+        contentType: 4,
+        content: JSON.stringify({ content: [{ type: 0, text: '窗口外原消息' }] }),
+      };
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'getMessageBySessionIDAndMsgIdx') {
+          exactQueryArgs = request.args.slice(1);
+          return { code: 0, data: [targetMessage] };
+        }
+        if (method === 'getMessages' && !inserted) return { code: 0, data: [] };
+        if (method === 'insertSendBefoeMsg') {
+          inserted = true;
+          const message = request.args[1] as Record<string, unknown>;
+          insertedMessage = message;
+          const rawMsgFlag = message['msgFlag'];
+          msgFlag = typeof rawMsgFlag === 'string' ? rawMsgFlag : '';
+          return { code: 0, data: { ...message, id: -22, msgIdx: '2.001' } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000021, msgIdx: 2, msgFlag }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp).sendReply(
+        { messageId: String(targetMessage.id), msgIdx: targetMessage.msgIdx },
+        '回复窗口外消息',
+        { targetSessionId: session.sesUUID }
+      );
+
+      const insertedContent = insertedMessage?.['content'] as
+        | Record<string, unknown>
+        | undefined;
+      expect(result.success).toBe(true);
+      expect(result.messageId).toBe('135000021');
+      expect(exactQueryArgs).toEqual([session.id, targetMessage.msgIdx]);
+      expect(insertedContent?.['replyedContent']).toEqual({
+        content: [{ type: 0, text: '窗口外原消息' }],
+      });
+    });
+
+    it('回复仅有 messageId 时必须有界分页查找旧消息', async () => {
+      let inserted = false;
+      let historyPageCalls = 0;
+      let msgFlag = '';
+      const targetMessage = {
+        id: 123307983,
+        msgIdx: 1,
+        sender: 3705,
+        senderName: 'int2024',
+        contentType: 4,
+        content: { content: [{ type: 0, text: '第二页原消息' }] },
+      };
+      const firstPage = Array.from({ length: 200 }, (_, index) => ({
+        id: 200000000 + index,
+        msgIdx: 201 + index,
+        contentType: 4,
+        content: { content: [{ type: 0, text: `第一页${index}` }] },
+      }));
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'getMessages' && !inserted) {
+          historyPageCalls += 1;
+          return historyPageCalls === 1
+            ? { code: 0, data: firstPage }
+            : { code: 0, data: [targetMessage] };
+        }
+        if (method === 'insertSendBefoeMsg') {
+          inserted = true;
+          const message = request.args[1] as Record<string, unknown>;
+          const rawMsgFlag = message['msgFlag'];
+          msgFlag = typeof rawMsgFlag === 'string' ? rawMsgFlag : '';
+          return { code: 0, data: { ...message, id: -22, msgIdx: '2.001' } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000023, msgIdx: 2, msgFlag }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp).sendReply(
+        { messageId: String(targetMessage.id) },
+        '分页回复旧消息',
+        { targetSessionId: session.sesUUID }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.messageId).toBe('135000023');
+      expect(historyPageCalls).toBe(2);
     });
 
     it('文件发送必须等待落库并返回真实正 ID', async () => {
