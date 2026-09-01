@@ -39,10 +39,9 @@ pnpm e2e
 | 任务 | 位置 |
 | --- | --- |
 | Driver 公开 API 与生命周期 | `packages/driver/src/index.ts`, `packages/driver/src/driver.ts` |
-| CDP 连接与调用 | `packages/driver/src/cdp/client.ts` |
-| EventBridge 与消息转换 | `packages/driver/src/bridge/` |
-| 会话、消息、发送与组织读取 | `packages/driver/src/dom/` |
-| 卡片渲染 | `packages/driver/src/canvas/` |
+| CDP 连接与底层调用 | `packages/driver/src/cdp/client.ts` |
+| Bridge 底层 IPC 操作与原生事件直连桥（会话、消息、发送、撤回、图片/文件、组织架构） | `packages/driver/src/bridge/` |
+| DOM 辅助解析与兼容逻辑 | `packages/driver/src/dom/` |
 | 离线测试 | `packages/driver/tests/` |
 | 真机脚本 | `packages/driver/examples/` |
 
