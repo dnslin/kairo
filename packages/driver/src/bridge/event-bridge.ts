@@ -26,7 +26,7 @@ import {
 
 const log = createChildLogger('event-bridge');
 
-const DEFAULT_BINDING_NAME = '__kkbot_native_bridge';
+const DEFAULT_BINDING_NAME = '__kairo_native_bridge';
 const DEFAULT_MAX_MESSAGE_IDS = 10000;
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging
@@ -541,9 +541,9 @@ export class KK9EventBridge extends EventEmitter {
     const connectionId = JSON.stringify(connectionIdentity?.connectionId ?? '');
     return `
       (() => {
-        if (typeof window.__kkbot_bridge_cleanup === 'function') {
+        if (typeof window.__kairo_bridge_cleanup === 'function') {
           try {
-            window.__kkbot_bridge_cleanup();
+            window.__kairo_bridge_cleanup();
           } catch (e) {
             console.warn('[KK9EventBridge] 清理前序 Hook 异常:', e);
           }
@@ -768,8 +768,8 @@ export class KK9EventBridge extends EventEmitter {
           const chatContainers = document.querySelectorAll('.chat-container, .chat-content, .message-content-box');
           chatContainers.forEach(container => {
             const vm = container.__vue__;
-            if (vm && typeof vm.addRevokeMsg === 'function' && !vm.__kkbot_revoke_active) {
-              vm.__kkbot_revoke_active = true;
+            if (vm && typeof vm.addRevokeMsg === 'function' && !vm.__kairo_revoke_active) {
+              vm.__kairo_revoke_active = true;
               const origAdd = vm.addRevokeMsg;
               vm.addRevokeMsg = function(data) {
                 if (data && (data.msgID || data.msgId || data.id)) {
@@ -826,7 +826,7 @@ export class KK9EventBridge extends EventEmitter {
           observer.observe(document.body, { childList: true, subtree: true });
         } catch {}
 
-        window.__kkbot_bridge_cleanup = () => {
+        window.__kairo_bridge_cleanup = () => {
           unbindFns.forEach(fn => {
             try { fn(); } catch (e) {}
           });

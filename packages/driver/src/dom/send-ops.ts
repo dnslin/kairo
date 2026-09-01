@@ -735,7 +735,7 @@ export class SendOps {
             return { success: false, error: '未找到 native IPC 撤回通道' };
           }
 
-          const key = '__kkbot_rpc_id';
+          const key = '__kairo_rpc_id';
           const current = typeof window[key] === 'number' ? window[key] : 800000;
           window[key] = current + 1;
           const requestId = current + 1;

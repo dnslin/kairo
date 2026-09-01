@@ -180,7 +180,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         id: botMsgId,
         sessionId: 'session_user_002',
         sessionType: 'private',
-        sender: 'KKBot 助手',
+        sender: 'Kairo 助手',
         senderId: currentUserId,
         content: '您好，我是智能助手，很高兴为您服务。',
         time: '10:06:00',
@@ -388,7 +388,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       bridge.on('message', msg => emittedMessages.push(msg));
 
       // 1. external
-      mockCdp.triggerBinding('__kkbot_native_bridge', {
+      mockCdp.triggerBinding('__kairo_native_bridge', {
         type: 'receive-message',
         data: {
           id: 'eb_ext_1',
@@ -401,7 +401,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       });
 
       // 2. operator (isMe: true 且非 bot_echo)
-      mockCdp.triggerBinding('__kkbot_native_bridge', {
+      mockCdp.triggerBinding('__kairo_native_bridge', {
         type: 'receive-message',
         data: {
           id: 'eb_op_1',
@@ -417,13 +417,13 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
 
       // 3. bot_echo (isMe: true 且已在 knownBotSentMessageKeys 中)
 
-      mockCdp.triggerBinding('__kkbot_native_bridge', {
+      mockCdp.triggerBinding('__kairo_native_bridge', {
         type: 'receive-message',
         data: {
           id: 'eb_bot_echo_1',
           sessionId: 'group_eb',
           sessionType: 'group',
-          sender: 'KKBot 机器人',
+          sender: 'Kairo 机器人',
           senderId: currentUserId,
           content: '机器人自身发出的回复',
           isMe: true,
@@ -431,7 +431,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       });
 
       // 4. system
-      mockCdp.triggerBinding('__kkbot_native_bridge', {
+      mockCdp.triggerBinding('__kairo_native_bridge', {
         type: 'receive-message',
         data: {
           id: 'eb_sys_1',
@@ -494,7 +494,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
           raw: { msgID: 'poll-op-1' },
         },
         {
-          sender: 'KKBot 助手',
+          sender: 'Kairo 助手',
           senderId: currentUserId,
           time: '12:02',
           content: '单据已生成',

@@ -1,5 +1,5 @@
 /**
- * @kkbot/driver
+ * @kairo/driver
  * 纯净事件驱动的 KK9 Electron 客户端 CDP 驱动
  */
 

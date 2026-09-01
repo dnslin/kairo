@@ -3,7 +3,7 @@
  * KK9 Driver 全功能实机诊断与测试套件 (Bridge 优先)
  *
  * 使用方式:
- *   pnpm --filter @kkbot/driver run diagnose [command] [args...]
+ *   pnpm --filter @kairo/driver run diagnose [command] [args...]
  *
  * 命令清单:
  *   status                      探测 CDP 端口与 Target 状态
@@ -349,7 +349,7 @@ async function main() {
 === KK9 Driver 综合实机诊断与测试套件 (Bridge 优先) ===
 
 使用方式:
-  pnpm --filter @kkbot/driver run diagnose <command> [args...]
+  pnpm --filter @kairo/driver run diagnose <command> [args...]
 
 【会话与消息】
   status                          探测 CDP 端口与 Target 状态

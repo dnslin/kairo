@@ -1,5 +1,5 @@
 {
-  "name": "@kkbot/driver",
+  "name": "@kairo/driver",
   "version": "2.0.0",
   "description": "Pure, event-driven CDP driver for KK9 desktop client",
   "type": "module",

@@ -120,7 +120,7 @@ const CONFIRM_SENT_MESSAGE_SCRIPT = `
 `;
 
 function createMessageFlag(kind: string): string {
-  return `kkbot:${kind}:${randomUUID()}`;
+  return `kairo:${kind}:${randomUUID()}`;
 }
 
 function buildMentionNodes(mentions?: SendOptions['mentions']): Array<Record<string, unknown>> {
@@ -334,7 +334,7 @@ export class BridgeMessageOps {
         const store = app?.$store || window.$store;
         ${RENDERER_SESSION_RESOLVER_SCRIPT}
         ${RENDERER_IPC_HELPERS_SCRIPT}
-        const callIpc = callKkbotIpc;
+        const callIpc = callKairoIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
@@ -516,7 +516,7 @@ export class BridgeMessageOps {
         const store = app?.$store || window.$store;
         ${RENDERER_SESSION_RESOLVER_SCRIPT}
         ${RENDERER_IPC_HELPERS_SCRIPT}
-        const callIpc = callKkbotIpc;
+        const callIpc = callKairoIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
@@ -703,7 +703,7 @@ export class BridgeMessageOps {
         const store = app?.$store || window.$store;
         ${RENDERER_SESSION_RESOLVER_SCRIPT}
         ${RENDERER_IPC_HELPERS_SCRIPT}
-        const callIpc = callKkbotIpc;
+        const callIpc = callKairoIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;

@@ -85,7 +85,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       url: 'http://127.0.0.1:9222',
       pageMatch: 'renderer.html',
     },
-    bindingName: '__kkbot_native_bridge',
+    bindingName: '__kairo_native_bridge',
     maxMessageIds: 100,
     currentUserId: '10086',
   };
@@ -108,7 +108,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
 
     expect(mockCdp.sendCommandMock).toHaveBeenCalledWith('Runtime.enable');
     expect(mockCdp.sendCommandMock).toHaveBeenCalledWith('Runtime.addBinding', {
-      name: '__kkbot_native_bridge',
+      name: '__kairo_native_bridge',
     });
     expect(mockCdp.evaluateMock).toHaveBeenCalled();
 
@@ -152,7 +152,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(bridge.getConnectionIdentity()).toEqual(identity);
     const received: KK9Message[] = [];
     bridge.on('message', message => received.push(message));
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       generationId: identity.startupGenerationId,
       connectionId: identity.connectionId,
       type: 'receive-message',
@@ -176,7 +176,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     bridge.on('message', msg => receivedMessages.push(msg));
 
     // 模拟来自渲染进程 $bus 的 receive-message 事件
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         session: {
@@ -214,7 +214,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     const receivedMessages: KK9Message[] = [];
     bridge.on('message', msg => receivedMessages.push(msg));
 
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'session-msg',
       data: {
         sesUUID: 'ses-uuid-999',
@@ -260,7 +260,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     bridge.on('message', msg => receivedMessages.push(msg));
 
     // 1. isMe: true (operator 操作员)
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         id: 'msg-self-1',
@@ -273,7 +273,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     });
 
     // 2. senderId 匹配 currentUserId (operator 操作员)
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         id: 'msg-self-2',
@@ -286,7 +286,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     });
 
     // 3. 正常他人消息 (external 外部成员)
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         id: 'msg-other-1',
@@ -325,10 +325,10 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
       },
     };
 
-    mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
-    mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
-    mockCdp.triggerBinding('__kkbot_native_bridge', msgPayload);
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', msgPayload);
+    mockCdp.triggerBinding('__kairo_native_bridge', msgPayload);
+    mockCdp.triggerBinding('__kairo_native_bridge', msgPayload);
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         id: 'msg-dup-1',
@@ -357,7 +357,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     bridge.on('message', msg => normalMessages.push(msg));
 
     // 1. @ 我 (atMemberIDList 包含 10086)
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         id: 'msg-at-1',
@@ -369,7 +369,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     });
 
     // 2. @ 全体 (atAll: true)
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         id: 'msg-at-2',
@@ -381,7 +381,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     });
 
     // 3. 普通消息 (不触发 at)
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         id: 'msg-normal-1',
@@ -408,7 +408,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     bridge.on('recalled', evt => recalledEvents.push(evt));
 
     // 1. type === 'recalled' 直达
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'recalled',
       data: {
         msgID: 'msg-to-recall-1',
@@ -418,7 +418,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     });
 
     // 2. receive-message 中携带 CancelMessage 事件
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         event: 'CancelMessage',
@@ -429,7 +429,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     });
 
     // 3. receive-message.message 数组中嵌套 Event 撤回消息（KK9 生产真实载荷格式）
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
         session: { id: '0-7783', sesUUID: '0-7783', name: '王五' },
@@ -450,7 +450,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     });
 
     // 4. 重复撤回事件（去重）
-    mockCdp.triggerBinding('__kkbot_native_bridge', {
+    mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'recalled',
       data: {
         messageId: 'msg-to-recall-1',
@@ -511,7 +511,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
 
     // 传入非 JSON 畸变字符串不应崩溃
     expect(() => {
-      mockCdp.triggerBinding('__kkbot_native_bridge', 'INVALID_JSON_STRING');
+      mockCdp.triggerBinding('__kairo_native_bridge', 'INVALID_JSON_STRING');
     }).not.toThrow();
 
     // 传入非对应 bindingName 不应处理

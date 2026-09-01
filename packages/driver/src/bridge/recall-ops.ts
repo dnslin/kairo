@@ -65,7 +65,7 @@ export async function recallNativeMessage(
         const msgID = matchedVueMessage?.id || matchedVueMessage?.msgID ||
           Number(targetId) || targetId;
         const msgIdx = matchedVueMessage?.msgIdx || 0;
-        const response = await callKkbotIpc('cancelMessage', {
+        const response = await callKairoIpc('cancelMessage', {
           type: 'own',
           sessionID,
           msgID,

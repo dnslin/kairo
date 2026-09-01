@@ -282,7 +282,7 @@ export class BridgeSessionOps {
             const maxMsgIdx = targetSession.maxMessageIndex || 0;
             const type = targetSession.type || 0;
 
-            const readRes = await callKkbotIpc('readMessage', {
+            const readRes = await callKairoIpc('readMessage', {
               type,
               sessionID,
               maxMsgIdx

@@ -14,9 +14,9 @@ const GROUP_ID = process.env['KK9_TEST_GROUP_ID'] || '1-29467';
 const EXPECTED_USER_ID = process.env['KK9_TEST_USER_ID'] || '5761';
 const EXPECTED_CONFIRMATION = `${EXPECTED_USER_ID}:${PRIVATE_ID}:${GROUP_ID}`;
 const runId = new Date().toISOString().replace(/[:.]/g, '-');
-const prefix = `[KKBot真实回归测试 ${runId}]`;
-const tempFile = path.join(os.tmpdir(), `kkbot-real-${runId}.txt`);
-const tempImage = path.join(os.tmpdir(), `kkbot-real-${runId}.png`);
+const prefix = `[Kairo真实回归测试 ${runId}]`;
+const tempFile = path.join(os.tmpdir(), `kairo-real-${runId}.txt`);
+const tempImage = path.join(os.tmpdir(), `kairo-real-${runId}.png`);
 
 interface StepResult {
   name: string;
@@ -367,7 +367,7 @@ try {
         {
           messageId: groupTextResult.messageId,
           msgIdx: Number(groupTextRaw.msgIdx || 0),
-          sender: 'KKBot真实回归测试',
+          sender: 'Kairo真实回归测试',
           content: groupText,
         },
         replyText,

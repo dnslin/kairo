@@ -1,7 +1,7 @@
 import type EventEmitter from 'node:events';
 
 /**
- * @kkbot/driver 强类型与接口定义
+ * @kairo/driver 强类型与接口定义
  */
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 
@@ -286,7 +286,7 @@ export interface EventBridgeConfig {
   cdp: CdpConfig;
   /** Composition Root 分配的唯一启动代次。 */
   startupGenerationId?: string;
-  /** 自定义 CDP 绑定名称 (默认 '__kkbot_native_bridge') */
+  /** 自定义 CDP 绑定名称 (默认 '__kairo_native_bridge') */
   bindingName?: string;
   /** 去重 native messageId 的最大缓存数量 (默认 10000) */
   maxMessageIds?: number;

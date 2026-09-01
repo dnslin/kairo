@@ -31,7 +31,7 @@ export async function callIpcToData<T = unknown>(
       const electron = window.require ? window.require('electron') : null;
       const ipc = window.ipcRenderer || electron?.ipcRenderer;
       ${RENDERER_IPC_HELPERS_SCRIPT}
-      const result = await callKkbotIpcWithTimeout(
+      const result = await callKairoIpcWithTimeout(
         ${timeoutMs},
         ${JSON.stringify(method)},
         ...${JSON.stringify(args)}

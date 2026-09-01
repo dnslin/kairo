@@ -300,7 +300,7 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
     });
 
     it('sendFile 在 bringToFront 失败时应返回 isPreTrigger: true', async () => {
-      const tempFilePath = path.join(os.tmpdir(), `kkbot_test_btf_${Date.now()}.txt`);
+      const tempFilePath = path.join(os.tmpdir(), `kairo_test_btf_${Date.now()}.txt`);
       fs.writeFileSync(tempFilePath, '测试内容');
       try {
         const ops = new SendOps(rejectingCdp, DEFAULT_SELECTORS);
@@ -314,7 +314,7 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
     });
 
     it('sendImage 在 bringToFront 失败时应返回 isPreTrigger: true', async () => {
-      const tempImgPath = path.join(os.tmpdir(), `kkbot_test_btf_${Date.now()}.png`);
+      const tempImgPath = path.join(os.tmpdir(), `kairo_test_btf_${Date.now()}.png`);
       fs.writeFileSync(tempImgPath, 'fake_png_data');
       try {
         const ops = new SendOps(rejectingCdp, DEFAULT_SELECTORS);
