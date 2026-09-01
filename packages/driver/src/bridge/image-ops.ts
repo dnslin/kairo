@@ -175,6 +175,12 @@ export async function sendNativeImage(
         return { success: false, error: '未指定目标会话且当前无激活会话', isPreTrigger: true };
       }
 
+      const myUid = main?.userID || editor?.userID;
+      if (!myUid) {
+        return { success: false, error: '未获取到当前登录用户身份 (userID)', isPreTrigger: true };
+      }
+      const myName = main?.userName || editor?.userName || '我';
+
       // 1. 调用 Native 预处理图片与缩略图
       const handleRes = await callIpc('sendingImgBeforeHandle', data.base64Thumb, data.fullPath);
       if (!handleRes || handleRes.code !== 0 || !handleRes.data) {
@@ -187,9 +193,6 @@ export async function sendNativeImage(
 
       const thumbPath = handleRes.data.thumbPath;
       const artworkPath = handleRes.data.artworkPath;
-
-      const myUid = main?.userID || editor?.userID || 5761;
-      const myName = main?.userName || editor?.userName || '我';
 
       // 2. 构造 PicText 图片消息对象
       const imgNode = {

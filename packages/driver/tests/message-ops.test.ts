@@ -48,7 +48,7 @@ describe('MessageOps 消息解析测试', () => {
           sender: '群员李四',
           senderId: 'user_456',
           time: '14:20',
-          content: '@机器人 @陈鹏 @王治 请查一下报表',
+          content: '@机器人 @张三 @李四 请查一下报表',
           isMe: false,
           messageType: 'text',
           raw: { msgID: 'native-msg-mention-1' },
@@ -57,7 +57,7 @@ describe('MessageOps 消息解析测试', () => {
           mentions: {
             isAtMe: true,
             isAtAll: false,
-            mentionedUsers: ['机器人', '陈鹏', '王治'],
+            mentionedUsers: ['机器人', '张三', '李四'],
           },
         },
       ];
@@ -82,7 +82,7 @@ describe('MessageOps 消息解析测试', () => {
       expect(msg.sender).toBe('群员李四');
       expect(msg.senderId).toBe('user_456');
       expect(msg.atMe).toBe(true);
-      expect(msg.mentions?.mentionedUsers).toEqual(['机器人', '陈鹏', '王治']);
+      expect(msg.mentions?.mentionedUsers).toEqual(['机器人', '张三', '李四']);
       expect(msg.id).toBe('native-msg-mention-1');
     });
     it('缺少 Vue/native runtime messageId 时丢弃消息并返回空结果', async () => {
@@ -172,6 +172,7 @@ describe('MessageOps 消息解析测试', () => {
         id: 'session-image',
         name: '图片会话',
         type: 'private',
+        unread: false,
       });
 
       expect(messages).toHaveLength(1);
@@ -208,6 +209,7 @@ describe('MessageOps 消息解析测试', () => {
         id: 'session-reply',
         name: '回复会话',
         type: 'private',
+        unread: false,
       });
 
       expect(messages).toHaveLength(1);
@@ -244,6 +246,7 @@ describe('MessageOps 消息解析测试', () => {
         id: 'session-file',
         name: '文件会话',
         type: 'private',
+        unread: false,
       });
 
       expect(messages).toHaveLength(1);
