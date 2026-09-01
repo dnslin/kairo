@@ -53,9 +53,9 @@
 | 功能模块 | 历史实现 | 当前实现 | 已验证边界 |
 | :--- | :--- | :--- | :--- |
 | **会话列表** | 遍历 DOM / 虚拟列表 | `toData('getConversations')` 读取会话 Map 并计算未读数 | Bridge 失败时仍可能回退 DOM |
-| **历史消息** | 抓取可视 DOM 文本 | `toData('getMessages')` 读取原生结构化消息 | 目标会话需先解析为 native session ID |
+| **历史消息** | 抓取可视 DOM 文本 | `toData('getMessages')` 读取原生结构化消息 | 成功空结果与 Bridge 不可用显式区分；显式目标仅在当前 DOM 会话 ID 精确一致时允许 fallback |
 | **文本 / 富文本 / @** | 输入框与按钮模拟 | `insertSendBefoeMsg` ➔ `sendMessageNew` ➔ `getMessages(msgFlag)` | `sendMessageNew code: 0` 后仍需按唯一 `msgFlag` 解析落库正 ID；超时或无法解析真实 ID 均不得 DOM 重发 |
-| **引用回复** | DOM 回复条 | 从目标会话历史读取原消息元数据，再构造 `contentType: 13` | 使用真实 sender/msgIdx/contentType/content，并按 `msgFlag` 返回回复的真实 ID |
+| **引用回复** | DOM 回复条 | 从目标会话历史读取原消息元数据，再构造 `contentType: 13` | 有 `msgIdx` 时精确查询并解析 JSON 字符串 content；否则有界分页；按 `msgFlag` 返回真实 ID |
 | **文件发送** | 模拟拖拽或 DOM 事件 | 构造 `contentType: 3` 后走 native sender | 文件落库后按 `msgFlag` 返回真实 ID；路径、大小和 native ack 均验证 |
 | **图片发送** | 剪贴板、按键与发送按钮 | 先真实切换并确认当前会话，再执行 UI 发送 | 目标未激活时 Fail-Closed；该路径会获取前台焦点，不宣称静默发送 |
 | **消息撤回** | DOM 菜单 | 精确 `messageId` 与目标会话组装 `cancelMessage` | 仅 native `code: 0` 成功；`$bus` 只用于 ack 后更新本地 UI |
@@ -112,11 +112,14 @@ packages/driver/src/
 ├── driver.ts                # IKK9Driver 聚合实现 (Bridge 优先，DOM 后备)
 ├── fake-driver.ts           # 单元测试与故障注入测试桩 (实现 IKK9Driver)
 ├── bridge/                  # [核心] 纯数据层 Bridge 与 IPC 实现
+│   ├── renderer-script.ts   # 共享 renderer 会话解析、请求 ID 与精确 listener cleanup
 │   ├── rpc.ts               # callIpcToData 底层 RPC 请求/响应封装
 │   ├── session-ops.ts       # 会话数据拉取与 readMessage 同步
-│   ├── message-ops.ts       # insertSendBefoeMsg + sendMessageNew 静默发送与 getMessages
+│   ├── message-ops.ts       # 文本、回复、文件发送与历史读取编排
+│   ├── ui-image-ops.ts      # 图片 UI/剪贴板窄路径
+│   ├── recall-ops.ts        # native cancelMessage 撤回事务
 │   ├── org-ops.ts           # 组织架构递归遍历与单点档案查询
-│   ├── event-bridge.ts      # CDP Binding 原生实时事件直连桥
+│   ├── event-bridge.ts      # 唯一实时消息/撤回 Hook 所有者
 │   └── converter.ts         # 原生消息标准化与来源身份四分类
 ├── dom/                     # [后备] 保留的历史 DOM 操作层 (仅供极窄降级)
 │   ├── rich-text.ts         # 富文本与 Markdown 解析
@@ -139,11 +142,11 @@ packages/driver/src/
 2. **来源与 @ 状态分类**：
    `origin` 依据账号 ID、已记录发送身份和原生载荷分类。`atState: 1` 视为普通消息，`atState: 2` 或明确包含当前账号的成员列表才判定为 `@我`。
 3. **发送结果三态**：
-   发送结果区分“native ack 成功”“可证明脚本未提交”和“提交后结果未知”。只有第一种成功；第三种不得自动进入 DOM 重试。
-4. **变更性操作的 IPC 请求 ID**：
-   文本、回复、文件、撤回和已读路径使用 renderer 单调计数器分配唯一 reply channel；组织根部门探测仍有独立内部请求序列，不在此保证范围内。
-5. **目标与撤回 Fail-Closed**：
-   Bridge 与 DOM 解析会话时均优先匹配 `sesUUID/id`；仅在没有 ID 命中且名称唯一时接受名称。指定目标的 Bridge 拒绝不会再进入 DOM fallback；只有未指定目标、明确发送当前会话时保留该 fallback。图片目标未命中时在剪贴板和键盘动作前拒绝；撤回只使用精确消息 ID，并且仅 native ack 成功后更新本地事件总线。
+   文本、回复和文件区分“native ack/落库确认成功”“可证明脚本未提交”和“提交后结果未知”；只有第一种成功，第三种不得自动进入 DOM 重试。图片没有已验证的 native ack，`success` 仅表示剪贴板、按键和按钮触发完成，真实验收必须再按 baseline、发送者与图片指纹从历史绑定 native ID。
+4. **统一 renderer IPC 生命周期**：
+   RPC、文本、回复、文件、撤回、已读和组织根探测统一使用 renderer 单调请求 ID；成功、timeout 与 `ipc.send` 抛错均只移除本次具名 listener，禁止 `removeAllListeners(replyChannel)`。
+5. **目标与读取 Fail-Closed**：
+   Driver 先从权威会话列表全局解析目标：`sesUUID/id` 精确优先，名称只在唯一时接受，随后仅向 Bridge/DOM 传递精确 ID。Bridge 成功空历史不会触发 DOM fallback；Bridge 不可用时，显式目标只有与当前 DOM active ID 精确一致才允许读取。图片目标未命中时在剪贴板和键盘动作前拒绝；撤回只使用精确消息 ID，并且仅 native ack 成功后更新本地事件总线。
 6. **启动代次与健康事实**：
    `startupGenerationId` 和结构化健康事件用于识别连接身份变化；单次业务失败不会自动升级为 Driver 身份失效。
 
@@ -153,20 +156,21 @@ packages/driver/src/
 
 ### 6.1 自动化测试覆盖
 - **测试套件总数**：19 个测试文件
-- **测试用例总数**：196 个测试用例
-- **新增关键场景**：发送超时与未知状态、临时负 ID 到真实正 ID 的 `msgFlag` 绑定、回复原消息元数据、并发 IPC ID、listener 精确清理、ID 优先与名称歧义拒绝、图片真实切换、撤回与已读 ack、200 人分页边界、普通 `atState: 1`、字面反斜杠与 CLI 解码边界
+- **测试用例总数**：208 个离线辅助用例；它们不替代真实 KK9 验收
+- **新增关键场景**：成功空历史与 Bridge unavailable 判别、显式 DOM active ID 守卫、Driver 全局重名拒绝、精确 `msgIdx`/有界分页回复、JSON 字符串 content 规范化、RPC timeout 只移除自身 listener、图片焦点重试、EventBridge 单一 Hook 所有权，以及原有真实 ID、ack、分页、mention 和转义边界
 - **验证命令**：`pnpm test`、`pnpm typecheck`、`pnpm lint`、`pnpm build`
 
 ### 6.2 实机 E2E 结果与边界
-- **执行日期**：2026-08-31；KK9 `renderer.html`，CDP `127.0.0.1:9222`。
-- **目标锁定**：私聊 `int2024 / 0-3585`；群聊存在两个同名会话，测试明确选择 `测试123 / 1-29467`。
-- **真实结果**：`pnpm e2e` 覆盖文本、富文本、字面反斜杠、文件、图片、群聊普通消息、引用回复、历史回读、已读、组织架构与撤回清理，共 **27/27 PASS**。
-- **身份验证**：文本、富文本、文件、群聊消息和回复均返回并回读到真实正 native ID；图片确认落入 `int2024`，未再串入群聊；6 条测试消息均成功撤回。
+- **执行日期**：2026-09-01；KK9 `renderer.html`，CDP `127.0.0.1:9222`。
+- **目标锁定**：实际登录用户 `5761`；私聊 `int2024 / 0-3585`；群聊存在两个同名会话，测试明确选择 `测试123 / 1-29467`。
+- **真实结果**：`pnpm e2e` 覆盖授权确认、目标身份、文本、富文本、字面反斜杠、文件、图片唯一关联、群聊普通消息、引用回复原生结构、历史回读、已读、组织架构与撤回清理，共 **28/28 PASS**。
+- **身份验证**：文本、富文本、文件、群聊消息和回复均返回并回读到真实正 native ID；图片使用同一 baseline、发送者和 `7×11` 指纹精确关联，确认落入 `int2024` 且未进入群聊；6 条测试消息均成功撤回。
+- **专项真机结果**：两个同名 `测试123` 时名称选择返回 false；窗口外 `123307983 / msgIdx=1` 回复成功并形成 `contentType: 13`；1ms 真实 IPC timeout 后同 channel 观察 listener 保持存在。
 - **组织观测**：单次实机抽取 341 个部门、1357 名员工，耗时约 4.6 秒。该数值是本次环境观测，不是稳定性能承诺。
-- `pnpm e2e` 会真实发送消息并切换 UI，只能在明确授权的测试会话运行，不能作为无副作用的默认 CI 门禁；脚本禁止 `@全体` 并自动按真实 ID 清理。
+- `pnpm e2e` 会真实发送消息并切换 UI，只能在明确授权的测试会话运行，不能作为无副作用的默认 CI 门禁；运行前必须设置 `KK9_REAL_TEST_CONFIRM=5761:0-3585:1-29467`，脚本禁止 `@全体`、关键失败立即停止后续副作用，并自动按真实 ID 清理。
 
 ---
 
 ## 7. 架构评审总结与结论
 
-本次重构完成了 Canvas/Card 职责剥离，并将文本、回复、文件、会话、已读和组织架构的主路径迁移到 Bridge / IPC。自动化 196 个用例与授权实机 27 个步骤均已通过，真实 ID、文件、回复、图片目标、已读、组织读取和撤回清理得到当前客户端版本的直接证据。图片发送仍依赖 UI，部分读取与轮询仍保留 DOM 回退，私有 IPC 结论也绑定当前 KK9 版本；因此结论是“当前版本已通过代码门禁与指定会话实机验收”，而不是对未来客户端版本的无条件兼容承诺。
+本次重构完成了 Canvas/Card 职责剥离，并将文本、回复、文件、会话、已读和组织架构的主路径迁移到 Bridge / IPC。208 个离线辅助用例与授权实机 28 个步骤均已通过；真实 ID、窗口外回复、图片目标、全局重名拒绝、RPC listener 所有权、已读、组织读取和撤回清理均获得当前客户端版本的直接证据。图片发送仍依赖 UI，部分读取与轮询仍保留受 active ID 约束的 DOM 回退，私有 IPC 结论也绑定当前 KK9 版本；因此结论是“当前版本已通过代码门禁与指定会话实机验收”，而不是对未来客户端版本的无条件兼容承诺。

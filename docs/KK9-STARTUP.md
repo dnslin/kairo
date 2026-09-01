@@ -83,13 +83,16 @@ pnpm verify:bridge
 - `send <sessionId> <text>`：向指定会话发送真实消息；
 - `exit`：断开并退出。
 
-### 增强链路验证
+### 完整真实回归
 
-```bash
-pnpm tsx scripts/e2e-live-verification.ts
+PowerShell：
+
+```powershell
+$env:KK9_REAL_TEST_CONFIRM = "5761:0-3585:1-29467"
+pnpm e2e
 ```
 
-该脚本包含固定会话 ID，会发送真实富文本和文件。运行前必须打开脚本核对目标，不得在生产会话中直接执行。
+脚本会同时核对实际登录用户以及私聊/群聊的 ID、名称和类型；任一项不匹配、关键步骤失败或未提供确认变量时，会停止后续副作用并仅执行已知消息清理。它会真实发送文本、富文本、文件、图片和引用回复、切换 UI、标记已读，再按 native ID 撤回，因此不得在未授权会话运行。
 
 ## 6. 故障排查
 

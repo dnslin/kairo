@@ -144,7 +144,17 @@ pnpm verify:bridge
 - 图片仍走 UI/剪贴板路径，必须先真实切换并确认当前会话；只赋值 `editor.activedSes` 会把图片发送到原 UI 会话；
 - 本轮指定 `int2024 / 0-3585` 与 `测试123 / 1-29467` 执行 27 个真实步骤并全部通过，随后按真实 ID 完成消息撤回清理。
 
-以上结论绑定本次 KK9 客户端版本；客户端升级后必须重新运行 `pnpm e2e`。
+### 5.2 2026-09-01 修复后实机验收
+
+在同一真实客户端上进一步确认：
+
+- `getMessageBySessionIDAndMsgIdx(sessionID, msgIdx)` 返回的 `content` 是 JSON 字符串，而 `getMessages` 返回对象；构造回复前必须先规范化，否则 native 会把回复落成 `contentType: -1`、`content: {}`；
+- 使用 `msgIdx: 1` 精确读取窗口外消息 `123307983` 后，真实回复成功落为 `contentType: 13`，`replyedMsgId`、`replyedContent` 与 `replyContent` 均正确；
+- 权威会话列表存在 `1-29467` 与 `1-26519` 两个同名 `测试123` 时，Driver 名称选择真实返回 false，精确 ID 仍可操作；
+- 真实 `getChildDeptsAndMembers` 1ms timeout 后，同 reply channel 的独立观察 listener 仍保留，证明 cleanup 只移除本次 listener；
+- `pnpm e2e` 在 `int2024 / 0-3585` 与 `测试123 / 1-29467` 完成 28/28 PASS，图片通过 baseline、发送者和 `7×11` 指纹关联，6 条测试消息全部按 native ID 撤回。
+
+以上结论绑定本次 KK9 客户端版本；客户端升级后必须重新运行带显式确认变量的 `pnpm e2e`。
 
 ## 6. IPC 名称线索
 
