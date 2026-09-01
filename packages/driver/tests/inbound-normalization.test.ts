@@ -11,6 +11,10 @@ import { KK9EventBridge } from '../src/bridge/event-bridge.js';
 import type { CdpClient } from '../src/cdp/client.js';
 import { KK9Driver } from '../src/driver.js';
 import type { ConnectionStatus, KK9Message } from '../src/types/index.js';
+import {
+  getDriverTestInternals,
+  getMessageOpsTestInternals,
+} from './helpers/driver-internals.js';
 
 class MockCdpClient extends EventEmitter {
   private status: ConnectionStatus = 'connected';
@@ -460,12 +464,14 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
         currentUserId,
       });
+      const internals = getDriverTestInternals<{ cdp: MockCdpClient }>(driver);
+      const messageOpsInternals = getMessageOpsTestInternals<MockCdpClient>(
+        internals.domMessageOps
+      );
 
       // 将 driver 内部的 cdpClient 替换为 MockCdpClient 进行底层 evaluate 拦截
-      // @ts-expect-error 访问私有 cdp 成员注入单元测试桩
-      driver.cdp = mockCdp;
-      // @ts-expect-error 访问私有 messageOps 成员注入单元测试桩
-      driver.messageOps.cdp = mockCdp;
+      internals.cdp = mockCdp;
+      messageOpsInternals.cdp = mockCdp;
       // 登记已发送的 Bot 消息身份键
       driver.recordBotSentMessageId('ses_poll_all', 'poll_bot_echo_1');
 
@@ -526,20 +532,19 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         type: 'private' as const,
         unread: true,
       };
-      const parsedMessages = await driver.messageOps.getRecentMessages(
+      const parsedMessages = await internals.domMessageOps.getRecentMessages(
         10,
         pollingSession,
         new Set(['ses_poll_all:poll_bot_echo_1']),
         currentUserId
       );
-      Object.assign(driver.bridgeMessageOps, {
+      Object.assign(internals.bridgeMessageOps, {
         getRecentMessagesResult: vi
           .fn()
           .mockResolvedValue({ kind: 'ok', value: parsedMessages }),
       });
 
-      // @ts-expect-error 访问私有方法 collectAndEmitMessages 验证轮询派发
-      await driver.collectAndEmitMessages(pollingSession, 10);
+      await internals.collectAndEmitMessages(pollingSession, 10);
 
       expect(emittedMessages).toHaveLength(4);
       expect(emittedMessages[0].origin).toBe('external');
@@ -563,11 +568,13 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
         currentUserId,
       });
+      const internals = getDriverTestInternals<{ cdp: MockCdpClient }>(driver);
+      const messageOpsInternals = getMessageOpsTestInternals<MockCdpClient>(
+        internals.domMessageOps
+      );
 
-      // @ts-expect-error 访问私有 cdp 成员注入单元测试桩
-      driver.cdp = mockCdp;
-      // @ts-expect-error 访问私有 messageOps 成员注入单元测试桩
-      driver.messageOps.cdp = mockCdp;
+      internals.cdp = mockCdp;
+      messageOpsInternals.cdp = mockCdp;
 
       mockCdp.evaluateMock.mockImplementation((script: string) =>
         script.includes('extractContent')
@@ -588,19 +595,17 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       driver.on('message', message => emittedMessages.push(message));
       const sessionA = { id: 'session-a', name: '会话 A', type: 'private' as const, unread: true };
       const sessionB = { id: 'session-b', name: '会话 B', type: 'private' as const, unread: true };
-      const messagesA = await driver.messageOps.getRecentMessages(10, sessionA, undefined, currentUserId);
-      const messagesB = await driver.messageOps.getRecentMessages(10, sessionB, undefined, currentUserId);
-      Object.assign(driver.bridgeMessageOps, {
+      const messagesA = await internals.domMessageOps.getRecentMessages(10, sessionA, undefined, currentUserId);
+      const messagesB = await internals.domMessageOps.getRecentMessages(10, sessionB, undefined, currentUserId);
+      Object.assign(internals.bridgeMessageOps, {
         getRecentMessagesResult: vi
           .fn()
           .mockResolvedValueOnce({ kind: 'ok', value: messagesA })
           .mockResolvedValueOnce({ kind: 'ok', value: messagesB }),
       });
 
-      // @ts-expect-error 访问私有方法验证轮询去重边界
-      await driver.collectAndEmitMessages(sessionA, 10);
-      // @ts-expect-error 访问私有方法验证轮询去重边界
-      await driver.collectAndEmitMessages(sessionB, 10);
+      await internals.collectAndEmitMessages(sessionA, 10);
+      await internals.collectAndEmitMessages(sessionB, 10);
 
       expect(emittedMessages).toHaveLength(2);
       expect(emittedMessages.map(message => message.sessionId)).toEqual(['session-a', 'session-b']);

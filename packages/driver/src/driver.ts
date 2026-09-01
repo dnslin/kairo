@@ -54,43 +54,15 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
   private readonly selectors: SelectorsConfig;
 
   // Bridge 优先操作服务
-  public bridgeSessionOps: BridgeSessionOps;
-  public bridgeMessageOps: BridgeMessageOps;
-  public bridgeOrgOps: BridgeOrgOps;
+  private readonly bridgeSessionOps: BridgeSessionOps;
+  private readonly bridgeMessageOps: BridgeMessageOps;
+  private readonly bridgeOrgOps: BridgeOrgOps;
 
-  // 保留旧版 DOM 操作层（作为后备回退与单元测试兼容）
-  public domSessionOps: SessionOps;
-  public domMessageOps: MessageOps;
-  public domSendOps: SendOps;
-  public domOrgOps: OrgOps;
-
-  public get sessionOps(): SessionOps {
-    return this.domSessionOps;
-  }
-  public set sessionOps(v: SessionOps) {
-    this.domSessionOps = v;
-  }
-
-  public get messageOps(): MessageOps {
-    return this.domMessageOps;
-  }
-  public set messageOps(v: MessageOps) {
-    this.domMessageOps = v;
-  }
-
-  public get sendOps(): SendOps {
-    return this.domSendOps;
-  }
-  public set sendOps(v: SendOps) {
-    this.domSendOps = v;
-  }
-
-  public get orgOps(): OrgOps {
-    return this.domOrgOps;
-  }
-  public set orgOps(v: OrgOps) {
-    this.domOrgOps = v;
-  }
+  // 保留旧版 DOM 操作层（作为后备回退）
+  private readonly domSessionOps: SessionOps;
+  private readonly domMessageOps: MessageOps;
+  private readonly domSendOps: SendOps;
+  private readonly domOrgOps: OrgOps;
 
   private isPolling = false;
   private pollTimer: NodeJS.Timeout | null = null;
@@ -462,7 +434,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     return this.bridgeMessageOps.recallMessage(messageId, session?.id);
   }
 
-  public handleRecalledEvent(event: KK9RecalledEvent): void {
+  private handleRecalledEvent(event: KK9RecalledEvent): void {
     if (!event.messageId || !event.sessionId) {
       log.warn(
         { messageId: event.messageId, sessionId: event.sessionId },

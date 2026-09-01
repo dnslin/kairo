@@ -4,6 +4,7 @@ import { DEFAULT_SELECTORS } from '../src/dom/selectors.js';
 import { SendOps } from '../src/dom/send-ops.js';
 import { KK9Driver } from '../src/driver.js';
 import type { KK9RecalledEvent, KK9Session } from '../src/types/index.js';
+import { getDriverTestInternals } from './helpers/driver-internals.js';
 import {
   createRendererRuntime,
   FakeIpcRenderer,
@@ -40,11 +41,15 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       const mockSendOps = {
         recallMessage: vi.fn().mockResolvedValue(true),
       };
+      const internals = getDriverTestInternals<{
+        bridgeMessageOps: typeof mockSendOps;
+        domSendOps: typeof mockSendOps;
+      }>(driver);
       driver.getSessions = vi.fn().mockResolvedValue([
         { id: 'ses_test', name: '测试会话', type: 'private', unread: false },
       ]);
-      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).bridgeMessageOps = mockSendOps;
-      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).domSendOps = mockSendOps;
+      internals.bridgeMessageOps = mockSendOps;
+      internals.domSendOps = mockSendOps;
 
       const result = await driver.recallMessage('msg_001', 'ses_test');
       expect(result).toBe(true);
@@ -62,8 +67,12 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       const mockSendOps = {
         recallMessage: vi.fn().mockResolvedValue(true),
       };
-      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).bridgeMessageOps = mockSendOps;
-      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).domSendOps = mockSendOps;
+      const internals = getDriverTestInternals<{
+        bridgeMessageOps: typeof mockSendOps;
+        domSendOps: typeof mockSendOps;
+      }>(driver);
+      internals.bridgeMessageOps = mockSendOps;
+      internals.domSendOps = mockSendOps;
 
       const session: KK9Session = {
         id: 'session_xyz',
@@ -86,11 +95,15 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       });
       const bridgeOps = { recallMessage: vi.fn().mockResolvedValue(false) };
       const domOps = { recallMessage: vi.fn().mockResolvedValue(true) };
+      const internals = getDriverTestInternals<{
+        bridgeMessageOps: typeof bridgeOps;
+        domSendOps: typeof domOps;
+      }>(driver);
       driver.getSessions = vi.fn().mockResolvedValue([
         { id: 'session-a', name: '会话 A', type: 'private', unread: false },
       ]);
-      (driver as unknown as { bridgeMessageOps: typeof bridgeOps }).bridgeMessageOps = bridgeOps;
-      (driver as unknown as { domSendOps: typeof domOps }).domSendOps = domOps;
+      internals.bridgeMessageOps = bridgeOps;
+      internals.domSendOps = domOps;
 
       const result = await driver.recallMessage('msg_unknown', 'session-a');
 
@@ -370,11 +383,8 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       };
 
       // 模拟内部事件桥或轮询器捕获到撤回
-      (
-        driver as unknown as {
-          handleRecalledEvent: (evt: KK9RecalledEvent) => void;
-        }
-      ).handleRecalledEvent(rawCancelPayload);
+      const internals = getDriverTestInternals(driver);
+      internals.handleRecalledEvent(rawCancelPayload);
 
       expect(recalledEvents).toHaveLength(1);
       expect(recalledEvents[0]).toMatchObject({
@@ -405,11 +415,8 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
         time: '14:31:00',
       };
 
-      const handler = (
-        driver as unknown as {
-          handleRecalledEvent: (evt: KK9RecalledEvent) => void;
-        }
-      ).handleRecalledEvent.bind(driver);
+      const internals = getDriverTestInternals(driver);
+      const handler = internals.handleRecalledEvent.bind(driver);
 
       handler(rawCancelPayload);
       handler(rawCancelPayload);
