@@ -439,27 +439,6 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     const resolvedOptions = await this.resolveTargetOptions(options);
     if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
 
-    if (resolvedOptions.targetSessionId) {
-      const switched = await this.selectSession(resolvedOptions.targetSessionId);
-      if (!switched) {
-        return {
-          success: false,
-          error: `图片目标会话切换失败 [${resolvedOptions.targetSessionId}]`,
-          isPreTrigger: true,
-        };
-      }
-      await sleep(300);
-
-      const current = await this.getCurrentSession();
-      if (!current || current.id !== resolvedOptions.targetSessionId) {
-        return {
-          success: false,
-          error: `图片目标会话未激活 [${resolvedOptions.targetSessionId}]`,
-          isPreTrigger: true,
-        };
-      }
-    }
-
     const res = await this.bridgeMessageOps.sendImage(imagePath, resolvedOptions);
     if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
       const domRes = await this.domSendOps.sendImage(imagePath, resolvedOptions);

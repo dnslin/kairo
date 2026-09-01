@@ -210,79 +210,46 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       expect(res.success).toBe(true);
     });
 
-    it('图片剪贴板因窗口未聚焦失败时应重新前置并重试一次', async () => {
-      vi.useFakeTimers();
-      const tmpFile = path.resolve('tmp', 'test-bridge-img-focus-retry.png');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
-      fs.writeFileSync(
-        tmpFile,
-        Buffer.from(
-          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
-          'base64'
-        )
-      );
-      const bringToFront = vi.fn().mockResolvedValue(undefined);
-      const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
-      const evaluate = vi
-        .fn()
-        .mockResolvedValueOnce({
-          success: false,
-          error: 'NotAllowedError: Document is not focused.',
-        })
-        .mockResolvedValueOnce({ success: true })
-        .mockResolvedValueOnce({ success: true });
-      const mockCdp = {
-        bringToFront,
-        evaluate,
-        dispatchKeyEvent,
-      } as unknown as CdpClient;
-
-      try {
-        const pending = new BridgeMessageOps(mockCdp).sendImage(tmpFile);
-        await vi.runAllTimersAsync();
-        const result = await pending;
-
-        expect(result.success).toBe(true);
-        expect(bringToFront).toHaveBeenCalledTimes(2);
-        expect(dispatchKeyEvent).toHaveBeenCalledTimes(2);
-      } finally {
-        fs.unlinkSync(tmpFile);
-        vi.useRealTimers();
-      }
-    });
-
-    it('发送文件时校验不存在的路径应立即返回 pre-trigger 失败', async () => {
-      const mockCdp = { evaluate: vi.fn() } as unknown as CdpClient;
-      const ops = new BridgeMessageOps(mockCdp);
-      const res = await ops.sendFile('D:\\non_existent_file.pdf');
-
-      expect(res.success).toBe(false);
-      expect(res.isPreTrigger).toBe(true);
-      expect(res.error).toContain('文件不存在');
-    });
-
-    it('发送本地图片应进行格式检查与剪贴板模拟', async () => {
+    it('发送本地图片应进行格式检查与尺寸解析，通过底层 IPC 成功发送', async () => {
       const tmpFile = path.resolve('tmp', 'test-bridge-img.png');
       if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
-      fs.writeFileSync(tmpFile, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'));
+      fs.writeFileSync(tmpFile, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mNk+M9QzwAEjDAGBhAFAFcaAQXw22J4AAAAAElFTkSuQmCC', 'base64'));
 
+      let msgFlag = '';
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'sendingImgBeforeHandle') {
+          return { code: 0, data: { thumbPath: 'C:\\thumb.png', artworkPath: 'C:\\art.png' } };
+        }
+        if (method === 'insertSendBefoeMsg') {
+          const message = request.args[1] as Record<string, unknown>;
+          msgFlag = String(message['msgFlag'] || '');
+          return { code: 0, data: { ...message, id: 1002, msgIdx: 20 } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000088, msgIdx: 20, msgFlag }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [
+          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
+        ],
+      });
       const mockCdp = {
-        bringToFront: vi.fn().mockResolvedValue(undefined),
-        evaluate: vi.fn().mockResolvedValue({ success: true }),
-        dispatchKeyEvent: vi.fn().mockResolvedValue(undefined),
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
       } as unknown as CdpClient;
 
-      const ops = new BridgeMessageOps(mockCdp);
-      const res = await ops.sendImage(tmpFile);
-
-      expect(res.success).toBe(true);
-      expect(mockCdp.bringToFront).toHaveBeenCalledOnce();
-      expect(mockCdp.dispatchKeyEvent).toHaveBeenCalledTimes(2);
-
       try {
+        const ops = new BridgeMessageOps(mockCdp);
+        const res = await ops.sendImage(tmpFile, { targetSessionId: '0-3585' });
+
+        expect(res.success).toBe(true);
+        expect(res.messageId).toBe('135000088');
+      } finally {
         fs.unlinkSync(tmpFile);
-      } catch {
-        // 忽略清理错误
       }
     });
   });
@@ -505,8 +472,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       expect(new Set(requestIds).size).toBe(requestIds.length);
     });
 
-    it('图片目标会话不存在时不得操作剪贴板、键盘或发送按钮', async () => {
-      vi.useFakeTimers();
+    it('图片目标会话不存在时必须 Fail-Closed', async () => {
       const tmpFile = path.resolve('tmp', 'test-bridge-invalid-target.png');
       if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(
@@ -517,35 +483,25 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         )
       );
 
-      const clipboardWrite = vi.fn().mockResolvedValue(undefined);
-      const onSendClick = vi.fn();
+      const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
       const runtime = createRendererRuntime({
+        ipc,
         sessions: [
           { id: 793803, sesUUID: '1-29467', typeName: '当前群聊', type: 1, typeID: 29467 },
         ],
-        clipboardWrite,
-        onSendClick,
       });
-      const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
       const mockCdp = {
-        bringToFront: vi.fn().mockResolvedValue(undefined),
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
-        dispatchKeyEvent,
       } as unknown as CdpClient;
 
       try {
-        const pending = new BridgeMessageOps(mockCdp).sendImage(tmpFile, {
+        const result = await new BridgeMessageOps(mockCdp).sendImage(tmpFile, {
           targetSessionId: '0-3585',
         });
-        await Promise.resolve();
-        await vi.runAllTimersAsync();
-        const result = await pending;
 
         expect(result.success).toBe(false);
         expect(result.isPreTrigger).toBe(true);
-        expect(clipboardWrite).not.toHaveBeenCalled();
-        expect(dispatchKeyEvent).not.toHaveBeenCalled();
-        expect(onSendClick).not.toHaveBeenCalled();
+        expect(ipc.sent).toHaveLength(0);
       } finally {
         fs.unlinkSync(tmpFile);
       }
@@ -904,6 +860,9 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     const createSuccessfulIpc = () => {
       const persisted: Array<Record<string, unknown>> = [];
       return new FakeIpcRenderer(request => {
+        if (request.args[0] === 'sendingImgBeforeHandle') {
+          return { code: 0, data: { thumbPath: 'C:\\thumb.png', artworkPath: 'C:\\art.png' } };
+        }
         if (request.args[0] === 'insertSendBefoeMsg') {
           const message = request.args[1] as Record<string, unknown>;
           persisted.push({
@@ -987,8 +946,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       }
     });
 
-    it('图片目标未真实激活时不得仅赋值 activedSes 后继续发送', async () => {
-      vi.useFakeTimers();
+    it('图片发送必须让 sesUUID/id 命中优先于更早出现的同名会话', async () => {
       const tmpFile = path.resolve('tmp', 'test-image-id-priority.png');
       if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(
@@ -998,24 +956,18 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
           'base64'
         )
       );
-      const runtime = createRendererRuntime({ sessions: createShadowedSessions() });
-      const dispatchKeyEvent = vi.fn().mockResolvedValue(undefined);
+      const ipc = createSuccessfulIpc();
+      const runtime = createRendererRuntime({ ipc, sessions: createShadowedSessions() });
       const mockCdp = {
-        bringToFront: vi.fn().mockResolvedValue(undefined),
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
-        dispatchKeyEvent,
       } as unknown as CdpClient;
 
       try {
-        const pending = new BridgeMessageOps(mockCdp).sendImage(tmpFile, { targetSessionId });
-        await Promise.resolve();
-        await vi.runAllTimersAsync();
-        const result = await pending;
+        const result = await new BridgeMessageOps(mockCdp).sendImage(tmpFile, { targetSessionId });
+        const insertRequest = ipc.sent.find(request => request.args[0] === 'insertSendBefoeMsg');
 
-        expect(result.success).toBe(false);
-        expect(result.isPreTrigger).toBe(true);
-        expect(runtime.editor.activedSes?.id).toBe(7);
-        expect(dispatchKeyEvent).not.toHaveBeenCalled();
+        expect(result.success).toBe(true);
+        expect(insertRequest?.args[1]).toMatchObject({ sessionID: 8 });
       } finally {
         fs.unlinkSync(tmpFile);
       }

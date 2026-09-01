@@ -14,7 +14,7 @@ import {
   RENDERER_SESSION_RESOLVER_SCRIPT,
 } from './renderer-script.js';
 import { recallNativeMessage } from './recall-ops.js';
-import { sendUiImage } from './ui-image-ops.js';
+import { sendNativeImage } from './image-ops.js';
 import { parseFormattedTextToKK } from '../dom/rich-text.js';
 import type {
   FormattedText,
@@ -829,10 +829,10 @@ export class BridgeMessageOps {
   }
 
   /**
-   * 发送本地图片
+   * 通过纯底层 IPC 发送本地图片
    */
   public sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
-    return sendUiImage(this.cdp, imagePath, options);
+    return sendNativeImage(this.cdp, imagePath, options);
   }
 
   /**
