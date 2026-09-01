@@ -40,21 +40,21 @@ export const RENDERER_SESSION_RESOLVER_SCRIPT = `
 `;
 
 export const RENDERER_IPC_HELPERS_SCRIPT = `
-  function nextKkbotRequestId() {
-    const key = '__kkbot_rpc_id';
+  function nextKairoRequestId() {
+    const key = '__kairo_rpc_id';
     const currentId = typeof window[key] === 'number' ? window[key] : 800000;
     window[key] = currentId + 1;
     return currentId + 1;
   }
 
-  function callKkbotIpcWithTimeout(timeoutMs, channel, ...args) {
+  function callKairoIpcWithTimeout(timeoutMs, channel, ...args) {
     return new Promise(resolve => {
       if (!ipc || typeof ipc.send !== 'function' || typeof ipc.once !== 'function') {
         resolve({ code: -1, error: '当前环境未找到有效的 ipcRenderer 对象' });
         return;
       }
 
-      const requestId = nextKkbotRequestId();
+      const requestId = nextKairoRequestId();
       const replyChannel = 'data-' + requestId;
       let settled = false;
       let timer;
@@ -92,7 +92,7 @@ export const RENDERER_IPC_HELPERS_SCRIPT = `
     });
   }
 
-  function callKkbotIpc(channel, ...args) {
-    return callKkbotIpcWithTimeout(4000, channel, ...args);
+  function callKairoIpc(channel, ...args) {
+    return callKairoIpcWithTimeout(4000, channel, ...args);
   }
 `;

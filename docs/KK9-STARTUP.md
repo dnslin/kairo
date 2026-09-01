@@ -25,7 +25,7 @@
 --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 ```
 
-不要修改日常使用的快捷方式；调试端口只应在需要运行 KKBot 或真机验证时开启。
+不要修改日常使用的快捷方式；调试端口只应在需要运行 Kairo 或真机验证时开启。
 
 ## 3. 验证 CDP 端点
 

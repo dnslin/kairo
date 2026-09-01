@@ -1,6 +1,6 @@
-# KKBot Driver 开发与验证
+# Kairo Driver 开发与验证
 
-本仓库只维护 `@kkbot/driver`：一个面向 KK9 Windows 客户端的事件驱动 CDP Driver。
+本仓库只维护 `@kairo/driver`：一个面向 KK9 Windows 客户端的事件驱动 CDP Driver。
 
 ## 环境
 

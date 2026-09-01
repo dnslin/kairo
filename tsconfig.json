@@ -2,7 +2,7 @@
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
     "paths": {
-      "@kkbot/driver": ["./packages/driver/src/index.ts"]
+      "@kairo/driver": ["./packages/driver/src/index.ts"]
     }
   },
   "include": ["packages/driver/src/**/*", "packages/driver/examples/**/*"]

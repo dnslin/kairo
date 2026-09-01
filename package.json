@@ -1,5 +1,5 @@
 {
-  "name": "kkbot-driver-workspace",
+  "name": "kairo-driver-workspace",
   "version": "2.0.0",
   "private": true,
   "description": "KK9 desktop client CDP driver workspace",
@@ -8,15 +8,15 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "build": "pnpm --filter @kkbot/driver build",
-    "typecheck": "pnpm --filter @kkbot/driver typecheck",
-    "test": "pnpm --filter @kkbot/driver test",
-    "test:watch": "pnpm --filter @kkbot/driver test:watch",
+    "build": "pnpm --filter @kairo/driver build",
+    "typecheck": "pnpm --filter @kairo/driver typecheck",
+    "test": "pnpm --filter @kairo/driver test",
+    "test:watch": "pnpm --filter @kairo/driver test:watch",
     "lint": "eslint \"packages/driver/src/**/*.ts\" \"packages/driver/tests/**/*.ts\" \"packages/driver/examples/**/*.ts\"",
     "format": "prettier --write \"packages/driver/src/**/*.ts\" \"packages/driver/tests/**/*.ts\" \"packages/driver/examples/**/*.ts\"",
-    "verify": "pnpm --filter @kkbot/driver verify",
-    "diagnose": "pnpm --filter @kkbot/driver diagnose",
-    "e2e": "pnpm --filter @kkbot/driver e2e"
+    "verify": "pnpm --filter @kairo/driver verify",
+    "diagnose": "pnpm --filter @kairo/driver diagnose",
+    "e2e": "pnpm --filter @kairo/driver e2e"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",

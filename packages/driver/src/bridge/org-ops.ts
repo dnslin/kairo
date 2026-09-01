@@ -46,7 +46,7 @@ export class BridgeOrgOps {
           const ipc = window.ipcRenderer || electron?.ipcRenderer;
           ${RENDERER_IPC_HELPERS_SCRIPT}
           const callIpc = (channel, ...args) =>
-            callKkbotIpcWithTimeout(2000, channel, ...args);
+            callKairoIpcWithTimeout(2000, channel, ...args);
 
           const discovered = new Set([0]);
           const main = document.querySelector('.main-page')?.__vue__;

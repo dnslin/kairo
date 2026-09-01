@@ -1,10 +1,10 @@
-# KKBot Driver Agent Guide
+# Kairo Driver Agent Guide
 
 所有交流、日志和代码注释使用中文。
 
 ## 范围
 
-本仓库只保留 `@kkbot/driver`。修改前读取：
+本仓库只保留 `@kairo/driver`。修改前读取：
 
 - 开发与验证：`docs/DEVELOPMENT.md`
 - 真实 KK9 启动：`docs/KK9-STARTUP.md`
