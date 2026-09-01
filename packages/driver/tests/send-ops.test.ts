@@ -5,8 +5,69 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CdpClient } from '../src/cdp/client.js';
 import { DEFAULT_SELECTORS } from '../src/dom/selectors.js';
 import { SendOps } from '../src/dom/send-ops.js';
+import { runRendererScript } from './helpers/renderer-runtime.js';
 
 describe('SendOps 消息发送、富文本、引用与文件发送测试', () => {
+  describe('checkPreSendState 会话身份校验', () => {
+    const runCheck = async (
+      target: string,
+      activeId: string,
+      activeTitle: string,
+      scrollerItems: Array<Record<string, unknown>>
+    ) => {
+      const activeItem = {
+        querySelector: () => ({ textContent: activeTitle }),
+        getAttribute: (name: string) =>
+          name === 'data-sesuuid' || name === 'data-session-id' || name === 'id'
+            ? activeId
+            : null,
+      };
+      const document = {
+        querySelector(selector: string): unknown {
+          if (selector.includes('.chat-item.chat-selected')) return activeItem;
+          if (selector.includes('.vue-recycle-scroller')) {
+            return { __vue__: { items: scrollerItems } };
+          }
+          if (selector.includes('.chat-header') || selector.includes('.head-title')) {
+            return { textContent: activeTitle };
+          }
+          return null;
+        },
+      };
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, { document })),
+      } as unknown as CdpClient;
+
+      return new SendOps(mockCdp, DEFAULT_SELECTORS).checkPreSendState(target);
+    };
+
+    it('重名会话无法唯一解析时必须 Fail-Closed', async () => {
+      const result = await runCheck('重复会话', '7', '重复会话', [
+        { id: 7, sesUUID: 'first', typeName: '重复会话', name: '重复会话' },
+        { id: 8, sesUUID: 'second', typeName: '重复会话', name: '重复会话' },
+      ]);
+
+      expect(result.canSend).toBe(false);
+    });
+
+    it('真实 ID 被更早会话名称遮蔽时不得放行错误 active 会话', async () => {
+      const result = await runCheck('1-29467', '7', '1-29467', [
+        { id: 7, sesUUID: 'shadow', typeName: '1-29467', name: '1-29467' },
+        { id: 8, sesUUID: '1-29467', typeName: '真实目标', name: '真实目标' },
+      ]);
+
+      expect(result.canSend).toBe(false);
+    });
+
+    it('唯一 ID 命中且 active ID 一致时允许发送', async () => {
+      const result = await runCheck('1-29467', '1-29467', '真实目标', [
+        { id: 8, sesUUID: '1-29467', typeName: '真实目标', name: '真实目标' },
+      ]);
+
+      expect(result.canSend).toBe(true);
+    });
+  });
+
   describe('sendText', () => {
     it('sendText 空内容应直接拦截返回错误', async () => {
       const mockCdp = { evaluate: vi.fn() } as unknown as CdpClient;

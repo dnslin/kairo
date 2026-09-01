@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  decodeCliEscapedLineBreaks,
   escapeHtml,
   formatSegmentsToHtml,
   formattedTextToHtml,
@@ -34,6 +35,14 @@ describe('RichText 富文本转换与样式编译测试', () => {
     });
   });
 
+  describe('CLI 转义边界', () => {
+    it('仅在 CLI 边界将叠加反斜杠换行序列解码一次', () => {
+      const input = String.raw`第一行\\n第二行\\r\\n第三行`;
+
+      expect(decodeCliEscapedLineBreaks(input)).toBe('第一行\n第二行\r\n第三行');
+    });
+  });
+
   describe('parseFormattedTextToKK', () => {
     it('应正确解析带 Markdown 标签的字符串为 KK9 结构化消息', () => {
       const input = '**[加粗标题]** [color=#1890ff]蓝色正文[/color] [size=14]14号字[/size]';
@@ -44,6 +53,14 @@ describe('RichText 富文本转换与样式编译测试', () => {
       expect(parsed.font.size).toBe(14);
       expect(parsed.font.color).toBe(16748568);
       expect(parsed.font.fontfamily).toBe('微软雅黑');
+    });
+
+    it('应保留字符串中的字面反斜杠与 Windows 路径', () => {
+      const input = String.raw`路径 C:\new\notes 与字面序列 \n 不应被改写`;
+
+      const parsed = parseFormattedTextToKK(input);
+
+      expect(parsed.plainText).toBe(input);
     });
 
     it('应正确解析 TextSegment 片段数组', () => {

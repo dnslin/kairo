@@ -1,126 +1,487 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { callIpcToData } from '../src/bridge/rpc.js';
+import type { CdpClient } from '../src/cdp/client.js';
 import { KK9Driver } from '../src/index.js';
+import type { KK9Message, SendResult } from '../src/types/index.js';
 
-async function runRealDeviceE2ETest() {
-  console.log('====================================================');
-  console.log('🚀 开始执行 KKBot Driver 真机全链路端到端集成验证');
-  console.log('====================================================\n');
+const PRIVATE_NAME = process.env['KK9_TEST_PRIVATE_NAME'] || 'int2024';
+const PRIVATE_ID = process.env['KK9_TEST_PRIVATE_ID'] || '0-3585';
+const GROUP_NAME = process.env['KK9_TEST_GROUP_NAME'] || '测试123';
+const GROUP_ID = process.env['KK9_TEST_GROUP_ID'] || '1-29467';
+const EXPECTED_USER_ID = process.env['KK9_TEST_USER_ID'] || '5761';
+const EXPECTED_CONFIRMATION = `${EXPECTED_USER_ID}:${PRIVATE_ID}:${GROUP_ID}`;
+const runId = new Date().toISOString().replace(/[:.]/g, '-');
+const prefix = `[KKBot真实回归测试 ${runId}]`;
+const tempFile = path.join(os.tmpdir(), `kkbot-real-${runId}.txt`);
+const tempImage = path.join(os.tmpdir(), `kkbot-real-${runId}.png`);
 
-  const driver = new KK9Driver({
-    cdp: {
-      url: process.env['CDP_URL'] || 'http://127.0.0.1:9222',
-      pageMatch: process.env['PAGE_MATCH'] || 'renderer.html',
-    },
-    polling: {
-      intervalMs: 1500,
-    },
-  });
+interface StepResult {
+  name: string;
+  ok: boolean;
+  detail?: unknown;
+  error?: string;
+}
 
-  let heartbeatCount = 0;
-  driver.on('heartbeat', () => {
-    heartbeatCount++;
-  });
+interface RecallTarget {
+  label: string;
+  messageId: string;
+  sessionId: string;
+}
 
-  const capturedMessages: Array<{ origin: string; messageId: string }> = [];
-  driver.on('message', msg => {
-    const origin = msg.origin ?? 'unknown';
-    const messageId = msg.messageId || msg.id;
-    console.log(
-      `  [实时事件] 捕获到新消息: [${msg.sender}] ${msg.content} (origin: ${origin}, native message ID: ${messageId.slice(0, 12)}...)`
-    );
-    capturedMessages.push({ origin, messageId });
-  });
+interface RawMessage extends Record<string, unknown> {
+  id?: string | number;
+  msgID?: string | number;
+  msgIdx?: string | number;
+  sender?: string | number;
+  sendTime?: string | number;
+  content?: unknown;
+}
 
+interface NativeSession {
+  id: string | number;
+}
+
+const steps: StepResult[] = [];
+const recallTargets: RecallTarget[] = [];
+const recalledKeys = new Set<string>();
+let connected = false;
+let fatalError: Error | undefined;
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function requiredStep<T>(name: string, run: () => Promise<T> | T): Promise<T> {
   try {
-    // 1. 建立连接
-    console.log('Step 1: 正在连接真实 KK9 客户端...');
-    await driver.connect();
-    console.log(`  ✅ 连接成功！状态: ${driver.getStatus()}\n`);
-
-    // 2. 会话穿透与读取
-    console.log('Step 2: 穿透 Vue 虚拟滚动读取全量会话...');
-    const sessions = await driver.getSessions();
-    console.log(`  ✅ 成功读取到 ${sessions.length} 个会话`);
-    const unreadSessions = sessions.filter(s => s.unread);
-    console.log(`  📊 未读会话数: ${unreadSessions.length} 个`);
-    const groupSessions = sessions.filter(s => s.type === 'group');
-    console.log(`  👥 群聊会话数: ${groupSessions.length} 个\n`);
-
-    // 3. 目标会话切换定位
-    const targetSessionId = '0-3585'; // 专用测试用户: int2024
-    console.log(`Step 3: 测试会话切换与定位 (目标: int2024 / ${targetSessionId})...`);
-    const switched = await driver.selectSession(targetSessionId);
-    if (!switched) {
-      throw new Error(`切换到会话 ${targetSessionId} 失败`);
-    }
-    await new Promise(r => setTimeout(r, 600));
-    const current = await driver.getCurrentSession();
-    console.log(`  ✅ 切换成功！当前激活会话: ${current?.name} (${current?.id})\n`);
-
-    // 4. 读取历史消息
-    console.log('Step 4: 读取当前会话最近消息...');
-    const messages = await driver.getRecentMessages(6);
-    console.log(`  ✅ 检索到 ${messages.length} 条消息:`);
-    messages.forEach((m, idx) => {
-      console.log(
-        `    [${idx + 1}] ${m.time} | ${m.isMe ? '我' : m.sender}: ${m.content.slice(0, 30)}`
-      );
-    });
-    console.log();
-
-    // 5. 文本发送与回读测试
-    const testText = `[真机集成测试] Driver v2 自动化验证 ${Date.now()}`;
-    console.log(`Step 5: 测试发送文本: "${testText}" ...`);
-    const textSendRes = await driver.sendText(testText, { targetSessionId });
-    if (!textSendRes.success) {
-      throw new Error(`文本发送失败: ${textSendRes.error}`);
-    }
-    console.log(`  ✅ 文本发送成功！回读确认耗时: ${textSendRes.verifyLatencyMs || 0}ms\n`);
-
-    // 6. 生成测试图片并测试图片发送
-    const tmpDir = path.resolve('tmp');
-    if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-    const testImgPath = path.resolve(tmpDir, 'test-pixel.png');
-    // 写入一个合法的单像素 PNG 图片文件
-    const pngBase64 =
-      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-    fs.writeFileSync(testImgPath, Buffer.from(pngBase64, 'base64'));
-
-    console.log(`Step 6: 测试本地图片剪贴板注入与发送: ${testImgPath} ...`);
-    const imgSendRes = await driver.sendImage(testImgPath, { targetSessionId });
-    if (!imgSendRes.success) {
-      throw new Error(`图片发送失败: ${imgSendRes.error}`);
-    }
-    console.log(`  ✅ 图片发送成功！回读确认耗时: ${imgSendRes.verifyLatencyMs || 0}ms\n`);
-
-    // 7. 实时消息轮询与来源分类观测；Driver 会 emit bot_echo，Gateway 负责过滤
-    console.log('Step 7: 启动智能轮询来源分类观测 (运行 4 秒)...');
-    driver.startPolling({ intervalMs: 1000 });
-    await new Promise(r => setTimeout(r, 4000));
-    driver.stopPolling();
-    const externalCount = capturedMessages.filter(message => message.origin === 'external').length;
-    const botEchoCount = capturedMessages.filter(message => message.origin === 'bot_echo').length;
-    const unknownCount = capturedMessages.filter(message => message.origin === 'unknown').length;
-    const otherCount = capturedMessages.length - externalCount - botEchoCount - unknownCount;
-    console.log(`  external: ${externalCount} 条`);
-    console.log(`  bot_echo: ${botEchoCount} 条（Driver 会 emit，Gateway 才负责过滤）`);
-    console.log(`  unknown: ${unknownCount} 条`);
-    if (otherCount > 0) {
-      console.log(`  其他来源: ${otherCount} 条`);
-    }
-    console.log('  来源分类观测完成；本步骤不验证 Gateway 过滤行为。\n');
-
-    console.log('====================================================');
-    console.log('Driver 真机端到端发送与来源分类观测完成');
-    console.log('Gateway Bot 回显过滤不在本脚本验证范围内');
-    console.log('====================================================');
-  } finally {
-    await driver.disconnect();
+    const value = await run();
+    steps.push({ name, ok: true });
+    console.log(`PASS ${name}`);
+    return value;
+  } catch (error) {
+    const message = errorText(error);
+    steps.push({ name, ok: false, error: message });
+    console.error(`FAIL ${name}: ${message}`);
+    throw error instanceof Error ? error : new Error(message);
   }
 }
 
-void runRealDeviceE2ETest().catch(err => {
-  console.error('\n❌ 真机测试失败:', err);
-  process.exit(1);
+async function cleanupStep(name: string, run: () => Promise<void>): Promise<void> {
+  try {
+    await run();
+    steps.push({ name, ok: true });
+    console.log(`PASS ${name}`);
+  } catch (error) {
+    const message = errorText(error);
+    steps.push({ name, ok: false, error: message });
+    console.error(`FAIL ${name}: ${message}`);
+  }
+}
+
+function rawId(message: RawMessage): string {
+  return String(message.id ?? message.msgID ?? '');
+}
+
+function isPositiveNativeId(value: string | undefined): value is string {
+  if (!value) return false;
+  const numeric = Number(value);
+  return Number.isSafeInteger(numeric) && numeric > 0;
+}
+
+function rememberRecall(label: string, messageId: string | undefined, sessionId: string): void {
+  if (!isPositiveNativeId(messageId)) return;
+  const key = `${sessionId}:${messageId}`;
+  if (recallTargets.some(target => `${target.sessionId}:${target.messageId}` === key)) return;
+  recallTargets.push({ label, messageId, sessionId });
+}
+
+function containsTestImage(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(containsTestImage);
+  const object = value as Record<string, unknown>;
+  if (Number(object['width']) === 7 && Number(object['height']) === 11) {
+    return true;
+  }
+  return Object.values(object).some(containsTestImage);
+}
+
+function findMessage(messages: KK9Message[], messageId?: string): KK9Message | undefined {
+  if (!messageId) return undefined;
+  return messages.find(message => message.id === messageId || message.messageId === messageId);
+}
+
+const driver = new KK9Driver({
+  currentUserId: Number(EXPECTED_USER_ID),
+  cdp: {
+    url: process.env['CDP_URL'] || 'http://127.0.0.1:9222',
+    pageMatch: process.env['PAGE_MATCH'] || 'renderer.html',
+  },
 });
+const cdp = (driver as unknown as { cdp: CdpClient }).cdp;
+
+async function exactNativeSession(sessionId: string): Promise<NativeSession> {
+  const session = await cdp.evaluate<NativeSession | null>(`
+    (() => {
+      const target = ${JSON.stringify(sessionId)};
+      const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
+      const sessions = Array.isArray(editor?.sortedSessions) ? editor.sortedSessions : [];
+      const found = sessions.find(item => item.sesUUID === target || String(item.id) === target);
+      return found ? { id: found.id } : null;
+    })()
+  `);
+  if (!session) throw new Error(`未找到精确 native 会话 ${sessionId}`);
+  return session;
+}
+
+async function readRawMessages(sessionId: string, count = 100): Promise<RawMessage[]> {
+  const session = await exactNativeSession(sessionId);
+  const response = await callIpcToData<RawMessage[]>(
+    cdp,
+    'getMessages',
+    [{ sessionID: session.id, count, endIdx: 2147483647, sendTime: 0 }],
+    5000
+  );
+  if (response.code !== 0 || !Array.isArray(response.data)) {
+    throw new Error(`getMessages(${sessionId}) 失败: ${JSON.stringify(response)}`);
+  }
+  return response.data;
+}
+
+async function findRawByContent(
+  sessionId: string,
+  contentMarker: string,
+  timeoutMs = 8000
+): Promise<RawMessage | undefined> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const messages = await readRawMessages(sessionId, 120);
+    const found = messages.find(message => JSON.stringify(message.content).includes(contentMarker));
+    if (found) return found;
+    await sleep(400);
+  }
+  return undefined;
+}
+
+async function trackSendResult(
+  label: string,
+  result: SendResult,
+  sessionId: string,
+  contentMarker: string
+): Promise<SendResult> {
+  console.log(`${label}: ${JSON.stringify(result)}`);
+  if (isPositiveNativeId(result.messageId)) {
+    rememberRecall(label, result.messageId, sessionId);
+  } else if (!result.isPreTrigger) {
+    const persisted = await findRawByContent(sessionId, contentMarker);
+    rememberRecall(`${label}（未知结果恢复）`, persisted ? rawId(persisted) : undefined, sessionId);
+  }
+  if (!result.success || !isPositiveNativeId(result.messageId)) {
+    throw new Error(result.error || `${label} 未返回真实正 native ID`);
+  }
+  return result;
+}
+
+async function pollImageCandidates(
+  privateBeforeIds: Set<string>,
+  groupBeforeIds: Set<string>
+): Promise<{ privateImages: RawMessage[]; groupImages: RawMessage[] }> {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const [privateMessages, groupMessages] = await Promise.all([
+      readRawMessages(PRIVATE_ID, 120),
+      readRawMessages(GROUP_ID, 120),
+    ]);
+    const isCurrentImage = (message: RawMessage, beforeIds: Set<string>): boolean =>
+      isPositiveNativeId(rawId(message)) &&
+      !beforeIds.has(rawId(message)) &&
+      String(message.sender ?? '') === EXPECTED_USER_ID &&
+      containsTestImage(message);
+    const privateImages = privateMessages.filter(message =>
+      isCurrentImage(message, privateBeforeIds)
+    );
+    const groupImages = groupMessages.filter(message => isCurrentImage(message, groupBeforeIds));
+    if (privateImages.length > 0 || groupImages.length > 0) {
+      return { privateImages, groupImages };
+    }
+    await sleep(500);
+  }
+  return { privateImages: [], groupImages: [] };
+}
+
+try {
+  await requiredStep('确认真实测试授权', () => {
+    const confirmation = process.env['KK9_REAL_TEST_CONFIRM'];
+    if (confirmation !== EXPECTED_CONFIRMATION) {
+      throw new Error(
+        `必须设置 KK9_REAL_TEST_CONFIRM=${EXPECTED_CONFIRMATION}，当前=${confirmation || '<未设置>'}`
+      );
+    }
+  });
+
+  fs.writeFileSync(tempFile, `${prefix}\n文件发送真实测试\n`, 'utf8');
+  fs.writeFileSync(
+    tempImage,
+    Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAcAAAALCAYAAACzkJeoAAAAAXNSR0IArs4c6QAAABdJREFUKFNjvK1V+58BB2AclWRgwBsIAHlLG5fbQNpJAAAAAElFTkSuQmCC',
+      'base64'
+    )
+  );
+
+  await requiredStep('连接真实 KK9 renderer', async () => {
+    await driver.connect();
+    connected = true;
+  });
+
+  const sessions = await requiredStep('读取并锁定真实测试目标', async () => {
+    const actualUserId = await cdp.evaluate<string>(`
+      (() => {
+        const main = document.querySelector('.main-page')?.__vue__;
+        const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
+        return String(main?.userID || editor?.userID || '');
+      })()
+    `);
+    if (actualUserId !== EXPECTED_USER_ID) {
+      throw new Error(`登录用户不匹配: expected=${EXPECTED_USER_ID}, actual=${actualUserId}`);
+    }
+
+    const allSessions = await driver.getSessions();
+    const privateMatches = allSessions.filter(
+      session =>
+        session.id === PRIVATE_ID &&
+        session.name === PRIVATE_NAME &&
+        session.type === 'private'
+    );
+    const groupMatches = allSessions.filter(
+      session =>
+        session.id === GROUP_ID && session.name === GROUP_NAME && session.type === 'group'
+    );
+    if (privateMatches.length !== 1 || groupMatches.length !== 1) {
+      throw new Error(
+        `目标必须精确唯一: ${JSON.stringify({ privateMatches, groupMatches })}`
+      );
+    }
+    console.log(
+      `TARGETS ${JSON.stringify({
+        actualUserId,
+        private: privateMatches[0],
+        group: groupMatches[0],
+        sameNameGroups: allSessions
+          .filter(session => session.name === GROUP_NAME)
+          .map(session => ({ id: session.id, type: session.type })),
+      })}`
+    );
+    return { privateSession: privateMatches[0]!, groupSession: groupMatches[0]! };
+  });
+  const { privateSession, groupSession } = sessions;
+
+  const privateText = `${prefix} 私聊文本`;
+  const privateTextResult = await requiredStep('真实发送私聊文本', async () =>
+    trackSendResult(
+      'privateText',
+      await driver.sendText(privateText, { targetSessionId: PRIVATE_ID }),
+      PRIVATE_ID,
+      privateText
+    )
+  );
+
+  const richText = `**${prefix} 富文本**\n字面路径 C:\\new\\notes`;
+  const privateRichResult = await requiredStep('真实发送私聊富文本与字面反斜杠', async () =>
+    trackSendResult(
+      'privateRich',
+      await driver.sendRichText(richText, { targetSessionId: PRIVATE_ID }),
+      PRIVATE_ID,
+      `${prefix} 富文本`
+    )
+  );
+
+  const privateFileResult = await requiredStep('真实发送私聊文件', async () =>
+    trackSendResult(
+      'privateFile',
+      await driver.sendFile(tempFile, { targetSessionId: PRIVATE_ID }),
+      PRIVATE_ID,
+      path.basename(tempFile)
+    )
+  );
+
+  const imageBaselines = await requiredStep('读取图片发送前双会话基线', async () => {
+    const [privateBefore, groupBefore] = await Promise.all([
+      readRawMessages(PRIVATE_ID, 120),
+      readRawMessages(GROUP_ID, 120),
+    ]);
+    return {
+      privateBeforeIds: new Set(privateBefore.map(rawId)),
+      groupBeforeIds: new Set(groupBefore.map(rawId)),
+    };
+  });
+
+  await requiredStep('真实发送并精确关联私聊图片', async () => {
+    if (!(await driver.selectSession(GROUP_ID))) {
+      throw new Error('无法在图片测试前切换至授权群聊');
+    }
+    await sleep(500);
+    const result = await driver.sendImage(tempImage, { targetSessionId: PRIVATE_ID });
+    const candidates = await pollImageCandidates(
+      imageBaselines.privateBeforeIds,
+      imageBaselines.groupBeforeIds
+    );
+    for (const message of candidates.privateImages) {
+      rememberRecall('私聊图片', rawId(message), PRIVATE_ID);
+    }
+    for (const message of candidates.groupImages) {
+      rememberRecall('误投群聊图片', rawId(message), GROUP_ID);
+    }
+    if (
+      !result.success ||
+      candidates.privateImages.length !== 1 ||
+      candidates.groupImages.length !== 0
+    ) {
+      throw new Error(
+        `图片目标或落库异常: ${JSON.stringify({ result, candidates })}`
+      );
+    }
+  });
+
+  const groupText = `${prefix} 群聊普通消息（无群体提醒）`;
+  const groupTextResult = await requiredStep('真实发送群聊普通消息', async () =>
+    trackSendResult(
+      'groupText',
+      await driver.sendText(groupText, { targetSessionId: GROUP_ID }),
+      GROUP_ID,
+      groupText
+    )
+  );
+  const groupTextRaw = await requiredStep('读取群聊原消息 native 元数据', async () => {
+    const messages = await readRawMessages(GROUP_ID, 120);
+    const found = messages.find(message => rawId(message) === groupTextResult.messageId);
+    if (!found) throw new Error('未读取到群聊原消息 raw 数据');
+    return found;
+  });
+
+  const replyText = `${prefix} 引用回复`;
+  const groupReplyResult = await requiredStep('真实发送群聊引用回复', async () =>
+    trackSendResult(
+      'groupReply',
+      await driver.sendReply(
+        {
+          messageId: groupTextResult.messageId,
+          msgIdx: Number(groupTextRaw.msgIdx || 0),
+          sender: 'KKBot真实回归测试',
+          content: groupText,
+        },
+        replyText,
+        { targetSessionId: GROUP_ID }
+      ),
+      GROUP_ID,
+      replyText
+    )
+  );
+
+  await sleep(1000);
+  const privateMessages = await requiredStep('真实回读私聊历史', () =>
+    driver.getRecentMessages(100, privateSession)
+  );
+  await requiredStep('确认私聊文本落库', () => {
+    if (!findMessage(privateMessages, privateTextResult.messageId)) {
+      throw new Error('未按 native messageId 回读到私聊文本');
+    }
+  });
+  await requiredStep('确认私聊富文本及字面路径无损', () => {
+    const message = findMessage(privateMessages, privateRichResult.messageId);
+    if (!message) throw new Error('未按 native messageId 回读到私聊富文本');
+    if (!message.content.includes(String.raw`C:\new\notes`)) {
+      throw new Error(`字面路径被改写: ${JSON.stringify(message.content)}`);
+    }
+  });
+  await requiredStep('确认私聊文件落库', () => {
+    const message = findMessage(privateMessages, privateFileResult.messageId);
+    if (!message) throw new Error('未按 native messageId 回读到私聊文件');
+    if (!message.fileInfo && !message.content.includes(path.basename(tempFile))) {
+      throw new Error('回读消息缺少文件信息');
+    }
+  });
+
+  const groupMessages = await requiredStep('真实回读群聊历史', () =>
+    driver.getRecentMessages(100, groupSession)
+  );
+  await requiredStep('确认群聊文本落库且无群体提醒', () => {
+    const message = findMessage(groupMessages, groupTextResult.messageId);
+    if (!message || !message.content.includes(groupText)) {
+      throw new Error('群聊文本正文不匹配');
+    }
+    if (message.atAll || message.mentions?.isAtAll) {
+      throw new Error('群聊普通消息被错误标记为 @全体');
+    }
+  });
+  await requiredStep('确认群聊回复原生引用关系与正文', async () => {
+    const rawMessages = await readRawMessages(GROUP_ID, 120);
+    const reply = rawMessages.find(message => rawId(message) === groupReplyResult.messageId);
+    const content = reply?.content as Record<string, unknown> | undefined;
+    if (
+      Number(reply?.['contentType']) !== 13 ||
+      String(content?.['replyedMsgId']) !== groupTextResult.messageId ||
+      !JSON.stringify(content?.['replyContent']).includes(replyText)
+    ) {
+      throw new Error(`引用回复 raw 结构不匹配: ${JSON.stringify(reply)}`);
+    }
+  });
+
+  await requiredStep('真实标记私聊已读', async () => {
+    if (!(await driver.markSessionRead(PRIVATE_ID))) {
+      throw new Error('私聊 readMessage 未获成功 ack');
+    }
+  });
+  await requiredStep('真实标记群聊已读', async () => {
+    if (!(await driver.markSessionRead(GROUP_ID))) {
+      throw new Error('群聊 readMessage 未获成功 ack');
+    }
+  });
+  await requiredStep('真实读取组织架构', async () => {
+    const employees = await driver.getOrgEmployees(15000);
+    if (employees.length === 0) throw new Error('组织架构返回 0 人');
+    console.log(`ORG_EMPLOYEES ${employees.length}`);
+  });
+} catch (error) {
+  fatalError = error instanceof Error ? error : new Error(String(error));
+} finally {
+  if (connected) {
+    for (const target of [...recallTargets].reverse()) {
+      await cleanupStep(`真实撤回清理：${target.label}`, async () => {
+        let recalled = await driver.recallMessage(target.messageId, target.sessionId);
+        if (!recalled) {
+          await sleep(500);
+          recalled = await driver.recallMessage(target.messageId, target.sessionId);
+        }
+        if (!recalled) throw new Error(`撤回失败 messageId=${target.messageId}`);
+        recalledKeys.add(`${target.sessionId}:${target.messageId}`);
+      });
+    }
+    await cleanupStep('断开真实 KK9', () => driver.disconnect());
+  }
+  for (const file of [tempFile, tempImage]) {
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      // 临时文件可能尚未创建或已被系统清理。
+    }
+  }
+}
+
+const failures = steps.filter(result => !result.ok);
+const cleanupMissing = recallTargets.filter(
+  target => !recalledKeys.has(`${target.sessionId}:${target.messageId}`)
+);
+console.log(
+  `REAL_TEST_SUMMARY ${JSON.stringify({
+    runId,
+    total: steps.length,
+    passed: steps.length - failures.length,
+    failed: failures.length,
+    fatalError: fatalError?.message,
+    cleanupTargets: recallTargets.length,
+    cleanupMissing,
+    failures,
+  })}`
+);
+if (fatalError || failures.length > 0 || cleanupMissing.length > 0) process.exitCode = 1;

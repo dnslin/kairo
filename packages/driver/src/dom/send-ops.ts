@@ -1,22 +1,17 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import mime from 'mime-types';
-import { renderCardToBase64 } from '../canvas/renderer.js';
 import type { CdpClient } from '../cdp/client.js';
 import type {
-  CardData,
   FormattedText,
   KK9ReplyTarget,
   PreSendCheckResult,
   SelectorsConfig,
-  SendCardOptions,
   SendFileOptions,
   SendOptions,
   SendResult,
 } from '../types/index.js';
-import { SendError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 import { VUE_SCROLLER_HELPERS_SCRIPT } from './helpers.js';
 import { parseFormattedTextToKK } from './rich-text.js';
@@ -83,25 +78,22 @@ export class SendOps {
           activeItem?.getAttribute('id') ||
           '';
 
-        // 2. 检查右侧聊天面板标题栏
-        const headerTitle = document.querySelector('.chat-header, .chat-title, .head-title')?.textContent?.trim() || '';
-
-        // 3. 尝试从 Vue 实例获取目标信息
+        // 2. 从 Vue 会话列表唯一解析目标身份
         const scrollerItems = getVueScrollerItems('${this.selectors.virtualScroller || '.vue-recycle-scroller'}');
         const { item: matchedItem } = findVueSessionItem(scrollerItems, expected);
-        const expectedName = matchedItem?.typeName || matchedItem?.name || expected;
-        const expectedUuid = matchedItem?.sesUUID || expected;
+        if (!matchedItem) {
+          return {
+            canSend: false,
+            reason: 'target_ambiguous_or_missing',
+            details: '目标会话 [' + expected + '] 无法唯一解析',
+          };
+        }
 
-        // 4. 多重综合比对
-        const isMatch =
-          activeId === expected ||
-          activeId === expectedUuid ||
-          activeTitle === expected ||
-          activeTitle === expectedName ||
-          (activeTitle && expectedName && activeTitle.includes(expectedName)) ||
-          (activeTitle && expected && activeTitle.includes(expected)) ||
-          headerTitle.includes(expected) ||
-          headerTitle.includes(expectedName);
+        // 3. 当前 DOM 必须暴露与目标一致的原生身份，标题不能替代身份
+        const expectedIds = [matchedItem.sesUUID, matchedItem.id]
+          .filter(value => value !== undefined && value !== null)
+          .map(value => String(value));
+        const isMatch = Boolean(activeId && expectedIds.includes(String(activeId)));
 
         if (!isMatch) {
           return {
@@ -134,9 +126,7 @@ export class SendOps {
       };
     }
   }
-  /**
-   * 确保前台窗口已激活 (触发前校验与前置准备)
-   */
+
   private async ensureWindowActivated(
     contextLabel = '窗口'
   ): Promise<{ success: true } | { success: false; result: SendResult }> {
@@ -156,6 +146,7 @@ export class SendOps {
       };
     }
   }
+
   private postTriggerUnknown(label: string, verifyLatencyMs?: number): SendResult {
     return {
       success: false,
@@ -164,6 +155,7 @@ export class SendOps {
       verifyLatencyMs,
     };
   }
+
   private postTriggerFailure(label: string, error: unknown, startTime: number): SendResult {
     const errorMsg = error instanceof Error ? error.message : String(error);
     log.error({ err: errorMsg }, `${label}发送后响应丢失，结果为 unknown`);
@@ -175,20 +167,15 @@ export class SendOps {
     };
   }
 
-  /**
-   * 激活引用/回复目标
-   */
   public async activateQuoteTarget(replyTo: string | KK9ReplyTarget): Promise<boolean> {
     const targetObj =
       typeof replyTo === 'string' ? { content: replyTo, messageId: replyTo } : replyTo;
     const script = `
       (() => {
         const target = ${JSON.stringify(targetObj)};
-
         const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
         if (!editor) return false;
 
-        // 在 DOM 或 Vue 组件中查找目标消息并激活引用条
         const msgItems = Array.from(document.querySelectorAll('.rcd-item, .message-item, .msg-item'));
         for (let i = msgItems.length - 1; i >= 0; i--) {
           const item = msgItems[i];
@@ -215,16 +202,10 @@ export class SendOps {
     }
   }
 
-  /**
-   * 发送纯文本消息（支持 @ 提及、引用/回复与明确的发送触发结果分类）
-   */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
     return this.sendRichText(text, options);
   }
 
-  /**
-   * 发送富文本格式化消息（支持 @ 提及、颜色、字号、加粗、斜体、下划线、Markdown 格式）
-   */
   public async sendRichText(
     content: FormattedText,
     options: SendOptions = {}
@@ -273,7 +254,6 @@ export class SendOps {
           return { success: true, method: 'vue_native_pictext' };
         }
 
-        // 降级回退
         const input = document.querySelector('${this.selectors.inputBox}') || document.querySelector('.chat-sendArea');
         if (!input) return { success: false, error: '未找到输入框元素' };
 
@@ -312,9 +292,7 @@ export class SendOps {
       return this.postTriggerFailure('富文本', err, startTime);
     }
   }
-  /**
-   * 发送回复/引用消息
-   */
+
   public async sendReply(
     replyTo: string | KK9ReplyTarget,
     content: FormattedText,
@@ -349,7 +327,6 @@ export class SendOps {
         const target = ${JSON.stringify(targetObj)};
         const mentionNodes = ${JSON.stringify(mentionNodes)};
 
-        // 在 DOM 或 Vue 中查找被引用的目标消息
         let targetMsg = null;
         const msgItems = Array.from(document.querySelectorAll('.rcd-item, .message-item, .msg-item'));
         for (let i = msgItems.length - 1; i >= 0; i--) {
@@ -393,7 +370,6 @@ export class SendOps {
           if (typeof editor.cancelReply === 'function') editor.cancelReply();
           return { success: true, method: 'vue_native_reply' };
         } else {
-          // 兜底发送带样式的 PicText
           const payload = {
             type: 'PicText',
             content: replyContentNodes,
@@ -423,9 +399,6 @@ export class SendOps {
     }
   }
 
-  /**
-   * 发送本地文件（通过 KK9 原生 File 协议触发发送并分类结果）
-   */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(filePath);
     if (!fs.existsSync(fullPath)) {
@@ -461,7 +434,6 @@ export class SendOps {
     }
 
     try {
-      // 原生 Vue File 协议分发
       const injectScript = `
         (() => {
           const editor = document.querySelector('.chat-editor, .chat-sendArea')?.__vue__;
@@ -496,9 +468,7 @@ export class SendOps {
       return this.postTriggerFailure('文件', err, startTime);
     }
   }
-  /**
-   * 发送本地图片（通过渲染进程 Clipboard API 写入与跨平台按键模拟）
-   */
+
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(imagePath);
     if (!fs.existsSync(fullPath)) {
@@ -535,7 +505,6 @@ export class SendOps {
     }
 
     try {
-      // 1. 写入渲染进程剪贴板
       const clipScript = `
         (async () => {
           try {
@@ -568,11 +537,10 @@ export class SendOps {
 
       await sleep(400);
 
-      // 2. 跨平台模拟 Ctrl+V / Meta+V 粘贴按键
       const isMac = process.platform === 'darwin';
       await this.cdp.dispatchKeyEvent({
         type: 'keyDown',
-        modifiers: isMac ? 8 : 2, // 8: Meta, 2: Control
+        modifiers: isMac ? 8 : 2,
         windowsVirtualKeyCode: 86,
         key: 'v',
         code: 'KeyV',
@@ -585,7 +553,6 @@ export class SendOps {
         code: 'KeyV',
       });
 
-      // 3. 等待图片在输入框富文本中完成渲染挂载 (最多等待 3 秒)
       const waitImgScript = `
         (async () => {
           const start = Date.now();
@@ -608,7 +575,6 @@ export class SendOps {
         log.warn('图片粘贴后在输入框渲染超时');
       }
 
-      // 4. 点击发送按钮
       const sendScript = `
         (() => {
           const sendBtn = document.querySelector('.sendMsg-btn a.button') ||
@@ -640,67 +606,11 @@ export class SendOps {
       return this.postTriggerFailure('图片', err, startTime);
     }
   }
-  /**
-   * 发送 Canvas 2D 视觉卡片（远程 CDP 渲染 -> 临时缓存 -> 图片发送上屏 -> 临时文件安全清理）
-   *
-   * @param card 卡片结构化数据模型
-   * @param options 发送与渲染配置选项
-   * @returns 发送结果；缺少权威 native ack 时为 unknown，不生成 messageId。
-   */
-  public async sendCard(card: CardData, options: SendCardOptions = {}): Promise<SendResult> {
-    let tempFilePath: string | null = null;
 
-    try {
-      // 1. 调用 renderCardToBase64 远程渲染生成 Base64 PNG 数据
-      const dataUrl = await renderCardToBase64(this.cdp, card, options);
-      const base64Data = dataUrl.replace(/^data:[^;]+;base64,/, '');
-      const buffer = Buffer.from(base64Data, 'base64');
-
-      // 2. 将 Base64 写入系统临时缓存目录
-      const tempDir = path.join(os.tmpdir(), 'kkbot-cards');
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-      tempFilePath = path.join(
-        tempDir,
-        `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
-      );
-      fs.writeFileSync(tempFilePath, buffer);
-
-      // 3. 复用已有的 sendImage 进行可靠上屏校验与消息发送
-      const result = await this.sendImage(tempFilePath, options);
-      return result;
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error({ err: errorMsg }, '发送 Canvas 视觉卡片异常');
-      if (err instanceof SendError) {
-        throw err;
-      }
-      throw new SendError(
-        `发送 Canvas 视觉卡片异常: ${errorMsg}`,
-        err instanceof Error ? err : undefined
-      );
-    } finally {
-      // 4. 无论成功或失败均安全回收临时图片文件，杜绝磁盘垃圾泄漏
-      if (tempFilePath && fs.existsSync(tempFilePath)) {
-        try {
-          fs.unlinkSync(tempFilePath);
-        } catch (cleanupErr) {
-          log.warn({ err: String(cleanupErr), path: tempFilePath }, '临时卡片文件清理失败');
-        }
-      }
-    }
-  }
-
-  /**
-   * 消息撤回 (Recall / CancelMessage)
-   * 包含所有权校验与 120 秒时效守卫
-   */
   public async recallMessage(messageId: string, sessionId?: string): Promise<boolean> {
     if (!messageId) return false;
 
     try {
-      // 1. 查找目标消息并验证所有权与时效
       const checkScript = `
         (() => {
           const targetId = ${JSON.stringify(messageId)};
@@ -729,7 +639,9 @@ export class SendOps {
               if (!isNaN(p)) sendTime = p;
             }
 
-            if (targetId && (rawId === targetId || item.id === targetId || String(targetId).includes(String(rawId)) || (rawId && String(rawId).includes(String(targetId))))) {
+            const cleanRawId = rawId ? String(rawId).replace(/^msg-/, '') : '';
+            const cleanTargetId = String(targetId).replace(/^msg-/, '');
+            if (targetId && cleanRawId && cleanRawId === cleanTargetId) {
               return {
                 isMe,
                 sender,
@@ -754,13 +666,11 @@ export class SendOps {
         return false;
       }
 
-      // 所有权安全校验：仅允许撤回自己发出的消息
       if (!msgInfo.isMe) {
         log.warn({ messageId, sender: msgInfo.sender }, '尝试撤回非自己发出的消息，安全拦截');
         return false;
       }
 
-      // 时效安全防护：超过 120 秒拒绝撤回
       if (msgInfo.timestamp) {
         let ts = msgInfo.timestamp;
         if (ts < 10_000_000_000) {
@@ -773,9 +683,9 @@ export class SendOps {
         }
       }
 
-      // 2. 执行底层原生撤回 (CancelMessage)
       const recallScript = `
         (async () => {
+          ${VUE_SCROLLER_HELPERS_SCRIPT}
           const targetId = ${JSON.stringify(messageId)};
           const targetSessionId = ${JSON.stringify(sessionId || '')};
 
@@ -797,26 +707,51 @@ export class SendOps {
             }
           }
 
+          if (!matchedItem || !matchedVueMsg || matchedVueMsg.sessionID === undefined) {
+            return { success: false, error: '未找到具有原生身份的目标消息' };
+          }
+
           const app = document.querySelector('#app')?.__vue__;
           const main = document.querySelector('.main-page')?.__vue__;
           const bus = main?.$bus || app?.$bus;
           const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
-          const sesUUID = editor?.activedSes?.sesUUID || targetSessionId;
-          const sessionID = matchedVueMsg?.sessionID || editor?.activedSes?.id || targetSessionId;
-          const msgID = matchedVueMsg?.id || matchedVueMsg?.msgID || Number(targetId) || targetId;
-          const msgIdx = matchedVueMsg?.msgIdx || 0;
+          let targetSession = editor?.activedSes || null;
+          if (targetSessionId) {
+            if (!Array.isArray(editor?.sortedSessions)) {
+              return { success: false, error: '当前会话列表不可用' };
+            }
+            targetSession = findVueSessionItem(editor.sortedSessions, targetSessionId).item;
+          }
+          if (!targetSession || String(matchedVueMsg.sessionID) !== String(targetSession.id)) {
+            return { success: false, error: '目标消息不属于指定会话' };
+          }
 
-          // 优先链路: 通过 Electron ipcRenderer 原生通道发送 cancelMessage 并派发 revokeMsg
+          const sesUUID = targetSession.sesUUID || targetSessionId;
+          const sessionID = targetSession.id;
+          const msgID = matchedVueMsg.id || matchedVueMsg.msgID;
+          const msgIdx = matchedVueMsg.msgIdx || 0;
           const ipc = window.ipcRenderer || (window.require ? window.require('electron')?.ipcRenderer : null);
-          if (ipc && typeof ipc.send === 'function') {
-            const key = '__kkbotRecallReqId';
-            const current = typeof window[key] === 'number' ? window[key] : 900000;
-            window[key] = current + 1;
-            const requestId = current + 1;
-            const replyChannel = 'data-' + requestId;
+          if (!ipc || typeof ipc.send !== 'function' || typeof ipc.once !== 'function') {
+            return { success: false, error: '未找到 native IPC 撤回通道' };
+          }
 
-            const ipcPromise = new Promise(resolve => {
-              ipc.once(replyChannel, (_event, payload) => resolve(payload));
+          const key = '__kkbot_rpc_id';
+          const current = typeof window[key] === 'number' ? window[key] : 800000;
+          window[key] = current + 1;
+          const requestId = current + 1;
+          const replyChannel = 'data-' + requestId;
+          const ipcRes = await new Promise(resolve => {
+            const onReply = (_event, payload) => {
+              clearTimeout(timer);
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve(payload);
+            };
+            const timer = setTimeout(() => {
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve({ code: -2 });
+            }, 4000);
+            ipc.once(replyChannel, onReply);
+            try {
               ipc.send('data', {
                 id: requestId,
                 args: ['cancelMessage', {
@@ -827,47 +762,26 @@ export class SendOps {
                 }],
                 progress: false
               });
-            });
-
-            const ipcRes = await ipcPromise;
-            if (ipcRes && (ipcRes.code === 0 || ipcRes.code === undefined)) {
-              if (bus && sesUUID) {
-                bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
-              }
-              return { success: true, method: 'ipc_cancelMessage' };
+            } catch (sendErr) {
+              clearTimeout(timer);
+              try { ipc.removeListener(replyChannel, onReply); } catch (e) {}
+              resolve({ code: -3 });
             }
-          }
+          });
 
-          // 降级链路 1: 通过 Vue chatContent.addRevokeMsg / onCancelMessage
-          function findChatContentVm(vm) {
-            if (!vm) return null;
-            if (vm.$options?._componentTag === 'chat-content' || vm.$options?.name === 'chat-content') return vm;
-            if (vm.$children) {
-              for (const c of vm.$children) {
-                const res = findChatContentVm(c);
-                if (res) return res;
-              }
-            }
-            return null;
+          if (!ipcRes || ipcRes.code !== 0) {
+            return { success: false, error: 'native 撤回未返回成功 ack' };
           }
-          const chatContent = findChatContentVm(app);
-          if (chatContent && typeof chatContent.addRevokeMsg === 'function') {
-            await chatContent.addRevokeMsg({ byAdmin: 0, msgID, msgIdex: msgIdx });
-            return { success: true, method: 'chat_content_addRevokeMsg' };
-          }
-
-          // 降级链路 2: 通过 $bus 广播
           if (bus && sesUUID) {
-            bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
-            bus.$emit('CancelMessage', { byAdmin: 0, event: 'CancelMessage', msgID, msgIdex: msgIdx });
-            return { success: true, method: 'bus_revokeMsg' };
+            try {
+              bus.$emit(sesUUID + '-revokeMsg', { msgID, msgIdx });
+            } catch (eventErr) {}
           }
-
-          return { success: false, error: '未找到可用的底层撤回通道' };
+          return { success: true, method: 'ipc_cancelMessage' };
         })()
       `;
 
-      const res = await this.cdp.evaluate<{ success: boolean; error?: string }>(recallScript);
+      const res = await this.cdp.evaluate<{ success: boolean; error?: string }>(recallScript, 6000);
       return Boolean(res?.success);
     } catch (err) {
       log.error({ err: String(err), messageId }, '执行消息撤回异常');

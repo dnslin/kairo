@@ -1,7 +1,7 @@
-import type { RenderCanvasOptions } from './card.js';
+import type EventEmitter from 'node:events';
 
 /**
- * @kkbot/driver 强类型定义
+ * @kkbot/driver 强类型与接口定义
  */
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 
@@ -122,6 +122,7 @@ export interface KK9MentionTarget {
   uid: number | string;
   name: string;
 }
+
 /**
  * 图片元数据（支持本地缓存路径与远程 URI）
  */
@@ -223,6 +224,8 @@ export interface KK9Employee {
   email?: string;
   /** 头像地址 */
   avatarUrl?: string;
+  /** 部门全路径层级 */
+  deptPaths?: Array<{ id: number; name: string }>;
   /** 原始对象备份 */
   raw?: Record<string, unknown>;
   /** 抽取时间戳 (毫秒) */
@@ -261,6 +264,7 @@ export interface PollingConfig {
   /** 是否允许轮询自动在未读会话间切换（设为 false 时仅在当前激活会话监听） */
   autoSwitchSession?: boolean;
 }
+
 export interface CompensationScanOptions {
   fromTimestamp: number;
   toTimestamp?: number;
@@ -342,11 +346,6 @@ export interface SendFileOptions {
   verifyTimeoutMs?: number;
 }
 
-/**
- * 视觉卡片发送选项配置
- * 融合 Canvas 渲染配置 (RenderCanvasOptions) 与消息发送选项 (SendOptions)
- */
-export interface SendCardOptions extends RenderCanvasOptions, SendOptions {}
 export interface DriverEvents {
   status: (status: ConnectionStatus) => void;
   message: (message: KK9Message) => void;
@@ -359,29 +358,53 @@ export interface DriverEvents {
   health: (event: DriverHealthEvent) => void;
 }
 
-export type {
-  CardThemeType,
-  CardThemeCustom,
-  CardTheme,
-  CardTagVariant,
-  CardTag,
-  CardHeader,
-  CardFieldVariant,
-  CardFieldSpan,
-  CardField,
-  CardActionVariant,
-  CardAction,
-  CardFooter,
-  CardData,
-  RenderCanvasOptions,
-  ResolvedCardTheme,
-  CardLayoutResult,
-  AlertSeverity,
-  AlertMetric,
-  AlertCardParams,
-  ReportStatus,
-  ReportMetric,
-  ReportCardParams,
-  DecisionOption,
-  DecisionCardParams,
-} from './card.js';
+/**
+ * IKK9Driver 顶层纯净抽象接口契约
+ * 仅暴露出对 KK9 IM 软件的操作，屏蔽底层协议 (CDP/IPC/Bridge) 细节
+ */
+export interface IKK9Driver extends EventEmitter {
+  // 生命周期与连接状态
+  connect(): Promise<void>;
+  disconnect(): Promise<void>;
+  getStatus(): ConnectionStatus;
+  getStartupGenerationId(): string;
+  getHealthSnapshot(): DriverHealthSnapshot;
+
+  // 会话管理
+  getSessions(): Promise<KK9Session[]>;
+  getCurrentSession(): Promise<KK9Session | null>;
+  selectSession(sessionId: string): Promise<boolean>;
+  markSessionRead(sessionId: string): Promise<boolean>;
+
+  // 消息读取与补偿
+  getRecentMessages(limit?: number, session?: KK9Session): Promise<KK9Message[]>;
+  scanCompensationWindow(options: CompensationScanOptions): Promise<KK9Message[]>;
+
+  // 消息发送与撤回
+  sendText(text: string, options?: SendOptions): Promise<SendResult>;
+  sendRichText(content: FormattedText, options?: SendOptions): Promise<SendResult>;
+  sendReply(
+    replyTo: string | KK9ReplyTarget,
+    content: FormattedText,
+    options?: SendOptions
+  ): Promise<SendResult>;
+  sendFile(filePath: string, options?: SendFileOptions): Promise<SendResult>;
+  sendImage(imagePath: string, options?: SendOptions): Promise<SendResult>;
+  recallMessage(messageId: string, session?: KK9Session | string): Promise<boolean>;
+
+  // 组织架构与员工档案
+  getOrgEmployees(timeoutMs?: number): Promise<KK9Employee[]>;
+  getUserProfile(userId: number | string): Promise<KK9Employee | null>;
+
+  // 智能轮询
+  startPolling(customPolling?: Partial<PollingConfig>): void;
+  stopPolling(): void;
+
+  // 机器人发送状态跟踪
+  recordBotSentMessageId(sessionId: string, messageId: string): void;
+  isBotSentMessageId(sessionId: string, messageId: string): boolean;
+
+  // 强类型事件监听器绑定
+  on<U extends keyof DriverEvents>(event: U, listener: DriverEvents[U]): this;
+  emit<U extends keyof DriverEvents>(event: U, ...args: Parameters<DriverEvents[U]>): boolean;
+}

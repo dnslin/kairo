@@ -1,9 +1,8 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "paths": {
-      "@kkbot/driver": ["packages/driver/src/index.ts"]
+      "@kkbot/driver": ["./packages/driver/src/index.ts"]
     }
   },
   "include": ["packages/driver/src/**/*", "packages/driver/examples/**/*"]

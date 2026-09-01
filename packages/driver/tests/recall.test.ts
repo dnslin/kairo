@@ -4,6 +4,11 @@ import { DEFAULT_SELECTORS } from '../src/dom/selectors.js';
 import { SendOps } from '../src/dom/send-ops.js';
 import { KK9Driver } from '../src/driver.js';
 import type { KK9RecalledEvent, KK9Session } from '../src/types/index.js';
+import {
+  createRendererRuntime,
+  FakeIpcRenderer,
+  runRendererScript,
+} from './helpers/renderer-runtime.js';
 
 describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
   describe('SendResult.recall 快捷链式撤回', () => {
@@ -35,7 +40,11 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       const mockSendOps = {
         recallMessage: vi.fn().mockResolvedValue(true),
       };
-      (driver as unknown as { sendOps: typeof mockSendOps }).sendOps = mockSendOps;
+      driver.getSessions = vi.fn().mockResolvedValue([
+        { id: 'ses_test', name: '测试会话', type: 'private', unread: false },
+      ]);
+      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).bridgeMessageOps = mockSendOps;
+      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).domSendOps = mockSendOps;
 
       const result = await driver.recallMessage('msg_001', 'ses_test');
       expect(result).toBe(true);
@@ -53,7 +62,8 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       const mockSendOps = {
         recallMessage: vi.fn().mockResolvedValue(true),
       };
-      (driver as unknown as { sendOps: typeof mockSendOps }).sendOps = mockSendOps;
+      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).bridgeMessageOps = mockSendOps;
+      (driver as unknown as { bridgeMessageOps: typeof mockSendOps; domSendOps: typeof mockSendOps }).domSendOps = mockSendOps;
 
       const session: KK9Session = {
         id: 'session_xyz',
@@ -66,9 +76,193 @@ describe('消息撤回双轨 API 与安全守卫测试 (Issue #67)', () => {
       expect(result).toBe(true);
       expect(mockSendOps.recallMessage).toHaveBeenCalledWith('msg_002', 'session_xyz');
     });
+
+    it('Bridge 撤回失败或结果未知时不得再次调用 DOM 撤回', async () => {
+      const driver = new KK9Driver({
+        cdp: {
+          url: 'http://127.0.0.1:9222',
+          pageMatch: 'renderer.html',
+        },
+      });
+      const bridgeOps = { recallMessage: vi.fn().mockResolvedValue(false) };
+      const domOps = { recallMessage: vi.fn().mockResolvedValue(true) };
+      driver.getSessions = vi.fn().mockResolvedValue([
+        { id: 'session-a', name: '会话 A', type: 'private', unread: false },
+      ]);
+      (driver as unknown as { bridgeMessageOps: typeof bridgeOps }).bridgeMessageOps = bridgeOps;
+      (driver as unknown as { domSendOps: typeof domOps }).domSendOps = domOps;
+
+      const result = await driver.recallMessage('msg_unknown', 'session-a');
+
+      expect(result).toBe(false);
+      expect(domOps.recallMessage).not.toHaveBeenCalled();
+    });
   });
 
   describe('安全拦截与时效守卫', () => {
+    it('DOM 撤回不得让目标 123 被可见消息 23 子串命中', async () => {
+      const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: '目标会话', type: 0 }],
+        messages: [
+          {
+            id: 23,
+            msgIdx: 7,
+            sessionID: 602475,
+            isMe: true,
+            sendTime: Math.floor(Date.now() / 1000),
+          },
+        ],
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new SendOps(mockCdp, DEFAULT_SELECTORS).recallMessage('123', '0-3585');
+
+      expect(result).toBe(false);
+      expect(ipc.sent).toHaveLength(0);
+    });
+
+    it('DOM 撤回不得使用当前会话中同 ID 消息替代指定目标会话', async () => {
+      const targetSession = { id: 602475, sesUUID: '0-3585', typeName: '目标会话', type: 0 };
+      const activeSession = { id: 793803, sesUUID: '1-29467', typeName: '当前会话', type: 1 };
+      const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [targetSession, activeSession],
+        activeSession,
+        messages: [
+          {
+            id: 123,
+            msgIdx: 8,
+            sessionID: 793803,
+            isMe: true,
+            sendTime: Math.floor(Date.now() / 1000),
+          },
+        ],
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new SendOps(mockCdp, DEFAULT_SELECTORS).recallMessage('123', '0-3585');
+
+      expect(result).toBe(false);
+      expect(ipc.sent).toHaveLength(0);
+    });
+
+    it('DOM 撤回必须让 sesUUID/id 命中优先于更早出现的同名会话', async () => {
+      const targetSessionId = '1-29467';
+      const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [
+          { id: 7, sesUUID: 'shadow', typeName: targetSessionId, name: targetSessionId, type: 1 },
+          { id: 8, sesUUID: targetSessionId, typeName: '真实目标', name: '真实目标', type: 1 },
+        ],
+        messages: [
+          {
+            id: 123,
+            msgIdx: 8,
+            sessionID: 8,
+            isMe: true,
+            sendTime: Math.floor(Date.now() / 1000),
+          },
+        ],
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new SendOps(mockCdp, DEFAULT_SELECTORS).recallMessage(
+        '123',
+        targetSessionId
+      );
+      const cancelRequest = ipc.sent.find(request => request.args[0] === 'cancelMessage');
+
+      expect(result).toBe(true);
+      expect(cancelRequest?.args[1]).toMatchObject({ sessionID: 8, msgID: 123 });
+    });
+
+    it('DOM 撤回缺少 native IPC 时不得用 bus-only 结果宣称成功', async () => {
+      const runtime = createRendererRuntime({
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: '目标会话', type: 0 }],
+        messages: [
+          {
+            id: 123,
+            msgIdx: 8,
+            sessionID: 602475,
+            isMe: true,
+            sendTime: Math.floor(Date.now() / 1000),
+          },
+        ],
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new SendOps(mockCdp, DEFAULT_SELECTORS).recallMessage('123', '0-3585');
+
+      expect(result).toBe(false);
+      expect(runtime.events).toHaveLength(0);
+    });
+
+    it('DOM 撤回未收到 code=0 ack 时不得宣称成功', async () => {
+      const ipc = new FakeIpcRenderer(() => ({}));
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: '目标会话', type: 0 }],
+        messages: [
+          {
+            id: 123,
+            msgIdx: 8,
+            sessionID: 602475,
+            isMe: true,
+            sendTime: Math.floor(Date.now() / 1000),
+          },
+        ],
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new SendOps(mockCdp, DEFAULT_SELECTORS).recallMessage('123', '0-3585');
+
+      expect(result).toBe(false);
+      expect(runtime.events).toHaveLength(0);
+    });
+
+    it('DOM 撤回 ipc.send 抛错后必须移除本次 listener', async () => {
+      const ipc = new FakeIpcRenderer(() => {
+        throw new Error('dom recall send failed');
+      });
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: '目标会话', type: 0 }],
+        messages: [
+          {
+            id: 123,
+            msgIdx: 8,
+            sessionID: 602475,
+            isMe: true,
+            sendTime: Math.floor(Date.now() / 1000),
+          },
+        ],
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new SendOps(mockCdp, DEFAULT_SELECTORS).recallMessage('123', '0-3585');
+      const request = ipc.sent[0];
+
+      expect(result).toBe(false);
+      expect(request).toBeDefined();
+      expect(ipc.listenerCount(`data-${request?.id}`)).toBe(0);
+    });
+
     it('所有权校验：尝试撤回他人发出的消息 (isMe: false) 时应直接拦截并返回 false', async () => {
       const mockCdp = {
         evaluate: vi.fn().mockResolvedValueOnce({

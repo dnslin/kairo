@@ -132,6 +132,30 @@ pnpm verify:bridge
 
 旧实验还记录过通过当前 `chat-content` 构造目标会话消息并低层发送，但对应实验脚本已经缺失。除非重新建立可复现夹具并确认发送结果，否则不得仅凭本记录把该路径升级为生产主链。
 
+### 5.1 2026-08-31 当前客户端实机证据
+
+在 `renderer.html` 与 CDP `127.0.0.1:9222` 上重新建立了可重复发送夹具，并确认：
+
+- `insertSendBefoeMsg` 返回的是临时身份，例如 `id: -22`、`msgIdx: "161.001"`，不得作为公开 `messageId`；
+- `sendMessageNew` 返回 `{ code: 0 }` 只表示 native sender 已接受请求，不包含最终消息 ID；
+- 自定义唯一 `msgFlag` 会原样保存到落库消息，可通过后续 `getMessages` 无歧义解析正整数 ID 与整数 `msgIdx`；
+- 文本、富文本和文件均按上述方式完成真实 ID 绑定；文件的 `uri` 由 native 层上传后补齐；
+- `contentType: 13` 回复必须先读取被回复消息的原始 `sender/msgIdx/contentType/content`，仅凭公开摘要会生成无效内容；
+- 图片仍走 UI/剪贴板路径，必须先真实切换并确认当前会话；只赋值 `editor.activedSes` 会把图片发送到原 UI 会话；
+- 本轮指定 `int2024 / 0-3585` 与 `测试123 / 1-29467` 执行 27 个真实步骤并全部通过，随后按真实 ID 完成消息撤回清理。
+
+### 5.2 2026-09-01 修复后实机验收
+
+在同一真实客户端上进一步确认：
+
+- `getMessageBySessionIDAndMsgIdx(sessionID, msgIdx)` 返回的 `content` 是 JSON 字符串，而 `getMessages` 返回对象；构造回复前必须先规范化，否则 native 会把回复落成 `contentType: -1`、`content: {}`；
+- 使用 `msgIdx: 1` 精确读取窗口外消息 `123307983` 后，真实回复成功落为 `contentType: 13`，`replyedMsgId`、`replyedContent` 与 `replyContent` 均正确；
+- 权威会话列表存在 `1-29467` 与 `1-26519` 两个同名 `测试123` 时，Driver 名称选择真实返回 false，精确 ID 仍可操作；
+- 真实 `getChildDeptsAndMembers` 1ms timeout 后，同 reply channel 的独立观察 listener 仍保留，证明 cleanup 只移除本次 listener；
+- `pnpm e2e` 在 `int2024 / 0-3585` 与 `测试123 / 1-29467` 完成 28/28 PASS，图片通过 baseline、发送者和 `7×11` 指纹关联，6 条测试消息全部按 native ID 撤回。
+
+以上结论绑定本次 KK9 客户端版本；客户端升级后必须重新运行带显式确认变量的 `pnpm e2e`。
+
 ## 6. IPC 名称线索
 
 历史 bundle 扫描记录过 222 个 IPC 名称，但完整清单和提取脚本未保留。以下名称仅用于定向研究：
@@ -157,9 +181,9 @@ pnpm verify:bridge
 ## 8. 待验证问题
 
 - 底层 `message` 事件桥对象的真实来源和完整生命周期；
-- 各消息类型的完整 payload、稳定 ID 和撤回关联字段；
-- IPC 方法在当前客户端版本中的参数、错误和返回 Schema；
-- 低层发送与 KK 原生消息 ID 的无歧义绑定能力；
+- 语音、视频、位置等尚未覆盖消息类型的完整 payload；
+- IPC 方法在未来客户端版本中的参数、错误和返回 Schema 漂移；
+- `msgFlag` 真实 ID 绑定在客户端升级、重连和高并发下的持续稳定性；
 - 客户端升级、重连和多窗口场景下 Hook 的恢复行为。
 
 ## 9. 新增证据的记录格式
