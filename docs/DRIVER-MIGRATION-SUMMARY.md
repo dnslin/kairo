@@ -57,7 +57,7 @@
 | **文本 / 富文本 / @** | 输入框与按钮模拟 | `insertSendBefoeMsg` ➔ `sendMessageNew` ➔ `getMessages(msgFlag)` | `sendMessageNew code: 0` 后仍需按唯一 `msgFlag` 解析落库正 ID；超时或无法解析真实 ID 均不得 DOM 重发 |
 | **引用回复** | DOM 回复条 | 从目标会话历史读取原消息元数据，再构造 `contentType: 13` | 有 `msgIdx` 时精确查询并解析 JSON 字符串 content；否则有界分页；按 `msgFlag` 返回真实 ID |
 | **文件发送** | 模拟拖拽或 DOM 事件 | 构造 `contentType: 3` 后走 native sender | 文件落库后按 `msgFlag` 返回真实 ID；路径、大小和 native ack 均验证 |
-| **图片发送** | 剪贴板、按键与发送按钮 | 先真实切换并确认当前会话，再执行 UI 发送 | 目标未激活时 Fail-Closed；该路径会获取前台焦点，不宣称静默发送 |
+| **图片发送** | 剪贴板、按键与发送按钮 | `sendingImgBeforeHandle` ➔ `insertSendBefoeMsg` ➔ `sendMessageNew` | 纯底层 IPC 发送，无需切换会话，支持多会话静默并发与 `msgFlag` 真实 ID 确认 |
 | **消息撤回** | DOM 菜单 | 精确 `messageId` 与目标会话组装 `cancelMessage` | 仅 native `code: 0` 成功；`$bus` 只用于 ack 后更新本地 UI |
 | **已读消除** | 仅隐藏本地红点 | `readMessage` native RPC | ack 成功后才更新本地状态；多端效果仍需实机验证 |
 | **组织架构** | DOM 展开部门树 | `getChildDeptsAndMembers` 分页 BFS | 已覆盖首页恰好 200 人且同时返回子部门的边界 |

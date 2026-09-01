@@ -345,7 +345,7 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
     expect(driver.domSendOps.sendText).toHaveBeenCalledOnce();
   });
 
-  it('指定图片目标时必须先切换并确认当前会话', async () => {
+  it('向指定会话发送图片时应直接通过 Bridge IPC 发送 (无需切换 UI 会话)', async () => {
     const driver = new KK9Driver({
       cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
     });
@@ -360,33 +360,15 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
       unread: false,
       active: true,
     });
-    driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue({ success: true });
+    driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue({ success: true, messageId: '1001' });
 
     const result = await driver.sendImage('image.png', { targetSessionId: '0-3585' });
 
     expect(result.success).toBe(true);
-    expect(driver.selectSession).toHaveBeenCalledWith('0-3585');
-    expect(driver.getCurrentSession).toHaveBeenCalledOnce();
+    expect(driver.selectSession).not.toHaveBeenCalled();
     expect(driver.bridgeMessageOps.sendImage).toHaveBeenCalledWith('image.png', {
       targetSessionId: '0-3585',
     });
-  });
-
-  it('图片目标切换失败时不得继续发送', async () => {
-    const driver = new KK9Driver({
-      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
-    });
-    driver.getSessions = vi.fn().mockResolvedValue([
-      { id: '0-3585', name: 'int2024', type: 'private', unread: false },
-    ]);
-    driver.selectSession = vi.fn().mockResolvedValue(false);
-    driver.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue({ success: true });
-
-    const result = await driver.sendImage('image.png', { targetSessionId: '0-3585' });
-
-    expect(result.success).toBe(false);
-    expect(result.isPreTrigger).toBe(true);
-    expect(driver.bridgeMessageOps.sendImage).not.toHaveBeenCalled();
   });
 
   it('Driver 顶层必须拒绝全局重名会话的 select 与 markRead', async () => {

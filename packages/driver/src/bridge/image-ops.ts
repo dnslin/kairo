@@ -1,0 +1,323 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import mime from 'mime-types';
+import type { CdpClient } from '../cdp/client.js';
+import type { SendOptions, SendResult } from '../types/index.js';
+import {
+  encodeRendererPayload,
+  RENDERER_IPC_HELPERS_SCRIPT,
+  RENDERER_SESSION_RESOLVER_SCRIPT,
+} from './renderer-script.js';
+
+const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024; // 20MB
+
+function isCdpUnavailableBeforeSend(cdp: CdpClient): boolean {
+  const getStatus = (cdp as Partial<CdpClient>).getStatus;
+  return typeof getStatus === 'function' && getStatus.call(cdp) !== 'connected';
+}
+
+function getImageDimensions(buffer: Buffer): { width: number; height: number } {
+  // PNG: bytes 16-24 hold width (16..19) and height (20..23) big-endian
+  if (buffer.length >= 24 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+    return {
+      width: buffer.readUInt32BE(16),
+      height: buffer.readUInt32BE(20),
+    };
+  }
+
+  // GIF: bytes 6-10 hold width (6..7) and height (8..9) little-endian
+  if (buffer.length >= 10 && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+    return {
+      width: buffer.readUInt16LE(6),
+      height: buffer.readUInt16LE(8),
+    };
+  }
+
+  // BMP: bytes 18-26 hold width (18..21) and height (22..25) little-endian
+  if (buffer.length >= 26 && buffer[0] === 0x42 && buffer[1] === 0x4d) {
+    return {
+      width: Math.abs(buffer.readInt32LE(18)),
+      height: Math.abs(buffer.readInt32LE(22)),
+    };
+  }
+
+  // JPEG / JPG parse SOF markers (SOF0 = 0xC0, SOF2 = 0xC2, etc.)
+  if (buffer.length >= 4 && buffer[0] === 0xff && buffer[1] === 0xd8) {
+    let offset = 2;
+    while (offset < buffer.length) {
+      if (buffer[offset] !== 0xff) {
+        offset++;
+        continue;
+      }
+      const marker = buffer[offset + 1];
+      // SOF0 (0xC0), SOF1 (0xC1), SOF2 (0xC2)
+      if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+        if (offset + 9 <= buffer.length) {
+          const height = buffer.readUInt16BE(offset + 5);
+          const width = buffer.readUInt16BE(offset + 7);
+          return { width, height };
+        }
+      }
+      if (marker === 0xd9 || marker === 0xda) {
+        break;
+      }
+      if (offset + 4 <= buffer.length) {
+        const length = buffer.readUInt16BE(offset + 2);
+        offset += 2 + length;
+      } else {
+        break;
+      }
+    }
+  }
+
+  return { width: 300, height: 300 };
+}
+
+const CONFIRM_SENT_MESSAGE_SCRIPT = `
+  async function waitForPersistedMessage(sessionID, msgFlag) {
+    for (let attempt = 0; attempt < 15; attempt++) {
+      const messagesRes = await callIpc('getMessages', {
+        sessionID,
+        count: 100,
+        endIdx: 2147483647,
+        sendTime: 0
+      });
+      if (messagesRes?.code === 0 && Array.isArray(messagesRes.data)) {
+        const found = messagesRes.data.find(message =>
+          message && message.msgFlag === msgFlag && Number(message.id) > 0
+        );
+        if (found) return found;
+      }
+      if (attempt < 14) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+    return null;
+  }
+`;
+
+export async function sendNativeImage(
+  cdp: CdpClient,
+  imagePath: string,
+  options: SendOptions = {}
+): Promise<SendResult> {
+  const fullPath = path.resolve(imagePath);
+  if (!fs.existsSync(fullPath)) {
+    return { success: false, error: `图片文件不存在: ${fullPath}`, isPreTrigger: true };
+  }
+
+  const stats = fs.statSync(fullPath);
+  if (stats.isDirectory()) {
+    return { success: false, error: `不能发送目录作为图片: ${fullPath}`, isPreTrigger: true };
+  }
+  if (stats.size > MAX_IMAGE_SIZE_BYTES) {
+    return {
+      success: false,
+      error: `图片大小超出限制 (20MB): ${stats.size} bytes`,
+      isPreTrigger: true,
+    };
+  }
+
+  const mimeType = mime.lookup(fullPath) || 'image/png';
+  if (!mimeType.startsWith('image/')) {
+    return { success: false, error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
+  }
+
+  const buffer = fs.readFileSync(fullPath);
+  const { width, height } = getImageDimensions(buffer);
+  const base64Thumb = buffer.toString('base64');
+  const startTime = Date.now();
+  const cdpWasUnavailable = isCdpUnavailableBeforeSend(cdp);
+
+  const payloadData = {
+    target: options.targetSessionId || '',
+    msgFlag: `kairo:image:${randomUUID()}`,
+    fullPath,
+    base64Thumb,
+    mimeType,
+    width,
+    height,
+  };
+
+  const encoded = encodeRendererPayload(payloadData);
+
+  const script = `
+    (async () => {
+      const electron = window.require ? window.require('electron') : null;
+      const ipc = window.ipcRenderer || electron?.ipcRenderer;
+      const app = document.querySelector('#app')?.__vue__;
+      const main = document.querySelector('.main-page')?.__vue__;
+      const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
+      const bus = main?.$bus || app?.$bus || window.vueBus;
+      const store = app?.$store || window.$store;
+      ${RENDERER_SESSION_RESOLVER_SCRIPT}
+      ${RENDERER_IPC_HELPERS_SCRIPT}
+      const callIpc = callKairoIpc;
+      ${CONFIRM_SENT_MESSAGE_SCRIPT}
+
+      const data = JSON.parse(decodeURIComponent(${encoded}));
+      const target = data.target;
+
+      let targetSes = editor?.activedSes;
+      if (target) {
+        if (!Array.isArray(editor?.sortedSessions)) {
+          return { success: false, error: '当前会话列表不可用', isPreTrigger: true };
+        }
+        const found = resolveRendererSession(editor.sortedSessions, target);
+        if (!found) {
+          return { success: false, error: '未在会话列表中找到目标会话 [' + target + ']', isPreTrigger: true };
+        }
+        targetSes = found;
+      }
+
+      if (!targetSes) {
+        return { success: false, error: '未指定目标会话且当前无激活会话', isPreTrigger: true };
+      }
+
+      // 1. 调用 Native 预处理图片与缩略图
+      const handleRes = await callIpc('sendingImgBeforeHandle', data.base64Thumb, data.fullPath);
+      if (!handleRes || handleRes.code !== 0 || !handleRes.data) {
+        return {
+          success: false,
+          error: 'sendingImgBeforeHandle 失败: ' + (handleRes?.message || JSON.stringify(handleRes)),
+          isPreTrigger: true
+        };
+      }
+
+      const thumbPath = handleRes.data.thumbPath;
+      const artworkPath = handleRes.data.artworkPath;
+
+      const myUid = main?.userID || editor?.userID || 5761;
+      const myName = main?.userName || editor?.userName || '我';
+
+      // 2. 构造 PicText 图片消息对象
+      const imgNode = {
+        type: 1,
+        height: data.height,
+        width: data.width,
+        isValid: true,
+        filepath: thumbPath,
+        filepath_h: artworkPath,
+        mimetype: data.mimeType
+      };
+
+      const msgObj = {
+        contentType: 4, // PicText
+        content: {
+          content: [imgNode],
+          font: {
+            fontFamily: 'Microsoft YaHei',
+            fontSize: 14,
+            fontColor: '#000000',
+            fontBold: false,
+            fontItalic: false,
+            fontUnderline: false
+          }
+        },
+        sender: myUid,
+        senderName: myName,
+        senderNameEN: myName,
+        senderNameTC: myName,
+        receiver: targetSes.typeID || targetSes.sesTypeID,
+        sendTime: Math.floor(Date.now() / 1000),
+        sessionType: targetSes.type,
+        sessionID: targetSes.id,
+        atState: 1,
+        atMemberIDList: [],
+        status: 1,
+        type: 0,
+        msgFlag: data.msgFlag,
+        filepath: artworkPath,
+        deviceID: main?.deviceID || editor?.deviceID || ''
+      };
+
+      // 3. 写入本地 SQLite
+      const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
+      if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
+        return { success: false, error: 'insertSendBefoeMsg 写入失败', isPreTrigger: true };
+      }
+
+      const nativeId = insertRes.data.id;
+      msgObj.id = nativeId;
+      msgObj.msgIdx = insertRes.data.msgIdx;
+
+      // 4. 发送消息至 Native 通信层
+      const sendRes = await callIpc('sendMessageNew', {
+        id: nativeId,
+        content: msgObj.content,
+        contentType: msgObj.contentType,
+        sender: msgObj.sender,
+        senderName: msgObj.senderName,
+        senderNameEN: msgObj.senderNameEN,
+        senderNameTC: msgObj.senderNameTC,
+        receiver: msgObj.receiver,
+        sessionType: msgObj.sessionType,
+        sessionID: msgObj.sessionID,
+        atState: msgObj.atState,
+        msgFlag: msgObj.msgFlag,
+        atMemberIDList: msgObj.atMemberIDList,
+        type: msgObj.type
+      });
+
+      if (!sendRes || sendRes.code !== 0) {
+        return {
+          success: false,
+          error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
+          isPreTrigger: false
+        };
+      }
+
+      // 5. 轮询确认已持久化的正整数消息 ID
+      const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag);
+      if (!confirmedMessage) {
+        return {
+          success: false,
+          error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
+          isPreTrigger: false
+        };
+      }
+
+      try {
+        if (store) {
+          store.commit('updateSesLastMsg', { sesUUID: targetSes.sesUUID, message: confirmedMessage });
+        }
+        if (bus) {
+          bus.$emit(targetSes.sesUUID + '-msg', [confirmedMessage]);
+        }
+      } catch (updateErr) {}
+
+      return { success: true, messageId: String(confirmedMessage.id) };
+    })()
+  `;
+
+  try {
+    const res = await cdp.evaluate<{
+      success: boolean;
+      messageId?: string;
+      error?: string;
+      isPreTrigger?: boolean;
+    }>(script, 15000);
+
+    if (!res?.success) {
+      return {
+        success: false,
+        error: res?.error || '底层图片 IPC 发送失败',
+        isPreTrigger: res?.isPreTrigger ?? false,
+      };
+    }
+
+    return {
+      success: true,
+      messageId: res.messageId,
+      verifyLatencyMs: Date.now() - startTime,
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: `底层图片 IPC 发送异常: ${err instanceof Error ? err.message : String(err)}`,
+      isPreTrigger: cdpWasUnavailable,
+      verifyLatencyMs: Date.now() - startTime,
+    };
+  }
+}
