@@ -51,12 +51,14 @@ export class BridgeOrgOps {
           const discovered = new Set([0]);
           const main = document.querySelector('.main-page')?.__vue__;
           const editor = document.querySelector('.chat-editor, .message-editor')?.__vue__;
-          const myUid = main?.userID || editor?.userID || 5761;
+          const myUid = main?.userID || editor?.userID;
 
-          const myDetail = await callIpc('getMemberDetail', myUid);
-          if (myDetail?.data?.deptPaths) {
-            for (const p of myDetail.data.deptPaths) {
-              if (p && typeof p.id === 'number') discovered.add(p.id);
+          if (myUid) {
+            const myDetail = await callIpc('getMemberDetail', myUid);
+            if (myDetail?.data?.deptPaths) {
+              for (const p of myDetail.data.deptPaths) {
+                if (p && typeof p.id === 'number') discovered.add(p.id);
+              }
             }
           }
 

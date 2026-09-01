@@ -355,7 +355,10 @@ export class BridgeMessageOps {
           return { success: false, error: '未指定目标会话且当前无激活会话', isPreTrigger: true };
         }
 
-        const myUid = main?.userID || editor?.userID || 5761;
+        const myUid = main?.userID || editor?.userID;
+        if (!myUid) {
+          return { success: false, error: '未获取到当前登录用户身份 (userID)', isPreTrigger: true };
+        }
         const myName = main?.userName || editor?.userName || '我';
 
         const msgObj = {
@@ -545,7 +548,10 @@ export class BridgeMessageOps {
           return { success: false, error: '未在目标会话历史中找到被回复消息', isPreTrigger: true };
         }
 
-        const myUid = main?.userID || editor?.userID || 5761;
+        const myUid = main?.userID || editor?.userID;
+        if (!myUid) {
+          return { success: false, error: '未获取到当前登录用户身份 (userID)', isPreTrigger: true };
+        }
         const myName = main?.userName || editor?.userName || '我';
         const replyPayload = {
           type: 'Reply',
@@ -722,7 +728,10 @@ export class BridgeMessageOps {
 
         if (!targetSes) return { success: false, error: '当前无目标会话', isPreTrigger: true };
 
-        const myUid = main?.userID || editor?.userID || 5761;
+        const myUid = main?.userID || editor?.userID;
+        if (!myUid) {
+          return { success: false, error: '未获取到当前登录用户身份 (userID)', isPreTrigger: true };
+        }
         const myName = main?.userName || editor?.userName || '我';
 
         const filePayload = {

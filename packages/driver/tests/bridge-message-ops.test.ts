@@ -101,13 +101,13 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
                   id: 2001,
                   msgIdx: 55,
                   sender: 7783,
-                  senderName: '陈鹏',
+                  senderName: '张三',
                   atState: 2,
                   atMemberIDList: [5761],
                   contentType: 4,
                   content: {
                     content: [
-                      { type: 2, replyMemberID: 5761, replyMemberName: '董仕林' },
+                      { type: 2, replyMemberID: 5761, replyMemberName: '测试用户' },
                       { type: 0, text: '请查看当前附件图片' },
                       { type: 1, filepath: 'C:\\cache\\img1.png', mimetype: 'image/png' },
                     ],
@@ -130,7 +130,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       );
 
       expect(messages).toHaveLength(1);
-      expect(messages[0]?.sender).toBe('陈鹏');
+      expect(messages[0]?.sender).toBe('张三');
       expect(messages[0]?.sessionType).toBe('group');
       expect(messages[0]?.atMe).toBe(true);
       expect(messages[0]?.images).toHaveLength(1);
@@ -202,7 +202,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
       const ops = new BridgeMessageOps(mockCdp);
       const res = await ops.sendReply(
-        { messageId: '2001', sender: '陈鹏', content: '原始讨论' },
+        { messageId: '2001', sender: '张三', content: '原始讨论' },
         '收到回复',
         { targetSessionId: '1-29467' }
       );
@@ -223,7 +223,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         }
         if (method === 'insertSendBefoeMsg') {
           const message = request.args[1] as Record<string, unknown>;
-          msgFlag = String(message['msgFlag'] || '');
+          const rawMsgFlag = message['msgFlag'];
+          msgFlag = typeof rawMsgFlag === 'string' ? rawMsgFlag : '';
           return { code: 0, data: { ...message, id: 1002, msgIdx: 20 } };
         }
         if (method === 'sendMessageNew') return { code: 0 };
@@ -1111,6 +1112,179 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
       expect(ok).toBe(false);
       expect(runtime.events).toHaveLength(0);
+    });
+  });
+
+  describe('发送者身份校验 Fail-Closed (无固定账号兜底)', () => {
+    const session = {
+      id: 602475,
+      sesUUID: '0-3585',
+      typeName: 'int2024',
+      name: 'int2024',
+      type: 0,
+      typeID: 3585,
+    };
+
+    it('文本发送在无有效 userID 时必须明确失败 (isPreTrigger: true)，且不调用任何发送 IPC', async () => {
+      const ipc = new FakeIpcRenderer(() => ({ code: 0, data: { id: 1001, msgIdx: 1 } }));
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [session],
+        main: { userID: undefined, userName: undefined },
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp).sendText('测试无身份发送', {
+        targetSessionId: session.sesUUID,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.isPreTrigger).toBe(true);
+      expect(result.error).toContain('未获取到当前登录用户身份');
+      expect(ipc.sent).toHaveLength(0);
+    });
+
+    it('引用回复在无有效 userID 时必须明确失败 (isPreTrigger: true)，且不执行消息插入和发送', async () => {
+      const targetMessage = {
+        id: 135000010,
+        msgIdx: 9,
+        sender: 3705,
+        senderName: 'int2024',
+        contentType: 4,
+        content: { content: [{ type: 0, text: '原消息' }] },
+      };
+      const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'getMessages') return { code: 0, data: [targetMessage] };
+        return { code: 0 };
+      });
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [session],
+        main: { userID: undefined, userName: undefined },
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp).sendReply(
+        { messageId: '135000010' },
+        '测试无身份回复',
+        { targetSessionId: session.sesUUID }
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.isPreTrigger).toBe(true);
+      expect(result.error).toContain('未获取到当前登录用户身份');
+      const insertOrSendCalls = ipc.sent.filter(
+        req => req.args[0] === 'insertSendBefoeMsg' || req.args[0] === 'sendMessageNew'
+      );
+      expect(insertOrSendCalls).toHaveLength(0);
+    });
+
+    it('文件发送在无有效 userID 时必须明确失败 (isPreTrigger: true)，且不执行消息插入和发送', async () => {
+      const tmpFile = path.resolve('tmp', 'test-no-user-id-file.txt');
+      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      fs.writeFileSync(tmpFile, 'no user id content');
+
+      const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [session],
+        main: { userID: null, userName: null },
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      try {
+        const result = await new BridgeMessageOps(mockCdp).sendFile(tmpFile, {
+          targetSessionId: session.sesUUID,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.isPreTrigger).toBe(true);
+        expect(result.error).toContain('未获取到当前登录用户身份');
+        expect(ipc.sent).toHaveLength(0);
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
+    it('图片发送在无有效 userID 时必须明确失败 (isPreTrigger: true)，且不调用 sendingImgBeforeHandle 及发送 RPC', async () => {
+      const tmpFile = path.resolve('tmp', 'test-no-user-id-img.png');
+      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          'base64'
+        )
+      );
+
+      const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [session],
+        main: null,
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      try {
+        const result = await new BridgeMessageOps(mockCdp).sendImage(tmpFile, {
+          targetSessionId: session.sesUUID,
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.isPreTrigger).toBe(true);
+        expect(result.error).toContain('未获取到当前登录用户身份');
+        expect(ipc.sent).toHaveLength(0);
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
+    it('有效身份来自 editor.userID 时应成功读取并作为 sender 构造消息', async () => {
+      let insertedMessage: Record<string, unknown> | undefined;
+      let msgFlag = '';
+      const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'insertSendBefoeMsg') {
+          insertedMessage = request.args[1] as Record<string, unknown>;
+          const rawMsgFlag = insertedMessage['msgFlag'];
+          msgFlag = typeof rawMsgFlag === 'string' ? rawMsgFlag : '';
+          return { code: 0, data: { ...insertedMessage, id: 1009, msgIdx: 2 } };
+        }
+        if (request.args[0] === 'sendMessageNew') return { code: 0 };
+        if (request.args[0] === 'getMessages') {
+          return { code: 0, data: [{ id: 135000099, msgIdx: 2, msgFlag }] };
+        }
+        return { code: 1 };
+      });
+
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [session],
+        main: null,
+      });
+      // 模拟主页面无 main，但 editor 挂载了当前用户 8888
+      (runtime.editor as Record<string, unknown>)['userID'] = 8888;
+      (runtime.editor as Record<string, unknown>)['userName'] = '客服代表';
+
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp).sendText('来自 editor 身份测试', {
+        targetSessionId: session.sesUUID,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.messageId).toBe('135000099');
+      expect(insertedMessage?.['sender']).toBe(8888);
+      expect(insertedMessage?.['senderName']).toBe('客服代表');
     });
   });
 });

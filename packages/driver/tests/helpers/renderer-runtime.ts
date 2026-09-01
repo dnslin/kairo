@@ -87,6 +87,7 @@ interface RendererRuntimeOptions {
   math?: Math;
   clipboardWrite?: (items: unknown[]) => Promise<void>;
   onSendClick?: () => void;
+  main?: Record<string, unknown> | null;
 }
 
 interface RendererEvent {
@@ -138,12 +139,15 @@ export function createRendererRuntime(options: RendererRuntimeOptions = {}): Ren
       commits.push({ type, payload });
     },
   };
-  const main = {
-    userID: 5761,
-    userName: '我',
-    deviceID: 'test-device',
-    $bus: bus,
-  };
+  const main =
+    options.main !== undefined
+      ? options.main
+      : {
+          userID: 5761,
+          userName: '我',
+          deviceID: 'test-device',
+          $bus: bus,
+        };
   const app = { $bus: bus, $store: store };
   const editorNode = {
     __vue__: editor,
@@ -191,7 +195,7 @@ export function createRendererRuntime(options: RendererRuntimeOptions = {}): Ren
   const document = {
     querySelector(selector: string): unknown {
       if (selector === '#app') return { __vue__: app };
-      if (selector.includes('.main-page')) return { __vue__: main };
+      if (selector.includes('.main-page')) return main ? { __vue__: main } : null;
       if (selector.includes('.sendMsg-btn')) return sendButton;
       if (
         selector.includes('.chat-editor') ||
