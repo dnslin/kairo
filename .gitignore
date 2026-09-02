@@ -47,3 +47,6 @@ harness-tasks.json.bak
 harness-init.sh
 .harness-stop-counter
 .harness-active
+
+# Local documentation artifacts
+/docs/kairo-capability-map-eli5.html
