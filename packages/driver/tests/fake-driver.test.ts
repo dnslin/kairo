@@ -100,5 +100,11 @@ describe('FakeKK9Driver 故障注入与契约实现测试 (IKK9Driver)', () => {
 
     const user = await driver.getUserProfile(5761);
     expect(user?.name).toBe('董仕林');
+
+    const fromSesId = await driver.getEmployeeBySession('0-5761');
+    expect(fromSesId?.loginName).toBe('0123040139');
+
+    const fromGroup = await driver.getEmployeeBySession('1-29467');
+    expect(fromGroup).toBeNull();
   });
 });

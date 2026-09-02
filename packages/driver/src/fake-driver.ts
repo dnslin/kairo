@@ -249,6 +249,44 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
     return Promise.resolve(found || null);
   }
 
+  public async getEmployeeBySession(session: string | KK9Session): Promise<KK9Employee | null> {
+    if (!session) return null;
+
+    let targetSessionId = '';
+    if (typeof session === 'object') {
+      if (session.type !== 'private') {
+        return null;
+      }
+      targetSessionId = session.id?.trim() || '';
+    } else if (typeof session === 'string') {
+      targetSessionId = session.trim();
+    }
+
+    if (!targetSessionId) return null;
+
+    if (targetSessionId.startsWith('0-')) {
+      const uid = targetSessionId.slice(2).trim();
+      return this.getUserProfile(uid);
+    }
+
+    if (/^[123]-/.test(targetSessionId)) {
+      return null;
+    }
+
+    const matched = this.sessions.find(
+      s => s.id === targetSessionId || s.name === targetSessionId
+    );
+    if (matched && matched.type === 'private' && matched.id.startsWith('0-')) {
+      return this.getUserProfile(matched.id.slice(2).trim());
+    }
+
+    if (/^\d+$/.test(targetSessionId)) {
+      return this.getUserProfile(targetSessionId);
+    }
+
+    return null;
+  }
+
   public startPolling(_customPolling?: Partial<PollingConfig>): void {}
   public stopPolling(): void {}
 
