@@ -6,6 +6,17 @@
 // 顶层抽象接口与驱动实现
 export { KK9Driver } from './driver.js';
 export { FakeKK9Driver, type FakeSendBehavior, type RecordedSendCall } from './fake-driver.js';
+export { InMemorySendOperationStore, createSendOperationFingerprint } from './send-operation.js';
+export type {
+  SendOperationClaim,
+  SendOperationClaimResult,
+  SendOperationFingerprint,
+  SendOperationFingerprintInput,
+  SendOperationMessageType,
+  SendOperationRecord,
+  SendOperationStore,
+  SendOperationUpdate,
+} from './send-operation.js';
 
 // Bridge 核心操作与事件总线
 export { KK9EventBridge } from './bridge/event-bridge.js';
@@ -61,6 +72,7 @@ export type {
   KK9MessageType,
   KK9MessageOrigin,
   MessageDirection,
+  SendStatus,
   TextStyle,
   TextSegment,
   FormattedText,
