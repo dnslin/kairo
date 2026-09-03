@@ -1,9 +1,10 @@
 # Kairo 阶段一企业知识问答技术实施计划
 
-> 状态：待用户审阅
+> 状态：已确认；代码实现尚未开始
 > 日期：2026-09-03
 > 需求来源：[`docs/prd.md`](../docs/prd.md)、[`docs/SPEC-stage-1.md`](../docs/SPEC-stage-1.md)
-> 任务清单：[`tasks/todo.md`](./todo.md)
+> 任务定义快照：[`tasks/todo.md`](./todo.md)
+> 任务追踪：[`GitHub Issues`](https://github.com/dnslin/kairo/issues)（唯一任务状态与依赖来源）；[`Stage 1 - 企业知识问答`](https://github.com/dnslin/kairo/milestone/5)（里程碑 #5）
 
 ## 1. 目标与范围
 
@@ -239,15 +240,50 @@ T01-T03 工作区与依赖
 
 ## 7. 任务索引
 
-| 阶段 | 任务 |
-|---|---|
-| A | T01 工作区；T02 根规则与命令；T03 依赖锁定；T04 direction；T05 发送意图；T06 Bridge 三态；T07 兼容发送；T08 日志隐私；T09 Driver 真机 E2E；T10 PostgreSQL Send Store；T11 Mastra schema；T12 delayed-memory；T13 生产路由/Studio；T14 RAGFlow MCP-first |
-| B | T15 Bot 配置；T16 SOUL/AGENTS/Skill；T17 日志与健康；T18 私聊存储；T19 任务账本；T20 证据/Memory/反馈 |
-| C | T21 发送协调器；T22 direction/身份/allowlist/去重；T23 消息聚合；T24 `/new`/context；T25 队列/并发/时间；T26 重启与 Driver 重连 |
-| D | T27 唯一 RAGFlow 连接器；T28 Mastra Agent；T29 企业答案证据；T30 通用知识确认；T31 冲突/部分回答/反馈；T32 delivered-only Memory |
-| E | T33 Composition Root；T34 跨进程与故障 E2E；T35 双员工真实 IM 放行 |
+任务执行、状态、依赖和验收证据统一由 [`GitHub Issues`](https://github.com/dnslin/kairo/issues) 管理，全部任务归入 [`Stage 1 - 企业知识问答`](https://github.com/dnslin/kairo/milestone/5) 里程碑。issue 保持 open 表示未完成，完成全部验收后关闭；前置关系使用 GitHub 原生 `blocked by`。
 
-每个任务的具体文件、用户可见结果、验收条件、测试命令和真实环境要求见 [`tasks/todo.md`](./todo.md)。
+- **阶段 A：基础与高风险门禁**
+  - [`T01` #206](https://github.com/dnslin/kairo/issues/206) 建立 `@kairo/app` 最小工作区
+  - [`T02` #207](https://github.com/dnslin/kairo/issues/207) 扩展仓库规则与根质量命令
+  - [`T03` #208](https://github.com/dnslin/kairo/issues/208) 锁定依赖并验证干净检出启动
+  - [`T04` #209](https://github.com/dnslin/kairo/issues/209) 增加 Driver `direction` 公共合同
+  - [`T05` #210](https://github.com/dnslin/kairo/issues/210) 定义 Driver 发送意图与 Store port
+  - [`T06` #211](https://github.com/dnslin/kairo/issues/211) 接通文本类 Bridge 发送三态与只读查询
+  - [`T07` #212](https://github.com/dnslin/kairo/issues/212) 补齐图片、DOM 与 FakeDriver 兼容合同
+  - [`T08` #213](https://github.com/dnslin/kairo/issues/213) 删除 Driver 正文日志
+  - [`T09` #214](https://github.com/dnslin/kairo/issues/214) Driver 阶段一真实合同 E2E
+  - [`T10` #215](https://github.com/dnslin/kairo/issues/215) 建立 PostgreSQL 迁移与 SendOperationStore
+  - [`T11` #216](https://github.com/dnslin/kairo/issues/216) 建立 Mastra schema 与运行账号门禁
+  - [`T12` #217](https://github.com/dnslin/kairo/issues/217) 验证 Mastra delayed-memory 合同
+  - [`T13` #218](https://github.com/dnslin/kairo/issues/218) 验证 Mastra 生产路由与 Studio 隔离
+  - [`T14` #219](https://github.com/dnslin/kairo/issues/219) 执行 RAGFlow MCP-first 真实门禁
+- **阶段 B：配置、日志与业务账本**
+  - [`T15` #220](https://github.com/dnslin/kairo/issues/220) 加载并校验受控 Bot 配置
+  - [`T16` #221](https://github.com/dnslin/kairo/issues/221) 组合 SOUL、规则与用户真实 Skill
+  - [`T17` #222](https://github.com/dnslin/kairo/issues/222) 统一日志、错误与 localhost 健康接口
+  - [`T18` #223](https://github.com/dnslin/kairo/issues/223) 持久化原始消息、聚合批次、context 与提示限频
+  - [`T19` #224](https://github.com/dnslin/kairo/issues/224) 持久化任务、attempt 与等待员工状态
+  - [`T20` #225](https://github.com/dnslin/kairo/issues/225) 持久化知识证据、Memory commit、反馈与启动记录
+- **阶段 C：私聊、发送、队列与恢复**
+  - [`T21` #226](https://github.com/dnslin/kairo/issues/226) 实现统一出站发送协调器
+  - [`T22` #227](https://github.com/dnslin/kairo/issues/227) 实现 direction、员工身份、allowlist 与持久去重
+  - [`T23` #228](https://github.com/dnslin/kairo/issues/228) 实现 5秒/60秒消息合并与阶段一输入拒绝
+  - [`T24` #229](https://github.com/dnslin/kairo/issues/229) 实现 `/new` 与 2 小时 context 边界
+  - [`T25` #230](https://github.com/dnslin/kairo/issues/230) 实现同会话队列、全局并发与时间通知
+  - [`T26` #231](https://github.com/dnslin/kairo/issues/231) 实现启动恢复与 Driver 重连监督
+- **阶段 D：知识问答、Agent 与正式 Memory**
+  - [`T27` #232](https://github.com/dnslin/kairo/issues/232) 实现最终选定的唯一 RAGFlow 连接器与知识 Tool
+  - [`T28` #233](https://github.com/dnslin/kairo/issues/233) 装配唯一 Mastra Agent
+  - [`T29` #234](https://github.com/dnslin/kairo/issues/234) 实现企业答案证据检查与首个完整回答闭环
+  - [`T30` #235](https://github.com/dnslin/kairo/issues/235) 实现无资料与通用知识一次性确认
+  - [`T31` #236](https://github.com/dnslin/kairo/issues/236) 实现资料冲突、部分回答与负反馈
+  - [`T32` #237](https://github.com/dnslin/kairo/issues/237) 实现 delivered 后正式 Memory 提交与恢复
+- **阶段 E：单进程装配、跨进程测试与真实放行**
+  - [`T33` #238](https://github.com/dnslin/kairo/issues/238) 完成 Composition Root 与依赖状态管理
+  - [`T34` #239](https://github.com/dnslin/kairo/issues/239) 执行跨进程恢复与故障矩阵 E2E
+  - [`T35` #240](https://github.com/dnslin/kairo/issues/240) 执行双员工真实 IM 与知识回归放行
+
+任务定义、验收条件、测试命令和真实环境要求仍保留在 [`tasks/todo.md`](./todo.md)；该文件不维护执行状态。
 
 ## 8. 实施后命令合同
 
