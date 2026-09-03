@@ -7,7 +7,9 @@
   "include": [
     "packages/driver/src/**/*",
     "packages/driver/tests/**/*",
-    "packages/driver/examples/**/*"
+    "packages/driver/examples/**/*",
+    "apps/kairo/src/**/*",
+    "apps/kairo/tests/**/*"
   ],
   "exclude": ["node_modules", "dist"]
 }
