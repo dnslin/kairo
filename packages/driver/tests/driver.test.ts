@@ -93,6 +93,7 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
         content: '私聊咨询',
         time: '12:01',
         isMe: false,
+        direction: 'inbound',
         atMe: false,
         timestamp: Date.now(),
       },
@@ -105,6 +106,7 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
         content: '@机器人 请查一下数据',
         time: '12:02',
         isMe: false,
+        direction: 'inbound',
         atMe: true,
         mentions: {
           isAtMe: true,
@@ -278,6 +280,7 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
       content: '当前会话消息',
       time: '12:00',
       isMe: false,
+      direction: 'inbound',
       timestamp: Date.now(),
     };
     internals.domMessageOps.getRecentMessages = vi.fn().mockResolvedValue([domMessage]);
