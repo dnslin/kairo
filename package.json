@@ -8,11 +8,11 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "build": "pnpm --filter @kairo/driver build",
-    "typecheck": "pnpm --filter @kairo/driver typecheck",
-    "test": "pnpm --filter @kairo/driver test",
+    "build": "pnpm --filter @kairo/driver build && pnpm --filter @kairo/app build",
+    "typecheck": "pnpm --filter @kairo/driver typecheck && pnpm --filter @kairo/app typecheck",
+    "test": "pnpm --filter @kairo/driver test && pnpm --filter @kairo/app test",
     "test:watch": "pnpm --filter @kairo/driver test:watch",
-    "lint": "eslint \"packages/driver/src/**/*.ts\" \"packages/driver/tests/**/*.ts\" \"packages/driver/examples/**/*.ts\"",
+    "lint": "eslint \"packages/driver/src/**/*.ts\" \"packages/driver/tests/**/*.ts\" \"packages/driver/examples/**/*.ts\" \"apps/kairo/**/*.ts\"",
     "format": "prettier --write \"packages/driver/src/**/*.ts\" \"packages/driver/tests/**/*.ts\" \"packages/driver/examples/**/*.ts\"",
     "verify": "pnpm --filter @kairo/driver verify",
     "diagnose": "pnpm --filter @kairo/driver diagnose",

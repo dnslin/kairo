@@ -10,6 +10,8 @@ export default [
       'packages/driver/src/**/*.ts',
       'packages/driver/tests/**/*.ts',
       'packages/driver/examples/**/*.ts',
+      'apps/kairo/src/**/*.ts',
+      'apps/kairo/tests/**/*.ts',
     ],
     languageOptions: {
       parser: tsparser,
@@ -46,7 +48,11 @@ export default [
     },
   },
   {
-    files: ['packages/driver/tests/**/*.ts', 'packages/driver/examples/**/*.ts'],
+    files: [
+      'packages/driver/tests/**/*.ts',
+      'packages/driver/examples/**/*.ts',
+      'apps/kairo/tests/**/*.ts',
+    ],
     rules: {
       '@typescript-eslint/unbound-method': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',

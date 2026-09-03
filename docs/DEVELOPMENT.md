@@ -1,6 +1,6 @@
-# Kairo Driver 开发与验证
+# Kairo Driver 与应用开发和验证
 
-本仓库只维护 `@kairo/driver`：一个面向 KK9 Windows 客户端的事件驱动 CDP Driver。
+本仓库维护 `@kairo/driver` 与 `@kairo/app`。Driver 是一个面向 KK9 Windows 客户端的事件驱动 CDP Driver。
 
 ## 环境
 
@@ -23,6 +23,7 @@ pnpm test
 pnpm lint
 pnpm format
 ```
+以上四条根质量命令同时覆盖 `@kairo/driver` 与 `@kairo/app`；`pnpm format` 当前只格式化 Driver 文件。
 
 Driver 真机辅助命令：
 
