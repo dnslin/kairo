@@ -1,8 +1,11 @@
-# Kairo 阶段一企业知识问答任务清单
+# Kairo 阶段一企业知识问答任务定义与验收快照
 
-> 状态：待用户审阅
+> 状态：已确认；执行状态以 GitHub Issues 为准
 > 日期：2026-09-03
 > 上游：[`tasks/plan.md`](./plan.md)、[`docs/SPEC-stage-1.md`](../docs/SPEC-stage-1.md)
+> 任务追踪：[`GitHub Issues`](https://github.com/dnslin/kairo/issues)（唯一任务状态与依赖来源）
+> 阶段一里程碑：[`Stage 1 - 企业知识问答`](https://github.com/dnslin/kairo/milestone/5)（里程碑 #5）
+> 已建立任务 issues：#206–#240
 
 ## 使用规则
 
@@ -13,6 +16,8 @@
 - 若 Driver、Mastra 或 RAGFlow 的真实行为与 PRD/SPEC 冲突，停止后续任务，保存证据并先更新上游文档。
 - 默认 `test` 不得触发真实 IM 副作用；真实 E2E 必须要求显式确认变量。
 - 本清单不给工期；任务按依赖和可验证纵向结果排序。
+- GitHub Issues（#206–#240）管理任务状态、前置依赖、执行评论和完成证据；本文件只保留任务定义与验收快照。
+- 任务状态使用 issue 的 open/closed；前置关系使用 GitHub 原生 `blocked by`，issue 正文同步保留可读链接。
 
 ---
 
