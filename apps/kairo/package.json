@@ -8,9 +8,24 @@
   },
   "scripts": {
     "dev": "node --watch --experimental-strip-types src/index.ts",
+    "prebuild": "pnpm --filter @kairo/driver build",
     "build": "tsc -p tsconfig.json",
+    "pretypecheck": "pnpm --filter @kairo/driver build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm --filter @kairo/driver build",
     "test": "vitest run --config vitest.config.ts --passWithNoTests",
     "e2e": "vitest run --config vitest.config.ts --passWithNoTests --dir tests/e2e"
+  },
+  "dependencies": {
+    "@kairo/driver": "workspace:*",
+    "@mastra/core": "1.63.2",
+    "@mastra/memory": "1.28.1",
+    "@mastra/pg": "1.22.2",
+    "mastra": "1.27.2",
+    "node-pg-migrate": "9.0.0",
+    "pg": "8.23.0",
+    "pino": "9.14.0",
+    "yaml": "2.9.0",
+    "zod": "4.5.4"
   }
 }
