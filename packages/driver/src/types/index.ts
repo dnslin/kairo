@@ -52,6 +52,9 @@ export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system' |
 /** 消息方向；unknown 表示无法确认是员工还是 Bot 发出。 */
 export type MessageDirection = 'inbound' | 'outbound' | 'unknown';
 
+/** 发送操作最终状态；unknown 不等同于确定失败。 */
+export type SendStatus = 'delivered' | 'failed' | 'unknown';
+
 /**
  * 文本样式属性
  */
@@ -307,6 +310,10 @@ export interface EventBridgeConfig {
  */
 export interface SendResult {
   success: boolean;
+  /** 稳定发送意图 ID；旧调用方可以不提供。 */
+  operationId?: string;
+  /** 发送操作最终状态；旧底层实现迁移期间可以不提供。 */
+  status?: SendStatus;
   messageId?: string;
   recall?: () => Promise<boolean>;
   error?: string;
@@ -339,6 +346,8 @@ export interface PreSendCheckResult {
 
 export interface SendOptions {
   targetSessionId?: string;
+  /** 稳定发送意图 ID；同一 ID 的安全重试必须复用。 */
+  operationId?: string;
   verifyTimeoutMs?: number;
   /** 引用/回复目标 */
   replyTo?: string | KK9ReplyTarget;
@@ -348,6 +357,8 @@ export interface SendOptions {
 
 export interface SendFileOptions {
   targetSessionId?: string;
+  /** 稳定发送意图 ID；同一 ID 的安全重试必须复用。 */
+  operationId?: string;
   verifyTimeoutMs?: number;
 }
 
