@@ -479,6 +479,56 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     return this.domOrgOps.getUserProfile(userId);
   }
 
+  /**
+   * 通过私聊会话 ID 或会话实体直接获取对应员工的详细档案
+   * @param session 会话 ID 字符串（如 "0-9529"）或 KK9Session 实体
+   * @returns 员工档案；若为群聊、无效输入或查询无果则返回 null
+   */
+  public async getEmployeeBySession(session: string | KK9Session): Promise<KK9Employee | null> {
+    if (!session) return null;
+
+    let targetSessionId = '';
+    if (typeof session === 'object') {
+      if (session.type !== 'private') {
+        return null;
+      }
+      targetSessionId = session.id?.trim() || '';
+    } else if (typeof session === 'string') {
+      targetSessionId = session.trim();
+    }
+
+    if (!targetSessionId) return null;
+
+    // 1. 如果格式是 "0-12345" 形式的标准私聊 sesUUID
+    if (targetSessionId.startsWith('0-')) {
+      const uid = targetSessionId.slice(2).trim();
+      if (uid) {
+        return this.getUserProfile(uid);
+      }
+    }
+
+    // 2. 如果明确是群聊格式 "1-..." 或讨论组 "2-..."，直接拒止
+    if (/^[123]-/.test(targetSessionId)) {
+      return null;
+    }
+
+    // 3. 尝试通过会话名称或内部 ID 匹配会话
+    const resolved = await this.resolveSessionTarget(targetSessionId);
+    if (resolved && resolved.type === 'private' && resolved.id.startsWith('0-')) {
+      const uid = resolved.id.slice(2).trim();
+      if (uid) {
+        return this.getUserProfile(uid);
+      }
+    }
+
+    // 4. 若传入的是纯数字 UID 形式，尝试直接查询
+    if (/^\d+$/.test(targetSessionId)) {
+      return this.getUserProfile(targetSessionId);
+    }
+
+    return null;
+  }
+
   public startPolling(customPolling?: Partial<PollingConfig>): void {
     if (this.isPolling) return;
 

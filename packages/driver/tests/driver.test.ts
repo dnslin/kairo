@@ -508,4 +508,105 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
 
     expect(recalledEvents).toHaveLength(1);
   });
+
+  describe('getEmployeeBySession 会话员工档案查询', () => {
+    it('应支持通过私聊会话 ID 字符串 (0-xxxx) 直接查询员工档案', async () => {
+      const driver = new KK9Driver({
+        cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+      });
+      const internals = getDriverTestInternals(driver);
+      const mockEmployee: KK9Employee = {
+        id: 9529,
+        loginName: '0125090014',
+        name: '杨晓君',
+        position: '采购助理工程师',
+        updatedAt: Date.now(),
+      };
+      internals.bridgeOrgOps.getUserProfile = vi.fn().mockResolvedValue(mockEmployee);
+
+      const profile = await driver.getEmployeeBySession('0-9529');
+      expect(profile).not.toBeNull();
+      expect(profile?.name).toBe('杨晓君');
+      expect(profile?.loginName).toBe('0125090014');
+      expect(internals.bridgeOrgOps.getUserProfile).toHaveBeenCalledWith('9529');
+    });
+
+    it('应支持通过 KK9Session 私聊实体查询员工档案', async () => {
+      const driver = new KK9Driver({
+        cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+      });
+      const internals = getDriverTestInternals(driver);
+      const mockEmployee: KK9Employee = {
+        id: 7783,
+        loginName: '0124070224',
+        name: '陈鹏',
+        position: 'IT应用系统工程师',
+        updatedAt: Date.now(),
+      };
+      internals.bridgeOrgOps.getUserProfile = vi.fn().mockResolvedValue(mockEmployee);
+
+      const session: KK9Session = {
+        id: '0-7783',
+        name: '陈鹏',
+        type: 'private',
+        unread: false,
+      };
+      const profile = await driver.getEmployeeBySession(session);
+      expect(profile).not.toBeNull();
+      expect(profile?.name).toBe('陈鹏');
+      expect(profile?.loginName).toBe('0124070224');
+    });
+
+    it('群聊会话 ID (1-xxxx) 或群聊实体必须直接返回 null', async () => {
+      const driver = new KK9Driver({
+        cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+      });
+      const internals = getDriverTestInternals(driver);
+      internals.bridgeOrgOps.getUserProfile = vi.fn();
+
+      const byString = await driver.getEmployeeBySession('1-16733');
+      expect(byString).toBeNull();
+
+      const groupSession: KK9Session = {
+        id: '1-16733',
+        name: '财务大家庭',
+        type: 'group',
+        unread: false,
+      };
+      const byEntity = await driver.getEmployeeBySession(groupSession);
+      expect(byEntity).toBeNull();
+      expect(internals.bridgeOrgOps.getUserProfile).not.toHaveBeenCalled();
+    });
+
+    it('传入私聊会话名称时应自动解析目标并返回档案', async () => {
+      const driver = new KK9Driver({
+        cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+      });
+      const internals = getDriverTestInternals(driver);
+      driver.getSessions = vi.fn().mockResolvedValue([
+        { id: '0-11403', name: '沈文林', type: 'private', unread: false },
+      ]);
+      const mockEmployee: KK9Employee = {
+        id: 11403,
+        loginName: '0126080260',
+        name: '沈文林',
+        position: 'IT桌网工程师',
+        updatedAt: Date.now(),
+      };
+      internals.bridgeOrgOps.getUserProfile = vi.fn().mockResolvedValue(mockEmployee);
+
+      const profile = await driver.getEmployeeBySession('沈文林');
+      expect(profile).not.toBeNull();
+      expect(profile?.name).toBe('沈文林');
+      expect(profile?.loginName).toBe('0126080260');
+    });
+
+    it('无效空输入应直接返回 null', async () => {
+      const driver = new KK9Driver({
+        cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+      });
+      expect(await driver.getEmployeeBySession('')).toBeNull();
+      expect(await driver.getEmployeeBySession('   ')).toBeNull();
+    });
+  });
 });

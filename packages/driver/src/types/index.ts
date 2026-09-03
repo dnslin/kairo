@@ -395,6 +395,7 @@ export interface IKK9Driver extends EventEmitter {
   // 组织架构与员工档案
   getOrgEmployees(timeoutMs?: number): Promise<KK9Employee[]>;
   getUserProfile(userId: number | string): Promise<KK9Employee | null>;
+  getEmployeeBySession(session: string | KK9Session): Promise<KK9Employee | null>;
 
   // 智能轮询
   startPolling(customPolling?: Partial<PollingConfig>): void;
