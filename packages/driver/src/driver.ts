@@ -35,6 +35,7 @@ import type {
   SendResult,
 } from './types/index.js';
 import { DriverError } from './utils/errors.js';
+import { InMemorySendOperationStore, type SendOperationStore } from './send-operation.js';
 import { createChildLogger } from './utils/logger.js';
 
 const log = createChildLogger('kk9-driver');
@@ -70,7 +71,10 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
   private readonly knownRecalledMessageKeys = new Set<string>();
   private readonly knownBotSentMessageKeys = new Set<string>();
 
-  constructor(private readonly config: DriverConfig) {
+  constructor(
+    private readonly config: DriverConfig,
+    sendOperationStore: SendOperationStore = new InMemorySendOperationStore()
+  ) {
     super();
     this.selectors = resolveSelectors(config.selectors);
     this.cdp = new CdpClient(config.cdp, {
@@ -89,7 +93,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
 
     // 初始化 Bridge 操作层
     this.bridgeSessionOps = new BridgeSessionOps(this.cdp);
-    this.bridgeMessageOps = new BridgeMessageOps(this.cdp);
+    this.bridgeMessageOps = new BridgeMessageOps(this.cdp, sendOperationStore);
     this.bridgeOrgOps = new BridgeOrgOps(this.cdp);
 
     // 初始化 DOM 操作层 (保留)
@@ -337,7 +341,12 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
 
     const res = await this.bridgeMessageOps.sendText(text, resolvedOptions);
-    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+    if (
+      !res.success &&
+      res.isPreTrigger &&
+      !resolvedOptions.targetSessionId &&
+      !resolvedOptions.operationId
+    ) {
       const domRes = await this.domSendOps.sendText(text, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
@@ -357,7 +366,12 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
 
     const res = await this.bridgeMessageOps.sendRichText(content, resolvedOptions);
-    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+    if (
+      !res.success &&
+      res.isPreTrigger &&
+      !resolvedOptions.targetSessionId &&
+      !resolvedOptions.operationId
+    ) {
       const domRes = await this.domSendOps.sendRichText(content, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
@@ -378,7 +392,12 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
 
     const res = await this.bridgeMessageOps.sendReply(replyTo, content, resolvedOptions);
-    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+    if (
+      !res.success &&
+      res.isPreTrigger &&
+      !resolvedOptions.targetSessionId &&
+      !resolvedOptions.operationId
+    ) {
       const domRes = await this.domSendOps.sendReply(replyTo, content, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
@@ -395,13 +414,24 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
 
     const res = await this.bridgeMessageOps.sendFile(filePath, resolvedOptions);
-    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+    if (
+      !res.success &&
+      res.isPreTrigger &&
+      !resolvedOptions.targetSessionId &&
+      !resolvedOptions.operationId
+    ) {
       const domRes = await this.domSendOps.sendFile(filePath, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
     this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
     return res;
+  }
+  /**
+   * 只查询发送操作状态，不触发新的发送动作
+   */
+  public getSendStatus(operationId: string): Promise<SendResult> {
+    return this.bridgeMessageOps.getSendStatus(operationId);
   }
 
   /**

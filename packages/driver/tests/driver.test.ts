@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
+import { FakeKK9Driver } from '../src/fake-driver.js';
 import { KK9Driver } from '../src/driver.js';
-import type { KK9Employee, KK9Message, KK9Session, SendResult } from '../src/types/index.js';
+import type {
+  IKK9Driver,
+  KK9Employee,
+  KK9Message,
+  KK9Session,
+  SendResult,
+} from '../src/types/index.js';
+import { InMemorySendOperationStore } from '../src/send-operation.js';
 import { getDriverTestInternals } from './helpers/driver-internals.js';
 
 describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
@@ -360,9 +368,9 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
       cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
     });
     const internals = getDriverTestInternals(driver);
-    driver.getSessions = vi.fn().mockResolvedValue([
-      { id: '0-3585', name: 'int2024', type: 'private', unread: false },
-    ]);
+    driver.getSessions = vi
+      .fn()
+      .mockResolvedValue([{ id: '0-3585', name: 'int2024', type: 'private', unread: false }]);
     driver.selectSession = vi.fn().mockResolvedValue(true);
     driver.getCurrentSession = vi.fn().mockResolvedValue({
       id: '0-3585',
@@ -371,7 +379,9 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
       unread: false,
       active: true,
     });
-    internals.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue({ success: true, messageId: '1001' });
+    internals.bridgeMessageOps.sendImage = vi
+      .fn()
+      .mockResolvedValue({ success: true, messageId: '1001' });
 
     const result = await driver.sendImage('image.png', { targetSessionId: '0-3585' });
 
@@ -437,9 +447,9 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
       cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
     });
     const internals = getDriverTestInternals(driver);
-    driver.getSessions = vi.fn().mockResolvedValue([
-      { id: '0-3585', name: 'int2024', type: 'private', unread: false },
-    ]);
+    driver.getSessions = vi
+      .fn()
+      .mockResolvedValue([{ id: '0-3585', name: 'int2024', type: 'private', unread: false }]);
     internals.bridgeSessionOps.markSessionRead = vi.fn().mockResolvedValue(false);
     internals.domSessionOps.markSessionRead = vi.fn().mockResolvedValue(true);
 
@@ -460,7 +470,10 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
       loginName: '0123040139',
       name: '董仕林',
       position: 'IT开发工程师',
-      deptPaths: [{ id: 15, name: '联合光电' }, { id: 29, name: 'IT组' }],
+      deptPaths: [
+        { id: 15, name: '联合光电' },
+        { id: 29, name: 'IT组' },
+      ],
       updatedAt: Date.now(),
     };
 
@@ -482,9 +495,9 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
     });
     const internals = getDriverTestInternals(driver);
 
-    driver.getSessions = vi.fn().mockResolvedValue([
-      { id: '0-3585', name: 'int2024', type: 'private', unread: false },
-    ]);
+    driver.getSessions = vi
+      .fn()
+      .mockResolvedValue([{ id: '0-3585', name: 'int2024', type: 'private', unread: false }]);
     internals.bridgeMessageOps.recallMessage = vi.fn().mockResolvedValue(true);
 
     const ok = await driver.recallMessage('msg_1001', 'int2024');
@@ -586,9 +599,9 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
         cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
       });
       const internals = getDriverTestInternals(driver);
-      driver.getSessions = vi.fn().mockResolvedValue([
-        { id: '0-11403', name: '沈文林', type: 'private', unread: false },
-      ]);
+      driver.getSessions = vi
+        .fn()
+        .mockResolvedValue([{ id: '0-11403', name: '沈文林', type: 'private', unread: false }]);
       const mockEmployee: KK9Employee = {
         id: 11403,
         loginName: '0126080260',
@@ -610,6 +623,42 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
       });
       expect(await driver.getEmployeeBySession('')).toBeNull();
       expect(await driver.getEmployeeBySession('   ')).toBeNull();
+    });
+  });
+  it('带发送操作 ID 的发送前置失败不会退回无法关联的 DOM 双发路径', async () => {
+    const store = new InMemorySendOperationStore();
+    const driver = new KK9Driver(
+      { cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' } },
+      store
+    );
+    const internals = getDriverTestInternals(driver);
+    const bridgeFailure: SendResult = {
+      success: false,
+      operationId: 'op-no-dom-fallback',
+      status: 'failed',
+      isPreTrigger: true,
+    };
+    internals.bridgeMessageOps.sendText = vi.fn().mockResolvedValue(bridgeFailure);
+    internals.domSendOps.sendText = vi
+      .fn()
+      .mockResolvedValue({ success: true, messageId: 'dom-duplicate' });
+
+    const result = await driver.sendText('禁止 DOM 双发', { operationId: 'op-no-dom-fallback' });
+
+    expect(result).toEqual(bridgeFailure);
+    expect(internals.bridgeMessageOps.sendText).toHaveBeenCalledWith('禁止 DOM 双发', {
+      operationId: 'op-no-dom-fallback',
+    });
+    expect(internals.domSendOps.sendText).not.toHaveBeenCalled();
+  });
+  it('Driver 抽象与模拟 Driver 都支持无记录状态查询', async () => {
+    const driver: IKK9Driver = new FakeKK9Driver();
+
+    await expect(driver.getSendStatus('missing-operation')).resolves.toEqual({
+      success: false,
+      operationId: 'missing-operation',
+      status: 'unknown',
+      isPreTrigger: false,
     });
   });
 });

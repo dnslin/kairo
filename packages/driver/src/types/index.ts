@@ -405,6 +405,7 @@ export interface IKK9Driver extends EventEmitter {
     options?: SendOptions
   ): Promise<SendResult>;
   sendFile(filePath: string, options?: SendFileOptions): Promise<SendResult>;
+  getSendStatus(operationId: string): Promise<SendResult>;
   sendImage(imagePath: string, options?: SendOptions): Promise<SendResult>;
   recallMessage(messageId: string, session?: KK9Session | string): Promise<boolean>;
 

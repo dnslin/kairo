@@ -1,12 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import mime from 'mime-types';
 import type { CdpClient } from '../cdp/client.js';
-import {
-  normalizeNativeMessage,
-  type InboundNormalizationDiagnostic,
-} from './converter.js';
+import { normalizeNativeMessage, type InboundNormalizationDiagnostic } from './converter.js';
 import { callIpcToData } from './rpc.js';
 import {
   encodeRendererPayload,
@@ -16,6 +12,20 @@ import {
 import { recallNativeMessage } from './recall-ops.js';
 import { sendNativeImage } from './image-ops.js';
 import { parseFormattedTextToKK } from '../dom/rich-text.js';
+import {
+  BridgeSendStatus,
+  createNativeMessageKey,
+  isCdpUnavailableBeforeSend,
+  resolveActiveSendOptions,
+  sendOperationRecordToResult,
+  sendResultToOperationUpdate,
+} from './send-status.js';
+import {
+  InMemorySendOperationStore,
+  createSendOperationFingerprint,
+  type SendOperationMessageType,
+  type SendOperationStore,
+} from '../send-operation.js';
 import type {
   FormattedText,
   KK9Message,
@@ -25,16 +35,12 @@ import type {
   SendOptions,
   SendResult,
 } from '../types/index.js';
+import { SendError } from '../utils/errors.js';
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('bridge-message-ops');
 
 const MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
-
-function isCdpUnavailableBeforeSend(cdp: CdpClient): boolean {
-  const getStatus = (cdp as Partial<CdpClient>).getStatus;
-  return typeof getStatus === 'function' && getStatus.call(cdp) !== 'connected';
-}
 
 const FIND_REPLY_TARGET_SCRIPT = `
   function normalizeReplyTargetMessage(message) {
@@ -97,7 +103,12 @@ const FIND_REPLY_TARGET_SCRIPT = `
 `;
 
 const CONFIRM_SENT_MESSAGE_SCRIPT = `
-  async function waitForPersistedMessage(sessionID, msgFlag) {
+  async function waitForPersistedMessage(sessionID, msgFlag, targetSession) {
+    const targetSessionIds = [
+      String(sessionID),
+      String(targetSession?.id),
+      String(targetSession?.sesUUID)
+    ];
     for (let attempt = 0; attempt < 12; attempt++) {
       const messagesRes = await callIpc('getMessages', {
         sessionID,
@@ -106,9 +117,16 @@ const CONFIRM_SENT_MESSAGE_SCRIPT = `
         sendTime: 0
       });
       if (messagesRes?.code === 0 && Array.isArray(messagesRes.data)) {
-        const found = messagesRes.data.find(message =>
-          message && message.msgFlag === msgFlag && Number(message.id) > 0
-        );
+        const found = messagesRes.data.find(message => {
+          if (!message || message.msgFlag !== msgFlag || Number(message.id) <= 0) {
+            return false;
+          }
+          const rawSessionId = message.sessionId ?? message.sessionID ?? message.sesUUID;
+          return rawSessionId === undefined ||
+            rawSessionId === null ||
+            String(rawSessionId).trim() === '' ||
+            targetSessionIds.includes(String(rawSessionId));
+        });
         if (found) return found;
       }
       if (attempt < 11) {
@@ -118,10 +136,6 @@ const CONFIRM_SENT_MESSAGE_SCRIPT = `
     return null;
   }
 `;
-
-function createMessageFlag(kind: string): string {
-  return `kairo:${kind}:${randomUUID()}`;
-}
 
 function buildMentionNodes(mentions?: SendOptions['mentions']): Array<Record<string, unknown>> {
   if (!mentions) return [];
@@ -161,7 +175,74 @@ export type BridgeMessageReadResult =
   | { kind: 'unavailable'; error: string };
 
 export class BridgeMessageOps {
-  constructor(private readonly cdp: CdpClient) {}
+  private readonly sendOperationStore: SendOperationStore;
+  private readonly sendStatus: BridgeSendStatus;
+
+  constructor(
+    private readonly cdp: CdpClient,
+    sendOperationStore: SendOperationStore = new InMemorySendOperationStore()
+  ) {
+    this.sendOperationStore = sendOperationStore;
+    this.sendStatus = new BridgeSendStatus(this.cdp, sendOperationStore);
+  }
+
+  public getSendStatus(operationId: string): Promise<SendResult> {
+    return this.sendStatus.getSendStatus(operationId);
+  }
+
+  private async executeOperation<T extends SendOptions | SendFileOptions>(
+    operationType: SendOperationMessageType,
+    options: T,
+    content: unknown,
+    action: (nativeKey: string | undefined, effectiveOptions: T) => Promise<SendResult>
+  ): Promise<SendResult> {
+    const operationId = options.operationId;
+    if (operationId !== undefined && !operationId.trim()) {
+      throw new SendError('operationId 不能为空');
+    }
+    if (operationId === undefined) return action(undefined, options);
+
+    const effectiveOptions = await resolveActiveSendOptions(this.cdp, options);
+    if (!effectiveOptions) {
+      return {
+        success: false,
+        operationId: operationId.trim(),
+        status: 'failed',
+        error: '无法确定 operationId 的目标会话，发送未触发',
+        isPreTrigger: true,
+      };
+    }
+
+    const replyTo = 'replyTo' in effectiveOptions ? effectiveOptions.replyTo : undefined;
+    const mentions = 'mentions' in effectiveOptions ? effectiveOptions.mentions : undefined;
+    const fingerprint = createSendOperationFingerprint({
+      targetSessionId: effectiveOptions.targetSessionId,
+      messageType: operationType,
+      content: { payload: content, replyTo, mentions },
+    });
+    const claim = await this.sendOperationStore.claim({ operationId, fingerprint });
+    if (!claim.claimed) return this.sendStatus.resolve(claim.operation);
+
+    const nativeKey = createNativeMessageKey(operationType, claim.operation.operationId);
+    let result: SendResult;
+    try {
+      result = await action(nativeKey, effectiveOptions);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      const operation = await this.sendOperationStore.update(operationId, {
+        status: 'unknown',
+        error,
+        isPreTrigger: false,
+      });
+      return sendOperationRecordToResult(operation);
+    }
+
+    const operation = await this.sendOperationStore.update(
+      operationId,
+      sendResultToOperationUpdate(result)
+    );
+    return sendOperationRecordToResult(operation);
+  }
 
   /**
    * 优先通过底层 IPC toData('getMessages') 读取指定会话最近消息（无需切换 UI）
@@ -280,7 +361,10 @@ export class BridgeMessageOps {
    * 发送纯文本消息
    */
   public async sendText(text: string, options: SendOptions = {}): Promise<SendResult> {
-    return this.sendRichText(text, options);
+    if (options.replyTo) return this.sendReply(options.replyTo, text, options);
+    return this.executeOperation('text', options, text, (nativeKey, effectiveOptions) =>
+      this.sendRichTextRaw(text, effectiveOptions, nativeKey)
+    );
   }
 
   /**
@@ -291,13 +375,20 @@ export class BridgeMessageOps {
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
+    if (options.replyTo) return this.sendReply(options.replyTo, content, options);
+    return this.executeOperation('rich-text', options, content, (nativeKey, effectiveOptions) =>
+      this.sendRichTextRaw(content, effectiveOptions, nativeKey)
+    );
+  }
+
+  private async sendRichTextRaw(
+    content: FormattedText,
+    options: SendOptions,
+    nativeKey?: string
+  ): Promise<SendResult> {
     const parsed = parseFormattedTextToKK(content);
     if (!parsed.plainText.trim() && !options.mentions) {
       return { success: false, error: '富文本内容不能为空', isPreTrigger: true };
-    }
-
-    if (options.replyTo) {
-      return this.sendReply(options.replyTo, content, options);
     }
 
     const mentionNodes = buildMentionNodes(options.mentions);
@@ -314,7 +405,7 @@ export class BridgeMessageOps {
     const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
-      msgFlag: createMessageFlag('text'),
+      msgFlag: nativeKey ?? createNativeMessageKey('text'),
       contentNodes,
       font: parsed.font,
       mentionMemberIds: mentionNodes.map(m => m['replyMemberID']),
@@ -385,7 +476,11 @@ export class BridgeMessageOps {
 
         const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
         if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
-          return { success: false, error: 'insertSendBefoeMsg 写入失败', isPreTrigger: true };
+          return {
+            success: false,
+            error: 'insertSendBefoeMsg 写入失败',
+            isPreTrigger: Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2),
+          };
         }
 
         const nativeId = insertRes.data.id;
@@ -418,7 +513,7 @@ export class BridgeMessageOps {
           };
         }
 
-        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag);
+        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag, targetSes);
         if (!confirmedMessage) {
           return {
             success: false,
@@ -481,6 +576,22 @@ export class BridgeMessageOps {
     content: FormattedText,
     options: SendOptions = {}
   ): Promise<SendResult> {
+    const operationOptions: SendOptions = { ...options, replyTo };
+    return this.executeOperation(
+      'reply',
+      operationOptions,
+      content,
+      (nativeKey, effectiveOptions) =>
+        this.sendReplyRaw(replyTo, content, effectiveOptions, nativeKey)
+    );
+  }
+
+  private async sendReplyRaw(
+    replyTo: string | KK9ReplyTarget,
+    content: FormattedText,
+    options: SendOptions,
+    nativeKey?: string
+  ): Promise<SendResult> {
     const parsed = parseFormattedTextToKK(content);
     if (!parsed.plainText.trim()) {
       return { success: false, error: '回复内容不能为空', isPreTrigger: true };
@@ -500,7 +611,7 @@ export class BridgeMessageOps {
     const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
-      msgFlag: createMessageFlag('reply'),
+      msgFlag: nativeKey ?? createNativeMessageKey('reply'),
       targetRef: targetObj,
       replyContentNodes,
       font: parsed.font,
@@ -590,7 +701,11 @@ export class BridgeMessageOps {
 
         const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
         if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
-          return { success: false, error: 'insertSendBefoeMsg 失败', isPreTrigger: true };
+          return {
+            success: false,
+            error: 'insertSendBefoeMsg 失败',
+            isPreTrigger: Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2),
+          };
         }
 
         const nativeId = insertRes.data.id;
@@ -622,7 +737,7 @@ export class BridgeMessageOps {
           };
         }
 
-        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag);
+        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag, targetSes);
         if (!confirmedMessage) {
           return {
             success: false,
@@ -647,9 +762,18 @@ export class BridgeMessageOps {
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script, 15000);
+      const res = await this.cdp.evaluate<{
+        success: boolean;
+        messageId?: string;
+        error?: string;
+        isPreTrigger?: boolean;
+      }>(script, 15000);
       if (!res?.success) {
-        return { success: false, error: res?.error || '底层回复发送失败', isPreTrigger: res?.isPreTrigger ?? false };
+        return {
+          success: false,
+          error: res?.error || '底层回复发送失败',
+          isPreTrigger: res?.isPreTrigger ?? false,
+        };
       }
       return { success: true, messageId: res.messageId, verifyLatencyMs: Date.now() - startTime };
     } catch (err) {
@@ -666,6 +790,16 @@ export class BridgeMessageOps {
    * 通过纯底层 IPC 发送文件
    */
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
+    return this.executeOperation('file', options, filePath, (nativeKey, effectiveOptions) =>
+      this.sendFileRaw(filePath, effectiveOptions, nativeKey)
+    );
+  }
+
+  private async sendFileRaw(
+    filePath: string,
+    options: SendFileOptions,
+    nativeKey?: string
+  ): Promise<SendResult> {
     const fullPath = path.resolve(filePath);
     if (!fs.existsSync(fullPath)) {
       return { success: false, error: `文件不存在: ${fullPath}`, isPreTrigger: true };
@@ -689,7 +823,7 @@ export class BridgeMessageOps {
     const cdpWasUnavailable = isCdpUnavailableBeforeSend(this.cdp);
     const payloadData = {
       target: options.targetSessionId || '',
-      msgFlag: createMessageFlag('file'),
+      msgFlag: nativeKey ?? createNativeMessageKey('file'),
       fullPath,
       fileName,
       mimeType,
@@ -765,7 +899,11 @@ export class BridgeMessageOps {
 
         const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
         if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
-          return { success: false, error: 'insertSendBefoeMsg 写入失败', isPreTrigger: true };
+          return {
+            success: false,
+            error: 'insertSendBefoeMsg 写入失败',
+            isPreTrigger: Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2),
+          };
         }
 
         const nativeId = insertRes.data.id;
@@ -797,7 +935,7 @@ export class BridgeMessageOps {
           };
         }
 
-        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag);
+        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag, targetSes);
         if (!confirmedMessage) {
           return {
             success: false,
@@ -822,9 +960,18 @@ export class BridgeMessageOps {
     `;
 
     try {
-      const res = await this.cdp.evaluate<{ success: boolean; messageId?: string; error?: string; isPreTrigger?: boolean }>(script, 15000);
+      const res = await this.cdp.evaluate<{
+        success: boolean;
+        messageId?: string;
+        error?: string;
+        isPreTrigger?: boolean;
+      }>(script, 15000);
       if (!res?.success) {
-        return { success: false, error: res?.error || '文件底层发送失败', isPreTrigger: res?.isPreTrigger ?? false };
+        return {
+          success: false,
+          error: res?.error || '文件底层发送失败',
+          isPreTrigger: res?.isPreTrigger ?? false,
+        };
       }
       return { success: true, messageId: res.messageId, verifyLatencyMs: Date.now() - startTime };
     } catch (err) {

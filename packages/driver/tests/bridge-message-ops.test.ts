@@ -9,6 +9,11 @@ import {
   NO_IPC_RESPONSE,
   runRendererScript,
 } from './helpers/renderer-runtime.js';
+import {
+  InMemorySendOperationStore,
+  createSendOperationFingerprint,
+} from '../src/send-operation.js';
+import { createNativeMessageKey } from '../src/bridge/send-status.js';
 
 describe('BridgeMessageOps 纯数据消息操作测试', () => {
   afterEach(() => {
@@ -212,8 +217,15 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('发送本地图片应进行格式检查与尺寸解析，通过底层 IPC 成功发送', async () => {
       const tmpFile = path.resolve('tmp', 'test-bridge-img.png');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
-      fs.writeFileSync(tmpFile, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mNk+M9QzwAEjDAGBhAFAFcaAQXw22J4AAAAAElFTkSuQmCC', 'base64'));
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mNk+M9QzwAEjDAGBhAFAFcaAQXw22J4AAAAAElFTkSuQmCC',
+          'base64'
+        )
+      );
 
       let msgFlag = '';
       const ipc = new FakeIpcRenderer(request => {
@@ -235,9 +247,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       });
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
       });
       const mockCdp = {
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
@@ -267,9 +277,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       });
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
       });
       const mockCdp = {
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
@@ -292,9 +300,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       });
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
       });
       const mockCdp = {
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
@@ -318,9 +324,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       ipc.once('data-800001', unrelatedListener);
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
       });
       const mockCdp = {
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
@@ -363,9 +367,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       });
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
       });
       const mockCdp = {
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
@@ -387,7 +389,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     it('文件的 sendMessageNew 超时不得报告成功', async () => {
       vi.useFakeTimers();
       const tmpFile = path.resolve('tmp', 'test-native-send-timeout.txt');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(tmpFile, 'timeout');
       const ipc = new FakeIpcRenderer(request => {
         if (request.args[0] === 'insertSendBefoeMsg') {
@@ -397,9 +400,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       });
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
       });
       const mockCdp = {
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
@@ -453,9 +454,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       const runtime = createRendererRuntime({
         ipc,
         math: deterministicMath,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
       });
       const mockCdp = {
         evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
@@ -475,7 +474,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('图片目标会话不存在时必须 Fail-Closed', async () => {
       const tmpFile = path.resolve('tmp', 'test-bridge-invalid-target.png');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -560,7 +560,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('文件指定目标但会话列表不可用时必须 Fail-Closed', async () => {
       const tmpFile = path.resolve('tmp', 'test-missing-session-list.txt');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(tmpFile, 'target guard');
       const ipc = new FakeIpcRenderer(() => ({ code: 0, data: { id: 1006, msgIdx: 15 } }));
       const activeSession = {
@@ -748,9 +749,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         { targetSessionId: session.sesUUID }
       );
 
-      const insertedContent = insertedMessage?.['content'] as
-        | Record<string, unknown>
-        | undefined;
+      const insertedContent = insertedMessage?.['content'] as Record<string, unknown> | undefined;
       expect(result.success).toBe(true);
       expect(result.messageId).toBe('135000021');
       expect(exactQueryArgs).toEqual([session.id, targetMessage.msgIdx]);
@@ -816,7 +815,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('文件发送必须等待落库并返回真实正 ID', async () => {
       const tmpFile = path.resolve('tmp', 'test-confirmed-file-id.txt');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(tmpFile, 'confirmed file id');
       let msgFlag = '';
       const ipc = new FakeIpcRenderer(request => {
@@ -928,7 +928,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('文件发送必须让 sesUUID/id 命中优先于更早出现的同名会话', async () => {
       const tmpFile = path.resolve('tmp', 'test-id-priority.txt');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(tmpFile, 'id priority');
       const ipc = createSuccessfulIpc();
       const runtime = createRendererRuntime({ ipc, sessions: createShadowedSessions() });
@@ -949,7 +950,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('图片发送必须让 sesUUID/id 命中优先于更早出现的同名会话', async () => {
       const tmpFile = path.resolve('tmp', 'test-image-id-priority.png');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -1036,9 +1038,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
         messages: [{ id: 23, msgIdx: 7, sessionID: 602475 }],
       });
       const mockCdp = {
@@ -1059,9 +1059,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       const ipc = new FakeIpcRenderer(() => ({}));
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
         messages: [{ id: 123, msgIdx: 8, sessionID: 602475 }],
       });
       const mockCdp = {
@@ -1080,9 +1078,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       });
       const runtime = createRendererRuntime({
         ipc,
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
         messages: [{ id: 123, msgIdx: 8, sessionID: 602475 }],
       });
       const mockCdp = {
@@ -1099,9 +1095,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('缺少 ipcRenderer 时不得以 bus-only 撤回作为成功', async () => {
       const runtime = createRendererRuntime({
-        sessions: [
-          { id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 },
-        ],
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
         messages: [{ id: 123, msgIdx: 8, sessionID: 602475 }],
       });
       const mockCdp = {
@@ -1185,7 +1179,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('文件发送在无有效 userID 时必须明确失败 (isPreTrigger: true)，且不执行消息插入和发送', async () => {
       const tmpFile = path.resolve('tmp', 'test-no-user-id-file.txt');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(tmpFile, 'no user id content');
 
       const ipc = new FakeIpcRenderer(() => ({ code: 0 }));
@@ -1214,7 +1209,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('图片发送在无有效 userID 时必须明确失败 (isPreTrigger: true)，且不调用 sendingImgBeforeHandle 及发送 RPC', async () => {
       const tmpFile = path.resolve('tmp', 'test-no-user-id-img.png');
-      if (!fs.existsSync(path.resolve('tmp'))) fs.mkdirSync(path.resolve('tmp'), { recursive: true });
+      if (!fs.existsSync(path.resolve('tmp')))
+        fs.mkdirSync(path.resolve('tmp'), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -1285,6 +1281,444 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       expect(result.messageId).toBe('135000099');
       expect(insertedMessage?.['sender']).toBe(8888);
       expect(insertedMessage?.['senderName']).toBe('客服代表');
+    });
+  });
+  describe('发送操作 ID 的三态与只读查询', () => {
+    const session = {
+      id: 602475,
+      sesUUID: '0-3585',
+      typeName: 'int2024',
+      name: 'int2024',
+      type: 0,
+      typeID: 3585,
+    };
+
+    it('插入前失败写入确定失败状态且允许安全重试', async () => {
+      const store = new InMemorySendOperationStore();
+      const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'insertSendBefoeMsg') {
+          return { code: 1, error: 'insert rejected' };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp, store).sendText('插入前失败', {
+        targetSessionId: session.sesUUID,
+        operationId: 'op-insert-failed',
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        operationId: 'op-insert-failed',
+        status: 'failed',
+        isPreTrigger: true,
+      });
+      expect(await store.get('op-insert-failed')).toMatchObject({
+        status: 'failed',
+        isPreTrigger: true,
+      });
+      expect(ipc.sent.map(request => request.args[0])).toEqual(['insertSendBefoeMsg']);
+    });
+    it('插入返回成功但缺少原生数据时保持未知状态', async () => {
+      const store = new InMemorySendOperationStore();
+      const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'insertSendBefoeMsg') return { code: 0 };
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp, store).sendText('插入无数据', {
+        targetSessionId: session.sesUUID,
+        operationId: 'op-insert-no-data',
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        operationId: 'op-insert-no-data',
+        status: 'unknown',
+        isPreTrigger: false,
+      });
+      expect(ipc.sent.map(request => request.args[0])).toEqual(['insertSendBefoeMsg']);
+    });
+    it('空白发送操作 ID 必须在发送前拒绝且不产生查询', async () => {
+      const store = new InMemorySendOperationStore();
+      const mockCdp = { evaluate: vi.fn() } as unknown as CdpClient;
+      const ops = new BridgeMessageOps(mockCdp, store);
+
+      await expect(
+        ops.sendText('空白 operationId', {
+          targetSessionId: session.sesUUID,
+          operationId: '   ',
+        })
+      ).rejects.toThrow('operationId 不能为空');
+      expect(mockCdp.evaluate).not.toHaveBeenCalled();
+      expect(await store.get('')).toBeNull();
+    });
+
+    it('插入后响应丢失返回未知状态，查询可识别已存在的原生消息', async () => {
+      vi.useFakeTimers();
+      const store = new InMemorySendOperationStore();
+      let insertedMessage: Record<string, unknown> | undefined;
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'insertSendBefoeMsg') {
+          const message = request.args[1] as Record<string, unknown>;
+          insertedMessage = { id: 135000201, msgFlag: message['msgFlag'] };
+          return NO_IPC_RESPONSE;
+        }
+        if (method === 'getMessages') {
+          return { code: 0, data: insertedMessage ? [insertedMessage] : [] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const pending = new BridgeMessageOps(mockCdp, store).sendText('插入响应丢失', {
+        operationId: 'op-insert-lost',
+      });
+      await Promise.resolve();
+      await vi.runAllTimersAsync();
+      const result = await pending;
+
+      expect(result).toMatchObject({
+        success: false,
+        operationId: 'op-insert-lost',
+        status: 'unknown',
+        isPreTrigger: false,
+      });
+      expect(await store.get('op-insert-lost')).toMatchObject({
+        status: 'unknown',
+        fingerprint: { targetSessionId: session.sesUUID },
+      });
+
+      const status = await new BridgeMessageOps(mockCdp, store).getSendStatus('op-insert-lost');
+      expect(status).toMatchObject({
+        success: true,
+        operationId: 'op-insert-lost',
+        status: 'delivered',
+        messageId: '135000201',
+      });
+    });
+    it('显式空白目标会话必须拒绝且不得改投当前会话', async () => {
+      const store = new InMemorySendOperationStore();
+      const ipc = new FakeIpcRenderer(() => {
+        throw new Error('不应调用 native IPC');
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp, store).sendText('空白目标', {
+        targetSessionId: '   ',
+        operationId: 'op-whitespace-target',
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        operationId: 'op-whitespace-target',
+        status: 'failed',
+        isPreTrigger: true,
+      });
+      expect(await store.get('op-whitespace-target')).toBeNull();
+      expect(ipc.sent).toHaveLength(0);
+    });
+
+    it('发送后超时返回未知状态且不伪报确定失败', async () => {
+      vi.useFakeTimers();
+      const store = new InMemorySendOperationStore();
+      const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'insertSendBefoeMsg') {
+          return { code: 0, data: { id: -22, msgIdx: 10 } };
+        }
+        return NO_IPC_RESPONSE;
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const pending = new BridgeMessageOps(mockCdp, store).sendText('发送后超时', {
+        targetSessionId: session.sesUUID,
+        operationId: 'op-send-timeout',
+      });
+      await Promise.resolve();
+      await vi.runAllTimersAsync();
+      const result = await pending;
+
+      expect(result).toMatchObject({
+        success: false,
+        operationId: 'op-send-timeout',
+        status: 'unknown',
+        isPreTrigger: false,
+      });
+      expect(await store.get('op-send-timeout')).toMatchObject({ status: 'unknown' });
+      expect(ipc.sent.map(request => request.args[0])).toEqual([
+        'insertSendBefoeMsg',
+        'sendMessageNew',
+      ]);
+    });
+
+    it('CDP 断连时返回未知状态并保留发送操作记录', async () => {
+      const store = new InMemorySendOperationStore();
+      const mockCdp = {
+        getStatus: vi.fn().mockReturnValue('connected'),
+        evaluate: vi.fn().mockRejectedValue(new Error('CDP socket disconnected')),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp, store).sendText('CDP 断连', {
+        targetSessionId: session.sesUUID,
+        operationId: 'op-cdp-disconnect',
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        operationId: 'op-cdp-disconnect',
+        status: 'unknown',
+        isPreTrigger: false,
+      });
+      expect(await store.get('op-cdp-disconnect')).toMatchObject({ status: 'unknown' });
+    });
+
+    it('原生消息存在且属于目标会话时返回已送达', async () => {
+      const operationId = 'op-native-delivered';
+      const store = new InMemorySendOperationStore();
+      const fingerprint = createSendOperationFingerprint({
+        targetSessionId: session.sesUUID,
+        messageType: 'text',
+        content: '历史查询',
+      });
+      await store.claim({ operationId, fingerprint });
+      await store.update(operationId, { status: 'unknown' });
+      const nativeKey = createNativeMessageKey('text', operationId);
+      const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'getMessages') {
+          return {
+            code: 0,
+            data: [{ id: 135000202, msgFlag: nativeKey, sessionID: session.sesUUID }],
+          };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp, store).getSendStatus(operationId);
+
+      expect(result).toMatchObject({
+        success: true,
+        operationId,
+        status: 'delivered',
+        messageId: '135000202',
+      });
+    });
+
+    it('只读查询次数增加时不增加发送调用次数', async () => {
+      const operationId = 'op-read-only';
+      const store = new InMemorySendOperationStore();
+      const fingerprint = createSendOperationFingerprint({
+        targetSessionId: session.sesUUID,
+        messageType: 'text',
+        content: '只读查询',
+      });
+      await store.claim({ operationId, fingerprint });
+      const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'getMessages') return { code: 0, data: [] };
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+      const ops = new BridgeMessageOps(mockCdp, store);
+
+      const first = await ops.getSendStatus(operationId);
+      const second = await ops.getSendStatus(operationId);
+      const methods = ipc.sent.map(request => request.args[0]);
+
+      expect(first.status).toBe('unknown');
+      expect(second.status).toBe('unknown');
+      expect(methods.filter(method => method === 'getMessages').length).toBe(2);
+      expect(
+        methods.filter(method => method === 'insertSendBefoeMsg' || method === 'sendMessageNew')
+      ).toHaveLength(0);
+    });
+
+    it('同一发送操作 ID 重试时复用同一原生关联键', async () => {
+      const store = new InMemorySendOperationStore();
+      const flags: string[] = [];
+      let insertCount = 0;
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'insertSendBefoeMsg') {
+          insertCount += 1;
+          const message = request.args[1] as Record<string, unknown>;
+          flags.push(String(message['msgFlag']));
+          if (insertCount === 1) return { code: 1, error: '第一次未插入' };
+          return { code: 0, data: { ...message, id: -22, msgIdx: 20 } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000203, msgFlag: flags.at(-1) }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+      const ops = new BridgeMessageOps(mockCdp, store);
+
+      const first = await ops.sendText('稳定关联键', {
+        targetSessionId: session.sesUUID,
+        operationId: 'op-stable-key',
+      });
+      const second = await ops.sendText('稳定关联键', {
+        targetSessionId: session.sesUUID,
+        operationId: 'op-stable-key',
+      });
+
+      expect(first.status).toBe('failed');
+      expect(second).toMatchObject({ status: 'delivered', messageId: '135000203' });
+      expect(flags).toHaveLength(2);
+      expect(flags[0]).toBe(flags[1]);
+      expect(ipc.sent.filter(request => request.args[0] === 'sendMessageNew')).toHaveLength(1);
+    });
+
+    it('原生消息属于其他会话时不得返回已送达', async () => {
+      const operationId = 'op-wrong-session';
+      const store = new InMemorySendOperationStore();
+      const fingerprint = createSendOperationFingerprint({
+        targetSessionId: session.sesUUID,
+        messageType: 'text',
+        content: '目标校验',
+      });
+      await store.claim({ operationId, fingerprint });
+      const nativeKey = createNativeMessageKey('text', operationId);
+      const ipc = new FakeIpcRenderer(request => {
+        if (request.args[0] === 'getMessages') {
+          return {
+            code: 0,
+            data: [{ id: 135000204, msgFlag: nativeKey, sessionID: '1-29467' }],
+          };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp, store).getSendStatus(operationId);
+
+      expect(result).toMatchObject({
+        success: false,
+        operationId,
+        status: 'unknown',
+        isPreTrigger: false,
+      });
+      expect(result.messageId).toBeUndefined();
+    });
+
+    it('查询无发送操作记录时返回未知且不访问发送接口', async () => {
+      const store = new InMemorySendOperationStore();
+      const ipc = new FakeIpcRenderer(() => {
+        throw new Error('不应调用 native IPC');
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      const result = await new BridgeMessageOps(mockCdp, store).getSendStatus('op-missing');
+
+      expect(result).toMatchObject({
+        success: false,
+        operationId: 'op-missing',
+        status: 'unknown',
+        isPreTrigger: false,
+      });
+      expect(ipc.sent).toHaveLength(0);
+    });
+
+    it('文本、富文本、回复和文件的带操作 ID 路径均保持发送行为', async () => {
+      const store = new InMemorySendOperationStore();
+      const persisted: Array<Record<string, unknown>> = [
+        {
+          id: 900,
+          msgIdx: 9,
+          sender: 3705,
+          senderName: '员工',
+          contentType: 4,
+          content: { content: [{ type: 0, text: '原消息' }] },
+        },
+      ];
+      let nextId = 135000300;
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'insertSendBefoeMsg') {
+          const message = request.args[1] as Record<string, unknown>;
+          persisted.push({ id: nextId, msgFlag: message['msgFlag'] });
+          return { code: 0, data: { ...message, id: -22, msgIdx: nextId++ } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') return { code: 0, data: persisted };
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+      const ops = new BridgeMessageOps(mockCdp, store);
+      const filePath = path.resolve('tmp', 't06-operation-file.txt');
+      if (!fs.existsSync(path.dirname(filePath)))
+        fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(filePath, 'T06');
+
+      try {
+        const results = await Promise.all([
+          ops.sendText('文本路径', {
+            targetSessionId: session.sesUUID,
+            operationId: 'op-path-text',
+          }),
+          ops.sendRichText('富文本路径', {
+            targetSessionId: session.sesUUID,
+            operationId: 'op-path-rich',
+            mentions: ['all'],
+          }),
+          ops.sendReply({ messageId: '900' }, '回复路径', {
+            targetSessionId: session.sesUUID,
+            operationId: 'op-path-reply',
+          }),
+          ops.sendFile(filePath, { targetSessionId: session.sesUUID, operationId: 'op-path-file' }),
+        ]);
+
+        expect(results.map(result => result.status)).toEqual([
+          'delivered',
+          'delivered',
+          'delivered',
+          'delivered',
+        ]);
+        expect(results.every(result => result.success)).toBe(true);
+        expect(ipc.sent.filter(request => request.args[0] === 'insertSendBefoeMsg')).toHaveLength(
+          4
+        );
+        expect(ipc.sent.filter(request => request.args[0] === 'sendMessageNew')).toHaveLength(4);
+      } finally {
+        fs.unlinkSync(filePath);
+      }
     });
   });
 });

@@ -212,6 +212,18 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
   public async sendFile(filePath: string, options?: SendFileOptions): Promise<SendResult> {
     return this.executeSendAction('file', 'file', filePath, options);
   }
+  public async getSendStatus(operationId: string): Promise<SendResult> {
+    const operation = await this.sendOperationStore.get(operationId);
+    if (!operation) {
+      return {
+        success: false,
+        operationId: operationId.trim(),
+        status: 'unknown',
+        isPreTrigger: false,
+      };
+    }
+    return this.sendOperationToResult(operation);
+  }
 
   public recallMessage(_messageId: string, _session?: KK9Session | string): Promise<boolean> {
     return Promise.resolve(true);
