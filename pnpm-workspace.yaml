@@ -1,5 +1,6 @@
 packages:
   - 'packages/driver'
+  - 'apps/*'
 allowBuilds:
   esbuild: true
   libsql: true
