@@ -25,7 +25,6 @@ import {
   type SendOperationRecord,
   type SendOperationStore,
 } from './send-operation.js';
-import { SendError } from './utils/errors.js';
 
 export type FakeSendBehavior =
   | { mode: 'success'; messageId?: string }
@@ -281,11 +280,8 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
     options?: SendOptions | SendFileOptions
   ): Promise<SendResult> {
     const requestedOperationId = options?.operationId;
-    const operationId = requestedOperationId?.trim();
-    if (requestedOperationId !== undefined && !operationId) {
-      throw new SendError('operationId 不能为空');
-    }
-    if (operationId) {
+    let claimedOperation: SendOperationRecord | undefined;
+    if (requestedOperationId !== undefined) {
       const replyTo = options && 'replyTo' in options ? options.replyTo : undefined;
       const mentions = options && 'mentions' in options ? options.mentions : undefined;
       const fingerprint = createSendOperationFingerprint({
@@ -293,8 +289,12 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
         messageType: operationType,
         content: { payload, replyTo, mentions },
       });
-      const claim = await this.sendOperationStore.claim({ operationId, fingerprint });
+      const claim = await this.sendOperationStore.claim({
+        operationId: requestedOperationId,
+        fingerprint,
+      });
       if (!claim.claimed) return this.sendOperationToResult(claim.operation);
+      claimedOperation = claim.operation;
     }
 
     this.recordedCalls.push({
@@ -305,10 +305,10 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
     });
 
     const result = await this.executeSendBehavior(payload, options);
-    if (!operationId) return result;
+    if (!claimedOperation) return result;
 
-    const normalized = this.normalizeOperationResult(result, operationId);
-    const operation = await this.sendOperationStore.update(operationId, {
+    const normalized = this.normalizeOperationResult(result, claimedOperation.operationId);
+    const operation = await this.sendOperationStore.update(claimedOperation.operationId, {
       status: normalized.status,
       messageId: normalized.messageId,
       error: normalized.error,

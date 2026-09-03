@@ -113,11 +113,18 @@ export function createSendOperationFingerprint(
   };
 }
 
+function runAsync<T>(operation: () => T): Promise<T> {
+  return Promise.resolve().then(operation);
+}
+
 export class InMemorySendOperationStore implements SendOperationStore {
   private readonly operations = new Map<string, SendOperationRecord>();
 
-  public async claim(input: SendOperationClaim): Promise<SendOperationClaimResult> {
-    await Promise.resolve();
+  public claim(input: SendOperationClaim): Promise<SendOperationClaimResult> {
+    return runAsync(() => this.claimNow(input));
+  }
+
+  private claimNow(input: SendOperationClaim): SendOperationClaimResult {
     const operationId = normalizeOperationId(input.operationId);
     const existing = this.operations.get(operationId);
 
@@ -154,19 +161,23 @@ export class InMemorySendOperationStore implements SendOperationStore {
 
     return { claimed: false, operation: cloneOperation(existing) };
   }
-  public async get(operationId: string): Promise<SendOperationRecord | null> {
-    await Promise.resolve();
+
+  public get(operationId: string): Promise<SendOperationRecord | null> {
+    return runAsync(() => this.getNow(operationId));
+  }
+
+  private getNow(operationId: string): SendOperationRecord | null {
     const normalizedOperationId = operationId.trim();
     if (!normalizedOperationId) return null;
     const operation = this.operations.get(normalizedOperationId);
     return operation ? cloneOperation(operation) : null;
   }
 
-  public async update(
-    operationId: string,
-    update: SendOperationUpdate
-  ): Promise<SendOperationRecord> {
-    await Promise.resolve();
+  public update(operationId: string, update: SendOperationUpdate): Promise<SendOperationRecord> {
+    return runAsync(() => this.updateNow(operationId, update));
+  }
+
+  private updateNow(operationId: string, update: SendOperationUpdate): SendOperationRecord {
     const normalizedOperationId = normalizeOperationId(operationId);
     const existing = this.operations.get(normalizedOperationId);
     if (!existing) {
