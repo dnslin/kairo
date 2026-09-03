@@ -60,6 +60,7 @@ export type {
   KK9SessionType,
   KK9MessageType,
   KK9MessageOrigin,
+  MessageDirection,
   TextStyle,
   TextSegment,
   FormattedText,

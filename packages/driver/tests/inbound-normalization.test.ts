@@ -141,6 +141,30 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       expect(msg.sessionId).toBe('session_private_001');
       expect(msg.sessionType).toBe('private');
       expect(msg.origin).toBe('external');
+      expect(msg.direction).toBe('inbound');
+    });
+    it('相同原生输入在 EventBridge 与 Polling 来源下产生相同 direction', () => {
+      const payload = {
+        sessionId: 'session-source-parity',
+        id: 'native-source-parity',
+        sender: 'Bot',
+        senderId: currentUserId,
+        isFromSelf: true,
+        origin: 'external',
+        content: '自身消息',
+      };
+
+      const eventMessage = normalizeNativeMessage(payload, {
+        currentUserId,
+        source: 'event_bridge',
+      })[0];
+      const pollingMessage = normalizeNativeMessage(payload, {
+        currentUserId,
+        source: 'polling',
+      })[0];
+
+      expect(eventMessage?.direction).toBe('outbound');
+      expect(pollingMessage?.direction).toBe(eventMessage?.direction);
     });
   });
 
@@ -158,6 +182,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       };
       const [msg] = normalizeNativeMessage(payload, { currentUserId });
       expect(msg.origin).toBe('external');
+      expect(msg.direction).toBe('inbound');
       expect(msg.isMe).toBe(false);
     });
 
@@ -175,6 +200,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       };
       const [msg] = normalizeNativeMessage(payload, { currentUserId });
       expect(msg.origin).toBe('operator');
+      expect(msg.direction).toBe('outbound');
       expect(msg.isMe).toBe(true);
     });
 
@@ -195,6 +221,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         knownBotSentMessageKeys: new Set([createMessageIdentityKey('session_user_002', botMsgId)]),
       });
       expect(msg.origin).toBe('bot_echo');
+      expect(msg.direction).toBe('outbound');
       expect(msg.isMe).toBe(true);
     });
     it('反例：isMe=true 且没有可靠来源关联时保留 unknown', () => {
@@ -215,6 +242,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         ]),
       });
       expect(msg.origin).toBe('unknown');
+      expect(msg.direction).toBe('outbound');
       expect(msg.isMe).toBe(true);
     });
 
@@ -231,6 +259,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       };
       const [msg] = normalizeNativeMessage(payload, { currentUserId });
       expect(msg.origin).toBe('system');
+      expect(msg.direction).toBe('unknown');
     });
   });
 
@@ -450,12 +479,16 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       expect(emittedMessages).toHaveLength(4);
       expect(emittedMessages[0].id).toBe('eb_ext_1');
       expect(emittedMessages[0].origin).toBe('external');
+      expect(emittedMessages[0].direction).toBe('inbound');
       expect(emittedMessages[1].id).toBe('eb_op_1');
       expect(emittedMessages[1].origin).toBe('operator');
+      expect(emittedMessages[1].direction).toBe('outbound');
       expect(emittedMessages[2].id).toBe('eb_bot_echo_1');
       expect(emittedMessages[2].origin).toBe('bot_echo');
+      expect(emittedMessages[2].direction).toBe('outbound');
       expect(emittedMessages[3].id).toBe('eb_sys_1');
       expect(emittedMessages[3].origin).toBe('system');
+      expect(emittedMessages[3].direction).toBe('unknown');
     });
 
     it('Driver Polling 离线通过 MessageOps 解析 DOM 数据并派发 external, operator, bot_echo, system', async () => {
@@ -548,18 +581,22 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
 
       expect(emittedMessages).toHaveLength(4);
       expect(emittedMessages[0].origin).toBe('external');
+      expect(emittedMessages[0].direction).toBe('inbound');
       expect(emittedMessages[0].messageId).toBeDefined();
       expect(emittedMessages[0].id).toBe(emittedMessages[0].messageId);
 
       expect(emittedMessages[1].origin).toBe('operator');
+      expect(emittedMessages[1].direction).toBe('outbound');
       expect(emittedMessages[1].messageId).toBeDefined();
 
       // 原生 ID 验证
       expect(emittedMessages[2].id).toBe('poll_bot_echo_1');
       expect(emittedMessages[2].messageId).toBe('poll_bot_echo_1');
       expect(emittedMessages[2].origin).toBe('bot_echo');
+      expect(emittedMessages[2].direction).toBe('outbound');
 
       expect(emittedMessages[3].origin).toBe('system');
+      expect(emittedMessages[3].direction).toBe('unknown');
       expect(emittedMessages[3].messageId).toBeDefined();
     });
     it('Polling 按 sessionId 隔离相同 native messageId', async () => {
