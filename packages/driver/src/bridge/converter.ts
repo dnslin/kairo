@@ -5,6 +5,7 @@ import type {
   KK9Message,
   KK9MessageOrigin,
   KK9MessageType,
+  MessageDirection,
   KK9RecalledEvent,
   KK9ReplyInfo,
   KK9Session,
@@ -206,6 +207,114 @@ export interface NormalizeNativeMessageContext {
   sourceKnown?: boolean;
   source?: InboundNormalizationSource;
   onDiagnostic?: (diagnostic: InboundNormalizationDiagnostic) => void;
+}
+
+function hasMessageBooleanFlag(
+  raw: Record<string, unknown>,
+  nestedRaw: Record<string, unknown> | undefined,
+  key: 'isFromSelf' | 'fromMe' | 'isMe',
+  value: boolean
+): boolean {
+  return raw[key] === value || nestedRaw?.[key] === value;
+}
+
+function isSystemMessageRecord(record: Record<string, unknown> | undefined): boolean {
+  return (
+    record?.['isSystem'] === true ||
+    record?.['system'] === true ||
+    record?.['systemMsg'] === true ||
+    record?.['sysType'] !== undefined ||
+    record?.['type'] === 'system' ||
+    record?.['messageType'] === 'system' ||
+    record?.['origin'] === 'system' ||
+    record?.['source'] === 'system' ||
+    record?.['msgType'] === 99 ||
+    record?.['contentType'] === 99
+  );
+}
+
+function hasRawMessageValue(
+  raw: Record<string, unknown>,
+  nestedRaw: Record<string, unknown> | undefined,
+  key: 'origin' | 'source',
+  value: KK9MessageOrigin
+): boolean {
+  return raw[key] === value || nestedRaw?.[key] === value;
+}
+
+function determineDirection(
+  raw: Record<string, unknown>,
+  nestedRaw: Record<string, unknown> | undefined,
+  isMe: boolean,
+  messageType: KK9MessageType,
+  origin: KK9MessageOrigin,
+  isKnownBotSentMessage: boolean,
+  context: NormalizeNativeMessageContext | undefined,
+  senderId: string | undefined
+): MessageDirection {
+  if (
+    messageType === 'system' ||
+    origin === 'system' ||
+    isSystemMessageRecord(raw) ||
+    isSystemMessageRecord(nestedRaw)
+  ) {
+    return 'unknown';
+  }
+
+  const currentUserId =
+    context?.currentUserId !== undefined ? toSafeString(context.currentUserId).trim() : '';
+  const nestedSenderId =
+    nestedRaw?.['senderId'] ?? nestedRaw?.['senderID'] ?? nestedRaw?.['fromUID'];
+  const observedSenderId = senderId?.trim() || toSafeString(nestedSenderId).trim();
+  const senderIdMatchesCurrentUser = Boolean(
+    currentUserId && observedSenderId && observedSenderId === currentUserId
+  );
+  const senderIdIsExternal = Boolean(
+    currentUserId && observedSenderId && observedSenderId !== currentUserId
+  );
+  const hasSelfEvidence =
+    isMe ||
+    senderIdMatchesCurrentUser ||
+    context?.isBotEcho === true ||
+    isKnownBotSentMessage ||
+    hasMessageBooleanFlag(raw, nestedRaw, 'isFromSelf', true) ||
+    hasMessageBooleanFlag(raw, nestedRaw, 'fromMe', true) ||
+    hasMessageBooleanFlag(raw, nestedRaw, 'isMe', true);
+
+  if (hasSelfEvidence) {
+    return 'outbound';
+  }
+
+  const hasExternalOrigin =
+    hasRawMessageValue(raw, nestedRaw, 'origin', 'external') ||
+    hasRawMessageValue(raw, nestedRaw, 'source', 'external');
+  const hasOutboundOrigin =
+    hasRawMessageValue(raw, nestedRaw, 'origin', 'operator') ||
+    hasRawMessageValue(raw, nestedRaw, 'origin', 'bot_echo') ||
+    hasRawMessageValue(raw, nestedRaw, 'source', 'operator') ||
+    hasRawMessageValue(raw, nestedRaw, 'source', 'bot_echo');
+  const hasExplicitNonSelfEvidence =
+    senderIdIsExternal ||
+    hasMessageBooleanFlag(raw, nestedRaw, 'isFromSelf', false) ||
+    hasMessageBooleanFlag(raw, nestedRaw, 'fromMe', false) ||
+    hasMessageBooleanFlag(raw, nestedRaw, 'isMe', false);
+
+  if (hasExternalOrigin && hasOutboundOrigin) {
+    return 'unknown';
+  }
+  if (hasExplicitNonSelfEvidence && hasOutboundOrigin) {
+    return 'unknown';
+  }
+  if (hasExplicitNonSelfEvidence || hasExternalOrigin) {
+    return 'inbound';
+  }
+  if (context?.sourceKnown === false) {
+    return 'unknown';
+  }
+  if (hasOutboundOrigin) {
+    return 'outbound';
+  }
+  return 'unknown';
 }
 
 function isCancelMessageItem(item: Record<string, unknown>): boolean {
@@ -545,6 +654,22 @@ export function normalizeNativeMessage(
         { ...context, sourceKnown, sessionId },
         nativeMessageId
       );
+      const isKnownBotSentMessage = Boolean(
+        context?.isBotEcho ||
+        context?.knownBotSentMessageKeys?.has(
+          createMessageIdentityKey(sessionId, nativeMessageId)
+        )
+      );
+      const direction = determineDirection(
+        item,
+        nestedRaw,
+        isMe,
+        messageType,
+        origin,
+        isKnownBotSentMessage,
+        { ...context, sourceKnown },
+        senderId
+      );
 
       return {
         id: nativeMessageId,
@@ -553,6 +678,7 @@ export function normalizeNativeMessage(
         sessionName,
         sessionType,
         origin,
+        direction,
         sender,
         senderId,
         content,

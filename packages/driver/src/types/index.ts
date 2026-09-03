@@ -49,6 +49,9 @@ export type KK9MessageType = 'text' | 'image' | 'file' | 'quote' | 'rich-text' |
 /** 消息来源身份；unknown 表示当前可观察事实不足以安全分类。 */
 export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system' | 'unknown';
 
+/** 消息方向；unknown 表示无法确认是员工还是 Bot 发出。 */
+export type MessageDirection = 'inbound' | 'outbound' | 'unknown';
+
 /**
  * 文本样式属性
  */
@@ -177,6 +180,8 @@ export interface KK9Message {
   sessionType: KK9SessionType;
   /** 消息来源身份 */
   origin?: KK9MessageOrigin;
+  /** 消息方向；标准化消息始终提供该字段。 */
+  direction: MessageDirection;
   sender: string;
   senderId?: string;
   content: string;
