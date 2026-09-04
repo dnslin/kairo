@@ -195,14 +195,13 @@ describePostgres('PostgresSendOperationStore 真实 PostgreSQL 集成合同', ()
         isPreTrigger: true,
       });
 
-      await expect(store.claim({ operationId, fingerprint })).resolves.toMatchObject({
+      const retry = await store.claim({ operationId, fingerprint });
+      expect(retry).toMatchObject({
         claimed: true,
-        operation: {
-          status: 'unknown',
-          messageId: undefined,
-          error: undefined,
-        },
+        operation: { status: 'unknown' },
       });
+      expect(retry.operation.messageId).toBeUndefined();
+      expect(retry.operation.error).toBeUndefined();
       await expect(store.claim({ operationId, fingerprint })).resolves.toMatchObject({
         claimed: false,
         operation: { status: 'unknown' },
