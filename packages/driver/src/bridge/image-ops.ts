@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import mime from 'mime-types';
 import type { CdpClient } from '../cdp/client.js';
 import type { SendOptions, SendResult } from '../types/index.js';
@@ -9,12 +8,22 @@ import {
   RENDERER_IPC_HELPERS_SCRIPT,
   RENDERER_SESSION_RESOLVER_SCRIPT,
 } from './renderer-script.js';
+import {
+  createNativeMessageKey,
+  isCdpUnavailableBeforeSend,
+  sendResultToOperationUpdate,
+} from './send-status.js';
 
 const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024; // 20MB
-
-function isCdpUnavailableBeforeSend(cdp: CdpClient): boolean {
-  const getStatus = (cdp as Partial<CdpClient>).getStatus;
-  return typeof getStatus === 'function' && getStatus.call(cdp) !== 'connected';
+function imagePreflightFailure(operationAware: boolean, error: unknown): SendResult {
+  if (!operationAware) throw error;
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    success: false,
+    status: 'failed',
+    error: `图片文件预检失败: ${message}`,
+    isPreTrigger: true,
+  };
 }
 
 function getImageDimensions(buffer: Buffer): { width: number; height: number } {
@@ -100,20 +109,33 @@ const CONFIRM_SENT_MESSAGE_SCRIPT = `
 export async function sendNativeImage(
   cdp: CdpClient,
   imagePath: string,
-  options: SendOptions = {}
+  options: SendOptions = {},
+  nativeKey?: string
 ): Promise<SendResult> {
   const fullPath = path.resolve(imagePath);
+  const operationAware = nativeKey !== undefined || options.operationId !== undefined;
   if (!fs.existsSync(fullPath)) {
-    return { success: false, error: `图片文件不存在: ${fullPath}`, isPreTrigger: true };
+    return { success: false, status: 'failed', error: `图片文件不存在: ${fullPath}`, isPreTrigger: true };
   }
 
-  const stats = fs.statSync(fullPath);
+  let stats: fs.Stats;
+  try {
+    stats = fs.statSync(fullPath);
+  } catch (error) {
+    return imagePreflightFailure(operationAware, error);
+  }
   if (stats.isDirectory()) {
-    return { success: false, error: `不能发送目录作为图片: ${fullPath}`, isPreTrigger: true };
+    return {
+      success: false,
+      status: 'failed',
+      error: `不能发送目录作为图片: ${fullPath}`,
+      isPreTrigger: true,
+    };
   }
   if (stats.size > MAX_IMAGE_SIZE_BYTES) {
     return {
       success: false,
+      status: 'failed',
       error: `图片大小超出限制 (20MB): ${stats.size} bytes`,
       isPreTrigger: true,
     };
@@ -121,10 +143,15 @@ export async function sendNativeImage(
 
   const mimeType = mime.lookup(fullPath) || 'image/png';
   if (!mimeType.startsWith('image/')) {
-    return { success: false, error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
+    return { success: false, status: 'failed', error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
   }
 
-  const buffer = fs.readFileSync(fullPath);
+  let buffer: Buffer;
+  try {
+    buffer = fs.readFileSync(fullPath);
+  } catch (error) {
+    return imagePreflightFailure(operationAware, error);
+  }
   const { width, height } = getImageDimensions(buffer);
   const base64Thumb = buffer.toString('base64');
   const startTime = Date.now();
@@ -132,12 +159,13 @@ export async function sendNativeImage(
 
   const payloadData = {
     target: options.targetSessionId || '',
-    msgFlag: `kairo:image:${randomUUID()}`,
+    msgFlag: nativeKey ?? createNativeMessageKey('image', options.operationId),
     fullPath,
     base64Thumb,
     mimeType,
     width,
     height,
+    operationAware,
   };
 
   const encoded = encodeRendererPayload(payloadData);
@@ -238,7 +266,13 @@ export async function sendNativeImage(
       // 3. 写入本地 SQLite
       const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
       if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
-        return { success: false, error: 'insertSendBefoeMsg 写入失败', isPreTrigger: true };
+        return {
+          success: false,
+          error: 'insertSendBefoeMsg 写入失败',
+          isPreTrigger: data.operationAware
+            ? Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2)
+            : true,
+        };
       }
 
       const nativeId = insertRes.data.id;
@@ -300,26 +334,69 @@ export async function sendNativeImage(
       messageId?: string;
       error?: string;
       isPreTrigger?: boolean;
+      status?: SendResult['status'];
     }>(script, 15000);
 
-    if (!res?.success) {
+    if (!operationAware) {
+      const legacyResult: SendResult = res
+        ? {
+            ...res,
+            ...(!res.success && res.error === undefined
+              ? { error: '底层图片 IPC 发送失败' }
+              : {}),
+            ...(!res.success && res.isPreTrigger === undefined
+              ? { isPreTrigger: false }
+              : {}),
+            ...(res.success ? { verifyLatencyMs: Date.now() - startTime } : {}),
+          }
+        : {
+            success: false,
+            error: '底层图片 IPC 发送失败',
+            isPreTrigger: false,
+          };
       return {
+        ...legacyResult,
+        status: legacyResult.status ?? sendResultToOperationUpdate(legacyResult).status,
+      };
+    }
+
+    const isPreTrigger = res?.isPreTrigger ?? false;
+    if (!res?.success) {
+      const result: SendResult = {
         success: false,
         error: res?.error || '底层图片 IPC 发送失败',
-        isPreTrigger: res?.isPreTrigger ?? false,
+        isPreTrigger,
+      };
+      return {
+        ...result,
+        status: sendResultToOperationUpdate(result).status,
+      };
+    }
+
+    const messageId = typeof res.messageId === 'string' ? res.messageId.trim() : '';
+    if (!messageId || !Number.isFinite(Number(messageId)) || Number(messageId) <= 0) {
+      return {
+        success: false,
+        status: 'unknown',
+        error: '底层图片 IPC 已触发，但未确认有效 native 消息 ID',
+        isPreTrigger: false,
+        verifyLatencyMs: Date.now() - startTime,
       };
     }
 
     return {
       success: true,
-      messageId: res.messageId,
+      status: 'delivered',
+      messageId,
       verifyLatencyMs: Date.now() - startTime,
     };
   } catch (err) {
+    const isPreTrigger = cdpWasUnavailable;
     return {
       success: false,
+      status: isPreTrigger ? 'failed' : 'unknown',
       error: `底层图片 IPC 发送异常: ${err instanceof Error ? err.message : String(err)}`,
-      isPreTrigger: cdpWasUnavailable,
+      isPreTrigger,
       verifyLatencyMs: Date.now() - startTime,
     };
   }

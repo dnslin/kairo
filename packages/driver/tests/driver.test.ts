@@ -651,6 +651,33 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
     });
     expect(internals.domSendOps.sendText).not.toHaveBeenCalled();
   });
+  it('带发送操作 ID 的图片前置失败不会退回无法关联的 DOM 双发路径', async () => {
+    const store = new InMemorySendOperationStore();
+    const driver = new KK9Driver(
+      { cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' } },
+      store
+    );
+    const internals = getDriverTestInternals(driver);
+    const bridgeFailure: SendResult = {
+      success: false,
+      operationId: 'op-image-no-dom-fallback',
+      status: 'failed',
+      isPreTrigger: true,
+    };
+    internals.bridgeMessageOps.sendImage = vi.fn().mockResolvedValue(bridgeFailure);
+    internals.domSendOps.sendImage = vi
+      .fn()
+      .mockResolvedValue({ success: false, status: 'unknown', isPreTrigger: false });
+
+    const result = await driver.sendImage('image.png', { operationId: 'op-image-no-dom-fallback' });
+
+    expect(result).toEqual(bridgeFailure);
+    expect(internals.bridgeMessageOps.sendImage).toHaveBeenCalledWith('image.png', {
+      operationId: 'op-image-no-dom-fallback',
+    });
+    expect(internals.domSendOps.sendImage).not.toHaveBeenCalled();
+  });
+
   it('Driver 抽象与模拟 Driver 都支持无记录状态查询', async () => {
     const driver: IKK9Driver = new FakeKK9Driver();
 

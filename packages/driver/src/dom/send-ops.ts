@@ -140,6 +140,7 @@ export class SendOps {
         success: false,
         result: {
           success: false,
+          status: 'failed',
           error: `激活${contextLabel}失败: ${msg}`,
           isPreTrigger: true,
         },
@@ -150,6 +151,7 @@ export class SendOps {
   private postTriggerUnknown(label: string, verifyLatencyMs?: number): SendResult {
     return {
       success: false,
+      status: 'unknown',
       error: `${label}发送动作已触发，但当前 Driver 没有权威 native ack，结果为 unknown`,
       isPreTrigger: false,
       verifyLatencyMs,
@@ -161,6 +163,7 @@ export class SendOps {
     log.error({ err: errorMsg }, `${label}发送后响应丢失，结果为 unknown`);
     return {
       success: false,
+      status: 'unknown',
       error: `${label}发送动作响应丢失: ${errorMsg}`,
       isPreTrigger: false,
       verifyLatencyMs: Date.now() - startTime,
@@ -212,7 +215,7 @@ export class SendOps {
   ): Promise<SendResult> {
     const parsed = parseFormattedTextToKK(content);
     if (!parsed.plainText.trim() && !options.mentions) {
-      return { success: false, error: '富文本内容不能为空', isPreTrigger: true };
+      return { success: false, status: 'failed', error: '富文本内容不能为空', isPreTrigger: true };
     }
 
     if (options.targetSessionId) {
@@ -220,6 +223,7 @@ export class SendOps {
       if (!check.canSend) {
         return {
           success: false,
+          status: 'failed',
           error: `发送前检查未通过: ${check.reason} (${check.details})`,
           isPreTrigger: true,
         };
@@ -284,7 +288,12 @@ export class SendOps {
     try {
       const injectRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
       if (!injectRes?.success) {
-        return { success: false, error: injectRes?.error || '注入富文本失败', isPreTrigger: true };
+        return {
+          success: false,
+          status: 'failed',
+          error: injectRes?.error || '注入富文本失败',
+          isPreTrigger: true,
+        };
       }
 
       return this.postTriggerUnknown('富文本', Date.now() - startTime);
@@ -300,7 +309,7 @@ export class SendOps {
   ): Promise<SendResult> {
     const parsed = parseFormattedTextToKK(content);
     if (!parsed.plainText.trim()) {
-      return { success: false, error: '回复内容不能为空', isPreTrigger: true };
+      return { success: false, status: 'failed', error: '回复内容不能为空', isPreTrigger: true };
     }
 
     if (options.targetSessionId) {
@@ -308,6 +317,7 @@ export class SendOps {
       if (!check.canSend) {
         return {
           success: false,
+          status: 'failed',
           error: `发送前检查未通过: ${check.reason} (${check.details})`,
           isPreTrigger: true,
         };
@@ -390,7 +400,12 @@ export class SendOps {
     try {
       const sendRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(script);
       if (!sendRes?.success) {
-        return { success: false, error: sendRes?.error || '发送回复消息失败', isPreTrigger: true };
+        return {
+          success: false,
+          status: 'failed',
+          error: sendRes?.error || '发送回复消息失败',
+          isPreTrigger: true,
+        };
       }
 
       return this.postTriggerUnknown('回复消息', Date.now() - startTime);
@@ -402,16 +417,17 @@ export class SendOps {
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(filePath);
     if (!fs.existsSync(fullPath)) {
-      return { success: false, error: `文件不存在: ${fullPath}`, isPreTrigger: true };
+      return { success: false, status: 'failed', error: `文件不存在: ${fullPath}`, isPreTrigger: true };
     }
 
     const stats = fs.statSync(fullPath);
     if (stats.isDirectory()) {
-      return { success: false, error: `不能发送目录: ${fullPath}`, isPreTrigger: true };
+      return { success: false, status: 'failed', error: `不能发送目录: ${fullPath}`, isPreTrigger: true };
     }
     if (stats.size > MAX_FILE_SIZE_BYTES) {
       return {
         success: false,
+        status: 'failed',
         error: `文件大小超出限制 (100MB): ${stats.size} bytes`,
         isPreTrigger: true,
       };
@@ -420,7 +436,12 @@ export class SendOps {
     if (options.targetSessionId) {
       const check = await this.checkPreSendState(options.targetSessionId);
       if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason}`, isPreTrigger: true };
+        return {
+          success: false,
+          status: 'failed',
+          error: `发送前检查未通过: ${check.reason}`,
+          isPreTrigger: true,
+        };
       }
     }
 
@@ -458,6 +479,7 @@ export class SendOps {
       if (!injectRes?.success) {
         return {
           success: false,
+          status: 'failed',
           error: injectRes?.error || '文件发送初始化失败',
           isPreTrigger: true,
         };
@@ -470,15 +492,34 @@ export class SendOps {
   }
 
   public async sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
+    if (options.operationId !== undefined) {
+      const operationId = options.operationId.trim();
+      return {
+        success: false,
+        ...(operationId ? { operationId } : {}),
+        status: 'failed',
+        error: operationId
+          ? 'DOM 图片发送无法保证稳定 native 关联键，拒绝发送'
+          : 'operationId 不能为空',
+        isPreTrigger: true,
+      };
+    }
+
     const fullPath = path.resolve(imagePath);
     if (!fs.existsSync(fullPath)) {
-      return { success: false, error: `图片文件不存在: ${fullPath}`, isPreTrigger: true };
+      return {
+        success: false,
+        status: 'failed',
+        error: `图片文件不存在: ${fullPath}`,
+        isPreTrigger: true,
+      };
     }
 
     const stats = fs.statSync(fullPath);
     if (stats.size > MAX_IMAGE_SIZE_BYTES) {
       return {
         success: false,
+        status: 'failed',
         error: `图片大小超出限制 (10MB): ${stats.size} bytes`,
         isPreTrigger: true,
       };
@@ -486,13 +527,23 @@ export class SendOps {
 
     const mimeType = mime.lookup(fullPath) || 'image/png';
     if (!mimeType.startsWith('image/')) {
-      return { success: false, error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
+      return {
+        success: false,
+        status: 'failed',
+        error: `不支持的图片格式: ${mimeType}`,
+        isPreTrigger: true,
+      };
     }
 
     if (options.targetSessionId) {
       const check = await this.checkPreSendState(options.targetSessionId);
       if (!check.canSend) {
-        return { success: false, error: `发送前检查未通过: ${check.reason}`, isPreTrigger: true };
+        return {
+          success: false,
+          status: 'failed',
+          error: `发送前检查未通过: ${check.reason}`,
+          isPreTrigger: true,
+        };
       }
     }
 
@@ -532,7 +583,12 @@ export class SendOps {
 
       const clipRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(clipScript);
       if (!clipRes?.success) {
-        return { success: false, error: `剪贴板写入失败: ${clipRes?.error}`, isPreTrigger: true };
+        return {
+          success: false,
+          status: 'failed',
+          error: `剪贴板写入失败: ${clipRes?.error}`,
+          isPreTrigger: true,
+        };
       }
 
       await sleep(400);
@@ -598,7 +654,12 @@ export class SendOps {
 
       const sendRes = await this.cdp.evaluate<{ success: boolean; error?: string }>(sendScript);
       if (!sendRes?.success) {
-        return { success: false, error: `点击发送图片失败: ${sendRes?.error}`, isPreTrigger: true };
+        return {
+          success: false,
+          status: 'failed',
+          error: `点击发送图片失败: ${sendRes?.error}`,
+          isPreTrigger: true,
+        };
       }
 
       return this.postTriggerUnknown('图片', Date.now() - startTime);
