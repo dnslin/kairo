@@ -305,8 +305,9 @@ export class KK9EventBridge extends EventEmitter {
         generationId?: string;
         connectionId?: string;
       };
-    } catch {
-      log.warn({ payload: payloadStr.slice(0, 100) }, '收到非 JSON 格式的原生事件载荷');
+    } catch (err) {
+      const errorType = err instanceof Error ? err.constructor.name : typeof err;
+      log.warn({ errorType }, '收到非 JSON 格式的原生事件载荷');
       return;
     }
 
@@ -436,7 +437,18 @@ export class KK9EventBridge extends EventEmitter {
       }
 
       this.recordMessageId(messageKey);
-      log.debug({ id: msg.id, sender: msg.sender, content: msg.content }, '原生事件桥接收到新消息');
+      log.debug(
+        {
+          id: msg.id,
+          messageId: msg.messageId ?? msg.id,
+          sessionId: msg.sessionId,
+          sender: msg.sender,
+          direction: msg.direction,
+          origin: msg.origin,
+          status: 'received',
+        },
+        '原生事件桥接收到新消息'
+      );
       this.emit('message', msg);
 
       if (msg.atMe || msg.atAll || msg.mentions?.isAtMe || msg.mentions?.isAtAll) {
