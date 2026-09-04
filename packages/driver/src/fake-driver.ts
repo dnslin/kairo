@@ -16,7 +16,6 @@ import type {
   SendFileOptions,
   SendOptions,
   SendResult,
-  SendStatus,
 } from './types/index.js';
 import {
   InMemorySendOperationStore,
@@ -25,6 +24,7 @@ import {
   type SendOperationRecord,
   type SendOperationStore,
 } from './send-operation.js';
+import { sendOperationRecordToResult, sendResultToOperationUpdate } from './bridge/send-status.js';
 
 export type FakeSendBehavior =
   | { mode: 'success'; messageId?: string }
@@ -214,15 +214,14 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
   }
   public async getSendStatus(operationId: string): Promise<SendResult> {
     const operation = await this.sendOperationStore.get(operationId);
-    if (!operation) {
-      return {
-        success: false,
-        operationId: operationId.trim(),
-        status: 'unknown',
-        isPreTrigger: false,
-      };
-    }
-    return this.sendOperationToResult(operation);
+    return operation
+      ? sendOperationRecordToResult(operation)
+      : {
+          success: false,
+          operationId: operationId.trim(),
+          status: 'unknown',
+          isPreTrigger: false,
+        };
   }
 
   public recallMessage(_messageId: string, _session?: KK9Session | string): Promise<boolean> {
@@ -305,7 +304,7 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
         operationId: requestedOperationId,
         fingerprint,
       });
-      if (!claim.claimed) return this.sendOperationToResult(claim.operation);
+      if (!claim.claimed) return sendOperationRecordToResult(claim.operation);
       claimedOperation = claim.operation;
     }
 
@@ -317,17 +316,14 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
     });
 
     const result = await this.executeSendBehavior(payload, options);
-    if (!claimedOperation) return result;
+    if (!claimedOperation) return this.normalizeLegacyResult(result);
 
-    const normalized = this.normalizeOperationResult(result, claimedOperation.operationId);
-    const operation = await this.sendOperationStore.update(claimedOperation.operationId, {
-      status: normalized.status,
-      messageId: normalized.messageId,
-      error: normalized.error,
-      isPreTrigger: normalized.isPreTrigger,
-      verifyLatencyMs: normalized.verifyLatencyMs,
-    });
-    return this.sendOperationToResult(operation);
+    const normalized = sendResultToOperationUpdate(result);
+    const operation = await this.sendOperationStore.update(
+      claimedOperation.operationId,
+      normalized
+    );
+    return sendOperationRecordToResult(operation);
   }
 
   private async executeSendBehavior(
@@ -389,32 +385,11 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
     }
   }
 
-  private normalizeOperationResult(
-    result: SendResult,
-    operationId: string
-  ): SendResult & { operationId: string; status: SendStatus } {
-    const status: SendStatus =
-      result.status ?? (result.success ? 'delivered' : result.isPreTrigger ? 'failed' : 'unknown');
+  private normalizeLegacyResult(result: SendResult): SendResult {
+    const status = result.status ?? sendResultToOperationUpdate(result).status;
     return {
       ...result,
-      operationId,
       status,
-      success: status === 'delivered',
-      isPreTrigger: status === 'failed' ? (result.isPreTrigger ?? true) : false,
-    };
-  }
-
-  private sendOperationToResult(operation: SendOperationRecord): SendResult {
-    return {
-      success: operation.status === 'delivered',
-      operationId: operation.operationId,
-      status: operation.status,
-      ...(operation.messageId !== undefined ? { messageId: operation.messageId } : {}),
-      ...(operation.error !== undefined ? { error: operation.error } : {}),
-      isPreTrigger: operation.status === 'failed' ? (operation.isPreTrigger ?? true) : false,
-      ...(operation.verifyLatencyMs !== undefined
-        ? { verifyLatencyMs: operation.verifyLatencyMs }
-        : {}),
     };
   }
 

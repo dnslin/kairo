@@ -158,6 +158,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       const res = await ops.sendText('测试私聊文本发送', { targetSessionId: '0-3585' });
 
       expect(res.success).toBe(true);
+      expect(res.status).toBe('unknown');
       expect(res.verifyLatencyMs).toBeDefined();
     });
 
@@ -258,11 +259,143 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         const res = await ops.sendImage(tmpFile, { targetSessionId: '0-3585' });
 
         expect(res.success).toBe(true);
+        expect(res.status).toBe('delivered');
         expect(res.messageId).toBe('135000088');
       } finally {
         fs.unlinkSync(tmpFile);
       }
     });
+    it('图片 legacy 成功缺少原生 ID 时保留成功语义', async () => {
+      const tmpFile = path.resolve('tmp', 't07-legacy-image-no-id.png');
+      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          'base64'
+        )
+      );
+      const mockCdp = {
+        evaluate: vi.fn().mockResolvedValue({ success: true }),
+      } as unknown as CdpClient;
+
+      try {
+        const result = await new BridgeMessageOps(mockCdp).sendImage(tmpFile);
+
+        expect(result).toMatchObject({ success: true, status: 'unknown' });
+        expect(result.messageId).toBeUndefined();
+        expect(result.isPreTrigger).toBeUndefined();
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
+    it('图片 legacy 完整成功结果字段原样保留', async () => {
+      const tmpFile = path.resolve('tmp', 't07-legacy-image-fields-success.png');
+      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          'base64'
+        )
+      );
+      const legacyResult = {
+        success: true,
+        status: 'failed',
+        messageId: 'legacy-success-message',
+        error: 'legacy warning',
+        isPreTrigger: true,
+      };
+      const mockCdp = {
+        evaluate: vi.fn().mockResolvedValue(legacyResult),
+      } as unknown as CdpClient;
+
+      try {
+        const result = await new BridgeMessageOps(mockCdp).sendImage(tmpFile);
+
+        expect(result).toMatchObject(legacyResult);
+        expect(result.verifyLatencyMs).toBeDefined();
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
+    it('图片 legacy 完整失败结果字段原样保留', async () => {
+      const tmpFile = path.resolve('tmp', 't07-legacy-image-fields-failure.png');
+      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          'base64'
+        )
+      );
+      const legacyResult = {
+        success: false,
+        status: 'unknown',
+        messageId: 'legacy-failure-message',
+        error: 'legacy failure',
+        isPreTrigger: true,
+      };
+      const mockCdp = {
+        evaluate: vi.fn().mockResolvedValue(legacyResult),
+      } as unknown as CdpClient;
+
+      try {
+        const result = await new BridgeMessageOps(mockCdp).sendImage(tmpFile);
+
+        expect(result).toMatchObject(legacyResult);
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
+    it('图片 legacy 插入无 data 时保留触发前失败语义', async () => {
+      const tmpFile = path.resolve('tmp', 't07-legacy-image-no-data.png');
+      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          'base64'
+        )
+      );
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'sendingImgBeforeHandle') {
+          return { code: 0, data: { thumbPath: 'C:\\thumb.png', artworkPath: 'C:\\art.png' } };
+        }
+        if (method === 'insertSendBefoeMsg') return { code: 0 };
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({
+        ipc,
+        sessions: [{ id: 602475, sesUUID: '0-3585', typeName: 'int2024', type: 0, typeID: 3585 }],
+      });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+
+      try {
+        const result = await new BridgeMessageOps(mockCdp).sendImage(tmpFile, {
+          targetSessionId: '0-3585',
+        });
+
+        expect(result).toMatchObject({
+          success: false,
+          status: 'failed',
+          isPreTrigger: true,
+        });
+        expect(ipc.sent.map(request => request.args[0])).toEqual([
+          'sendingImgBeforeHandle',
+          'insertSendBefoeMsg',
+        ]);
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
   });
 
   describe('发送事务失败边界', () => {
@@ -1720,5 +1853,145 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         fs.unlinkSync(filePath);
       }
     });
+    it('图片发送操作 ID 使用稳定原生关联键并确认真实消息 ID', async () => {
+      const operationId = 'op-image-stable-key';
+      const tmpFile = path.resolve('tmp', 't07-operation-image.png');
+      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          'base64'
+        )
+      );
+
+      let insertCount = 0;
+      const flags: string[] = [];
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'sendingImgBeforeHandle') {
+          return { code: 0, data: { thumbPath: 'C:\\thumb.png', artworkPath: 'C:\\art.png' } };
+        }
+        if (method === 'insertSendBefoeMsg') {
+          insertCount += 1;
+          const message = request.args[1] as Record<string, unknown>;
+          flags.push(String(message['msgFlag']));
+          if (insertCount === 1) return { code: 1, error: '第一次插入失败' };
+          return { code: 0, data: { ...message, id: -22, msgIdx: 20 } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000206, msgIdx: 20, msgFlag: flags.at(-1) }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+      const store = new InMemorySendOperationStore();
+      const ops = new BridgeMessageOps(mockCdp, store);
+
+      try {
+        const first = await ops.sendImage(tmpFile, {
+          targetSessionId: session.sesUUID,
+          operationId,
+        });
+        const second = await ops.sendImage(tmpFile, {
+          targetSessionId: session.sesUUID,
+          operationId,
+        });
+        const queried = await ops.getSendStatus(operationId);
+
+        expect(first).toMatchObject({ status: 'failed', isPreTrigger: true });
+        expect(second).toMatchObject({
+          success: true,
+          operationId,
+          status: 'delivered',
+          messageId: '135000206',
+          isPreTrigger: false,
+        });
+        expect(queried).toMatchObject({
+          success: true,
+          operationId,
+          status: 'delivered',
+          messageId: '135000206',
+        });
+        expect(flags).toHaveLength(2);
+        expect(flags[0]).toBe(flags[1]);
+        expect(flags[0]).toBe(createNativeMessageKey('image', operationId));
+        expect(ipc.sent.filter(request => request.args[0] === 'sendMessageNew')).toHaveLength(1);
+      } finally {
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
+    it('图片 operation-aware 文件预检异常可安全重试', async () => {
+      const operationId = 'op-image-preflight-retry';
+      const tmpFile = path.resolve('tmp', 't07-operation-image-preflight.png');
+      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      fs.writeFileSync(
+        tmpFile,
+        Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+          'base64'
+        )
+      );
+
+      const flags: string[] = [];
+      const ipc = new FakeIpcRenderer(request => {
+        const method = request.args[0];
+        if (method === 'sendingImgBeforeHandle') {
+          return { code: 0, data: { thumbPath: 'C:\\thumb.png', artworkPath: 'C:\\art.png' } };
+        }
+        if (method === 'insertSendBefoeMsg') {
+          const message = request.args[1] as Record<string, unknown>;
+          flags.push(String(message['msgFlag']));
+          return { code: 0, data: { ...message, id: -22, msgIdx: 20 } };
+        }
+        if (method === 'sendMessageNew') return { code: 0 };
+        if (method === 'getMessages') {
+          return { code: 0, data: [{ id: 135000207, msgIdx: 20, msgFlag: flags.at(-1) }] };
+        }
+        return { code: 1 };
+      });
+      const runtime = createRendererRuntime({ ipc, sessions: [session] });
+      const mockCdp = {
+        evaluate: vi.fn((script: string) => runRendererScript(script, runtime.context)),
+      } as unknown as CdpClient;
+      const statSpy = vi.spyOn(fs, 'statSync').mockImplementationOnce(() => {
+        throw new Error('文件预检异常');
+      });
+      const ops = new BridgeMessageOps(mockCdp, new InMemorySendOperationStore());
+
+      try {
+        const first = await ops.sendImage(tmpFile, {
+          targetSessionId: session.sesUUID,
+          operationId,
+        });
+        const second = await ops.sendImage(tmpFile, {
+          targetSessionId: session.sesUUID,
+          operationId,
+        });
+
+        expect(first).toMatchObject({
+          success: false,
+          status: 'failed',
+          isPreTrigger: true,
+          error: expect.stringContaining('文件预检异常'),
+        });
+        expect(second).toMatchObject({
+          success: true,
+          status: 'delivered',
+          messageId: '135000207',
+        });
+        expect(flags).toHaveLength(1);
+        expect(ipc.sent.filter(request => request.args[0] === 'sendMessageNew')).toHaveLength(1);
+      } finally {
+        statSpy.mockRestore();
+        fs.unlinkSync(tmpFile);
+      }
+    });
+
   });
 });

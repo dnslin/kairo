@@ -189,6 +189,10 @@ export class BridgeMessageOps {
   public getSendStatus(operationId: string): Promise<SendResult> {
     return this.sendStatus.getSendStatus(operationId);
   }
+  private normalizeLegacyResult(result: SendResult): SendResult {
+    if (result.status !== undefined) return result;
+    return { ...result, status: sendResultToOperationUpdate(result).status };
+  }
 
   private async executeOperation<T extends SendOptions | SendFileOptions>(
     operationType: SendOperationMessageType,
@@ -200,7 +204,9 @@ export class BridgeMessageOps {
     if (operationId !== undefined && !operationId.trim()) {
       throw new SendError('operationId 不能为空');
     }
-    if (operationId === undefined) return action(undefined, options);
+    if (operationId === undefined) {
+      return this.normalizeLegacyResult(await action(undefined, options));
+    }
 
     const effectiveOptions = await resolveActiveSendOptions(this.cdp, options);
     if (!effectiveOptions) {
@@ -988,7 +994,9 @@ export class BridgeMessageOps {
    * 通过纯底层 IPC 发送本地图片
    */
   public sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
-    return sendNativeImage(this.cdp, imagePath, options);
+    return this.executeOperation('image', options, imagePath, (nativeKey, effectiveOptions) =>
+      sendNativeImage(this.cdp, imagePath, effectiveOptions, nativeKey)
+    );
   }
 
   /**

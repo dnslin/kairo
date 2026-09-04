@@ -178,6 +178,23 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
       expect(res.messageId).toBeUndefined();
       expect(evaluate).toHaveBeenCalledOnce();
     });
+    it('DOM 触发发送后未收到 native 回执时返回未知', async () => {
+      const mockCdp = {
+        evaluate: vi.fn().mockResolvedValue({ success: true, method: 'vue_native_pictext' }),
+        bringToFront: vi.fn().mockResolvedValue(undefined),
+      } as unknown as CdpClient;
+
+      const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
+      const res = await ops.sendRichText('等待 native 回执');
+
+      expect(res).toMatchObject({
+        success: false,
+        status: 'unknown',
+        isPreTrigger: false,
+      });
+      expect(res.messageId).toBeUndefined();
+    });
+
   });
 
   describe('sendReply', () => {
@@ -274,6 +291,25 @@ describe('SendOps 消息发送、富文本、引用与文件发送测试', () =>
       expect(res.success).toBe(false);
       expect(res.isPreTrigger).toBe(true);
       expect(res.error).toContain('文件不存在');
+    });
+    it('operation-aware 图片无法保证稳定关联时明确拒绝且不触发 DOM', async () => {
+      const mockCdp = {
+        evaluate: vi.fn(),
+        bringToFront: vi.fn(),
+      } as unknown as CdpClient;
+      const ops = new SendOps(mockCdp, DEFAULT_SELECTORS);
+
+      const res = await ops.sendImage('image.png', { operationId: 'op-dom-image' });
+
+      expect(res).toMatchObject({
+        success: false,
+        operationId: 'op-dom-image',
+        status: 'failed',
+        isPreTrigger: true,
+      });
+      expect(res.error).toContain('稳定 native 关联键');
+      expect(mockCdp.evaluate).not.toHaveBeenCalled();
+      expect(mockCdp.bringToFront).not.toHaveBeenCalled();
     });
   });
   describe('bringToFront 激活窗口失败 (pre-trigger) 测试', () => {

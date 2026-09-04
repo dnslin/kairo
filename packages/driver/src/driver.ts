@@ -171,6 +171,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
   private unresolvedTargetResult(target: string): SendResult {
     return {
       success: false,
+      status: 'failed',
       error: `目标会话无法唯一解析 [${target}]`,
       isPreTrigger: true,
     };
@@ -442,7 +443,12 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
 
     const res = await this.bridgeMessageOps.sendImage(imagePath, resolvedOptions);
-    if (!res.success && res.isPreTrigger && !resolvedOptions.targetSessionId) {
+    if (
+      !res.success &&
+      res.isPreTrigger &&
+      !resolvedOptions.targetSessionId &&
+      !resolvedOptions.operationId
+    ) {
       const domRes = await this.domSendOps.sendImage(imagePath, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
       return domRes;

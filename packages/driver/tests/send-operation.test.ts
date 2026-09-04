@@ -330,6 +330,7 @@ describe('发送操作 Store port 与 FakeDriver', () => {
     expect(result).toEqual({
       success: true,
       messageId: 'legacy-1',
+      status: 'delivered',
       isPreTrigger: false,
       verifyLatencyMs: 15,
     });
