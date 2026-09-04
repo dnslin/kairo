@@ -3,8 +3,8 @@ title KK9 CDP Launcher
 cls
 
 echo ====================================================
-echo ÕıÔÚÒÔ CDP µ÷ÊÔÄ£Ê½Æô¶¯ KK9 ¿Í»§¶Ë...
-echo µ÷ÊÔ¶Ë¿Ú: 9222
+echo æ­£åœ¨ä»¥ CDP è°ƒè¯•æ¨¡å¼å¯åŠ¨ KK9 å®¢æˆ·ç«¯...
+echo è°ƒè¯•ç«¯å£: 9222
 echo ====================================================
 
 set "KK_EXE="
@@ -31,21 +31,21 @@ if exist "C:\Program Files (x86)\KK9\KK9.exe" (
 
 :LAUNCH
 if "%KK_EXE%"=="" (
-    echo [´íÎó] Î´ÔÚÄ¬ÈÏÂ·¾¶ÕÒµ½ KK9 ¿Í»§¶Ë°²×°³ÌĞò¡£
-    echo Çë¼ì²éÂ·¾¶: %LOCALAPPDATA%\Programs\KK9\KK9.exe
+    echo [é”™è¯¯] æœªåœ¨é»˜è®¤è·¯å¾„æ‰¾åˆ° KK9 å®¢æˆ·ç«¯å®‰è£…ç¨‹åºã€‚
+    echo è¯·æ£€æŸ¥è·¯å¾„: %LOCALAPPDATA%\Programs\KK9\KK9.exe
     echo.
     pause
     exit /b 1
 )
 
-echo ÕÒµ½³ÌĞò: "%KK_EXE%"
-echo ÕıÔÚÆô¶¯ÃüÁî: "%KK_EXE%" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
+echo æ‰¾åˆ°ç¨‹åº: "%KK_EXE%"
+echo æ­£åœ¨å¯åŠ¨å‘½ä»¤: "%KK_EXE%" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 start "" "%KK_EXE%" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 
 echo.
 echo ====================================================
-echo KK9 Æô¶¯Ö¸ÁîÒÑ·¢³ö£¡
-echo ÇëÈ·ÈÏ KK9 ½çÃæÒÑÕı³£ÏÔÊ¾ÇÒÎ´×îĞ¡»¯¡£
+echo KK9 å¯åŠ¨æŒ‡ä»¤å·²å‘å‡ºï¼
+echo è¯·ç¡®è®¤ KK9 ç•Œé¢å·²æ­£å¸¸æ˜¾ç¤ºä¸”æœªæœ€å°åŒ–ã€‚
 echo ====================================================
 echo.
 pause
