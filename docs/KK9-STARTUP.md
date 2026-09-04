@@ -25,6 +25,8 @@
 --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 ```
 
+仓库根目录的 `start-kk9-cdp.bat` 使用相同的 `--remote-debugging-address=127.0.0.1` 与 `--remote-debugging-port=9222` 参数。
+
 不要修改日常使用的快捷方式；调试端口只应在需要运行 Kairo 或真机验证时开启。
 
 ## 3. 验证 CDP 端点
@@ -93,6 +95,27 @@ pnpm e2e
 ```
 
 脚本会同时核对实际登录用户以及私聊/群聊的 ID、名称和类型；任一项不匹配、关键步骤失败或未提供确认变量时，会停止后续副作用并仅执行已知消息清理。它会真实发送文本、富文本、文件、图片和引用回复、切换 UI、标记已读，再按 native ID 撤回，因此不得在未授权会话运行。
+
+### 阶段一真实合同验证（T09）
+
+`e2e:stage1` 只使用真实 `KK9Driver`，不能用 `FakeDriver` 代替。脚本会先精确核对登录 Bot、目标员工和私聊会话，再执行真实消息副作用；任一授权值缺失或不匹配都会在发送前失败。
+
+在同一个已启动 KK9 的 PowerShell 窗口设置实际值：
+
+```powershell
+$env:KK9_STAGE1_BOT_UID = "<登录 Bot UID>"
+$env:KK9_STAGE1_EMPLOYEE_UID = "<目标员工 UID>"
+$env:KK9_STAGE1_SESSION_ID = "0-<目标员工 UID>"
+$env:KK9_STAGE1_SESSION_NAME = "<目标员工会话名>"
+$env:KK9_STAGE1_CONFIRM = "<登录 Bot UID>:<目标员工 UID>:0-<目标员工 UID>"
+pnpm --filter @kairo/driver e2e:stage1
+```
+
+`KK9_STAGE1_CONFIRM` 必须完全等于 `Bot UID:员工 UID:sessionId`。运行后按终端提示让目标员工发送一条真实消息。脚本会验证员工消息为 `inbound`、Bot 回显为 `outbound`、证据不足消息为 `unknown`、同一 `(sessionId,messageId)` 可识别 EventBridge 与轮询重复，并覆盖 `delivered`、确定的 `pre-trigger failed`、发送后 `unknown`、状态查询和 operationId 防重。发送后 `unknown` 会在重连后查询最终状态并再次核对员工 UID 与 sessionId。
+
+若真实历史没有可用的非 `system` unknown，脚本会使用刚收到的真实消息 payload 去除 self/source/sender 身份字段做受控探针；该探针只验证证据不足时保持 `unknown`，不替代员工入站与 Bot 回显的真机方向验收。
+
+脚本会尽量撤回测试产生的 Bot 消息；清理失败时，`阶段一合同测试汇总` 会列出未撤回的原生消息 ID。
 
 ## 6. 故障排查
 

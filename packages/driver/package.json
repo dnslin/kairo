@@ -22,7 +22,8 @@
     "dev": "tsx watch src/index.ts",
     "verify": "tsx examples/verify.ts",
     "diagnose": "tsx examples/diagnose.ts",
-    "e2e": "tsx examples/e2e-real-test.ts"
+    "e2e": "tsx examples/e2e-real-test.ts",
+    "e2e:stage1": "tsx examples/e2e-stage1-contract.ts"
   },
   "dependencies": {
     "mime-types": "^3.0.2",
