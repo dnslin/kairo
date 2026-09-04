@@ -39,8 +39,8 @@ if "%KK_EXE%"=="" (
 )
 
 echo 找到程序: "%KK_EXE%"
-echo 正在启动命令: "%KK_EXE%" --remote-debugging-port=9222
-start "" "%KK_EXE%" --remote-debugging-port=9222
+echo 正在启动命令: "%KK_EXE%" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
+start "" "%KK_EXE%" --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
 
 echo.
 echo ====================================================
