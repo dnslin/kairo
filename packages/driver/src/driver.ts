@@ -661,7 +661,18 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
           if (firstKey) this.knownMessageKeys.delete(firstKey);
         }
 
-        log.debug({ id: msg.id, sender: msg.sender, content: msg.content }, '捕获新消息并触发事件');
+        log.debug(
+          {
+            id: msg.id,
+            messageId: msg.messageId ?? msg.id,
+            sessionId: msg.sessionId,
+            sender: msg.sender,
+            direction: msg.direction,
+            origin: msg.origin,
+            status: 'received',
+          },
+          '捕获新消息并触发事件'
+        );
         this.emit('message', msg);
 
         if (msg.atMe || msg.atAll || msg.mentions?.isAtMe || msg.mentions?.isAtAll) {
