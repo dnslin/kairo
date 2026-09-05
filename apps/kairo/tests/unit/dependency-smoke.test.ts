@@ -49,7 +49,7 @@ function parseVersion(value: string): Version {
 }
 
 function compareVersions(left: Version, right: Version): number {
-  for (let index = 0; index < left.length; index += 1) {
+  for (const index of [0, 1, 2] as const) {
     if (left[index] !== right[index]) {
       return left[index] > right[index] ? 1 : -1;
     }
@@ -75,7 +75,7 @@ function isVersionInRange(version: string, range: string): boolean {
     }
 
     const boundedRange = /^>=([\d.]+)(?:-[^ ]+)?\s+<([\d.]+)(?:-[^ ]+)?$/.exec(normalizedRange);
-    if (boundedRange) {
+    if (boundedRange?.[1] !== undefined && boundedRange[2] !== undefined) {
       const minimum = parseVersion(boundedRange[1]);
       const maximum = parseVersion(boundedRange[2]);
       return compareVersions(parsedVersion, minimum) >= 0 && compareVersions(parsedVersion, maximum) < 0;

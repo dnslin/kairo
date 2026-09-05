@@ -25,6 +25,10 @@ pnpm format
 ```
 以上四条根质量命令同时覆盖 `@kairo/driver` 与 `@kairo/app`；`pnpm format` 当前只格式化 Driver 文件。
 
+`@kairo/app` 的 `typecheck` 使用 `apps/kairo/tsconfig.typecheck.json`，覆盖 `src`、`tests` 和 `vitest.config.ts`，不生成文件；`build` 仍使用 `apps/kairo/tsconfig.json`，只编译 `src`。应用直接声明 `@types/node` 与 `@types/pg`，数据库代码使用 `pg` 提供的类型接口，不再手写第三方模块声明。
+
+默认 `pnpm test` 中的 App 测试排除 `tests/integration/**`，不要求 PostgreSQL 连接。显式执行 `pnpm --filter @kairo/app test:integration` 会加载仓库根目录 `.env` 并运行完整集成目录，覆盖发送操作存储与 Mastra 存储；缺少 `KAIRO_TEST_DATABASE_URL` 时 Mastra 集成测试会明确失败。请使用专用测试数据库：发送操作测试会在该库执行迁移和读写，Mastra 测试还需要创建、删除临时数据库的权限。
+
 Driver 真机辅助命令：
 
 ```bash

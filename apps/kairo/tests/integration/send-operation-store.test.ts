@@ -7,13 +7,14 @@ import {
   type SendOperationStore,
 } from '@kairo/driver';
 import { MIGRATIONS_TABLE, migrateDatabase } from '../../src/db/migrate.js';
-import { createPostgresPool, type PostgresPool } from '../../src/db/pool.js';
+import type { Pool } from 'pg';
+import { createPostgresPool } from '../../src/db/pool.js';
 import { PostgresSendOperationStore } from '../../src/modules/im-transport/postgres-send-operation-store.js';
 
 const databaseUrl = process.env.KAIRO_TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 const describePostgres = databaseUrl ? describe : describe.skip;
 
-let verificationPool: PostgresPool;
+let verificationPool: Pool;
 
 function newOperationId(): string {
   return `integration-${randomUUID()}`;
@@ -30,7 +31,7 @@ function newFingerprint(
   });
 }
 
-function createStore(pool: PostgresPool): SendOperationStore {
+function createStore(pool: Pool): SendOperationStore {
   return new PostgresSendOperationStore(pool);
 }
 
@@ -47,12 +48,13 @@ describePostgres('PostgresSendOperationStore 真实 PostgreSQL 集成合同', ()
     await verificationPool?.end();
   });
 
-  it('新库迁移可重复执行且只记录一次迁移', async () => {
+  it('迁移可重复执行且发送操作迁移只记录一次', async () => {
     const applied = await migrateDatabase({ databaseUrl });
     expect(applied).toHaveLength(0);
 
     const result = await verificationPool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM kairo.${MIGRATIONS_TABLE}`
+      `SELECT COUNT(*)::text AS count FROM kairo.${MIGRATIONS_TABLE} WHERE name = $1`,
+      ['000001-send-operations']
     );
     expect(result.rows[0]?.count).toBe('1');
 
