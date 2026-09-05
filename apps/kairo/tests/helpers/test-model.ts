@@ -1,5 +1,9 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { ModelRouterLanguageModel } from '@mastra/core/llm';
 import { MastraLanguageModelV2Mock } from '@mastra/core/test-utils/llm-mock';
+
+// 整个串行测试进程共享间隔，避免新建 runtime 后重新突发请求。
+let nextRequestAt = 0;
 
 // 仅替代模型网络边界；Memory、Agent 和 PostgreSQL 均使用真实实现。
 export function createTestModel() {
@@ -56,15 +60,26 @@ export function createApprovedTestModel() {
       '真实模型门禁需要 KAIRO_T12_MODEL（供应商/模型）、KAIRO_T12_MODEL_URL 和 KAIRO_T12_MODEL_API_KEY'
     );
   }
+  const intervalMs = Number(process.env.KAIRO_T12_MODEL_INTERVAL_MS ?? 0);
+  if (!Number.isFinite(intervalMs) || intervalMs < 0) {
+    throw new Error('KAIRO_T12_MODEL_INTERVAL_MS 必须是非负毫秒数');
+  }
+  async function waitForRequestSlot() {
+    const waitMs = nextRequestAt - Date.now();
+    if (waitMs > 0) await delay(waitMs);
+    nextRequestAt = Date.now() + intervalMs;
+  }
   const inputs: string[] = [];
   const model = new ModelRouterLanguageModel({ id: id as `${string}/${string}`, url, apiKey });
   const generate = model.doGenerate.bind(model);
   const stream = model.doStream.bind(model);
   model.doGenerate = async options => {
+    await waitForRequestSlot();
     inputs.push(JSON.stringify(options.prompt));
     return generate(options);
   };
   model.doStream = async options => {
+    await waitForRequestSlot();
     inputs.push(JSON.stringify(options.prompt));
     return stream(options);
   };
