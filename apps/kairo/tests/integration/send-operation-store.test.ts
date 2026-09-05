@@ -48,12 +48,13 @@ describePostgres('PostgresSendOperationStore 真实 PostgreSQL 集成合同', ()
     await verificationPool?.end();
   });
 
-  it('新库迁移可重复执行且只记录一次迁移', async () => {
+  it('迁移可重复执行且发送操作迁移只记录一次', async () => {
     const applied = await migrateDatabase({ databaseUrl });
     expect(applied).toHaveLength(0);
 
     const result = await verificationPool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM kairo.${MIGRATIONS_TABLE}`
+      `SELECT COUNT(*)::text AS count FROM kairo.${MIGRATIONS_TABLE} WHERE name = $1`,
+      ['000001-send-operations']
     );
     expect(result.rows[0]?.count).toBe('1');
 
