@@ -9,7 +9,7 @@ import {
   type SendOperationStore,
   type SendOperationUpdate,
 } from '@kairo/driver';
-import type { PostgresQueryExecutor } from '../../db/pool.js';
+import type { Pool } from 'pg';
 
 type DatabaseTimestamp = Date | number | string;
 
@@ -201,7 +201,7 @@ function mapRow(row: SendOperationRow): SendOperationRecord {
 }
 
 export class PostgresSendOperationStore implements SendOperationStore {
-  public constructor(private readonly pool: PostgresQueryExecutor) {}
+  public constructor(private readonly pool: Pick<Pool, 'query'>) {}
 
   public async claim(input: SendOperationClaim): Promise<SendOperationClaimResult> {
     const operationId = normalizeOperationId(input.operationId);

@@ -6,18 +6,21 @@ import type { MastraDBMessage } from '@mastra/core/memory';
 import { createMastraStorage } from '../../src/mastra/storage.js';
 import { assertMigrationMatchesExport } from '../../src/db/export-mastra-schema.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
-import { createPostgresPool, type PostgresPool } from '../../src/db/pool.js';
+import type { Pool } from 'pg';
+import { createPostgresPool } from '../../src/db/pool.js';
 
-const sourceDatabaseUrl = process.env.KAIRO_TEST_DATABASE_URL;
+const configuredDatabaseUrl = process.env.KAIRO_TEST_DATABASE_URL;
 
-if (!sourceDatabaseUrl) {
+if (!configuredDatabaseUrl) {
   throw new Error('缺少 KAIRO_TEST_DATABASE_URL，不能执行真实 PostgreSQL 集成测试');
 }
 
+const sourceDatabaseUrl = configuredDatabaseUrl;
+
 const testDatabaseName = `kairo_t11_${randomUUID().replaceAll('-', '')}`;
 let testDatabaseUrl: string;
-let adminPool: PostgresPool;
-let verificationPool: PostgresPool;
+let adminPool: Pool;
+let verificationPool: Pool;
 
 function getDatabaseUrl(databaseName: string): string {
   const databaseUrl = new URL(sourceDatabaseUrl);
@@ -65,7 +68,7 @@ describe('Mastra PostgreSQL 单账号开发集成合同', () => {
       expect(configuredStorage).toBeDefined();
       await configuredStorage?.init();
 
-      const schema = await storage.db.query<{ schema_name: string }>(
+      const schema = await storage.db.query(
         `
           SELECT schema_name
           FROM information_schema.schemata
@@ -73,10 +76,7 @@ describe('Mastra PostgreSQL 单账号开发集成合同', () => {
         `
       );
       expect(schema.rows).toHaveLength(0);
-      const nonSystemObjects = await storage.db.query<{
-        schema_name: string;
-        object_name: string;
-      }>(
+      const nonSystemObjects = await storage.db.query(
         `
           SELECT n.nspname AS schema_name, c.relname AS object_name
           FROM pg_catalog.pg_class AS c
