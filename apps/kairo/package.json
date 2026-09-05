@@ -14,7 +14,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm --filter @kairo/driver build",
     "test": "vitest run --config vitest.config.ts --passWithNoTests",
-    "e2e": "vitest run --config vitest.config.ts --passWithNoTests --dir tests/e2e"
+    "e2e": "vitest run --config vitest.config.ts --passWithNoTests --dir tests/e2e",
+    "db:mastra:verify": "pnpm --filter @kairo/app build && node --env-file=../../.env dist/db/export-mastra-schema.js",
+    "test:integration": "node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts tests/integration/mastra-storage.spike.test.ts"
   },
   "dependencies": {
     "@kairo/driver": "workspace:*",
