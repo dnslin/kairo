@@ -1,9 +1,13 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { stringify } from 'yaml';
 import { loadBotConfig } from '../../src/config/load.js';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { botConfigSchema } from '../../src/config/schema.js';
 import { startKairo } from '../../src/index.js';
 
@@ -199,4 +203,83 @@ describe('T15 受控配置读取', () => {
       expect((await loadBotConfig(directory)).configDigest).not.toBe(third.configDigest);
     });
   });
+});
+
+describe('T15 启动失败的完整 stderr', () => {
+  let directory: string;
+  let applicationDirectory: string;
+  let configFile: string;
+
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), 'kairo-startup-config-'));
+    applicationDirectory = join(directory, 'apps', 'kairo');
+    const configDirectory = join(directory, 'config', 'bots', 'default');
+    configFile = join(configDirectory, 'bot.yaml');
+    await mkdir(applicationDirectory, { recursive: true });
+    await mkdir(configDirectory, { recursive: true });
+    await writeFile(join(applicationDirectory, 'package.json'), '{"type":"module"}');
+    const applicationSource = fileURLToPath(new URL('../../', import.meta.url));
+    const repository = fileURLToPath(new URL('../../../../', import.meta.url));
+    // 保留 pnpm 相对链接布局；只隔离配置与编译产物，不复制依赖或改写正式配置。
+    await symlink(join(repository, 'node_modules'), join(directory, 'node_modules'), 'junction');
+    await symlink(
+      join(applicationSource, 'node_modules'),
+      join(applicationDirectory, 'node_modules'),
+      'junction'
+    );
+    // 编译当前源码到临时目录，避免回归测试误用旧 dist。
+    const compiler = createRequire(import.meta.url).resolve('typescript/bin/tsc');
+    await promisify(execFile)(
+      process.execPath,
+      [
+        compiler,
+        '-p',
+        join(applicationSource, 'tsconfig.json'),
+        '--outDir',
+        join(applicationDirectory, 'dist'),
+      ],
+      { timeout: 30000 }
+    );
+  }, 30000);
+
+  afterAll(async () => {
+    if (directory) await rm(directory, { recursive: true, force: true });
+  });
+
+  it.each([
+    [
+      '非法模型 URL',
+      (secret: string) => {
+        const config = validConfig();
+        config.model.url = `http://[${secret}`;
+        return stringify(config);
+      },
+      /model\.url/,
+    ],
+    [
+      'YAML 复杂键',
+      (secret: string) => `${stringify(validConfig())}? [${secret}]\n: ignored\n`,
+      /NON_STRING_KEY/,
+    ],
+  ] as const)(
+    '%s 拒绝启动且完整输出不含测试凭证',
+    async (_scenario, source, diagnostic) => {
+      const secret = 'T15_STDERR_TEST_CREDENTIAL';
+      await writeFile(configFile, source(secret));
+      const result = await new Promise<{ code: string | number; stdout: string; stderr: string }>(
+        resolve => {
+          execFile(
+            process.execPath,
+            [join(applicationDirectory, 'dist', 'index.js')],
+            { cwd: applicationDirectory, encoding: 'utf8', timeout: 10000 },
+            (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr })
+          );
+        }
+      );
+      expect(result.code).toBe(1);
+      expect(result.stdout + result.stderr).not.toContain(secret);
+      expect(result.stderr).toMatch(diagnostic);
+    },
+    15000
+  );
 });

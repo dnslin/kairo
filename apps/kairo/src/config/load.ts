@@ -22,7 +22,11 @@ export async function loadBotConfig(
 ): Promise<LoadedBotConfig> {
   const source = await readFile(join(directory, 'bot.yaml'));
   const lineCounter = new LineCounter();
-  const document = parseDocument(source.toString('utf8'), { prettyErrors: false, lineCounter });
+  const document = parseDocument(source.toString('utf8'), {
+    prettyErrors: false,
+    lineCounter,
+    stringKeys: true,
+  });
   const problems = [...document.errors, ...document.warnings];
   if (problems.length > 0) {
     const locations = problems.map(problem => {

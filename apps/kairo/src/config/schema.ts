@@ -6,7 +6,7 @@ const uniqueNames = z.array(requiredText).refine(names => new Set(names).size ==
 const skillNames = z
   .array(z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/))
   .refine(names => new Set(names).size === names.length);
-const modelUrl = z.url({ protocol: /^https?$/ }).refine(value => {
+const modelUrl = z.url({ protocol: /^https?$/, abort: true }).refine(value => {
   const url = new URL(value);
   return !url.username && !url.password;
 });

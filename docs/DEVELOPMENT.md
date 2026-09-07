@@ -199,9 +199,11 @@ node apps/kairo/tmp/t14/faults.mjs
 
 所有配置对象均拒绝未知字段，包括误写的 `password`、`apiKey`、`API_KEY`、`Authorization` 和数据库连接字段；凭证继续从环境变量提供。YAML 解析错误保留错误类别和行列，结构错误保留字段路径，不打印源文本或含原始输入的异常。重复 YAML 键和无法识别的标签同样报错，不静默忽略。
 
+模型 URL 初检设置 `abort: true`：无效地址不会进入后续 `new URL()` 校验，避免原生异常的 `input` 字段绕过安全错误转换。YAML 解析设置 `stringKeys: true`：复杂键在解析阶段被拒绝，不进入 `toJS()` 的键字符串化过程，避免库通过进程警告输出键原文。没有全局关闭警告或吞掉异常。
+
 启动使用现有 Pino 输出 `event: '配置已加载'`、`gitCommit`、`configDigest`，不输出配置值、员工正文或知识片段。摘要为受控目录全部文件的 SHA-256，包括存在的 SOUL、AGENTS、Skill 及其资源；未启用目录中的文件变化也会改变部署摘要。按相对路径排序并编码文件长度，不包含部署绝对路径或运行时间；文件字节、注释和换行变化都会改变摘要。启动记录入数据库由 T20 实施，本次不新建表或日志框架。
 
-#### 验证结果（2026-09-07）
+#### 初次实现验证（2026-09-07）
 
 - 实现提交：`ee6430fc021de64c9ba0c7d47a73faf6fccfe1ce`。先建立失败测试，再实现校验；启动顺序测试在接入前因先报 PostgreSQL 配置错误而失败，接入后通过。
 - 实际执行 `pnpm --filter @kairo/app exec vitest run tests/unit/config.test.ts`：22 个测试通过；`pnpm --filter @kairo/app typecheck` 和 `pnpm --filter @kairo/app build` 通过。
@@ -209,6 +211,14 @@ node apps/kairo/tmp/t14/faults.mjs
 - 在 `apps/kairo` 执行 `node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts tests/integration/mastra-route-isolation.spike.test.ts`：3 个真实 PostgreSQL 集成测试通过，原路由、关闭行为与 Studio 数据隔离不变。
 - 实际以 `node --env-file-if-exists=../../.env dist/index.js` 启动正式入口；向该验证进程注入现有测试连接作为 `DATABASE_URL`，存活接口返回 200。往正式 YAML 临时加入测试 `Authorization` 字段后，入口在监听前以退出码 1 拒绝；错误输出不含测试凭证，随后已恢复原文件并成功启动。
 - 临时程序 `tmp/t15-start-smoke.mjs` 用批准的真实配置和现有测试数据库执行 `SELECT 1`，确认主模型不被旧测试环境变量覆盖、原生执行路由为 404；文件中的 `maxSteps` 从 20 改成 21 时旧实例仍为 20，重启后为 21，恢复原文件后为 20。原配置摘要为 `e812947976ede2153a2711037d839a3f1c7618a4f8a2d9ebd3e4db8dec410043`，修改后的摘要不同，恢复后完全一致。该程序通过后删除，不成为正式启动命令。
+
+#### 启动错误输出修复（2026-09-07）
+
+初次验证未覆盖非法模型 URL 和 YAML 复杂键，不能据此得出所有错误输出均不泄露输入的结论。补充完整入口复现后确认两条独立问题：非法 URL 的 `TypeError.input` 会输出原文；复杂 YAML 键在对象转换阶段触发额外的进程警告，即使配置随后被拒绝，警告仍包含键原文。上述两个解析选项分别修复对应根因。
+
+- `tests/unit/config.test.ts` 新增两个完整启动回归：将当前源码编译到临时目录，启动真实 `dist/index.js` 子进程并捕获完整 stdout/stderr，不使用旧构建产物、不改写正式配置、不模拟错误打印。子进程及临时文件在测试结束时回收。
+- 修复前实际执行配置定向测试：22 个通过、2 个因输出包含测试凭证而失败；修复后 24 个全部通过。两条回归同时要求退出码为 1、完整输出不含测试凭证，并保留 `model.url` 或 `NON_STRING_KEY` 诊断。
+- 实际执行 `pnpm build && pnpm typecheck && pnpm test && pnpm lint`：全部通过，默认测试为 Driver 308 个、App 33 个。实际重跑上述 T13 PostgreSQL 集成命令，3 个测试通过，正常配置启动、端口与连接释放、原生路由隔离保持不变。
 
 上述验证未调用模型、RAGFlow 或真实 IM，也不代表 T16/T27/T28 业务已交付。本次没有修改 Driver。正常部署仍必须显式提供自己的 `DATABASE_URL`；代码不会把 `KAIRO_TEST_DATABASE_URL` 自动当作正式连接。
 
