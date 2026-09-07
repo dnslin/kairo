@@ -118,3 +118,60 @@ export const CONFIRM_SENT_MESSAGE_SCRIPT = `
     return null;
   }
 `;
+
+// 内容准备、操作登记与 UI 通知由调用方负责；这里只执行一次原生提交。
+export const SUBMIT_NATIVE_MESSAGE_SCRIPT = `
+  async function submitNativeMessage(msgObj, targetSession) {
+    const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
+    if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
+      return {
+        insertFailed: true,
+        failure: {
+          success: false,
+          error: insertRes?.error || 'insertSendBefoeMsg 写入失败',
+          isPreTrigger: Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2)
+        }
+      };
+    }
+
+    msgObj.id = insertRes.data.id;
+    msgObj.msgIdx = insertRes.data.msgIdx;
+    const sendRes = await callIpc('sendMessageNew', {
+      id: msgObj.id,
+      content: msgObj.content,
+      contentType: msgObj.contentType,
+      sender: msgObj.sender,
+      senderName: msgObj.senderName,
+      senderNameEN: msgObj.senderNameEN,
+      senderNameTC: msgObj.senderNameTC,
+      receiver: msgObj.receiver,
+      sessionType: msgObj.sessionType,
+      sessionID: msgObj.sessionID,
+      atState: msgObj.atState,
+      msgFlag: msgObj.msgFlag,
+      atMemberIDList: msgObj.atMemberIDList,
+      type: msgObj.type
+    });
+    if (!sendRes || sendRes.code !== 0) {
+      return {
+        failure: {
+          success: false,
+          error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
+          isPreTrigger: false
+        }
+      };
+    }
+
+    const confirmedMessage = await waitForPersistedMessage(msgObj.sessionID, msgObj.msgFlag, targetSession);
+    if (!confirmedMessage) {
+      return {
+        failure: {
+          success: false,
+          error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
+          isPreTrigger: false
+        }
+      };
+    }
+    return { confirmedMessage };
+  }
+`;

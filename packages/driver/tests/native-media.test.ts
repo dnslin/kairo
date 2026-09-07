@@ -5,7 +5,7 @@ import { normalizeNativeMessage } from '../src/bridge/converter.js';
 import { createNativeMessageKey } from '../src/bridge/send-status.js';
 import { prepareVoice } from '../src/bridge/voice-ops.js';
 import { KK9Driver } from '../src/driver.js';
-import { InMemorySendOperationStore } from '../src/send-operation.js';
+import { InMemorySendOperationStore, type SendOperationStore } from '../src/send-operation.js';
 import type { SendResult } from '../src/types/index.js';
 import { getDriverTestInternals } from './helpers/driver-internals.js';
 import {
@@ -205,6 +205,70 @@ describe('原生卡片与语音发送集成', () => {
     });
   });
 
+  it('ChatRecord 在 claim 等待期间保持调用时的嵌套内容快照，并允许原始内容安全重放', async () => {
+    const native = createSuccessfulNativeRuntime();
+    const innerStore = new InMemorySendOperationStore();
+    let markStarted = (): void => {};
+    let release = (): void => {};
+    const claimStarted = new Promise<void>(resolve => {
+      markStarted = resolve;
+    });
+    const releaseClaim = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const store: SendOperationStore = {
+      claim: vi.fn(async input => {
+        markStarted();
+        await releaseClaim;
+        return innerStore.claim(input);
+      }),
+      get: operationId => innerStore.get(operationId),
+      update: (operationId, update) => innerStore.update(operationId, update),
+    };
+    const operations = new BridgeMessageOps(native.cdp, store);
+    const nestedContent = { content: [{ type: 0, text: 'A' }] };
+    const options = {
+      targetSessionId: session.sesUUID,
+      operationId: 'op-chat-record-snapshot',
+    };
+
+    const pending = operations.sendChatRecord(
+      {
+        title: '嵌套内容快照',
+        msgArray: [{ senderName: '甲', contentType: 4, content: nestedContent }],
+      },
+      options
+    );
+    await claimStarted;
+    nestedContent.content[0]!.text = 'B';
+    release();
+
+    const first = await pending;
+    const replay = await operations.sendChatRecord(
+      {
+        title: '嵌套内容快照',
+        msgArray: [
+          {
+            senderName: '甲',
+            contentType: 4,
+            content: { content: [{ type: 0, text: 'A' }] },
+          },
+        ],
+      },
+      options
+    );
+
+    expect(first).toMatchObject({ status: 'delivered', messageId: '135700000' });
+    expect(replay).toEqual(first);
+    expect(native.inserted[0]?.['content']).toMatchObject({
+      msgArray: [{ content: { content: [{ type: 0, text: 'A' }] } }],
+    });
+    expect(
+      native.ipc.sent.filter(request => request.args[0] === 'insertSendBefoeMsg')
+    ).toHaveLength(1);
+    expect(native.ipc.sent.filter(request => request.args[0] === 'sendMessageNew')).toHaveLength(1);
+  });
+
   it('卡片显式传入 replyTo 或 mentions 时触发前失败并写入操作状态', async () => {
     const native = createSuccessfulNativeRuntime();
     const store = new InMemorySendOperationStore();
@@ -325,6 +389,48 @@ describe('原生卡片与语音发送集成', () => {
     expect(
       native.ipc.sent.filter(request => request.args[0] === 'insertSendBefoeMsg')
     ).toHaveLength(1);
+  });
+
+  it('直接 Bridge 无 operationId 时在语音准备前绑定当前会话', async () => {
+    const native = createSuccessfulNativeRuntime();
+    const other = {
+      ...session,
+      id: 700001,
+      sesUUID: '0-9999',
+      typeID: 9999,
+      name: '另一会话',
+      typeName: '另一会话',
+    };
+    native.runtime.editor.sortedSessions.push(other);
+    vi.mocked(prepareVoice).mockImplementation(() => {
+      native.runtime.editor.activedSes = other;
+      return Promise.resolve({ duration: 1, data: 'IyFBTVIK' });
+    });
+
+    const result = await new BridgeMessageOps(native.cdp).sendVoice({
+      text: '只发给调用时的当前会话',
+    });
+
+    expect(result).toMatchObject({ status: 'delivered', messageId: '135700000' });
+    expect(native.sent[0]?.['sessionID']).toBe(session.id);
+    expect(native.runtime.events[0]?.event).toBe(`${session.sesUUID}-msg`);
+  });
+
+  it('直接 Bridge 无 operationId 且无当前会话时不准备音频并明确触发前失败', async () => {
+    const native = createSuccessfulNativeRuntime();
+    native.runtime.editor.activedSes = null;
+    vi.mocked(prepareVoice).mockResolvedValue({ duration: 1, data: 'IyFBTVIK' });
+
+    const result = await new BridgeMessageOps(native.cdp).sendVoice({ text: '没有发送目标' });
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 'failed',
+      isPreTrigger: true,
+      error: expect.stringContaining('目标会话'),
+    });
+    expect(prepareVoice).not.toHaveBeenCalled();
+    expect(native.ipc.sent).toHaveLength(0);
   });
 
   it('跳过缺失或无效的消息 ID，只确认正式正整数 ID', async () => {

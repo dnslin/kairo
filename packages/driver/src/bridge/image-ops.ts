@@ -7,6 +7,7 @@ import {
   encodeRendererPayload,
   RENDERER_IPC_HELPERS_SCRIPT,
   RENDERER_SESSION_RESOLVER_SCRIPT,
+  SUBMIT_NATIVE_MESSAGE_SCRIPT,
 } from './renderer-script.js';
 import {
   createNativeMessageKey,
@@ -28,7 +29,13 @@ function imagePreflightFailure(operationAware: boolean, error: unknown): SendRes
 
 function getImageDimensions(buffer: Buffer): { width: number; height: number } {
   // PNG: bytes 16-24 hold width (16..19) and height (20..23) big-endian
-  if (buffer.length >= 24 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+  if (
+    buffer.length >= 24 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
     return {
       width: buffer.readUInt32BE(16),
       height: buffer.readUInt32BE(20),
@@ -115,7 +122,12 @@ export async function sendNativeImage(
   const fullPath = path.resolve(imagePath);
   const operationAware = nativeKey !== undefined || options.operationId !== undefined;
   if (!fs.existsSync(fullPath)) {
-    return { success: false, status: 'failed', error: `图片文件不存在: ${fullPath}`, isPreTrigger: true };
+    return {
+      success: false,
+      status: 'failed',
+      error: `图片文件不存在: ${fullPath}`,
+      isPreTrigger: true,
+    };
   }
 
   let stats: fs.Stats;
@@ -143,7 +155,12 @@ export async function sendNativeImage(
 
   const mimeType = mime.lookup(fullPath) || 'image/png';
   if (!mimeType.startsWith('image/')) {
-    return { success: false, status: 'failed', error: `不支持的图片格式: ${mimeType}`, isPreTrigger: true };
+    return {
+      success: false,
+      status: 'failed',
+      error: `不支持的图片格式: ${mimeType}`,
+      isPreTrigger: true,
+    };
   }
 
   let buffer: Buffer;
@@ -183,6 +200,7 @@ export async function sendNativeImage(
       ${RENDERER_IPC_HELPERS_SCRIPT}
       const callIpc = callKairoIpc;
       ${CONFIRM_SENT_MESSAGE_SCRIPT}
+      ${SUBMIT_NATIVE_MESSAGE_SCRIPT}
 
       const data = JSON.parse(decodeURIComponent(${encoded}));
       const target = data.target;
@@ -263,57 +281,13 @@ export async function sendNativeImage(
         deviceID: main?.deviceID || editor?.deviceID || ''
       };
 
-      // 3. 写入本地 SQLite
-      const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
-      if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
-        return {
-          success: false,
-          error: 'insertSendBefoeMsg 写入失败',
-          isPreTrigger: data.operationAware
-            ? Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2)
-            : true,
-        };
+      const submission = await submitNativeMessage(msgObj);
+      if (submission.failure) {
+        // 旧图片入口的预插入失败分类保持不变，操作登记入口使用实际触发证据。
+        if (submission.insertFailed && !data.operationAware) submission.failure.isPreTrigger = true;
+        return submission.failure;
       }
-
-      const nativeId = insertRes.data.id;
-      msgObj.id = nativeId;
-      msgObj.msgIdx = insertRes.data.msgIdx;
-
-      // 4. 发送消息至 Native 通信层
-      const sendRes = await callIpc('sendMessageNew', {
-        id: nativeId,
-        content: msgObj.content,
-        contentType: msgObj.contentType,
-        sender: msgObj.sender,
-        senderName: msgObj.senderName,
-        senderNameEN: msgObj.senderNameEN,
-        senderNameTC: msgObj.senderNameTC,
-        receiver: msgObj.receiver,
-        sessionType: msgObj.sessionType,
-        sessionID: msgObj.sessionID,
-        atState: msgObj.atState,
-        msgFlag: msgObj.msgFlag,
-        atMemberIDList: msgObj.atMemberIDList,
-        type: msgObj.type
-      });
-
-      if (!sendRes || sendRes.code !== 0) {
-        return {
-          success: false,
-          error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
-          isPreTrigger: false
-        };
-      }
-
-      // 5. 轮询确认已持久化的正整数消息 ID
-      const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag);
-      if (!confirmedMessage) {
-        return {
-          success: false,
-          error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
-          isPreTrigger: false
-        };
-      }
+      const confirmedMessage = submission.confirmedMessage;
 
       try {
         if (store) {
@@ -341,12 +315,8 @@ export async function sendNativeImage(
       const legacyResult: SendResult = res
         ? {
             ...res,
-            ...(!res.success && res.error === undefined
-              ? { error: '底层图片 IPC 发送失败' }
-              : {}),
-            ...(!res.success && res.isPreTrigger === undefined
-              ? { isPreTrigger: false }
-              : {}),
+            ...(!res.success && res.error === undefined ? { error: '底层图片 IPC 发送失败' } : {}),
+            ...(!res.success && res.isPreTrigger === undefined ? { isPreTrigger: false } : {}),
             ...(res.success ? { verifyLatencyMs: Date.now() - startTime } : {}),
           }
         : {

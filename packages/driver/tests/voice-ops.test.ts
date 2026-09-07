@@ -104,6 +104,16 @@ function createPcm16Wav(options: {
   return wav;
 }
 
+function withOddRiffChunk(wav: Buffer): Buffer {
+  const oddChunk = Buffer.alloc(10);
+  oddChunk.write('JUNK', 0, 'ascii');
+  oddChunk.writeUInt32LE(1, 4);
+  oddChunk[8] = 0x7f;
+  const result = Buffer.concat([wav.subarray(0, 12), oddChunk, wav.subarray(12)]);
+  result.writeUInt32LE(result.length - 8, 4);
+  return result;
+}
+
 const tempDirs: string[] = [];
 
 async function createTempFile(name: string, data: Uint8Array): Promise<string> {
@@ -148,6 +158,29 @@ describe('prepareVoice 语音输入与 KK9 AMR-NB 转换', () => {
     expect(captured?.pcm).toHaveLength(8160);
     expect(Array.from(captured?.pcm.subarray(8000) ?? [])).toEqual(new Array(160).fill(0));
     expect(Math.max(...Array.from(captured?.pcm.subarray(0, 8000) ?? []))).toBeGreaterThan(0.1);
+  });
+
+  it('跳过奇数字节 RIFF chunk 的 padding 并继续解码后续音频', async () => {
+    const wav = withOddRiffChunk(
+      createPcm16Wav({
+        sampleRate: 8000,
+        channels: 1,
+        frameCount: 800,
+        sampleAt: () => 0.2,
+      })
+    );
+    const filePath = await createTempFile('odd-chunk.wav', wav);
+    let captured: CapturedEncodeRequest | undefined;
+
+    const payload = await prepareVoice(
+      createEncodingCdp(request => {
+        captured = request;
+      }),
+      { filePath }
+    );
+
+    expect(payload.duration).toBe(1);
+    expect(captured?.pcm.subarray(0, 800).every(sample => sample > 0.19)).toBe(true);
   });
 
   it('在重采样前将多声道音频按声道平均为单声道', async () => {
