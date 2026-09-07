@@ -1,7 +1,7 @@
 # Kairo 阶段一企业知识问答任务定义与验收快照
 
 > 状态：已确认；执行状态以 GitHub Issues 为准
-> 日期：2026-09-03
+> 日期：2026-09-07
 > 上游：[`tasks/plan.md`](./plan.md)、[`docs/SPEC-stage-1.md`](../docs/SPEC-stage-1.md)
 > 任务追踪：[`GitHub Issues`](https://github.com/dnslin/kairo/issues)（唯一任务状态与依赖来源）
 > 阶段一里程碑：[`Stage 1 - 企业知识问答`](https://github.com/dnslin/kairo/milestone/5)（里程碑 #5）
@@ -128,7 +128,7 @@ pnpm lint
 - [ ] 精确锁定与 Node.js 22 兼容的 `pg`、`node-pg-migrate`、`zod`、`yaml`、`pino` 版本。
 - [ ] `@kairo/driver` 是 `workspace:` 直接依赖，不依赖 pnpm 偶然提升。
 - [ ] app 的 pre-scripts 在需要时先构建 Driver；运行时通过 package exports 使用 `dist`，不混用源码 alias。
-- [ ] 未选定 MCP 前，正式依赖中不保留 `@mastra/mcp`。
+- [ ] 阶段一正式依赖中不保留 `@mastra/mcp`；RAGFlow 检索所需 Python 运行依赖由 T27 按最终固定链路补充。
 - [ ] `pnpm-lock.yaml` 与 `package.json` 一致，不使用 `@latest`。
 
 **测试场景：**
@@ -590,51 +590,55 @@ pnpm --filter @kairo/app dev:studio
 
 ---
 
-## T14：执行 RAGFlow MCP-first 真实门禁
+## T14：验证 RAGFlow Skill 复用方案与检索合同
 
-**说明：**先用真实 RAGFlow 判断 MCP 是否满足全部合同；任务结束时只留下一个正式连接方向。
+**说明：**验证并确认“定制 RAGFlow Skill + 专用 `knowledge-search` Tool + 复用 Python 检索脚本”的可行性与合同。T14 负责方案验证、真实样本和上游文档一致性；正式代码、Skill 裁剪和脚本接入在 T27 实施，不在 T14 提前完成业务连接器。
 
-**前置依赖：**T03；需要 RAGFlow v0.27.1 和真实非敏感 Dataset。
+**前置依赖：**T03；目标版本为 RAGFlow v0.27.1，使用用户已配置的非敏感 ERP Dataset。版本实际验收依据需记录，不能将官方源码版本当作已部署版本证明。
 
-**修改文件（5，包含任务内临时 spike）：**
+**已确认方案：**
 
-- `apps/kairo/src/modules/tool-integration/ragflow-contract.ts`
-- `apps/kairo/tests/e2e/ragflow-mcp-gate.ts`
-- `apps/kairo/tests/e2e/fixtures/ragflow-gate-queries.yaml`
-- `apps/kairo/package.json`
-- `pnpm-lock.yaml`
+- Mastra 加载定制 Skill，提供检索时机、查询组织和资料使用说明。
+- Agent 通过专用 `knowledge-search` Tool 查询；Tool 固定调用选定的 Python 脚本，不向 Agent 开放通用命令执行工具。
+- 复用并裁剪 `ragflow-skill` 的检索脚本。Python 底层调用 RAGFlow HTTP Retrieval API；不另写 TypeScript HTTP 检索实现，也不增加 MCP、备用 endpoint 或第二通道。
+- 查询只发送 `query` 对应的 `question` 和服务端固定的 ERP Dataset ID；其余检索参数使用接口默认值，不复制默认数字，不增加调参配置。接口默认值不会自动继承 RAGFlow 网页设置。
+- Mastra 加载 Skill 说明与执行脚本是两种能力。Skill 不承担 Dataset 或执行权限限制；这些限制由专用 Tool 和固定脚本入口执行。
 
-**用户可见结果：**暂无直接回答；避免正式环境采用只能“连通”但不能安全固定 Dataset 的协议。
+**涉及范围：**最小临时验证、真实样本与脱敏证据、`docs/prd.md`、`docs/SPEC-stage-1.md` 和本任务快照。临时验证不作为正式业务实现交付，结束后清理未选实现和依赖；正式 Skill、脚本、Tool、连接器和长期测试归 T27。
+
+**用户可见结果：**暂无直接回答；先证明固定链路和结果合同可行，避免在 T27 引入错误实现边界。
+
+**已有证据边界（不等于完整验收）：**
+
+- 直接 HTTP 只读调用已观察 ERP 有结果、无结果、认证失败和 HTTP 200 业务错误；错误 Dataset 与错误参数不能仅靠单个业务 code 推定分类。
+- 真实 chunk 已观察到正文、Dataset、document、positions 和相似度等字段。RAGFlow v0.27.1 的 DOCX naive 路径会生成模拟 positions，不能据此推定 Word 物理页码或严格段落号；正式链路保留原始 positions，不猜测缺失页码。
+- 当前部署的 `/mcp` 响应不证明 MCP 鉴权，且用户说明部署似乎不提供 MCP；按已选方案，MCP 启用、SSE 回退和 MCP 重连不再是验收要求，也不能记为通过。
+- 已静态核对锁定 Mastra 版本的 Skill 读取与命令执行接口，以及上游 Skill 1.0.8。上游脚本注入 `top_k=5` 等默认参数、会把部分缺失字段当作空结果，且错误输出缺少结构化分类，须在 T27 修正。
+- 2026-09-07 最小临时链路已运行：锁定 Mastra 加载 Skill，经专用 Tool 启动 Python 检索 ERP；有结果、无结果、错误 key/业务错误、格式错误及 Agent 信号取消后的恢复已有证据。自动截止使用 10 秒实验预算，正式四分钟任务预算和重试仍归 T27。运行材料见 T14 Issue 与 `docs/DEVELOPMENT.md`；本文件复选框只保留验收定义，不作为实时状态。
 
 **验收条件：**
 
-- [ ] 验证 `/mcp` 的入站客户端鉴权，而不只验证 MCP Server 到 RAGFlow 的 API key。
-- [ ] Kairo 包装后模型无法提供或覆盖 Dataset ID。
-- [ ] raw RAGFlow Dataset/Chat tools 不暴露给 Agent。
-- [ ] 验证 chunk、document、positions/page、相似度和错误结果的真实格式。
-- [ ] 验证超时、AbortSignal、断线后重连和在途请求行为。
-- [ ] 验证 Mastra MCPClient 是否自动回退到 SSE，以及能否满足“不保留第二通道”。
-- [ ] 验证无结果、认证、参数、网络、5xx 和格式错误是否可稳定分类。
-- [ ] 验证检索参数是否真正由 RAGFlow 管理界面权威控制。
-- [ ] 仅全部通过且维护更简单时选择 MCP；否则选择 HTTP Retrieval API。
-- [ ] 门禁完成后删除未选 spike 实现和依赖；不得把 MCP/HTTP 同时提交为正式实现。
+- [ ] 记录上游 Skill 版本、许可证、拟复用文件和必须修改的行为，说明 Mastra 加载说明与执行脚本是两种不同能力。
+- [ ] 用最小临时验证证明锁定 Mastra 版本可加载定制 Skill，专用 Tool 可调用 Python 检索脚本并取得 ERP 真实结果；不向 Agent 开放通用 shell。
+- [ ] 确认最小输入、固定 ERP、环境变量凭证、结构化结果/错误和内部证据字段的合同；识别 HTTP 200 业务错误与缺失数据问题。
+- [ ] 记录真实有结果、空结果、认证失败、错误 Dataset、错误参数、文档元数据与 positions/page 的样本和核对结果，不记录企业资料正文或凭证。
+- [ ] 验证取消和超时可以终止本地在途 Python 调用，回收进程后能再次成功检索；明确本地终止不证明 RAGFlow 服务端计算已取消。正式总预算、重试和故障矩阵由 T27 实施。
+- [ ] 同步 PRD、SPEC 和本文件：选定 Skill + 专用 Tool + Python；检索使用接口默认值；不再用“阶段一不运行 Skill 脚本”禁止专用 Tool 调用固定检索脚本，也不因此允许 Agent 任意运行 Skill 脚本。
+- [ ] 删除本任务临时验证产生的未选实现和依赖，正式实现留给 T27；不安装或暴露上传、删除、Dataset/Chat 管理能力。
+- [ ] 将真实验证与静态核对、尚未验证项分开记录。未完成验收不关闭 T14。
 
 **测试场景：**
 
-- [ ] 固定 Dataset 有结果和无结果。
-- [ ] 错误凭证、错误 Dataset、错误参数。
-- [ ] 服务端延迟超过客户端预算。
-- [ ] 主动断开并恢复 MCP Server。
-- [ ] 文档元数据与页码/positions 映射。
-- [ ] 网络边界不允许未授权客户端调用。
+- [ ] 锁定 Mastra 版本加载定制 Skill，并只注册专用知识 Tool。
+- [ ] 专用 Tool 固定调用 Python 脚本，对 ERP 检索有结果和无结果。
+- [ ] 错误凭证、错误 Dataset、错误参数和 HTTP 200 业务错误可观察且不误报无资料。
+- [ ] 缺失 `data`/`chunks`、非对象 chunk 和字段类型错误不会被静默转换为空结果。
+- [ ] 超时或取消终止本地脚本后进程被回收，下一次查询仍可成功。
+- [ ] 文档元数据与 positions/page 结合真实样本核对，不凭字段名猜测页码。
 
-**执行命令：**
+**验证方式：**保留可重复的临时验证命令和脱敏结果到 T14 Issue 或关联 PR。原 `ragflow:mcp-gate` 不再是要求的交付命令，也不声称该命令已存在。无需为方案验证建立正式连接器、业务 Agent 或另一套长期测试框架。
 
-```bash
-pnpm --filter @kairo/app ragflow:mcp-gate
-```
-
-**真实环境验证：**必须连接真实 RAGFlow v0.27.1 和真实 Dataset。若 API 行为与 SPEC 冲突，停止后续知识连接器任务，记录证据并先更新上游文档。
+**真实环境边界：**使用现有 ERP，不创建、删除或修改知识资料，不擅自重启 RAGFlow。发现新的合同冲突时停止后续知识连接器工作，先更新上游文档。
 
 ---
 
@@ -645,7 +649,7 @@ pnpm --filter @kairo/app ragflow:mcp-gate
 - [ ] T11：迁移账号/运行账号分离，空库和重复初始化通过。
 - [ ] T12：read-only 生成、送达后保存、显式 observe 和崩溃恢复通过。
 - [ ] T13：生产无 Mastra 原生执行路由，开发 Studio 数据隔离通过。
-- [ ] T14：RAGFlow 已确定唯一连接方式，未选实现和依赖已删除。
+- [ ] T14：Skill + 专用 Tool + Python 检索方案、最小真实调用和结果合同已验证；正式实现归 T27，上游文档已同步，临时未选实现和依赖已清理。
 - [ ] 任一真实结果与 SPEC 冲突时已停止，没有继续实现业务模块。
 - [ ] 执行 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 全部通过。
 
@@ -724,7 +728,7 @@ pnpm --filter @kairo/app typecheck
 - [ ] 使用 Mastra 原生 filesystem Skills，不创建自研 Skill 引擎。
 - [ ] 只向 Agent提供 `bot.yaml` 启用的 Skill。
 - [ ] 员工不能通过 `/xxx` 安装、选择或强制执行 Skill。
-- [ ] 不创建 Workspace 或 Sandbox；Skill 中的 scripts 可以作为资源存在但不能执行。
+- [ ] 不创建 Workspace 或 Sandbox；普通 Agent 不能执行任意 Skill 脚本。专用 `knowledge-search` Tool 固定调用检索脚本的实现归 T27，不在 T16 开放通用执行能力。
 - [ ] `/new` 由 Kairo 处理，不属于 Skill。
 
 **测试场景：**
@@ -734,7 +738,7 @@ pnpm --filter @kairo/app typecheck
 - [ ] 无关请求不强制选择 Skill。
 - [ ] 未启用 Skill 目录不能被员工消息绕过 allowlist。
 - [ ] Skill 文本尝试覆盖 Dataset/Tool 权限时无效。
-- [ ] scripts 目录存在时仍没有执行能力。
+- [ ] scripts 目录存在时普通 Agent 仍没有脚本执行能力；尚未注册 T27 专用 Tool 时也不能借 Skill 说明执行脚本。
 
 **执行命令：**
 
@@ -1254,55 +1258,81 @@ pnpm --filter @kairo/app test:integration -- tests/integration/recovery.test.ts
 
 # 阶段 D：知识问答、Agent 与正式 Memory
 
-## T27：实现最终选定的唯一 RAGFlow 连接器与知识 Tool
+## T27：实现定制 RAGFlow Skill、专用知识 Tool 与 Python 检索链路
 
-**说明：**根据 T14 的真实门禁结果，只实现一个连接器，并向 Agent 暴露受控的 `knowledge-search`。
+**说明：**实现 T14 确认的“定制 RAGFlow Skill + 专用 `knowledge-search` Tool + 复用 Python 检索脚本”。这是正式接入的实施任务；不是另写 TypeScript HTTP 客户端，也不是让 Agent 自由执行上游 Skill 的管理命令。
 
-**前置依赖：**T14、T15、T17、T20。
+**前置依赖：**T14、T15、T17、T20。选择方案不等于依赖任务已经验收完成。
 
-**修改文件（5）：**
+**正式调用链：**
 
-- `apps/kairo/src/modules/tool-integration/knowledge-connector.ts`
-- `apps/kairo/src/modules/tool-integration/ragflow-connector.ts`
+```text
+Mastra Agent 加载定制 Skill 的说明
+  → 调用仅接收 query 的 knowledge-search
+  → Kairo 固定注入 Dataset/凭证并启动选定 Python 脚本
+  → 脚本调用 RAGFlow HTTP Retrieval API
+  → 专用 Tool 校验结构化结果并返回资料或明确错误
+```
+
+**实施范围：**
+
+- 以 T14 核对的 `ragflow-skill` 为基础，只保留检索所需说明、`search.py` 与其必要依赖；记录来源、版本和许可证，不引入整套上传、修改、删除、解析或模型管理能力。
+- 定制 Skill 描述检索时机、最少查询内容和如何使用企业资料；删除直接操作管理脚本、向员工输出内部 ID/来源列表等不适用说明。
+- 裁剪 Python 查询入口：只接受查询文本；Dataset 和凭证由 Kairo 受控注入，不能由模型或命令参数覆盖。移除 `top_k=5` 等上游默认参数和备用 `retrieval_test` 路径，只调用一个 Retrieval API。
+- TypeScript 只负责专用 Tool、固定脚本调用、预算/取消、结果校验和业务证据接入；不复制 Python 的 HTTP 检索实现。
+- 使用已有 Mastra/Node 进程执行能力中满足合同的最简单方式，固定程序、脚本和参数，不拼接模型提供的 shell 命令；不向业务 Agent 暴露 `execute_command` 或任意脚本执行能力。
+- 修正上游脚本的缺失数据、字段类型及错误输出行为。返回稳定结构化 JSON，保留诊断所需的 HTTP 状态与业务错误码；Python 和 TypeScript 不分别重试导致次数相乘。
+- 明确 Python 运行环境与启动检查、配置说明、来源许可及相关依赖；遵循现有 Skill 配置目录，不提前固定未经核对的文件数量或增加通用执行框架。
+
+**主要涉及位置：**
+
 - `apps/kairo/src/modules/tool-integration/knowledge-tool.ts`
+- `apps/kairo/src/modules/tool-integration/` 中的固定 Python 脚本调用与结果合同，复用既有模式，不强制新增两层 connector 抽象
+- 受控 Bot 配置中的定制 Skill 目录及其检索脚本
 - `apps/kairo/tests/unit/knowledge-tool.test.ts`
 - `apps/kairo/tests/integration/ragflow-connector.test.ts`
+- 必要的运行配置、依赖声明与开发文档；不修改 Driver 职责
 
 **用户可见结果：**Bot 只查询固定企业 Dataset；知识服务错误不会被说成“没有资料”。
 
 **验收条件：**
 
-- [ ] 正式代码和依赖中只有 MCP 或 HTTP 一种连接方式。
-- [ ] Tool 输入只有当前最小查询文字 `query`。
-- [ ] Dataset ID 由服务端固定注入；模型不能提供或覆盖。
-- [ ] 不向 RAGFlow 发送完整 thread、Observational Memory、历史消息、employeeId、sessionId 或 taskId。
-- [ ] 不把 top_k、阈值、向量权重、重排模型或凭证暴露给 Agent。
-- [ ] 连接器先校验外部数据格式，再返回可区分结果：有资料、无资料、认证/权限、参数错误、临时故障、格式错误。
-- [ ] 只有成功且 chunks 为空才是“无资料”。
-- [ ] 网络错误、429、5xx 最多自动重试 1 次；认证、参数、无资料和取消不重试。
-- [ ] 首次和重试共享 task 的四分钟总预算，AbortSignal 穿透到实际网络请求。
-- [ ] 保存调用次数、耗时、结果类别和内部证据，不在普通日志记录 query/chunk 正文。
-- [ ] RAGFlow 返回文字始终作为非可信资料，不能成为系统指令。
+- [ ] 正式代码只有“Skill + 专用 Tool + Python HTTP 检索”一条调用链，不保留 MCP、备用 API、TypeScript 直连检索或运行时自动切换。
+- [ ] Mastra 能加载并使用定制 Skill；Tool 的业务输入只有当前最小查询文字 `query`，不接受程序名、脚本路径或任意命令。
+- [ ] Dataset ID 由服务端固定注入，初始使用 ERP；模型不能提供或覆盖。凭证只进入所需执行环境，不进入 Skill 内容、模型上下文、命令行或普通日志。
+- [ ] HTTP 请求只发送当前检索所需 `question` 和固定 `dataset_ids`，不发送完整 thread、Observational Memory、历史消息、employeeId、sessionId 或 taskId。
+- [ ] 其他检索参数使用 RAGFlow 接口默认值，不注入上游 Skill 的 `top_k=5` 等默认数字，也不新增检索调参配置；明确不会自动跟随 RAGFlow 网页设置。
+- [ ] 不向 Agent 暴露管理脚本、原始 Dataset/Chat tools、通用 shell 或任意脚本执行工具。Skill 中的说明不能替代代码中的固定执行边界。
+- [ ] 外部结果先校验格式，返回可区分结果：有资料、无资料、认证/权限、参数错误、临时故障、格式错误；缺失 `data`/`chunks`、非对象 chunk 和字段类型错误不能被静默丢弃或转换为空结果。
+- [ ] 只有成功且有效 chunks 为空才是“无资料”。保留 chunk/document/Dataset 标识、名称、positions 和相似度等内部证据，不猜测缺失页码。
+- [ ] 正确处理 HTTP 200 但业务 code 非零的结果；错误 Dataset 和错误参数可能同为 code 102，不使用错误码单独推定所有分类。无法可靠归类的错误保留诊断信息并明确失败，不当作无结果。
+- [ ] 网络错误、429、5xx 最多自动重试 1 次；认证、参数、无资料和取消不重试。只在一个明确层次负责重试。
+- [ ] 首次与重试共享 task 四分钟总预算；AbortSignal 能终止实际在途脚本调用及本地网络等待，进程正确回收，不残留后台重试。不能宣称杀掉 Python 等于取消远端 RAGFlow 计算。
+- [ ] Python 缺失、脚本启动失败、非零退出、无效 JSON 和输出读取失败均有明确错误；不能静默降级到另一个实现。
+- [ ] 保存调用次数、耗时、结果类别和内部证据；普通日志不记录 query/chunk 正文或凭证，证据关联在 Kairo 内完成。
+- [ ] RAGFlow 返回文字始终是非可信资料，不能成为系统指令；资料不能改变 Tool、Dataset 或脚本执行范围。
 
 **测试场景：**
 
-- [ ] 固定 Dataset 成功有资料。
-- [ ] 成功无资料。
-- [ ] 错误 key、无权限、错误参数。
-- [ ] HTTP/MCP 成功但字段缺失、类型错误、无法读取。
-- [ ] 429、5xx、网络断开的一次重试。
-- [ ] Abort 和总预算到期。
-- [ ] Agent 输入尝试修改 Dataset/阈值/凭证。
-- [ ] query 只包含检索所需文字，不含内部 ID。
+- [ ] Mastra 加载定制 Skill，通过专用 Tool 调用真实 Python 脚本，固定 ERP 检索有资料和无资料。
+- [ ] 错误 key、无权限、错误 Dataset、错误参数及 HTTP 200 业务错误。
+- [ ] HTTP 成功但 `data`/`chunks` 缺失、chunk 类型错误、正文/元数据格式错误，不得误报无资料。
+- [ ] 429、5xx、网络断开与恢复的一次重试；确认两端重试没有叠加。
+- [ ] 在途 Abort、总预算到期、进程退出清理；取消后新请求可以成功。
+- [ ] Python/脚本不可启动、脚本非零退出、输出无效 JSON、stdout/stderr 读取异常。
+- [ ] Agent 输入尝试修改 Dataset、阈值、凭证、脚本路径或注入命令，无法改变真实检索/执行目标。
+- [ ] 对发出的真实请求核对最少数据范围；内部证据可供业务使用，员工输出不包含内部 ID 或来源列表。
 
 **执行命令：**
 
 ```bash
 pnpm --filter @kairo/app test -- tests/unit/knowledge-tool.test.ts
 pnpm --filter @kairo/app test:integration -- tests/integration/ragflow-connector.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app build
 ```
 
-**真实环境验证：**连接真实非敏感 Dataset，验证有结果、空结果、错误 key、格式、超时、重连和 positions/page 映射；确认正式部署只有一个端点和一种依赖。
+**真实环境验证：**必须运行完整 Skill → 专用 Tool → Python → ERP 链路；直接 HTTP 调用或假 Python 输出不能替代。验证有结果、空结果、错误 key、格式、超时、取消、断线恢复和 positions/page 映射。受控本地故障注入与真实 RAGFlow 样本分别记录，不擅自重启或修改 RAGFlow。
 
 ---
 
@@ -1557,8 +1587,8 @@ pnpm --filter @kairo/app test:integration -- tests/integration/memory-commit-rec
 
 # Checkpoint D：知识回答与正式 Memory
 
-- [ ] 正式依赖和代码中只有一个 RAGFlow 连接器。
-- [ ] Tool 只能接收最小 query，固定 Dataset 和凭证不能由模型覆盖。
+- [ ] 正式代码只有“定制 Skill + 专用 `knowledge-search` Tool + 固定 Python 脚本 + HTTP Retrieval API”一条链路，没有 MCP、备用 endpoint 或 TypeScript 平行 HTTP 实现。
+- [ ] Mastra 可加载定制 Skill；Tool 只能接收最小 `query`，固定 ERP Dataset、凭证、程序、脚本和命令不能由模型覆盖。
 - [ ] 企业、无资料、通用知识、冲突、部分回答和服务错误测试通过。
 - [ ] RAGFlow 格式错误不被当作无资料。
 - [ ] Prompt Injection 资料不能改变系统规则或 Tool 权限。
@@ -1741,8 +1771,8 @@ pnpm --filter @kairo/app e2e
 
 - [ ] 只实现阶段一企业知识问答。
 - [ ] 没有文件处理、审批、群聊、长期个人记忆、知识 ACL、管理后台或多 Bot 功能。
-- [ ] 没有 Redis、NATS、消息中间件、Sandbox、第二套业务数据库或运行时双 RAGFlow 连接。
-- [ ] 单任务实际改动未无故超出约 5 个文件；超出时已继续拆分并更新本清单。
+- [ ] 没有 Redis、NATS、消息中间件、Sandbox、第二套业务数据库、MCP、备用 RAGFlow endpoint、TypeScript 平行 HTTP 检索或通用 shell/任意脚本执行工具。
+- [ ] 各任务实际改动保持完成合同所需的最小范围，并与对应 Issue 一致；T27 不预先固定未经核对的文件数量，也不为凑分层增加 connector 抽象。
 
 ## Driver 与发送
 
@@ -1770,7 +1800,7 @@ pnpm --filter @kairo/app e2e
 
 ## 知识回答
 
-- [ ] RAGFlow MCP-first 已完成，正式环境只有一种连接。
+- [ ] 定制 RAGFlow Skill → 专用 `knowledge-search` → 固定 Python 脚本 → HTTP Retrieval API 的正式链路通过，且没有第二知识连接通道。
 - [ ] 企业答案有当前 task 证据，员工看不到来源或内部 ID。
 - [ ] 无资料、通用知识一次性确认、冲突、部分回答和反馈行为正确。
 - [ ] RAGFlow 返回格式错误、服务故障和无资料被准确区分。
@@ -1801,7 +1831,7 @@ pnpm --filter @kairo/app e2e
 | context 与 `/new` | T24、T26、T32、T35 |
 | 排队、并发、超时、进度 | T19、T21、T25、T26、T34、T35 |
 | 重启与 Driver 重连 | T26、T32–T35 |
-| RAGFlow MCP-first 与唯一连接器 | T14、T27 |
+| RAGFlow Skill 复用验证与正式 Python 检索链路 | T14、T27 |
 | 企业答案与内部资料检查 | T20、T28、T29 |
 | 无资料与通用知识确认 | T30 |
 | 冲突、部分回答、反馈 | T31、T35 |

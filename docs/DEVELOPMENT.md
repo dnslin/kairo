@@ -127,6 +127,47 @@ pnpm exec vitest run tests/unit/studio-isolation.test.ts
 
 应用开发依赖直接声明与现有依赖树相同的 `hono@4.13.5`，生产源码仅导入它的类型。`@mastra/core@1.63.2` 附带的 Hono 类型缺少原包的 CommonJS 类型目录标记，NodeNext 下无法完整解析 `ContextWithMastra`；直接使用 Hono 官方 `Context` 类型，避免手写框架声明或关闭 unsafe 检查。离线测试也用真实 Hono 和 RequestContext 验证伪造请求范围被覆盖。
 
+### T14 Skill 复用方案验证
+
+已选定的正式方向是：Mastra 加载定制 RAGFlow Skill → 专用 `knowledge-search` Tool → 固定 Python 检索脚本 → RAGFlow HTTP Retrieval API。T14 只验证可行性；正式 Skill 裁剪、脚本接入、错误分类、四分钟任务预算、一次重试与业务证据接入由 [T27 #232](https://github.com/dnslin/kairo/issues/232) 实施。本次没有向正式 `src`、依赖或默认测试增加临时实现。
+
+2026-09-07 的真实目标为 `http://rag.union.com/`（本机 hosts 内网域名），Dataset `ERP`，ID `b55a0fc8a69211f1bad90f767650f6fc`。只读 `/api/v1/system/version` 返回 `{"code":0,"data":"v0.27.1","message":"success"}`；这是服务自报版本，不是用官方源码版本推定部署版本。凭证仅通过本地环境变量传入，未写入源码或 Issue。
+
+上游为 [ragflow-skill 1.0.8](https://clawhub.ai/api/v1/skills/ragflow-skill/versions/1.0.8)，发布元数据声明许可证 `MIT-0`。临时验证仅下载并复用 `scripts/common.py` 的 HTTP/错误处理与 `scripts/search.py` 的字段映射；不安装管理脚本。临时入口只发送 `question` 与固定 `dataset_ids`，不调用上游会注入 `top_k=5` 等参数的 CLI。接口默认值不会自动跟随 RAGFlow 网页设置。
+
+验证环境为 Node.js `24.14.0`、Python `3.14.3`、仓库锁定的 `@mastra/core@1.63.2`。使用确定性模型仅驱动 `skill` 和 `knowledge-search` 两次工具调用；Mastra、Skill 读取、Node 子进程、Python 与 RAGFlow 全部真实执行。模型可见工具只有 `knowledge-search`、`skill`、`skill_read`、`skill_search`，没有通用命令执行工具。这不证明真实主模型的检索决策或最终回答质量。
+
+| 场景 | 实际结果与证据边界 |
+| --- | --- |
+| ERP 采购订单查询 | 完整链路返回 30 条片段，响应 total 为 64；正文、文档 ID/名称、positions、相似度可读 |
+| 无关查询 | 真实 ERP 返回成功且 chunks 为空 |
+| 错误 key | 真实 HTTP 401，Python 非零退出并保留结构化错误 |
+| 错误 Dataset、缺少 question | 真实 HTTP 200、业务 code 102；不能靠同一个 code 区分所有错误 |
+| 模型额外字段 | 严格 query 输入合同拒绝 Dataset/命令等额外字段；正式完整攻击矩阵归 T27 |
+| 缺失 chunks、非对象 chunk、正文类型错误 | 本地响应注入，返回 DataError，不能误报无资料；不是声称真实服务恰好发生过这些故障 |
+| 取消与自动超时 | 本地代理先转发并收到真实 ERP 成功响应，再扣留给 Python 的回复。主动取消和 `AbortSignal.timeout(10000)` 自动截止均通过 Agent → Tool → Python，等待 close 后 PID 不存在 |
+| 取消后的恢复 | 重建完整 Agent 链路，直接检索 ERP 再次成功；不代表 RAGFlow 服务端曾被重启 |
+
+本地进程退出只能证明本地调用与网络等待终止，不能证明 RAGFlow 服务端计算被取消。未操作远端服务重启、资料上传/删除或写权限，也未把完整 T27 重试与业务状态矩阵算作通过。
+
+当前 DOCX 样本返回 `positions=[[20,19,19,19,19]]`。官方 v0.27.1 的 [DOCX 分支](https://github.com/infiniflow/ragflow/blob/v0.27.1/rag/app/naive.py#L1063-L1103) 将合并后的 chunks 交给 [位置生成函数](https://github.com/infiniflow/ragflow/blob/v0.27.1/rag/nlp/__init__.py#L454-L479)，按序号 `ii` 生成 `[[ii]*5]`；[add_positions](https://github.com/infiniflow/ragflow/blob/v0.27.1/rag/nlp/__init__.py#L969-L981) 再将首维加一。该样本与 `ii=19` 规则吻合，但不能反推 Word 第 20 页或第 20 段，也不证明历史解析时使用的版本。保留原始 positions，物理页码保持未知；未拿 DOCX 样本替代 PDF 页码验收。
+
+临时验证命令（从仓库根目录执行，先按 [T14 证据评论](https://github.com/dnslin/kairo/issues/219#issuecomment-5567272438) 恢复临时文件并设置环境变量）：
+
+```powershell
+$env:RAGFLOW_API_URL = 'http://rag.union.com/'
+$env:RAGFLOW_DATASET_ID = 'b55a0fc8a69211f1bad90f767650f6fc'
+# RAGFLOW_API_KEY 由维护人员在当前进程环境中提供，不保存到脚本。
+node apps/kairo/tmp/t14/probe.mjs
+node apps/kairo/tmp/t14/faults.mjs
+```
+
+两个命令均实际成功执行；最终 `faults.mjs` 还包含完整 Agent 链路恢复。临时程序及下载的上游文件已删除，可复现代码保留在 T14 证据评论，不进入正式代码或长期测试套件。Mastra 的测试 mock 聚合入口依赖 Vitest，不能在普通 Node 脚本直接导入；最终探针使用最小确定性模型对象，不修改框架依赖。
+
+本次已执行 `pnpm build && pnpm typecheck && pnpm test && pnpm lint`，全部通过。默认测试为 Driver 25 个文件 / 308 个测试、App 2 个文件 / 9 个测试；不包含 PostgreSQL 集成测试或真实 KK9 测试。本次未修改 Driver，也未把这些默认测试算作真实 ERP 链路证据。
+
+接口依据：[Mastra Skill 加载](https://mastra.ai/docs/sandbox/skills)、[工具执行上下文](https://mastra.ai/reference/tools/create-tool)、[RAGFlow Retrieval API](https://ragflow.io/docs/http_api_reference#retrieve-chunks)，并以锁定类型与上述实际输出为准。
+
 ## 代码入口
 
 | 任务                                                                                | 位置                                                            |
