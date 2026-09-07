@@ -96,3 +96,25 @@ export const RENDERER_IPC_HELPERS_SCRIPT = `
     return callKairoIpcWithTimeout(4000, channel, ...args);
   }
 `;
+
+export const CONFIRM_SENT_MESSAGE_SCRIPT = `
+  async function waitForPersistedMessage(sessionID, msgFlag, targetSession) {
+    const targetSessionIds = [String(sessionID), String(targetSession?.id), String(targetSession?.sesUUID)];
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const messagesRes = await callIpc('getMessages', {
+        sessionID, count: 100, endIdx: 2147483647, sendTime: 0
+      });
+      if (messagesRes?.code === 0 && Array.isArray(messagesRes.data)) {
+        const found = messagesRes.data.find(message => {
+          if (!message || message.msgFlag !== msgFlag || !/^[1-9]\\d*$/.test(String(message.id))) return false;
+          const rawSessionId = message.sessionId ?? message.sessionID ?? message.sesUUID;
+          return rawSessionId === undefined || rawSessionId === null ||
+            String(rawSessionId).trim() === '' || targetSessionIds.includes(String(rawSessionId));
+        });
+        if (found) return found;
+      }
+      if (attempt < 11) await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    return null;
+  }
+`;

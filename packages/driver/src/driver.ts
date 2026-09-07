@@ -6,6 +6,7 @@ import { BridgeSessionOps } from './bridge/session-ops.js';
 import { BridgeMessageOps } from './bridge/message-ops.js';
 import { BridgeOrgOps } from './bridge/org-ops.js';
 import { createMessageIdentityKey } from './bridge/converter.js';
+import { resolveActiveSendOptions } from './bridge/send-status.js';
 
 import { OrgOps } from './dom/org-ops.js';
 import { resolveSelectors } from './dom/selectors.js';
@@ -23,11 +24,16 @@ import type {
   DriverHealthSnapshot,
   FormattedText,
   IKK9Driver,
+  KK9AppMsgOptions,
+  KK9BizMsgOptions,
+  KK9ChatRecordOptions,
   KK9Employee,
   KK9Message,
   KK9RecalledEvent,
   KK9ReplyTarget,
   KK9Session,
+  KK9UrlCardOptions,
+  KK9VoiceOptions,
   PollingConfig,
   SelectorsConfig,
   SendFileOptions,
@@ -168,6 +174,12 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     return targetSession ? { ...options, targetSessionId: targetSession.id } : null;
   }
 
+  private async resolveNativeTargetOptions(options: SendOptions): Promise<SendOptions | null> {
+    // TTS 可能耗时数秒；发送与撤回必须绑定调用开始时的会话，而不是完成时的窗口。
+    const boundOptions = await resolveActiveSendOptions(this.cdp, options);
+    return boundOptions ? this.resolveTargetOptions(boundOptions) : null;
+  }
+
   private unresolvedTargetResult(target: string): SendResult {
     return {
       success: false,
@@ -229,6 +241,18 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     const sessionId = targetSessionId?.trim();
     if (!sessionId) return;
     this.recordBotSentMessageId(sessionId, result.messageId);
+  }
+
+  private attachNativeRecall(result: SendResult, targetSessionId?: string): SendResult {
+    this.rememberBotSentMessage(result, targetSessionId);
+    if (!result.success || !result.messageId) return result;
+
+    const messageId = result.messageId;
+    const sessionId = targetSessionId?.trim();
+    return {
+      ...result,
+      recall: () => this.bridgeMessageOps.recallMessage(messageId, sessionId),
+    };
   }
 
   /**
@@ -455,6 +479,58 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     }
     this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
     return res;
+  }
+
+  /** 发送链接图文卡片。 */
+  public async sendUrlCard(
+    card: KK9UrlCardOptions,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    const resolvedOptions = await this.resolveNativeTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+    const result = await this.bridgeMessageOps.sendUrlCard(card, resolvedOptions);
+    return this.attachNativeRecall(result, resolvedOptions.targetSessionId);
+  }
+
+  /** 发送业务任务或通知卡片。 */
+  public async sendBizMessage(
+    message: KK9BizMsgOptions,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    const resolvedOptions = await this.resolveNativeTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+    const result = await this.bridgeMessageOps.sendBizMessage(message, resolvedOptions);
+    return this.attachNativeRecall(result, resolvedOptions.targetSessionId);
+  }
+
+  /** 发送工作台微应用通知卡片。 */
+  public async sendAppMessage(
+    message: KK9AppMsgOptions,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    const resolvedOptions = await this.resolveNativeTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+    const result = await this.bridgeMessageOps.sendAppMessage(message, resolvedOptions);
+    return this.attachNativeRecall(result, resolvedOptions.targetSessionId);
+  }
+
+  /** 发送合并聊天记录卡片。 */
+  public async sendChatRecord(
+    record: KK9ChatRecordOptions,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    const resolvedOptions = await this.resolveNativeTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+    const result = await this.bridgeMessageOps.sendChatRecord(record, resolvedOptions);
+    return this.attachNativeRecall(result, resolvedOptions.targetSessionId);
+  }
+
+  /** 准备并发送原生语音消息。 */
+  public async sendVoice(voice: KK9VoiceOptions, options: SendOptions = {}): Promise<SendResult> {
+    const resolvedOptions = await this.resolveNativeTargetOptions(options);
+    if (!resolvedOptions) return this.unresolvedTargetResult(options.targetSessionId || '');
+    const result = await this.bridgeMessageOps.sendVoice(voice, resolvedOptions);
+    return this.attachNativeRecall(result, resolvedOptions.targetSessionId);
   }
 
   /**

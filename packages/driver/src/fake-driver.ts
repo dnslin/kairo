@@ -6,11 +6,16 @@ import type {
   DriverHealthSnapshot,
   FormattedText,
   IKK9Driver,
+  KK9AppMsgOptions,
+  KK9BizMsgOptions,
+  KK9ChatRecordOptions,
   KK9Employee,
   KK9Message,
   KK9RecalledEvent,
   KK9ReplyTarget,
   KK9Session,
+  KK9UrlCardOptions,
+  KK9VoiceOptions,
   PollingConfig,
   PreSendCheckResult,
   SendFileOptions,
@@ -26,6 +31,14 @@ import {
 } from './send-operation.js';
 import { sendOperationRecordToResult, sendResultToOperationUpdate } from './bridge/send-status.js';
 
+export type FakeSendPayload =
+  | FormattedText
+  | KK9UrlCardOptions
+  | KK9BizMsgOptions
+  | KK9AppMsgOptions
+  | KK9ChatRecordOptions
+  | KK9VoiceOptions;
+
 export type FakeSendBehavior =
   | { mode: 'success'; messageId?: string }
   | { mode: 'pre_trigger_failure'; error: string }
@@ -34,13 +47,26 @@ export type FakeSendBehavior =
   | { mode: 'post_trigger_lost_response'; error?: string }
   | {
       mode: 'custom';
-      handler: (text: FormattedText, options?: SendOptions) => Promise<SendResult> | SendResult;
+      handler(
+        payload: FakeSendPayload,
+        options?: SendOptions | SendFileOptions
+      ): Promise<SendResult> | SendResult;
     }
   | { mode: 'sequence'; behaviors: FakeSendBehavior[] };
 
 export interface RecordedSendCall {
-  type: 'text' | 'richText' | 'reply' | 'image' | 'file';
-  payload: FormattedText | string;
+  type:
+    | 'text'
+    | 'richText'
+    | 'reply'
+    | 'image'
+    | 'file'
+    | 'urlCard'
+    | 'bizMessage'
+    | 'appMessage'
+    | 'chatRecord'
+    | 'voice';
+  payload: FakeSendPayload;
   options?: SendOptions | SendFileOptions;
   timestamp: number;
 }
@@ -212,6 +238,35 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
   public async sendFile(filePath: string, options?: SendFileOptions): Promise<SendResult> {
     return this.executeSendAction('file', 'file', filePath, options);
   }
+
+  public async sendUrlCard(card: KK9UrlCardOptions, options?: SendOptions): Promise<SendResult> {
+    return this.executeSendAction('url-card', 'urlCard', card, options, false);
+  }
+
+  public async sendBizMessage(
+    message: KK9BizMsgOptions,
+    options?: SendOptions
+  ): Promise<SendResult> {
+    return this.executeSendAction('biz-message', 'bizMessage', message, options, false);
+  }
+
+  public async sendAppMessage(
+    message: KK9AppMsgOptions,
+    options?: SendOptions
+  ): Promise<SendResult> {
+    return this.executeSendAction('app-message', 'appMessage', message, options, false);
+  }
+
+  public async sendChatRecord(
+    record: KK9ChatRecordOptions,
+    options?: SendOptions
+  ): Promise<SendResult> {
+    return this.executeSendAction('chat-record', 'chatRecord', record, options, false);
+  }
+
+  public async sendVoice(voice: KK9VoiceOptions, options?: SendOptions): Promise<SendResult> {
+    return this.executeSendAction('voice', 'voice', voice, options, false);
+  }
   public async getSendStatus(operationId: string): Promise<SendResult> {
     const operation = await this.sendOperationStore.get(operationId);
     return operation
@@ -287,8 +342,9 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
   private async executeSendAction(
     operationType: SendOperationMessageType,
     callType: RecordedSendCall['type'],
-    payload: FormattedText | string,
-    options?: SendOptions | SendFileOptions
+    payload: FakeSendPayload,
+    options?: SendOptions | SendFileOptions,
+    supportsReplyAndMentions = true
   ): Promise<SendResult> {
     const requestedOperationId = options?.operationId;
     let claimedOperation: SendOperationRecord | undefined;
@@ -315,7 +371,19 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
       timestamp: Date.now(),
     });
 
-    const result = await this.executeSendBehavior(payload, options);
+    const unsupportedOptions =
+      !supportsReplyAndMentions &&
+      options &&
+      (('replyTo' in options && options.replyTo !== undefined) ||
+        ('mentions' in options && options.mentions !== undefined));
+    const result: SendResult = unsupportedOptions
+      ? {
+          success: false,
+          status: 'failed',
+          error: '原生卡片与语音消息不支持 replyTo 或 mentions 参数',
+          isPreTrigger: true,
+        }
+      : await this.executeSendBehavior(payload, options);
     if (!claimedOperation) return this.normalizeLegacyResult(result);
 
     const normalized = sendResultToOperationUpdate(result);
@@ -327,7 +395,7 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
   }
 
   private async executeSendBehavior(
-    payload: FormattedText | string,
+    payload: FakeSendPayload,
     options?: SendOptions | SendFileOptions
   ): Promise<SendResult> {
     const active = this.currentBehavior;

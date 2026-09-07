@@ -16,6 +16,9 @@
  *   reply <target> <msgId> <text>向指定消息发送引用回复
  *   image [target=int2024] <imgPath>向目标发送图片
  *   file [target=int2024] <filePath>向目标发送文件
+ *   card <target> <url|biz|app|record> <JSON> 发送原生卡片
+ *   voice <target> <text>       合成并发送语音
+ *   voice-file <target> <path>  将本地音频转为原生语音发送
  *   recall <msgId> [sessionId]  通过原生 IPC 撤回消息
  *   user <uid>                  按 UID 单点查询员工档案
  *   org [timeoutMs=10000]       递归抽取企业组织架构全量员工
@@ -23,6 +26,13 @@
  */
 
 import { KK9Driver } from '../src/index.js';
+import type {
+  KK9AppMsgOptions,
+  KK9BizMsgOptions,
+  KK9ChatRecordOptions,
+  KK9UrlCardOptions,
+  SendResult,
+} from '../src/index.js';
 import { decodeCliEscapedLineBreaks } from '../src/dom/rich-text.js';
 
 const cdpUrl = process.env['CDP_URL'] || 'http://127.0.0.1:9222';
@@ -49,7 +59,12 @@ async function main() {
       try {
         const res = await fetch(`${cdpUrl.replace(/\/+$/, '')}/json`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const targets = (await res.json()) as Array<{ title: string; type: string; url: string; webSocketDebuggerUrl?: string }>;
+        const targets = (await res.json()) as Array<{
+          title: string;
+          type: string;
+          url: string;
+          webSocketDebuggerUrl?: string;
+        }>;
         console.log(`✅ 成功连接到 CDP 服务，共发现 ${targets.length} 个 Target:\n`);
         targets.forEach((t, i) => {
           const isMatched = t.url.includes(pageMatch);
@@ -73,7 +88,9 @@ async function main() {
         const unreadTag = s.unread ? ` [未读${s.unreadCount ? ` (${s.unreadCount})` : ''}]` : '';
         const unreadAtTag = s.unreadAt ? ' [@提及未读]' : '';
         const activeTag = s.active ? ' [当前激活]' : '';
-        console.log(`${(i + 1).toString().padStart(3)}. [${s.type.padEnd(7)}] ${s.name} (id: ${s.id})${unreadTag}${unreadAtTag}${activeTag}`);
+        console.log(
+          `${(i + 1).toString().padStart(3)}. [${s.type.padEnd(7)}] ${s.name} (id: ${s.id})${unreadTag}${unreadAtTag}${activeTag}`
+        );
         if (s.lastMessage) {
           console.log(`     └─ 最新消息: ${s.lastMessage} (${s.lastMessageTime || '无时间'})`);
         }
@@ -87,16 +104,25 @@ async function main() {
       const target = args[1] || DEFAULT_PRIVATE_TARGET;
       await driver.connect();
       console.log(`正在后台读取会话 [${target}] 最近 ${count} 条消息 (无需切换UI)...\n`);
-      const msgs = await driver.getRecentMessages(count, { id: target, name: target, type: 'private', unread: false });
+      const msgs = await driver.getRecentMessages(count, {
+        id: target,
+        name: target,
+        type: 'private',
+        unread: false,
+      });
       msgs.forEach((m, i) => {
         const who = m.isMe ? '我 (发送)' : `${m.sender} (接收)`;
         console.log(`[${i + 1}] ${m.time} | ${who} [${m.origin || 'unknown'}]`);
         console.log(`    内容: ${m.content}`);
         if (m.images && m.images.length > 0) {
-          console.log(`    图片附件 (${m.images.length}张): ${m.images.map(img => img.filePath || img.url).join(', ')}`);
+          console.log(
+            `    图片附件 (${m.images.length}张): ${m.images.map(img => img.filePath || img.url).join(', ')}`
+          );
         }
         if (m.fileInfo) {
-          console.log(`    文件卡片: ${m.fileInfo.fileName} (${m.fileInfo.fileSize || ''}) -> ${m.fileInfo.filePath || '云端/未下载'}`);
+          console.log(
+            `    文件卡片: ${m.fileInfo.fileName} (${m.fileInfo.fileSize || ''}) -> ${m.fileInfo.filePath || '云端/未下载'}`
+          );
         }
         console.log(`    NativeID: ${m.id}\n`);
       });
@@ -213,7 +239,9 @@ async function main() {
       const target = args[0] || DEFAULT_PRIVATE_TARGET;
       const imgPath = args[1];
       if (!imgPath) {
-        console.error(`用法: pnpm diagnose image [目标会话=${DEFAULT_PRIVATE_TARGET}] <图片文件路径>`);
+        console.error(
+          `用法: pnpm diagnose image [目标会话=${DEFAULT_PRIVATE_TARGET}] <图片文件路径>`
+        );
         process.exit(1);
       }
 
@@ -249,6 +277,55 @@ async function main() {
       break;
     }
 
+    case 'card':
+    case 'voice':
+    case 'voice-file': {
+      const [target, kind, ...rest] = args;
+      if (!target || !kind) {
+        throw new Error(
+          '用法: card <目标> <url|biz|app|record> <JSON>；voice <目标> <文本>；voice-file <目标> <路径>'
+        );
+      }
+      let send: () => Promise<SendResult>;
+      const options = { targetSessionId: target };
+      if (cmd === 'card') {
+        const payload: unknown = JSON.parse(rest.join(' '));
+        switch (kind) {
+          case 'url':
+            send = () => driver.sendUrlCard(payload as KK9UrlCardOptions, options);
+            break;
+          case 'biz':
+            send = () => driver.sendBizMessage(payload as KK9BizMsgOptions, options);
+            break;
+          case 'app':
+            send = () => driver.sendAppMessage(payload as KK9AppMsgOptions, options);
+            break;
+          case 'record':
+            send = () => driver.sendChatRecord(payload as KK9ChatRecordOptions, options);
+            break;
+          default:
+            throw new Error('卡片类型必须为 url、biz、app 或 record');
+        }
+      } else if (cmd === 'voice-file') {
+        send = () => driver.sendVoice({ filePath: [kind, ...rest].join(' ') }, options);
+      } else {
+        send = () =>
+          driver.sendVoice(
+            { text: decodeCliEscapedLineBreaks([kind, ...rest].join(' ')) },
+            options
+          );
+      }
+      try {
+        await driver.connect();
+        const result = await send();
+        console.log(JSON.stringify(result, null, 2));
+        if (!result.success) process.exitCode = 1;
+      } finally {
+        await driver.disconnect();
+      }
+      break;
+    }
+
     case 'recall': {
       const msgId = args[0];
       const target = args[1] || DEFAULT_PRIVATE_TARGET;
@@ -281,7 +358,9 @@ async function main() {
         console.log(`   岗位: ${profile.position || '无'}`);
         console.log(`   办公区: ${profile.region || '无'}`);
         console.log(`   签名: ${profile.signature || '无'}`);
-        console.log(`   部门: ${profile.deptPaths?.map((d: { name: string }) => d.name).join(' > ') || '无'}\n`);
+        console.log(
+          `   部门: ${profile.deptPaths?.map((d: { name: string }) => d.name).join(' > ') || '无'}\n`
+        );
       } else {
         console.log('❌ 未检索到该员工档案');
       }
@@ -314,10 +393,14 @@ async function main() {
         console.log(`   发送人: ${m.sender} @ ${m.time} (来源: ${m.origin || 'unknown'})`);
         console.log(`   内容: ${m.content}`);
         if (m.images && m.images.length > 0) {
-          console.log(`   🖼️ 图片附件 (${m.images.length}张): ${m.images.map(img => img.filePath || img.url).join(', ')}`);
+          console.log(
+            `   🖼️ 图片附件 (${m.images.length}张): ${m.images.map(img => img.filePath || img.url).join(', ')}`
+          );
         }
         if (m.fileInfo) {
-          console.log(`   📎 文件卡片: ${m.fileInfo.fileName} (${m.fileInfo.fileSize || ''}) -> ${m.fileInfo.filePath || '未下载/云端'}`);
+          console.log(
+            `   📎 文件卡片: ${m.fileInfo.fileName} (${m.fileInfo.fileSize || ''}) -> ${m.fileInfo.filePath || '未下载/云端'}`
+          );
         }
         console.log(`   NativeID: ${m.id}\n`);
       });
@@ -362,6 +445,9 @@ async function main() {
   reply <target> <msgId> <text>   向目标消息发送引用回复
   image [target] <path>           向目标会话发送图片
   file [target] <path>            向目标会话发送本地文件
+  card <target> <url|biz|app|record> <JSON> 发送原生卡片
+  voice <target> <text>           使用 Edge TTS 合成并发送语音
+  voice-file <target> <path>      转换本地音频并发送语音
   recall <msgId> [target]         撤回指定已发送消息
 
 【组织架构与通讯录】

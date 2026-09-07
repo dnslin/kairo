@@ -5,6 +5,7 @@ import {
   createNativeMessageKey,
   createSendOperationFingerprint,
   type SendOperationFingerprint,
+  type SendOperationMessageType,
   type SendOperationStore,
 } from '@kairo/driver';
 import { MIGRATIONS_TABLE, migrateDatabase } from '../../src/db/migrate.js';
@@ -58,6 +59,11 @@ describePostgres('PostgresSendOperationStore 真实 PostgreSQL 集成合同', ()
       ['000001-send-operations']
     );
     expect(result.rows[0]?.count).toBe('1');
+    const mediaMigration = await verificationPool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM kairo.${MIGRATIONS_TABLE} WHERE name = $1`,
+      ['000003-native-media-send-operations']
+    );
+    expect(mediaMigration.rows[0]?.count).toBe('1');
 
     const table = await verificationPool.query<{ table_name: string }>(
       `
@@ -68,6 +74,37 @@ describePostgres('PostgresSendOperationStore 真实 PostgreSQL 集成合同', ()
       `
     );
     expect(table.rows).toHaveLength(1);
+  });
+
+  it('卡片与语音 operation message type 均可写入并保留原生关联键', async () => {
+    const messageTypes = [
+      'url-card',
+      'biz-message',
+      'app-message',
+      'chat-record',
+      'voice',
+    ] satisfies SendOperationMessageType[];
+    const store = createStore(verificationPool);
+
+    for (const messageType of messageTypes) {
+      const operationId = `media-c-${randomUUID()}`;
+      const fingerprint = createSendOperationFingerprint({
+        targetSessionId: 'session-native-media',
+        messageType,
+        content: { messageType },
+      });
+
+      await expect(store.claim({ operationId, fingerprint })).resolves.toMatchObject({
+        claimed: true,
+        operation: { operationId, fingerprint, status: 'unknown' },
+      });
+      const nativeKey = await verificationPool.query<{ native_key: string }>(
+        'SELECT native_key FROM kairo.send_operations WHERE operation_id = $1',
+        [operationId]
+      );
+      expect(nativeKey.rows[0]?.native_key).toBe(createNativeMessageKey(messageType, operationId));
+      expect(nativeKey.rows[0]?.native_key).not.toMatch(/[Cc]/);
+    }
   });
 
   it('两个真实连接并发 claim 同一 operation 只允许一个声明者', async () => {

@@ -14,6 +14,13 @@ import {
 import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('bridge-send-status');
+const NATIVE_MEDIA_KINDS: Record<string, true> = {
+  'url-card': true,
+  'biz-message': true,
+  'app-message': true,
+  'chat-record': true,
+  voice: true,
+};
 export function isCdpUnavailableBeforeSend(cdp: CdpClient): boolean {
   const getStatus = (cdp as Partial<CdpClient>).getStatus;
   return typeof getStatus === 'function' && getStatus.call(cdp) !== 'connected';
@@ -25,11 +32,12 @@ export interface NativeSendStatusObservation {
 }
 
 export function createNativeMessageKey(kind: string, operationId?: string): string {
+  const isNativeMedia = NATIVE_MEDIA_KINDS[kind] === true;
   const normalizedOperationId = operationId?.trim();
   if (normalizedOperationId) {
     const key = `kairo:operation:${encodeURIComponent(normalizedOperationId)}`;
-    // 保留已有合法键供历史回查；KK9 的 msgFlag 最多允许 64 个字符。
-    if (key.length <= 64) return key;
+    // 旧类型保留已有短键供历史回查；新媒体类型不能生成会被原生历史过滤的 C/c。
+    if (key.length <= 64 && (!isNativeMedia || !/[Cc]/.test(key))) return key;
     // 原生历史查询过滤 %C%；同时避开 SQLite LIKE 可能折叠的小写 c。
     // . 和 ~ 不在 Base64URL 字母表中，替换保持一一对应与完整摘要长度。
     const digest = createHash('sha256')
@@ -39,7 +47,8 @@ export function createNativeMessageKey(kind: string, operationId?: string): stri
       .replaceAll('c', '~');
     return `k:op:${digest}`;
   }
-  return `kairo:${kind}:${randomUUID()}`;
+  const key = `kairo:${kind}:${randomUUID()}`;
+  return isNativeMedia ? key.replaceAll('C', '.').replaceAll('c', '~') : key;
 }
 export async function resolveActiveSendOptions<T extends SendOptions | SendFileOptions>(
   cdp: CdpClient,
