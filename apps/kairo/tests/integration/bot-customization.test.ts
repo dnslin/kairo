@@ -1,10 +1,14 @@
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { Agent } from '@mastra/core/agent';
 import { MastraLanguageModelV2Mock } from '@mastra/core/test-utils/llm-mock';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { defaultBotDirectory, loadBotConfig } from '../../src/config/load.js';
 import { loadBotCustomization } from '../../src/modules/bot-customization/instructions.js';
 import { startKairo } from '../../src/index.js';
@@ -170,4 +174,69 @@ describe('T16 原生 filesystem Skill 合同', () => {
       await expect(loadBotCustomization(config, directory)).rejects.toThrow(/AGENTS\.md/);
     });
   });
+});
+
+describe('T16 Skill 启动失败的完整日志', () => {
+  let directory: string;
+  let applicationDirectory: string;
+  let skillFile: string;
+
+  beforeAll(async () => {
+    directory = await mkdtemp(join(tmpdir(), 'kairo-skill-startup-'));
+    applicationDirectory = join(directory, 'apps', 'kairo');
+    const configDirectory = join(directory, 'config', 'bots', 'default');
+    await mkdir(applicationDirectory, { recursive: true });
+    await cp(defaultBotDirectory, configDirectory, { recursive: true });
+    skillFile = join(configDirectory, 'skills', 'reader-sim', 'SKILL.md');
+    await writeFile(join(applicationDirectory, 'package.json'), '{"type":"module"}');
+    const applicationSource = fileURLToPath(new URL('../../', import.meta.url));
+    const repository = fileURLToPath(new URL('../../../../', import.meta.url));
+    // 复用现有启动回归的隔离方式，保留 pnpm 相对链接并编译当前源码。
+    await symlink(join(repository, 'node_modules'), join(directory, 'node_modules'), 'junction');
+    await symlink(
+      join(applicationSource, 'node_modules'),
+      join(applicationDirectory, 'node_modules'),
+      'junction'
+    );
+    const compiler = createRequire(import.meta.url).resolve('typescript/bin/tsc');
+    await promisify(execFile)(
+      process.execPath,
+      [
+        compiler,
+        '-p',
+        join(applicationSource, 'tsconfig.json'),
+        '--outDir',
+        join(applicationDirectory, 'dist'),
+      ],
+      { timeout: 30000 }
+    );
+  }, 30000);
+
+  afterAll(async () => {
+    if (directory) await rm(directory, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['未知 YAML 标签', '---\nname: reader-sim\ndescription: !invalid t16-secret\n---\n测试正文'],
+    ['元数据名称不匹配', '---\nname: t16-secret\ndescription: 测试技能\n---\n测试正文'],
+  ])(
+    '%s 拒绝启动且完整输出没有文件内容',
+    async (_scenario, source) => {
+      await writeFile(skillFile, source);
+      const result = await new Promise<{ code: string | number; stdout: string; stderr: string }>(
+        resolve => {
+          execFile(
+            process.execPath,
+            [join(applicationDirectory, 'dist', 'index.js')],
+            { cwd: applicationDirectory, encoding: 'utf8', timeout: 10000 },
+            (error, stdout, stderr) => resolve({ code: error?.code ?? 0, stdout, stderr })
+          );
+        }
+      );
+      expect(result.code).toBe(1);
+      expect(result.stdout + result.stderr).not.toContain('t16-secret');
+      expect(result.stderr).toContain(skillFile);
+    },
+    15000
+  );
 });

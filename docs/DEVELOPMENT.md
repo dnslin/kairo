@@ -236,7 +236,7 @@ node apps/kairo/tmp/t14/faults.mjs
 
 所有启用的 `SKILL.md` 在进入原生解析前，必须以独立的 `---` 行开始 YAML 元数据；接受可选 UTF-8 BOM、LF 或 CRLF，不接受 `---javascript` 等语言选择标记。锁定 `gray-matter@4.0.3` 的 JavaScript 引擎会执行 `eval`，因此仅检查 Agent 工具列表或解析后的元数据不能阻止文件读取阶段执行代码。这里只限制开始行，名称、description 与 YAML 内容继续由 Mastra 校验；不自研解析器、不修改全局引擎。
 
-启动还通过公开 `resolveAgentSkills(skills).list()` 执行原生发现，并逐项核对 YAML 启用的 Skill。锁定版本会记录 Skill 解析错误并跳过该目录，不会向调用方抛出；因此发现结果缺项时，Kairo 明确报出对应 `SKILL.md` 路径，在数据库与监听初始化之前拒绝启动。没有自研 frontmatter 解析器，也不屏蔽框架的具体诊断。
+启动使用公开 `resolveAgentSkills([])` 创建空 registry，再逐项调用锁定版本支持的 `addSkill()`，由 Mastra 校验 YAML、元数据和资源。成功返回即表示该 Skill 加载成功，不再通过扫描结果补查缺项。扫描路径会自行打印可能含源行的异常消息，而 `addSkill()` 向调用方抛错；Kairo 将其转换为固定的“YAML 格式错误”或“元数据或资源无效”类别，保留对应 `SKILL.md` 路径，不附带原始 message/cause，并在数据库与监听初始化前拒绝启动。没有自研解析器、全局 console 替换或日志过滤器。
 
 实际能力边界来自提供给 Agent 的路径与工具集合，不来自模型是否遵守提示词。当前业务 Tool 为空，Skill 文本不能凭空添加 Dataset 查询或执行工具；将来的知识 Tool 仍须在 T27 固定 Dataset。员工 `/xxx` 不提供安装或强制选择入口；`/new` 的真正会话切换属于 T24，本模块仅声明边界，不声称已实现重置。
 
@@ -249,14 +249,16 @@ pnpm --filter @kairo/app exec vitest run tests/integration/bot-customization.tes
 pnpm build && pnpm typecheck && pnpm test && pnpm lint
 ```
 
-- T16 定向集成测试 10/10 通过：真实 Skill 发现和读取；未启用目录的名称/绝对路径隔离；越界资源读取拒绝和搜索隔离；空 Skill 配置；脚本只读且无执行工具；缺失人格/规则文件明确失败；畸形元数据启动拒绝；JavaScript 元数据不执行测试标记；BOM、CRLF 合法 YAML 仍可读取。
+- T16 定向集成测试 12/12 通过：真实 Skill 发现和读取；未启用目录的名称/绝对路径隔离；越界资源读取拒绝和搜索隔离；空 Skill 配置；脚本只读且无执行工具；缺失人格/规则文件明确失败；畸形元数据启动拒绝；JavaScript 元数据不执行测试标记；BOM、CRLF 合法 YAML 仍可读取；两种原生解析错误的完整 stdout/stderr 不泄漏文件内容。
 - 根质量命令全部通过，默认测试 Driver 308 项、App 33 项。新增 T16 测试在集成目录，不在默认 App 测试中。
-- 设置进程环境 `KAIRO_T12_REAL_MODEL=0` 后执行 `pnpm --filter @kairo/app test:integration`：5 个文件、32 项通过。数据库真实，T12 模型为确定性替身；不是本次真实模型放行。
+- 设置进程环境 `KAIRO_T12_REAL_MODEL=0` 后执行 `pnpm --filter @kairo/app test:integration`：5 个文件、34 项通过。数据库真实，T12 模型为确定性替身；不是本次真实模型放行。
 - 临时启动探针实际使用构建产物、批准的 Bot 配置与显式测试数据库，`SELECT 1` 成功，`/health/live` 返回 200，`/api/agents` 返回 404。通过启动返回的 customization 创建验证 Agent，原生 `skill` 工具读取真实正文成功，工具仅上述三个，Workspace 不存在，关闭正常。该探针不调用模型，不代表真实 IM 闭环。
-- 启动解析回归先于修复执行：原有 6 项通过，新增 2 项失败，错误均已进入 PostgreSQL 配置检查，说明畸形 Skill 未被提前拒绝。接入原生发现结果核对后，8 项通过，并保留框架对缺少 description、名称不匹配的具体诊断。再次执行上述根质量命令，全部通过。
+- 启动解析回归先于初次修复执行：原有 6 项通过，新增 2 项失败，错误均已进入 PostgreSQL 配置检查，说明畸形 Skill 未被提前拒绝。初次接入发现结果核对后 8 项通过，但当时仍输出框架原始诊断；此路径后来由逐项加载与完整日志回归替代。
 - 临时 `t16-metadata-smoke.mjs` 使用最新构建产物与显式真实测试数据库：在隔离配置目录分别写入上述两种畸形 Skill，两次启动均明确拒绝；恢复原始真实 Skill 后成功启动，`SELECT 1` 成功、健康接口返回 200，随后正常关闭。没有修改正式配置或调用模型，探针运行后删除。
 - 元数据执行回归使用唯一环境变量作为无害标记，结束后删除。修复前 8 项通过、新增 1 项失败，断言实际读到“已执行”；限制开始行后标记保持未设置，启动明确拒绝。连同 BOM、CRLF 正向回归共 10 项通过，并再次通过根质量命令。
 - 临时 `t16-frontmatter-smoke.mjs` 使用最新构建产物与显式真实测试数据库：`---javascript`、`--- javascript`、带 BOM/CRLF 的 JavaScript 开始行均拒绝启动，三个测试标记均未执行。恢复带 BOM/CRLF 的合法真实 Skill 后正常启动，数据库 `SELECT 1` 成功、健康接口返回 200。只操作隔离目录，未调用模型；探针运行后删除。
+- 日志回归覆盖未知 YAML 标签和名称不匹配两条错误路径：编译当前源码到临时目录，启动真实 `dist/index.js` 子进程，捕获完整 stdout/stderr。修复前 10 项通过、新增 2 项因包含 `t16-secret` 失败；改用 `addSkill()` 并转换错误后 12 项通过，均要求退出码 1、输出不含测试秘密且保留出错文件路径。没有模拟 console、错误打印或原生解析器。
+- 独立启动探针使用相同的 `description: !invalid 测试秘密…` 输入复查最新源码：stdout 为空，退出码 1，stderr 只保留 Kairo 的“YAML 格式错误”诊断、文件路径及应用调用栈，不再包含源行或测试秘密。隔离配置、编译产物和进程已清理，没有修改正式配置或调用模型。修复后再次执行根质量命令和全部集成测试，均通过。
 
 #### 真实模型验收阻塞
 

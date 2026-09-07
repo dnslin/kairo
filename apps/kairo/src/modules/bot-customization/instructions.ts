@@ -29,11 +29,18 @@ export async function loadBotCustomization(
       throw new Error(`Skill 必须以独立的 --- 行开始 YAML 元数据：${file}`);
     }
   }
-  const discovered = await resolveAgentSkills(skills).list();
-  // Mastra 会记录解析错误并跳过该 Skill；正式启动不能把缺失能力当作成功。
-  for (const name of config.skills) {
-    if (!discovered.some(skill => skill.name === name)) {
-      throw new Error(`无法加载已启用 Skill：${join(directory, 'skills', name, 'SKILL.md')}`);
+  // 空 registry 避免扫描器自行打印解析异常；锁定版本的 addSkill 向调用方抛错。
+  const registry = resolveAgentSkills([]);
+  for (const directory of skills) {
+    try {
+      await registry.addSkill!(directory);
+    } catch (error) {
+      // 原始 message/cause 可能含源行或字段值，只保留固定错误类别与受控路径。
+      const kind =
+        error instanceof Error && error.name === 'YAMLException'
+          ? 'YAML 格式错误'
+          : '元数据或资源无效';
+      throw new Error(`无法加载已启用 Skill（${kind}）：${join(directory, 'SKILL.md')}`);
     }
   }
   return {
