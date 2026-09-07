@@ -47,6 +47,27 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
       expect(createNativeMessageKey('image', `${prefix}甲`)).toBe(first);
       expect(createNativeMessageKey('text', `${prefix}乙`)).not.toBe(first);
     });
+
+    it('五类新消息的无 operationId 随机关联键均避开 C/c', () => {
+      for (const kind of ['url-card', 'biz-message', 'app-message', 'chat-record', 'voice']) {
+        const key = createNativeMessageKey(kind);
+        expect(key).not.toMatch(/[Cc]/);
+        expect(Buffer.byteLength(key)).toBeLessThanOrEqual(64);
+        expect(createNativeMessageKey(kind)).not.toBe(key);
+      }
+    });
+
+    it('新消息的短含 c 操作 ID 使用安全稳定键，不改变旧类型回查键', () => {
+      const operationId = 'task-complete-001';
+      for (const kind of ['url-card', 'biz-message', 'app-message', 'chat-record', 'voice']) {
+        const key = createNativeMessageKey(kind, operationId);
+        expect(key).not.toMatch(/[Cc]/);
+        expect(Buffer.byteLength(key)).toBeLessThanOrEqual(64);
+        expect(createNativeMessageKey(kind, ` ${operationId} `)).toBe(key);
+        expect(createNativeMessageKey(kind, 'task-Complete-001')).not.toBe(key);
+      }
+      expect(createNativeMessageKey('text', operationId)).toBe('kairo:operation:task-complete-001');
+    });
   });
 
   describe('getRecentMessages 消息历史拉取', () => {

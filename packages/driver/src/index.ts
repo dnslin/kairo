@@ -5,7 +5,12 @@
 
 // 顶层抽象接口与驱动实现
 export { KK9Driver } from './driver.js';
-export { FakeKK9Driver, type FakeSendBehavior, type RecordedSendCall } from './fake-driver.js';
+export {
+  FakeKK9Driver,
+  type FakeSendBehavior,
+  type FakeSendPayload,
+  type RecordedSendCall,
+} from './fake-driver.js';
 export { InMemorySendOperationStore, createSendOperationFingerprint } from './send-operation.js';
 export type {
   SendOperationClaim,
@@ -81,6 +86,12 @@ export type {
   KK9ReplyInfo,
   KK9MentionInfo,
   KK9MentionTarget,
+  KK9UrlCardOptions,
+  KK9BizMsgOptions,
+  KK9AppMsgOptions,
+  KK9ChatRecordItem,
+  KK9ChatRecordOptions,
+  KK9VoiceOptions,
   KK9FileInfo,
   KK9ImageInfo,
   KK9Session,

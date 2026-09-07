@@ -43,25 +43,41 @@ export function tryParseJson(val: unknown): Record<string, unknown> | null {
   return null;
 }
 
-function extractTextContent(content: unknown, notifyMsg?: unknown): string {
+function extractTextContent(content: unknown, notifyMsg?: unknown, contentType?: unknown): string {
   if (typeof content === 'string') {
     const parsed = tryParseJson(content);
-    if (parsed) return extractTextContent(parsed, notifyMsg);
+    if (parsed) return extractTextContent(parsed, notifyMsg, contentType);
     return content;
   }
   if (content && typeof content === 'object') {
     const obj = content as Record<string, unknown>;
+    const nativeContentType = Number(contentType);
+    if (nativeContentType === 2) {
+      const duration = Number(obj['duration']);
+      return Number.isFinite(duration) && duration > 0 ? `[语音: ${duration}秒]` : '[语音]';
+    }
+    if ([8, 10, 15, 17].includes(nativeContentType)) {
+      const title = toSafeString(obj['title']).trim();
+      const detail =
+        nativeContentType === 10
+          ? toSafeString(obj['summary']).trim()
+          : nativeContentType === 8 || nativeContentType === 17
+            ? toSafeString(obj['content']).trim()
+            : '';
+      const summary = [title, detail].filter(Boolean).join('\n');
+      if (summary) return summary;
+    }
     if (obj['filename'] || obj['fileName']) {
       const fn = toSafeString(obj['filename'] || obj['fileName']);
       return `[文件: ${fn}]`;
     }
     if (Array.isArray(obj['content'])) {
       const text = obj['content']
-        .map((c: unknown) => {
-          if (c && typeof c === 'object') {
-            const co = c as Record<string, unknown>;
-            if (typeof co['text'] === 'string') return co['text'];
-            if (co['type'] === 1) return '[图片]';
+        .map((node: unknown) => {
+          if (node && typeof node === 'object') {
+            const contentNode = node as Record<string, unknown>;
+            if (typeof contentNode['text'] === 'string') return contentNode['text'];
+            if (contentNode['type'] === 1) return '[图片]';
           }
           return '';
         })
@@ -71,7 +87,9 @@ function extractTextContent(content: unknown, notifyMsg?: unknown): string {
     }
     if (typeof obj['text'] === 'string') return obj['text'];
     if (typeof obj['msg'] === 'string') return obj['msg'];
-    if (typeof obj['content'] === 'string') return extractTextContent(obj['content']);
+    if (typeof obj['content'] === 'string') {
+      return extractTextContent(obj['content'], notifyMsg, contentType);
+    }
     try {
       return JSON.stringify(content);
     } catch {
@@ -93,17 +111,19 @@ function determineMessageType(
   if (typeof raw['messageType'] === 'string') {
     return raw['messageType'] as KK9MessageType;
   }
-  if (fileInfo || raw['contentType'] === 3 || raw['contentType'] === 'file') {
+  const nativeContentType = Number(raw['contentType']);
+  if (nativeContentType === 2) return 'voice';
+  if (nativeContentType === 8) return 'app-message';
+  if (nativeContentType === 10) return 'url-card';
+  if (nativeContentType === 15) return 'chat-record';
+  if (nativeContentType === 17) return 'biz-message';
+  if (fileInfo || nativeContentType === 3 || raw['contentType'] === 'file') {
     return 'file';
   }
-  if (
-    (images && images.length > 0) ||
-    raw['contentType'] === 2 ||
-    raw['contentType'] === 'image'
-  ) {
+  if ((images && images.length > 0) || nativeContentType === 1 || raw['contentType'] === 'image') {
     return 'image';
   }
-  if (replyTo || raw['replyMsg']) {
+  if (replyTo || raw['replyMsg'] || nativeContentType === 13) {
     return 'quote';
   }
   if (raw['richText'] || raw['html'] || raw['contentType'] === 'rich-text') {
@@ -419,10 +439,8 @@ export function normalizeNativeMessage(
 
       const contentObj =
         tryParseJson(item['content']) ||
-        (typeof item['content'] === 'object'
-          ? (item['content'] as Record<string, unknown>)
-          : null);
-      const content = extractTextContent(item['content'], item['notifyMsg']);
+        (typeof item['content'] === 'object' ? (item['content'] as Record<string, unknown>) : null);
+      const content = extractTextContent(item['content'], item['notifyMsg'], item['contentType']);
       const rawTime = item['time'] ?? item['sendTime'];
       const time = toSafeString(rawTime, new Date(now).toLocaleTimeString());
 
@@ -472,16 +490,10 @@ export function normalizeNativeMessage(
           }
         : undefined;
       let atMe = Boolean(
-        item['atMe'] ||
-        item['isAtMe'] ||
-        rawMentions?.isAtMe ||
-        item['atState'] === 2
+        item['atMe'] || item['isAtMe'] || rawMentions?.isAtMe || item['atState'] === 2
       );
       let atAll = Boolean(
-        item['atAll'] ||
-        item['isAtAll'] ||
-        rawMentions?.isAtAll ||
-        item['atState'] === 3
+        item['atAll'] || item['isAtAll'] || rawMentions?.isAtAll || item['atState'] === 3
       );
 
       const atMemberList = Array.isArray(item['atMemberIDList'])
@@ -568,44 +580,50 @@ export function normalizeNativeMessage(
       }
 
       let fileInfo: KK9FileInfo | undefined;
-      if (item['fileInfo'] && typeof item['fileInfo'] === 'object') {
-        fileInfo = item['fileInfo'] as KK9FileInfo;
-      } else if (
-        contentObj &&
-        (contentObj['filename'] ||
-          contentObj['fileName'] ||
-          contentObj['filepath'] ||
-          contentObj['filePath'])
-      ) {
-        const fileName = toSafeString(
-          contentObj['filename'] || contentObj['fileName'],
-          '未知文件'
-        );
-        const extMatch =
-          fileName.lastIndexOf('.') !== -1 ? fileName.slice(fileName.lastIndexOf('.')) : undefined;
-        fileInfo = {
-          fileName,
-          filePath: toSafeString(contentObj['filepath'] || contentObj['filePath']) || undefined,
-          fileSize: toSafeString(contentObj['size'] || contentObj['fileSize']) || undefined,
-          fileExt: extMatch,
-        };
-      } else if (item['fileName'] || item['filePath']) {
-        const fileName = toSafeString(item['fileName'], '未知文件');
-        const extMatch =
-          fileName.lastIndexOf('.') !== -1 ? fileName.slice(fileName.lastIndexOf('.')) : undefined;
-        fileInfo = {
-          fileName,
-          fileSize:
-            typeof item['fileSize'] === 'string'
-              ? item['fileSize']
-              : typeof item['fileSizeFormatted'] === 'string'
-                ? item['fileSizeFormatted']
-                : item['fileSize'] !== undefined
-                  ? toSafeString(item['fileSize'])
-                  : undefined,
-          fileExt: typeof item['fileExt'] === 'string' ? item['fileExt'] : extMatch,
-          filePath: typeof item['filePath'] === 'string' ? item['filePath'] : undefined,
-        };
+      if (Number(item['contentType']) !== 2) {
+        if (item['fileInfo'] && typeof item['fileInfo'] === 'object') {
+          fileInfo = item['fileInfo'] as KK9FileInfo;
+        } else if (
+          contentObj &&
+          (contentObj['filename'] ||
+            contentObj['fileName'] ||
+            contentObj['filepath'] ||
+            contentObj['filePath'])
+        ) {
+          const fileName = toSafeString(
+            contentObj['filename'] || contentObj['fileName'],
+            '未知文件'
+          );
+          const extMatch =
+            fileName.lastIndexOf('.') !== -1
+              ? fileName.slice(fileName.lastIndexOf('.'))
+              : undefined;
+          fileInfo = {
+            fileName,
+            filePath: toSafeString(contentObj['filepath'] || contentObj['filePath']) || undefined,
+            fileSize: toSafeString(contentObj['size'] || contentObj['fileSize']) || undefined,
+            fileExt: extMatch,
+          };
+        } else if (item['fileName'] || item['filePath']) {
+          const fileName = toSafeString(item['fileName'], '未知文件');
+          const extMatch =
+            fileName.lastIndexOf('.') !== -1
+              ? fileName.slice(fileName.lastIndexOf('.'))
+              : undefined;
+          fileInfo = {
+            fileName,
+            fileSize:
+              typeof item['fileSize'] === 'string'
+                ? item['fileSize']
+                : typeof item['fileSizeFormatted'] === 'string'
+                  ? item['fileSizeFormatted']
+                  : item['fileSize'] !== undefined
+                    ? toSafeString(item['fileSize'])
+                    : undefined,
+            fileExt: typeof item['fileExt'] === 'string' ? item['fileExt'] : extMatch,
+            filePath: typeof item['filePath'] === 'string' ? item['filePath'] : undefined,
+          };
+        }
       }
 
       const messageType = determineMessageType(item, images, fileInfo, replyTo);
@@ -656,9 +674,7 @@ export function normalizeNativeMessage(
       );
       const isKnownBotSentMessage = Boolean(
         context?.isBotEcho ||
-        context?.knownBotSentMessageKeys?.has(
-          createMessageIdentityKey(sessionId, nativeMessageId)
-        )
+        context?.knownBotSentMessageKeys?.has(createMessageIdentityKey(sessionId, nativeMessageId))
       );
       const direction = determineDirection(
         item,

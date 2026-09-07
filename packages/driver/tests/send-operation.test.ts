@@ -336,4 +336,50 @@ describe('发送操作 Store port 与 FakeDriver', () => {
     });
     expect(driver.recordedCalls).toHaveLength(1);
   });
+
+  it('FakeDriver 五类原生媒体门面共享 operationId 防重合同', async () => {
+    const driver = new FakeKK9Driver();
+    driver.setSendBehavior({ mode: 'success', messageId: 'native-media' });
+    const sends = [
+      () =>
+        driver.sendUrlCard(
+          { title: '链接', summary: '摘要', linkUrl: 'https://example.com' },
+          { targetSessionId: 'session-1', operationId: 'op-fake-url' }
+        ),
+      () =>
+        driver.sendBizMessage(
+          { title: '业务', content: '正文' },
+          { targetSessionId: 'session-1', operationId: 'op-fake-biz' }
+        ),
+      () =>
+        driver.sendAppMessage(
+          { title: '应用', content: '<p>正文</p>' },
+          { targetSessionId: 'session-1', operationId: 'op-fake-app' }
+        ),
+      () =>
+        driver.sendChatRecord(
+          { title: '记录', msgArray: [{ senderName: '甲', contentType: 0, content: '内容' }] },
+          { targetSessionId: 'session-1', operationId: 'op-fake-record' }
+        ),
+      () =>
+        driver.sendVoice(
+          { text: '语音' },
+          { targetSessionId: 'session-1', operationId: 'op-fake-voice' }
+        ),
+    ];
+
+    for (const send of sends) {
+      const first = await send();
+      const replay = await send();
+      expect(first).toMatchObject({ status: 'delivered', messageId: 'native-media' });
+      expect(replay).toEqual(first);
+    }
+    expect(driver.recordedCalls.map(call => call.type)).toEqual([
+      'urlCard',
+      'bizMessage',
+      'appMessage',
+      'chatRecord',
+      'voice',
+    ]);
+  });
 });

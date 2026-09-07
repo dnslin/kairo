@@ -44,7 +44,18 @@ export interface DriverHealthSnapshot {
 
 export type KK9SessionType = 'private' | 'group';
 
-export type KK9MessageType = 'text' | 'image' | 'file' | 'quote' | 'rich-text' | 'system';
+export type KK9MessageType =
+  | 'text'
+  | 'image'
+  | 'file'
+  | 'quote'
+  | 'rich-text'
+  | 'url-card'
+  | 'biz-message'
+  | 'app-message'
+  | 'chat-record'
+  | 'voice'
+  | 'system';
 
 /** 消息来源身份；unknown 表示当前可观察事实不足以安全分类。 */
 export type KK9MessageOrigin = 'external' | 'operator' | 'bot_echo' | 'system' | 'unknown';
@@ -158,6 +169,49 @@ export interface KK9FileInfo {
   fileExt?: string;
   filePath?: string;
 }
+
+/** 链接图文卡片发送参数。 */
+export interface KK9UrlCardOptions {
+  title: string;
+  summary: string;
+  linkUrl: string;
+  picUrl?: string;
+}
+
+/** 业务任务或通知卡片发送参数。 */
+export interface KK9BizMsgOptions {
+  title: string;
+  content: string;
+  summary?: string[];
+  bizUrl?: string;
+  bizType?: number;
+}
+
+/** 工作台微应用通知卡片发送参数。 */
+export interface KK9AppMsgOptions {
+  title: string;
+  content: string;
+  linkUrl?: string;
+  pcAppCode?: string;
+}
+
+/** 合并转发记录中的单条原始消息。 */
+export interface KK9ChatRecordItem {
+  senderName: string;
+  contentType: number;
+  content: unknown;
+}
+
+/** 合并转发聊天记录卡片发送参数。 */
+export interface KK9ChatRecordOptions {
+  title: string;
+  msgArray: KK9ChatRecordItem[];
+}
+
+/** 语音输入二选一：文本合成或本地音频文件。 */
+export type KK9VoiceOptions =
+  | { text: string; filePath?: never; voice?: string }
+  | { filePath: string; text?: never; voice?: never };
 
 export interface KK9Session {
   id: string;
@@ -407,6 +461,11 @@ export interface IKK9Driver extends EventEmitter {
   sendFile(filePath: string, options?: SendFileOptions): Promise<SendResult>;
   getSendStatus(operationId: string): Promise<SendResult>;
   sendImage(imagePath: string, options?: SendOptions): Promise<SendResult>;
+  sendUrlCard(card: KK9UrlCardOptions, options?: SendOptions): Promise<SendResult>;
+  sendBizMessage(message: KK9BizMsgOptions, options?: SendOptions): Promise<SendResult>;
+  sendAppMessage(message: KK9AppMsgOptions, options?: SendOptions): Promise<SendResult>;
+  sendChatRecord(record: KK9ChatRecordOptions, options?: SendOptions): Promise<SendResult>;
+  sendVoice(voice: KK9VoiceOptions, options?: SendOptions): Promise<SendResult>;
   recallMessage(messageId: string, session?: KK9Session | string): Promise<boolean>;
 
   // 组织架构与员工档案

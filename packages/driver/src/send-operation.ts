@@ -4,7 +4,17 @@ import { SendError } from './utils/errors.js';
 
 export type { SendStatus } from './types/index.js';
 
-export type SendOperationMessageType = 'text' | 'rich-text' | 'reply' | 'image' | 'file';
+export type SendOperationMessageType =
+  | 'text'
+  | 'rich-text'
+  | 'reply'
+  | 'image'
+  | 'file'
+  | 'url-card'
+  | 'biz-message'
+  | 'app-message'
+  | 'chat-record'
+  | 'voice';
 
 export interface SendOperationFingerprint {
   targetSessionId: string;

@@ -6,11 +6,15 @@ import { normalizeNativeMessage, type InboundNormalizationDiagnostic } from './c
 import { callIpcToData } from './rpc.js';
 import {
   encodeRendererPayload,
+  CONFIRM_SENT_MESSAGE_SCRIPT,
   RENDERER_IPC_HELPERS_SCRIPT,
   RENDERER_SESSION_RESOLVER_SCRIPT,
+  SUBMIT_NATIVE_MESSAGE_SCRIPT,
 } from './renderer-script.js';
 import { recallNativeMessage } from './recall-ops.js';
 import { sendNativeImage } from './image-ops.js';
+import { sendNativeStructuredMessage } from './card-ops.js';
+import { prepareVoice } from './voice-ops.js';
 import { parseFormattedTextToKK } from '../dom/rich-text.js';
 import {
   BridgeSendStatus,
@@ -28,9 +32,14 @@ import {
 } from '../send-operation.js';
 import type {
   FormattedText,
+  KK9AppMsgOptions,
+  KK9BizMsgOptions,
+  KK9ChatRecordOptions,
   KK9Message,
   KK9ReplyTarget,
   KK9Session,
+  KK9UrlCardOptions,
+  KK9VoiceOptions,
   SendFileOptions,
   SendOptions,
   SendResult,
@@ -97,41 +106,6 @@ const FIND_REPLY_TARGET_SCRIPT = `
       const nextEndIdx = Math.min(...indices) - 1;
       if (nextEndIdx >= endIdx) return null;
       endIdx = nextEndIdx;
-    }
-    return null;
-  }
-`;
-
-const CONFIRM_SENT_MESSAGE_SCRIPT = `
-  async function waitForPersistedMessage(sessionID, msgFlag, targetSession) {
-    const targetSessionIds = [
-      String(sessionID),
-      String(targetSession?.id),
-      String(targetSession?.sesUUID)
-    ];
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const messagesRes = await callIpc('getMessages', {
-        sessionID,
-        count: 100,
-        endIdx: 2147483647,
-        sendTime: 0
-      });
-      if (messagesRes?.code === 0 && Array.isArray(messagesRes.data)) {
-        const found = messagesRes.data.find(message => {
-          if (!message || message.msgFlag !== msgFlag || Number(message.id) <= 0) {
-            return false;
-          }
-          const rawSessionId = message.sessionId ?? message.sessionID ?? message.sesUUID;
-          return rawSessionId === undefined ||
-            rawSessionId === null ||
-            String(rawSessionId).trim() === '' ||
-            targetSessionIds.includes(String(rawSessionId));
-        });
-        if (found) return found;
-      }
-      if (attempt < 11) {
-        await new Promise(resolve => setTimeout(resolve, 200));
-      }
     }
     return null;
   }
@@ -433,6 +407,7 @@ export class BridgeMessageOps {
         ${RENDERER_IPC_HELPERS_SCRIPT}
         const callIpc = callKairoIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
+        ${SUBMIT_NATIVE_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
 
@@ -480,53 +455,9 @@ export class BridgeMessageOps {
           deviceID: main?.deviceID || editor?.deviceID || ''
         };
 
-        const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
-        if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
-          return {
-            success: false,
-            error: 'insertSendBefoeMsg 写入失败',
-            isPreTrigger: Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2),
-          };
-        }
-
-        const nativeId = insertRes.data.id;
-        const nativeMsgIdx = insertRes.data.msgIdx;
-        msgObj.id = nativeId;
-        msgObj.msgIdx = nativeMsgIdx;
-
-        const sendRes = await callIpc('sendMessageNew', {
-          id: nativeId,
-          content: msgObj.content,
-          contentType: msgObj.contentType,
-          sender: msgObj.sender,
-          senderName: msgObj.senderName,
-          senderNameEN: msgObj.senderNameEN,
-          senderNameTC: msgObj.senderNameTC,
-          receiver: msgObj.receiver,
-          sessionType: msgObj.sessionType,
-          sessionID: msgObj.sessionID,
-          atState: msgObj.atState,
-          msgFlag: msgObj.msgFlag,
-          atMemberIDList: msgObj.atMemberIDList,
-          type: msgObj.type
-        });
-
-        if (!sendRes || sendRes.code !== 0) {
-          return {
-            success: false,
-            error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
-            isPreTrigger: false
-          };
-        }
-
-        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag, targetSes);
-        if (!confirmedMessage) {
-          return {
-            success: false,
-            error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
-            isPreTrigger: false
-          };
-        }
+        const submission = await submitNativeMessage(msgObj, targetSes);
+        if (submission.failure) return submission.failure;
+        const confirmedMessage = submission.confirmedMessage;
         msgObj.id = confirmedMessage.id;
         msgObj.msgIdx = confirmedMessage.msgIdx;
 
@@ -638,6 +569,7 @@ export class BridgeMessageOps {
         ${RENDERER_IPC_HELPERS_SCRIPT}
         const callIpc = callKairoIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
+        ${SUBMIT_NATIVE_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
 
@@ -705,52 +637,9 @@ export class BridgeMessageOps {
           deviceID: main?.deviceID || editor?.deviceID || ''
         };
 
-        const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
-        if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
-          return {
-            success: false,
-            error: 'insertSendBefoeMsg 失败',
-            isPreTrigger: Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2),
-          };
-        }
-
-        const nativeId = insertRes.data.id;
-        msgObj.id = nativeId;
-        msgObj.msgIdx = insertRes.data.msgIdx;
-
-        const sendRes = await callIpc('sendMessageNew', {
-          id: nativeId,
-          content: msgObj.content,
-          contentType: msgObj.contentType,
-          sender: msgObj.sender,
-          senderName: msgObj.senderName,
-          senderNameEN: msgObj.senderNameEN,
-          senderNameTC: msgObj.senderNameTC,
-          receiver: msgObj.receiver,
-          sessionType: msgObj.sessionType,
-          sessionID: msgObj.sessionID,
-          atState: msgObj.atState,
-          msgFlag: msgObj.msgFlag,
-          atMemberIDList: msgObj.atMemberIDList,
-          type: msgObj.type
-        });
-
-        if (!sendRes || sendRes.code !== 0) {
-          return {
-            success: false,
-            error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
-            isPreTrigger: false
-          };
-        }
-
-        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag, targetSes);
-        if (!confirmedMessage) {
-          return {
-            success: false,
-            error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
-            isPreTrigger: false
-          };
-        }
+        const submission = await submitNativeMessage(msgObj, targetSes);
+        if (submission.failure) return submission.failure;
+        const confirmedMessage = submission.confirmedMessage;
         msgObj.id = confirmedMessage.id;
         msgObj.msgIdx = confirmedMessage.msgIdx;
 
@@ -851,6 +740,7 @@ export class BridgeMessageOps {
         ${RENDERER_IPC_HELPERS_SCRIPT}
         const callIpc = callKairoIpc;
         ${CONFIRM_SENT_MESSAGE_SCRIPT}
+        ${SUBMIT_NATIVE_MESSAGE_SCRIPT}
         const data = JSON.parse(decodeURIComponent(${encoded}));
         const target = data.target;
 
@@ -903,52 +793,9 @@ export class BridgeMessageOps {
           deviceID: main?.deviceID || editor?.deviceID || ''
         };
 
-        const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
-        if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
-          return {
-            success: false,
-            error: 'insertSendBefoeMsg 写入失败',
-            isPreTrigger: Boolean(insertRes && insertRes.code !== 0 && insertRes.code !== -2),
-          };
-        }
-
-        const nativeId = insertRes.data.id;
-        msgObj.id = nativeId;
-        msgObj.msgIdx = insertRes.data.msgIdx;
-
-        const sendRes = await callIpc('sendMessageNew', {
-          id: nativeId,
-          content: msgObj.content,
-          contentType: msgObj.contentType,
-          sender: msgObj.sender,
-          senderName: msgObj.senderName,
-          senderNameEN: msgObj.senderNameEN,
-          senderNameTC: msgObj.senderNameTC,
-          receiver: msgObj.receiver,
-          sessionType: msgObj.sessionType,
-          sessionID: msgObj.sessionID,
-          atState: msgObj.atState,
-          msgFlag: msgObj.msgFlag,
-          atMemberIDList: msgObj.atMemberIDList,
-          type: msgObj.type
-        });
-
-        if (!sendRes || sendRes.code !== 0) {
-          return {
-            success: false,
-            error: sendRes?.error || 'sendMessageNew 未返回成功 ack',
-            isPreTrigger: false
-          };
-        }
-
-        const confirmedMessage = await waitForPersistedMessage(targetSes.id, msgObj.msgFlag, targetSes);
-        if (!confirmedMessage) {
-          return {
-            success: false,
-            error: 'sendMessageNew 已确认，但未解析到落库后的真实消息 ID',
-            isPreTrigger: false
-          };
-        }
+        const submission = await submitNativeMessage(msgObj, targetSes);
+        if (submission.failure) return submission.failure;
+        const confirmedMessage = submission.confirmedMessage;
         msgObj.id = confirmedMessage.id;
         msgObj.msgIdx = confirmedMessage.msgIdx;
 
@@ -996,6 +843,179 @@ export class BridgeMessageOps {
   public sendImage(imagePath: string, options: SendOptions = {}): Promise<SendResult> {
     return this.executeOperation('image', options, imagePath, (nativeKey, effectiveOptions) =>
       sendNativeImage(this.cdp, imagePath, effectiveOptions, nativeKey)
+    );
+  }
+
+  /** 发送链接图文卡片。 */
+  public sendUrlCard(card: KK9UrlCardOptions, options: SendOptions = {}): Promise<SendResult> {
+    const content = {
+      title: card.title,
+      summary: card.summary,
+      linkUrl: card.linkUrl,
+      picUrl: card.picUrl ?? '',
+      isValid: true,
+      filepath: '',
+    };
+    return this.executeOperation('url-card', options, content, (nativeKey, effectiveOptions) => {
+      if (!content.title.trim() || !content.summary.trim() || !content.linkUrl.trim()) {
+        return Promise.resolve<SendResult>({
+          success: false,
+          status: 'failed',
+          error: 'UrlCard 的 title、summary 与 linkUrl 不能为空',
+          isPreTrigger: true,
+        });
+      }
+      return sendNativeStructuredMessage(
+        this.cdp,
+        { kind: 'url-card', contentType: 10, content },
+        effectiveOptions,
+        nativeKey
+      );
+    });
+  }
+
+  /** 发送业务任务或通知卡片。 */
+  public sendBizMessage(message: KK9BizMsgOptions, options: SendOptions = {}): Promise<SendResult> {
+    const content = {
+      title: message.title,
+      content: message.content,
+      summary: [...(message.summary ?? [])],
+      bizUrl: message.bizUrl ?? '',
+      bizType: message.bizType ?? 1,
+    };
+    return this.executeOperation('biz-message', options, content, (nativeKey, effectiveOptions) => {
+      if (!content.title.trim() || !content.content.trim()) {
+        return Promise.resolve<SendResult>({
+          success: false,
+          status: 'failed',
+          error: 'BizMsg 的 title 与 content 不能为空',
+          isPreTrigger: true,
+        });
+      }
+      return sendNativeStructuredMessage(
+        this.cdp,
+        { kind: 'biz-message', contentType: 17, content },
+        effectiveOptions,
+        nativeKey
+      );
+    });
+  }
+
+  /** 发送工作台微应用通知卡片。 */
+  public sendAppMessage(message: KK9AppMsgOptions, options: SendOptions = {}): Promise<SendResult> {
+    const content = {
+      title: message.title,
+      content: message.content,
+      linkUrl: message.linkUrl ?? '',
+      pcAppCode: message.pcAppCode ?? '',
+    };
+    return this.executeOperation('app-message', options, content, (nativeKey, effectiveOptions) => {
+      if (!content.title.trim() || !content.content.trim()) {
+        return Promise.resolve<SendResult>({
+          success: false,
+          status: 'failed',
+          error: 'AppMsg 的 title 与 content 不能为空',
+          isPreTrigger: true,
+        });
+      }
+      return sendNativeStructuredMessage(
+        this.cdp,
+        { kind: 'app-message', contentType: 8, content },
+        effectiveOptions,
+        nativeKey
+      );
+    });
+  }
+
+  /** 发送可点击查看详情的合并聊天记录卡片。 */
+  public sendChatRecord(
+    record: KK9ChatRecordOptions,
+    options: SendOptions = {}
+  ): Promise<SendResult> {
+    let content: KK9ChatRecordOptions;
+    try {
+      const serialized = JSON.stringify({
+        title: record.title,
+        msgArray: record.msgArray,
+      });
+      content = JSON.parse(serialized) as KK9ChatRecordOptions;
+    } catch (error) {
+      const cause = error instanceof Error ? error : new Error(String(error));
+      throw new SendError(`无法生成 ChatRecord 内容快照: ${cause.message}`, cause);
+    }
+
+    return this.executeOperation('chat-record', options, content, (nativeKey, effectiveOptions) => {
+      const invalidItem = content.msgArray.some(
+        item =>
+          !item.senderName.trim() ||
+          !Number.isFinite(item.contentType) ||
+          item.content === undefined
+      );
+      if (!content.title.trim() || content.msgArray.length === 0 || invalidItem) {
+        return Promise.resolve<SendResult>({
+          success: false,
+          status: 'failed',
+          error: 'ChatRecord 需要非空 title 与至少一条完整消息',
+          isPreTrigger: true,
+        });
+      }
+      return sendNativeStructuredMessage(
+        this.cdp,
+        { kind: 'chat-record', contentType: 15, content },
+        effectiveOptions,
+        nativeKey
+      );
+    });
+  }
+
+  /** 准备音频后发送原生语音气泡。 */
+  public async sendVoice(voice: KK9VoiceOptions, options: SendOptions = {}): Promise<SendResult> {
+    const input: KK9VoiceOptions = { ...voice };
+    let initialOptions = options;
+    if (options.operationId === undefined) {
+      const resolvedOptions = await resolveActiveSendOptions(this.cdp, options);
+      if (!resolvedOptions) {
+        return {
+          success: false,
+          status: 'failed',
+          error: '无法确定语音消息的目标会话，发送未触发',
+          isPreTrigger: true,
+        };
+      }
+      initialOptions = resolvedOptions;
+    }
+
+    return this.executeOperation(
+      'voice',
+      initialOptions,
+      input,
+      async (nativeKey, effectiveOptions) => {
+        if (effectiveOptions.replyTo !== undefined || effectiveOptions.mentions !== undefined) {
+          return {
+            success: false,
+            status: 'failed',
+            error: '原生语音消息不支持 replyTo 或 mentions',
+            isPreTrigger: true,
+          };
+        }
+        let prepared: { duration: number; data: string; filepath?: string };
+        try {
+          prepared = await prepareVoice(this.cdp, input);
+        } catch (error) {
+          return {
+            success: false,
+            status: 'failed',
+            error: `语音准备失败: ${error instanceof Error ? error.message : String(error)}`,
+            isPreTrigger: true,
+          };
+        }
+        return sendNativeStructuredMessage(
+          this.cdp,
+          { kind: 'voice', contentType: 2, content: prepared },
+          effectiveOptions,
+          nativeKey
+        );
+      }
     );
   }
 
