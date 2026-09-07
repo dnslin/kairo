@@ -21,6 +21,14 @@ export async function loadBotCustomization(
   ]);
   // 不传整个 skills 根目录，未列入配置的相邻目录不会被发现。
   const skills = config.skills.map(name => join(directory, 'skills', name));
+  for (const directory of skills) {
+    const file = join(directory, 'SKILL.md');
+    const source = await readFile(file, 'utf8');
+    // gray-matter 的语言标记可选择 eval 引擎；只接受独立的 YAML 开始行。
+    if (!/^\uFEFF?---\r?\n/.test(source)) {
+      throw new Error(`Skill 必须以独立的 --- 行开始 YAML 元数据：${file}`);
+    }
+  }
   const discovered = await resolveAgentSkills(skills).list();
   // Mastra 会记录解析错误并跳过该 Skill；正式启动不能把缺失能力当作成功。
   for (const name of config.skills) {

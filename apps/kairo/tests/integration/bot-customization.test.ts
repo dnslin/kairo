@@ -1,4 +1,5 @@
-import { cp, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Agent } from '@mastra/core/agent';
@@ -49,6 +50,38 @@ describe('T16 原生 filesystem Skill 合同', () => {
       await expect(
         startKairo({ configDirectory: directory, databaseUrl: '', port: 0 })
       ).rejects.toThrow(/reader-sim/);
+    });
+  });
+
+  it('在原生解析之前拒绝 JavaScript 元数据，不执行其中的测试标记', async () => {
+    await fixture(async directory => {
+      const marker = `KAIRO_T16_${randomUUID().replaceAll('-', '')}`;
+      try {
+        await writeFile(
+          join(directory, 'skills', 'reader-sim', 'SKILL.md'),
+          `---javascript\n(process.env[${JSON.stringify(marker)}] = '已执行', { name: 'reader-sim', description: '无害执行门禁测试' })\n---\n测试正文`
+        );
+        const result: unknown = await startKairo({
+          configDirectory: directory,
+          databaseUrl: '',
+          port: 0,
+        }).catch((error: unknown) => error);
+        expect(process.env[marker]).toBeUndefined();
+        expect(result).toBeInstanceOf(Error);
+        expect(result).toHaveProperty('message', expect.stringContaining('SKILL.md'));
+      } finally {
+        delete process.env[marker];
+      }
+    });
+  });
+
+  it('接受带 UTF-8 BOM 和 CRLF 的标准 YAML 技能', async () => {
+    await fixture(async directory => {
+      const file = join(directory, 'skills', 'reader-sim', 'SKILL.md');
+      const source = await readFile(file, 'utf8');
+      await writeFile(file, `\uFEFF${source.replace(/\r?\n/g, '\r\n')}`);
+      const agent = await agentFor(directory);
+      expect((await agent.getSkill('reader-sim'))?.instructions).toContain('Transportation');
     });
   });
 
