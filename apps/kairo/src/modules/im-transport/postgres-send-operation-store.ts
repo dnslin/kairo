@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   SendError,
+  createNativeMessageKey,
   type SendOperationClaim,
   type SendOperationClaimResult,
   type SendOperationFingerprint,
@@ -212,7 +213,7 @@ export class PostgresSendOperationStore implements SendOperationStore {
       fingerprint.targetSessionId,
       fingerprint.messageType,
       fingerprint.contentDigest,
-      `kairo:operation:${encodeURIComponent(operationId)}`,
+      createNativeMessageKey(fingerprint.messageType, operationId),
       claimToken,
     ]);
     const row = result.rows[0];

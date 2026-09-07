@@ -23,6 +23,7 @@ export { KK9EventBridge } from './bridge/event-bridge.js';
 export { BridgeSessionOps } from './bridge/session-ops.js';
 export { BridgeMessageOps } from './bridge/message-ops.js';
 export { BridgeOrgOps } from './bridge/org-ops.js';
+export { createNativeMessageKey } from './bridge/send-status.js';
 export { callIpcToData, type IpcResponse } from './bridge/rpc.js';
 export {
   createMessageIdentityKey,

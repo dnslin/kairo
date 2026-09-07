@@ -90,3 +90,11 @@ node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vit
 - DOM、Vue 运行时对象和原始事件必须先规范化，再进入公开类型。
 - 发送结果必须保留“触发前失败”和“触发后结果未知”的区别。
 - 离线测试不得依赖 KK9、网络或真实账号。
+
+### 原生发送关联键
+
+KK9 的 `msgFlag` 上限为 64 个字符。`createNativeMessageKey(kind, operationId)` 保留原来不超限的编码结果；超限时使用 `k:op:` 加完整 SHA-256 摘要的 Base64URL 编码，并将 `C`、`c` 分别替换为 `.`、`~`，固定为 48 个 ASCII 字符，不截断操作 ID。这两个替代字符不在 Base64URL 原字母表中，因此替换保持一一对应。原生 `searchMessages` 和 `queryChatMessage` 会过滤匹配 `%C%` 的消息；摘要必须避开该标志，不能仅以发送成功或 Driver 回查成功作为历史可见性的证据。发送、只读状态回查和 PostgreSQL 的 `native_key` 写入统一调用该函数。调用方仍保存、传递完整的 `operationId`。
+
+已有合法短键保持不变，供历史回查使用；不迁移旧发送记录，也不自动重发旧 `unknown` 操作。服务端 `102` 或本地 `status: failed` 本身不能证明服务端未创建消息，仍遵守触发后结果未知的合同。
+
+此摘要修复不改写旧短键、无操作 ID 的 UUID 键或已发送消息；这些旧格式若包含 `C/c`，仍存在相同历史过滤风险，不能按摘要分支的验证结果认定它们安全。

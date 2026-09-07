@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   FakeKK9Driver,
+  createNativeMessageKey,
   createSendOperationFingerprint,
   type SendOperationFingerprint,
   type SendOperationStore,
@@ -80,7 +81,7 @@ describePostgres('PostgresSendOperationStore 真实 PostgreSQL 集成合同', ()
     });
     const firstStore = createStore(firstPool);
     const secondStore = createStore(secondPool);
-    const operationId = newOperationId();
+    const operationId = `超长发送操作-${newOperationId()}`;
     const fingerprint = newFingerprint('并发 claim 内容');
 
     try {
@@ -110,7 +111,7 @@ describePostgres('PostgresSendOperationStore 真实 PostgreSQL 集成合同', ()
         [operationId]
       );
       expect(nativeKey.rows[0]?.native_key).toBe(
-        `kairo:operation:${encodeURIComponent(operationId)}`
+        createNativeMessageKey(fingerprint.messageType, operationId)
       );
       expect(await firstStore.get(operationId)).toMatchObject({
         operationId,
