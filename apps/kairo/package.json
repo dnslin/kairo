@@ -7,7 +7,9 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "node --watch --experimental-strip-types src/index.ts",
+    "dev": "pnpm build && node --env-file-if-exists=../../.env dist/index.js",
+    "start": "node --env-file-if-exists=../../.env dist/index.js",
+    "dev:studio": "pnpm build && node --env-file=../../.env.studio dist/mastra/studio/check.js && node --env-file=../../.env.studio node_modules/mastra/dist/index.js dev --dir src/mastra/studio --env ../../.env.studio",
     "prebuild": "pnpm --filter @kairo/driver build",
     "build": "tsc -p tsconfig.json",
     "pretypecheck": "pnpm --filter @kairo/driver build",
@@ -32,6 +34,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.19.8",
-    "@types/pg": "^8.23.1"
+    "@types/pg": "^8.23.1",
+    "hono": "4.13.5"
   }
 }

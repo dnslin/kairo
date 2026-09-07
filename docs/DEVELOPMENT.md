@@ -73,6 +73,58 @@ node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vit
 
 接口依据：[Memory 只读配置](https://mastra.ai/reference/memory/memory-class)、[Observational Memory](https://mastra.ai/docs/memory/observational-memory)，并以锁定 `@mastra/core@1.63.2`、`@mastra/memory@1.28.1`、`@mastra/pg@1.22.2` 的类型和运行结果为准。
 
+### T13 生产路由与 Studio 隔离
+
+正式启动：
+
+```bash
+pnpm --filter @kairo/app build
+pnpm --filter @kairo/app start
+```
+
+`start` 使用 Node 直接执行 `dist/index.js`，读取根目录 `.env` 中的 `DATABASE_URL`；系统环境变量优先。`dev` 先构建再启动同一个入口，不启动 Studio。生产构建仅运行 TypeScript 编译，不执行 `mastra build --studio`，也不打包 Studio UI。
+
+`startKairo()` 创建进程内 Mastra 和 PostgreSQL storage，唯一监听地址为 `127.0.0.1:4110`。`GET /health/live` 返回 `200 {"status":"alive"}`；其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。该接口由 `modules/operability/health-server.ts` 提供，仅表示进程存活，不表示数据库、Driver 或 Agent 已就绪；T17 再接入依赖状态和 ready。当前不装配 T28 的业务 Agent。
+
+收到 Ctrl+C 或 SIGTERM 后先关闭健康端口，再等待 `mastra.shutdown()`。锁定的 `@mastra/core@1.63.2` 会在 shutdown 内关闭注册的 storage，不再重复调用 `storage.close()`。程序内调用方使用返回的 `close()`，重复或并发关闭共用同一个 Promise。
+
+开发 Studio 使用根目录独立的 `.env.studio`（已被 Git 忽略），不会自动读取正式 `.env`。配置以下实际值：
+
+```dotenv
+NODE_ENV=development
+DATABASE_URL=postgresql://正式账号:密码@数据库主机/正式库名
+KAIRO_PRODUCTION_DATASET_ID=正式DatasetID
+KAIRO_PRODUCTION_EMPLOYEE_IDS=正式员工UID1,正式员工UID2
+KAIRO_STUDIO_DATABASE_URL=postgresql://开发账号:密码@数据库主机/独立开发库名
+KAIRO_STUDIO_DATASET_ID=测试DatasetID
+KAIRO_STUDIO_EMPLOYEE_ID=测试员工UID
+```
+
+正式字段仅用于启动前比对；Studio storage 只连接 `KAIRO_STUDIO_DATABASE_URL`。维护人员必须填写真实的正式比对值，不能用虚构值替代。开发库要求使用不同库名，即使在另一台服务器也不能与正式库同名；按 pg 实际解析结果比较，避免不同账号、主机别名或 URL 编码绕过。测试员工不能出现在正式员工列表中，测试 Dataset 不能等于正式 Dataset。缺少任一值或使用非 development 模式时明确拒绝启动，不回退到正式配置。
+
+先用现有 `migrateDatabase({ databaseUrl })` 为开发库执行仓库迁移，再启动：
+
+```bash
+pnpm --filter @kairo/app dev:studio
+```
+
+命令先构建并执行配置检查，再让 Mastra CLI 显式读取同一份 `.env.studio`，仅监听 `127.0.0.1:4111`。锁定 CLI 的开发子进程会将未出现在 `--env` 文件中的 `NODE_ENV` 设为 production，因此文件本身也必须写明 development；外部 `NODE_ENV=production` 仍在前置检查时拒绝启动。不要直接用默认 `mastra dev/start` 代替上述命令。
+
+Studio 的请求中间件固定注入测试员工、`MASTRA_RESOURCE_ID_KEY` 和测试 Dataset，客户端请求上下文不能覆盖这些值。此阶段 Studio 没有业务 Agent 或知识 Tool；测试 Dataset 的配置隔离不代表已验证 RAGFlow 数据或检索权限，真实知识连接属于 T14/T27。`.mastra/` 是 CLI 生成目录，不提交到 Git。
+
+定向合同（在 `apps/kairo` 目录执行）：
+
+```bash
+node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts tests/integration/mastra-route-isolation.spike.test.ts
+pnpm exec vitest run tests/unit/studio-isolation.test.ts
+```
+
+集成测试要求 `KAIRO_TEST_DATABASE_URL`，创建并删除两个随机临时数据库，验证正式路由不可达、端口及数据库连接释放，以及开发和正式 thread 双向隔离。真实启动验收还需运行 `start` 与 `dev:studio`，检查实际监听地址、Studio 页面和错误配置拒绝；不能用单元测试代替。
+
+框架依据：[CLI 命令](https://mastra.ai/reference/cli/mastra)、[Mastra 实例](https://mastra.ai/reference/core/mastra-class)、[请求上下文保留键](https://mastra.ai/docs/server/request-context#reserved-keys)，并以锁定版本的类型、实现和实际启动结果为准。
+
+应用开发依赖直接声明与现有依赖树相同的 `hono@4.13.5`，生产源码仅导入它的类型。`@mastra/core@1.63.2` 附带的 Hono 类型缺少原包的 CommonJS 类型目录标记，NodeNext 下无法完整解析 `ContextWithMastra`；直接使用 Hono 官方 `Context` 类型，避免手写框架声明或关闭 unsafe 检查。离线测试也用真实 Hono 和 RequestContext 验证伪造请求范围被覆盖。
+
 ## 代码入口
 
 | 任务                                                                                | 位置                                                            |
