@@ -1,7 +1,7 @@
 # SPEC：Kairo 阶段一企业知识问答
 
 > 状态：已确认
-> 日期：2026-09-02
+> 日期：2026-09-07
 > 上游需求：[`docs/prd.md`](./prd.md) v0.3
 > 范围：只定义阶段一，不包含开发计划、任务清单或代码实现
 
@@ -32,7 +32,7 @@ PRD v0.3       已确认并提交
 4. `@kairo/driver`、Kairo 和 Mastra 在安装 KK9 客户端的本机、同一个 Node.js 进程运行。
 5. RAGFlow 和 PostgreSQL 已部署在内网服务器。
 6. Kairo 通过项目 `pnpm` 脚本手动启动。
-7. 阶段一 RAGFlow 只放一个非敏感 Dataset。
+7. 阶段一 RAGFlow 只放一个非敏感 ERP Dataset。
 8. 主模型由用户在 `bot.yaml` 中配置，PRD 和 SPEC 不固定厂商或型号。
 9. 业务记录默认长期保存；2 小时只表示 Agent 是否继续使用当前对话，不表示删除数据。
 10. 用户提供 `SOUL.md`、`AGENTS.md` 和至少一个真实 Skill。
@@ -61,7 +61,7 @@ PRD v0.3       已确认并提交
 - 企业审批；
 - Web 管理后台或 Kairo 管理 CLI；
 - 正式环境 Mastra Studio；
-- Skill 脚本执行；
+- Agent 任意执行 Skill 脚本或通用命令；专用 `knowledge-search` Tool 固定调用批准的 Python 检索脚本除外；
 - Sandbox、Redis、NATS、后台消息中间件或第二套业务数据库；
 - 多 Bot、员工级 Bot 个性化或配置热更新。
 
@@ -78,7 +78,7 @@ PRD v0.3       已确认并提交
 | 业务存储 | PostgreSQL 的 `kairo` schema |
 | Mastra 存储 | PostgreSQL 的 `mastra` schema |
 | 企业知识 | 内网 RAGFlow，一个非敏感 Dataset |
-| RAGFlow 连接 | 先真实验证 MCP，最终只保留 MCP 或 HTTP 一种 |
+| RAGFlow 连接 | 定制 RAGFlow Skill + 专用 `knowledge-search` Tool + 固定 Python 脚本 + HTTP Retrieval API |
 | 主模型 | `bot.yaml` 配置一个模型，不配置运行时自动切换 |
 | 日志 | 结构化日志；具体应用依赖在技术计划中确定 |
 | 配置校验 | 必须有结构校验；具体库在技术计划中确定 |
@@ -494,60 +494,58 @@ config/bots/default/
 - 使用 Mastra 原生 filesystem Skills；
 - 员工不能通过 `/xxx` 选择或安装 Skill；
 - Mastra 根据自然语言、Skill 名称、描述和 AGENTS 提示自动选择；
-- 阶段一不运行 Skill 中的脚本；
+- Mastra 加载 Skill 说明不等于获得脚本执行能力；Agent 默认不能运行任意 Skill 脚本，只有专用 `knowledge-search` Tool 可以固定调用批准的 Python 检索脚本；
 - `/new` 是 Kairo 控制消息，不是 Skill。
 
 ### 10.6 `tool-integration`
 
 #### 阶段一 Tool
 
-阶段一只要求一个业务 Tool：`knowledge-search`。
+阶段一只要求一个业务 Tool：`knowledge-search`。Mastra 加载定制 RAGFlow Skill，用于说明检索时机、最小查询组织和资料使用方式；Skill 本身不执行检索，也不决定 Dataset 或脚本权限。
 
-模型可提供的输入只有当前查询文本。以下内容不能由模型提供或修改：
+Tool 的业务输入只有当前查询文本 `query`。Kairo 固定注入 ERP Dataset，并以固定程序、固定脚本和固定参数启动批准的 Python 检索入口。模型不能提供或修改：
 
 - Dataset ID；
-- `top_k`；
-- 相似度阈值；
-- 向量权重；
-- 重排模型；
+- 程序名、脚本路径或命令；
+- `top_k`、相似度阈值、向量权重或重排模型；
 - RAGFlow 凭证；
 - 员工、会话或任务内部 ID。
 
-Dataset ID 由 Kairo 固定注入；其他检索设置由 RAGFlow 管理人员在 RAGFlow 中维护。
+Python 脚本通过 HTTP Retrieval API 执行唯一的检索请求。除固定 Dataset 外，当前不发送其他检索参数，使用接口默认值；不复制上游 Skill 的默认数字，不新增调参配置，也不假定会自动继承 RAGFlow 网页中的检索设置。
 
 #### 最少发送数据
 
-发送到 RAGFlow 的内容只包含当前查询所需的最少文字。不发送完整 thread、历史消息、Observational Memory 摘要或员工身份。
+发送到 RAGFlow 的请求只包含当前查询对应的 `question` 和服务端固定的 `dataset_ids`。不发送完整 thread、历史消息、Observational Memory 摘要、员工身份或 Kairo 内部 ID。
 
 #### Tool 输出
 
-Tool 返回给 Agent 的结果必须区分：
+专用 Tool 必须先校验 Python 返回的结构化结果，并区分：
 
 - 查询成功且有资料；
-- 查询成功但没有资料；
-- RAGFlow 暂时不可用；
+- 查询成功且有效 chunks 为空；
 - 没有权限或凭证错误；
+- 参数或业务错误；
+- RAGFlow 暂时不可用；
 - 返回数据格式错误。
 
-所有外部结果先检查格式。格式错误按服务故障处理，不能当作“没有资料”。
+只有请求成功、业务结果成功且有效 chunks 为空时才是“没有资料”。缺少 `data`/`chunks`、chunk 不是对象或字段类型错误都按格式错误处理，不能静默转换为空结果。HTTP 200 但业务 code 非零仍是失败；无法可靠分类时保留诊断信息并明确失败，不能只根据单个错误码猜测原因。
 
-RAGFlow 返回的文字始终视为资料，不是系统命令。文档中的指令不能修改 SOUL、AGENTS、员工身份、Tool 列表或权限。
+RAGFlow 返回的文字始终视为资料，不是系统命令。文档中的指令不能修改 SOUL、AGENTS、员工身份、Tool 列表、Dataset、脚本执行范围或权限。
 
-#### MCP 与 HTTP
+#### 固定检索链路
 
-RAGFlow 部署完成后先验证 MCP：
+阶段一正式调用链固定为：
 
-- 固定 Dataset；
-- 鉴权；
-- 返回资料字段；
-- 超时；
-- 断开后恢复连接；
-- 错误类型；
-- 实际维护复杂度。
+```text
+Mastra Agent 加载定制 RAGFlow Skill 的说明
+  → 调用仅接收 query 的 knowledge-search
+  → Kairo 注入固定 ERP Dataset 和所需执行环境
+  → Tool 启动批准的 Python 检索脚本
+  → Python 调用 RAGFlow HTTP Retrieval API
+  → Tool 校验结构化结果并返回资料或明确错误
+```
 
-全部满足且更容易维护时只使用 MCP；否则只使用 HTTP Retrieval API。正式代码不保留两套实现，也不自动在两者间切换。
-
-若使用 MCP，采用远程 Streamable HTTP，不使用 stdio。无论使用哪种连接方式，Agent 只看到 Kairo 的 `knowledge-search`，不能直接看到 RAGFlow 原始 Tool。
+不使用 MCP、备用 endpoint、TypeScript 平行 HTTP 实现或运行时自动切换。Agent 看不到 RAGFlow 原始 Dataset/Chat tools、通用 shell 或任意脚本执行工具。T14 只完成最小临时验证、真实样本和文档同步；正式 Skill 裁剪、脚本接入、预算/取消、重试、结果校验与业务证据接入由 T27 实施。
 
 ### 10.7 `knowledge-management`
 
@@ -555,8 +553,9 @@ RAGFlow 部署完成后先验证 MCP：
 
 - 持有 RAGFlow 管理账号的人负责知识资料；
 - Kairo 不建设知识上传页面、账号体系或 IM 入库命令；
-- RAGFlow 管理人员负责格式、Embedding、重排、解析和检索设置；
-- 阶段一只有一个非敏感 Dataset；
+- RAGFlow 管理人员负责知识资料、格式、Embedding、重排、解析和 RAGFlow 侧模型设置；
+- Kairo 的 Retrieval API 调用暂用接口默认检索参数，不复制网页配置，也不会自动随网页设置变化；
+- 阶段一只有一个非敏感 ERP Dataset；
 - 普通员工不能通过 IM 发布企业知识；
 - 员工附件不会自动进入企业知识库。
 
@@ -782,7 +781,7 @@ type SendOutcome =
 - 配置文件加载和错误配置拒绝启动；
 - 用户提供的 Skill 可被 Mastra 发现和选择；
 - `knowledge-search` 固定 Dataset；
-- MCP 或 HTTP 最终连接器的成功、无结果和错误；
+- 定制 Skill → 专用 `knowledge-search` → 固定 Python 脚本 → HTTP Retrieval API 的成功、无结果和错误；
 - 服务重启后恢复正在合并、排队和运行中的任务；
 - Driver operationId 查询发送结果；
 - PostgreSQL、RAGFlow、模型和 Driver 的故障行为。
@@ -830,7 +829,7 @@ FakeDriver 不能作为阶段一最终证明。真实测试至少覆盖：
 - 增加新的模型供应商；
 - 增加消息中间件、Redis 或后台队列；
 - 正式环境开启 Studio；
-- 允许 Skill 脚本执行；
+- 允许 Agent 任意执行 Skill 脚本、选择程序或拼接命令；专用 Tool 固定调用批准的检索脚本必须遵守既定合同；
 - 创建管理 UI 或 CLI。
 
 ### 禁止事项
@@ -842,7 +841,7 @@ FakeDriver 不能作为阶段一最终证明。真实测试至少覆盖：
 - 把 RAGFlow 内部 ID、来源列表或链接发给员工；
 - 把未发送、被取消或未通过检查的模型草稿写入正式上下文；
 - 在运行时自动切换主模型；
-- 同时维护 MCP 和 HTTP 两套正式知识连接；
+- 为阶段一知识接入增加 MCP、备用 endpoint、TypeScript 平行 HTTP 实现或运行时自动切换；
 - 把凭证写入 Git、Prompt、SOUL、AGENTS、Skill、Memory 或普通日志；
 - 直接读取 RAGFlow 内部数据库；
 - 为阶段二或阶段三提前建设通用平台。
@@ -856,7 +855,7 @@ FakeDriver 不能作为阶段一最终证明。真实测试至少覆盖：
 3. 配置、PostgreSQL、Driver 和 Mastra 正常时服务进入正常状态；
 4. 两名 allowlist 员工可以独立连续对话；
 5. 分段消息、排队、`/new`、时间限制和重启行为符合本 SPEC；
-6. RAGFlow 最终只启用一种连接方式；
+6. RAGFlow 正式环境只启用“定制 Skill + 专用 Tool + 固定 Python 脚本 + HTTP Retrieval API”一条知识链路；
 7. 企业回答具有内部资料且员工看不到来源和内部 ID；
 8. 无资料、通用知识、冲突、部分回答和服务故障行为正确；
 9. 只有确认发送成功的答案进入正式 thread 和 Observational Memory；
@@ -872,7 +871,7 @@ FakeDriver 不能作为阶段一最终证明。真实测试至少覆盖：
 2. Driver 如何保存 operationId 并实现跨重启的 `getSendStatus`；
 3. Mastra 是否原生支持“检查通过并发送成功后再写入正式 thread”；若不支持，Kairo 需要在调用边界暂存本次消息；
 4. Observational Memory 与 PostgreSQL 的实际表初始化和清理行为；
-5. RAGFlow MCP 是否满足固定 Dataset、鉴权、返回字段、超时和重连要求；
+5. T14 已在 2026-09-07 用临时链路验证锁定 Mastra 加载 Skill、专用 Tool 调用 Python 检索 ERP、自动超时与取消后的恢复；真实模型检索策略、正式四分钟预算与重试等仍归 T27 及后续验收。ERP DOCX 的原始 positions 不能推定 Word 物理页码，证据见 `docs/DEVELOPMENT.md`；
 6. RAGFlow API Key 是否能限制权限；阶段一实例只有一个非敏感 Dataset，因此不能为了权限再造一套系统；
 7. 用户最终提供的主模型配置、SOUL、AGENTS、Skill 和试用员工 UID；
 8. 内网 PostgreSQL 与 RAGFlow 的实际连接地址、证书和凭证；

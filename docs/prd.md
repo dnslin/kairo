@@ -1,7 +1,7 @@
 # Kairo 企业 IM 智能助手 PRD
 
 > 版本：v0.3
-> 日期：2026-09-02
+> 日期：2026-09-07
 > 状态：阶段一产品规则已确认，关键 Driver、Mastra 与 RAGFlow 接口待实现和真实联调
 > 依据：本次会话中提出的需求与讨论
 
@@ -58,7 +58,7 @@ Kairo 需要把消息、员工身份、个人记忆、企业知识、文件处�
 | 文件输入 | 需要处理用户发送的文件，解析与任务衔接方式需要设计。 |
 | Agent 方向 | 用户倾向于使用 Mastra、Mastra Server 和 Mastra Studio。 |
 | 知识库现状 | 需要建设知识库和向量检索系统，不能按“已有系统直接复用”处理。 |
-| RAGFlow 条件 | 用户接受采用 RAGFlow 的方向，可以自行部署，服务器配置足够；与 Mastra 的集成仍需验证。 |
+| RAGFlow 条件 | 用户接受采用 RAGFlow 的方向，可以自行部署，服务器配置足够；阶段一已确认采用“定制 RAGFlow Skill + 专用 `knowledge-search` Tool + Python HTTP 检索脚本”，完整真实调用仍需验证。 |
 | 审批条件 | IM 没有原生审批接口，但有普通消息收发能力。用户提出通过 Bot 询问、审批人回复来完成审批。 |
 | 登录现状 | 没有现成的企业 OIDC / SSO，不能假设存在统一登录系统。 |
 | Bot 定制 | 希望支持 SOUL.md 等定制方式，参考 Hermes / OpenClaw 的体验，而非要求完整复刻其运行时。 |
@@ -70,7 +70,7 @@ Kairo 需要把消息、员工身份、个人记忆、企业知识、文件处�
 | 阶段验收 | 使用真实 IM、真实员工身份、真实资料和真实问题，由用户人工确认是否进入下一阶段；Mock 只用于自动化验证，不作为产品可用性的唯一依据。 |
 | 消息执行规则 | 同一 Bot、同一会话内保持输入和回复顺序；不同员工或不同会话可以并行。Agent 开始执行后收到的补充消息排入下一轮，不取消或重跑当前请求。 |
 | Mastra 运行形态 | 阶段一中 Kairo 业务协调层与 Mastra 运行在同一 Node.js 进程并直接调用实例；Mastra Server 仅开放必要的本机接口，Studio 只用于连接开发数据库和测试 Dataset。 |
-| MCP 与 stdio | MCP 是 Tool 的可选接入方式；stdio 只在出现具体 MCP 子进程工具时启用，不作为 Kairo 与 Mastra 的主通信方式。 |
+| 知识接入与 stdio | 阶段一知识接入固定为专用 Tool 调用批准的 Python 检索脚本，再访问 RAGFlow HTTP Retrieval API；不使用 MCP，也不把 stdio 作为 Kairo 与 Mastra 的主通信方式。 |
 | 加密文件 | Kairo 不负责解密密码保护或加密文件；识别后明确告知用户无法处理。 |
 
 **尚不能视为已确认的内容：**独立管理后台、Web 审批、Better Auth、消息中间件、单独部署 OCR、具体后台任务队列、完整容器编排平台、群聊共享记忆模式。
@@ -184,7 +184,7 @@ config/bots/default/
 
 `bot.yaml` 保存模型、固定 Dataset、试用员工 UID allowlist、启用的 Tools、Skills 和运行参数，但不保存凭证。`SOUL.md` 保存身份、语气和表达风格；`AGENTS.md` 保存业务规则和工作边界。Mastra 普通 Agent 不会自动识别 SOUL 或项目规则文件，因此由 Kairo 显式读取并组合为 Agent `instructions`。
 
-Skills 直接使用 Mastra 原生 filesystem Skills：每个 Skill 目录必须包含 `SKILL.md`，可以按需携带 `references/`、`scripts/` 和 `assets/`，不另写通用 Skill 引擎。阶段一由用户提供至少一个真实 Skill，用于验证加载和自然语言选择流程，不为了测试额外制造假 Skill。即使 Skill 中存在脚本资源，阶段一也不得直接执行；只有以后通过受控 Tool 或启用 `sandboxed-execution` 后才能运行。
+Skills 直接使用 Mastra 原生 filesystem Skills：每个 Skill 目录必须包含 `SKILL.md`，可以按需携带 `references/`、`scripts/` 和 `assets/`，不另写通用 Skill 引擎。阶段一由用户提供至少一个真实 Skill，用于验证加载和自然语言选择流程，不为了测试额外制造假 Skill。Mastra 加载 Skill 说明与执行脚本是两种能力：默认不允许 Agent 任意运行 Skill 中的脚本；阶段一唯一例外是受控的 `knowledge-search` Tool 可以固定调用批准的 Python 检索脚本，Agent 仍只能传入查询文本，不能选择程序、脚本路径或命令。
 
 员工不能通过斜杠命令选择、安装或强制执行 Skill。`bot.yaml` 只启用经过批准的 Skills，Mastra 根据员工自然语言、Skill 名称与描述自动选择；Kairo 可以在 `AGENTS.md` 或其他受控内部 instructions 中说明哪类任务应使用哪个 Skill。路由不明确时应追问或不使用 Skill，不能让员工消息绕过 Skill allowlist。`/new` 是 Kairo 控制消息，不属于 Skill。
 
@@ -241,7 +241,7 @@ Observational Memory 产生的摘要只能用于当前 thread 的对话连贯性
 
 **阶段一范围：**仅向 `bot.yaml` 中明确配置的试用员工 UID allowlist 开放。Kairo 通过 `getEmployeeBySession` 验证员工身份后检查名单；未在名单中的员工只收到“当前功能仍在试用，暂未向你开放”，不进入 Agent、Memory 或知识检索。扩大试用范围通过修改配置并重启完成，不引入部门规则或管理页面。
 
-阶段一部署的 RAGFlow 只放一个统一、非敏感 Dataset，其中资料对所有试用员工均可访问，以真实问题验证检索证据和回答质量。Dataset ID 由 Kairo 服务端配置，知识 Tool 固定查询该 Dataset；模型、SOUL、Skill 和员工消息均不能改选 Dataset。阶段一仍使用可信员工身份，但不实现部门或员工级知识 ACL。任何受限资料或第二个 Dataset 上线前，必须先完成并验证 `knowledge-acl`。
+阶段一部署的 RAGFlow 只放一个统一、非敏感 Dataset，其中资料对所有试用员工均可访问，以真实问题验证检索证据和回答质量。Dataset 初始固定为 ERP，由 Kairo 服务端注入；知识 Tool 只查询该 Dataset，模型、SOUL、Skill 和员工消息均不能改选 Dataset。阶段一仍使用可信员工身份，但不实现部门或员工级知识 ACL。任何受限资料或第二个 Dataset 上线前，必须先完成并验证 `knowledge-acl`。
 
 阶段一允许把回答所需的最少企业知识片段和对话内容发送给明确配置的外部主 Agent 模型，因为当前 Dataset 被限定为非敏感资料。PRD 不固定模型供应商或具体型号，由用户在 `bot.yaml` 中配置唯一已批准主模型；模型不能由 Bot、Skill、员工消息或运行时故障自动切换。Observational Memory 使用同一个主模型，不配置第二个压缩模型或自动 fallback。后续迁移到内部部署 LLM 时只更换正式模型配置，通过重启生效，并在切换前后重新执行知识回归题集。
 
@@ -251,9 +251,9 @@ Observational Memory 产生的摘要只能用于当前 thread 的对话连贯性
 
 阶段一不限制单个任务调用 `knowledge-search` 的固定次数。Agent 可以根据原问题、查询改写或多个子问题按需检索；所有调用仍受任务 4 分钟总执行时间和系统全局并发限制。查询次数只记录用于观察和调试，不作为停止任务或拒绝回答的条件。
 
-`knowledge-search` 只向 RAGFlow 发送当前检索所需的最小查询文本，不发送完整 thread、Observational Memory 摘要、历史消息、员工 ID、sessionId 或 taskId。Agent 可以根据当前上下文改写查询，但必须删除与检索无关的个人和业务细节。Kairo 在内部保存 Tool 调用与任务的关联，不依赖把内部标识发送给 RAGFlow。
+`knowledge-search` 的业务输入只有当前检索所需的最小查询文本 `query`，不接收程序名、脚本路径、命令或检索调参；也不发送完整 thread、Observational Memory 摘要、历史消息、员工 ID、sessionId 或 taskId。Agent 可以根据当前上下文改写查询，但必须删除与检索无关的个人和业务细节。Kairo 在内部保存 Tool 调用与任务的关联，不依赖把内部标识发送给 RAGFlow。
 
-Agent 不能提供或覆盖 Dataset、`top_k`、相似度阈值、向量权重、重排模型或其他检索参数。除固定 Dataset ID 由 Kairo 注入外，其余检索参数由 RAGFlow 管理人员在 RAGFlow 中配置和测试，Kairo 不重复保存；知识连接器也不把这些参数开放给模型。
+Agent 不能提供或覆盖 Dataset、`top_k`、相似度阈值、向量权重、重排模型或其他检索参数。除固定 Dataset ID 由 Kairo 注入外，Python 脚本调用 Retrieval API 时暂不发送其他检索参数，直接使用接口默认值；不复制上游 Skill 的默认数字，不新增调参配置，也不假定会自动继承 RAGFlow 网页中的检索设置。
 
 问题既可能询问公司规定，也可能询问通用知识且企业检索没有可靠依据时，Bot 必须先追问用户是否改用通用知识，不能直接把通用答案当作公司规则。只有用户明确选择通用知识后才回答，并说明内容不代表公司制度；不得伪造企业来源。
 
@@ -285,18 +285,19 @@ RAGFlow 返回的文档、片段和元数据始终视为非可信数据，不是
 
 ```text
 员工问题
-  → Mastra Agent
-  → Kairo 知识检索 Tool
-  → 服务端确定可访问范围
-  → RAGFlow 检索
-  → 返回资料片段与来源
+  → Mastra Agent 加载定制 RAGFlow Skill 的检索说明
+  → Agent 调用 Kairo 专用 knowledge-search Tool（仅 query）
+  → Tool 固定注入 ERP Dataset 与受控执行环境
+  → Tool 调用批准的 Python 检索脚本
+  → Python 调用 RAGFlow HTTP Retrieval API
+  → Tool 校验结构化资料或明确错误
   → Mastra 组织回答
   → IM 回复
 ```
 
-Kairo 对 Agent 只暴露一个受控的 `knowledge-search` Tool，不直接暴露 RAGFlow 原始 HTTP 参数或原始 MCP Tool。该 Tool 强制注入服务端配置的阶段一 Dataset ID，模型不能提供或覆盖 `dataset_ids`。
+Kairo 对 Agent 只暴露一个受控的 `knowledge-search` Tool，不暴露 RAGFlow 原始 HTTP 参数、Dataset/Chat 管理工具、通用 shell 或任意脚本执行能力。该 Tool 强制注入服务端固定的阶段一 ERP Dataset ID，模型不能提供或覆盖 `dataset_ids`；凭证只进入固定脚本所需的受控环境，不进入 Skill、模型上下文、命令行或普通日志。
 
-RAGFlow 部署完成后先进行 MCP-first 真实联调，验证固定 Dataset、鉴权、检索元数据、超时、重连、错误分类和运维复杂度。全部满足且实际维护更简单时，正式环境只使用 RAGFlow MCP Server；任一关键项不满足时，正式环境只使用 HTTP Retrieval API。联调结束后删除未选方案，不保留双实现或运行时自动降级通道。若选择 MCP，使用远程 Streamable HTTP 连接，不使用 stdio。
+阶段一已选定“定制 RAGFlow Skill + 专用 Tool + Python 检索脚本 + HTTP Retrieval API”这一条链路。Skill 负责告诉 Agent 何时检索、如何组织最小查询和怎样使用资料；专用 Tool 负责固定执行边界与结果合同；Python 脚本负责唯一的 HTTP 检索实现。不增加 MCP、备用 endpoint、TypeScript 平行 HTTP 实现或运行时自动切换。T14 只做最小临时验证、真实样本与文档同步，正式 Skill 裁剪、脚本接入和业务实现归 T27。
 
 Mastra 负责 Agent 和对话；RAGFlow 负责知识处理与检索。阶段一不使用 RAGFlow Chat 或 Agent，也不并行维护两套 Agent、Chat、Memory 或知识连接主流程。
 
@@ -307,14 +308,14 @@ Mastra 负责 Agent 和对话；RAGFlow 负责知识处理与检索。阶段一�
 - 检索结果在内部保留文档、片段或页码等来源映射，用于验收、排查和审计；这些信息不默认出现在员工 IM 回复中。
 - 企业知识回答不能只依赖 Prompt 自律。Agent 最终结果必须把“给员工看的答案正文”和“内部检索资料记录”分开返回。Kairo 只把答案正文发送到 IM，文档、片段、页码、RAGFlow ID 和相似度等内部信息只保存在任务记录中。
 - Kairo 在发送前校验：企业答案必须关联本任务成功返回的检索资料；未调用 `knowledge-search` 或检索结果为空时，不得发送企业结论。通用答案必须具有当前问题的一次性员工授权并自动添加 `【非企业资料】`。校验失败时丢弃模型原文，按无依据或系统错误处理。
-- RAGFlow 或 MCP/HTTP 连接器返回的数据必须先检查格式。缺少必要字段、字段类型错误或内容无法读取时，按知识服务故障处理并使用已有重试规则，不能当作“没有企业资料”。
+- Python HTTP 检索脚本和专用 Tool 返回的数据必须先检查格式。缺少必要字段、字段类型错误或内容无法读取时，按知识服务故障处理并使用已有重试规则，不能当作“没有企业资料”。
 - 无结果、解析失败或服务不可用时，应说明当前状态。
 - 文档删除、替换或权限变更后，不应继续以旧的可访问状态提供资料；具体更新机制需验证。
 - 群内回复的知识范围需要单独定义，不能只检查提问者权限。
 
 **联调必须确认：**上传、解析、状态查询、检索、范围限制、片段读取、删除、来源映射，以及 API 凭证的实际权限边界。
 
-阶段一只有一个固定 Dataset。Embedding、重排、文档规模、知识格式和解析方式均由 RAGFlow 管理人员在 RAGFlow 中配置和测试，Kairo 不复制这些配置。Kairo 仍需完成 MCP-first 真实联调，并由用户根据真实问题和回归题集判断最终回答是否可用。部门访问规则属于后续 `knowledge-acl`。
+阶段一只有一个固定 ERP Dataset。知识资料、Embedding、重排、文档格式和解析方式仍由 RAGFlow 管理人员在 RAGFlow 中维护和测试；Kairo 不复制这些配置。检索调用暂时省略 Dataset 之外的调参并使用 Retrieval API 默认值，这不会自动套用 RAGFlow 网页设置。T14 必须验证最小真实调用和结果合同，T27 才实施正式链路；最终效果仍由用户根据真实问题和回归题集判断。部门访问规则属于后续 `knowledge-acl`。
 
 ### 4.5 用户文件接收与解析
 
@@ -595,7 +596,7 @@ FakeDriver 只能用于离线逻辑测试，不能证明真实身份、跨来源
 | `task-lifecycle` | 保存业务任务信封和状态，关联消息、附件、Agent Run、审批和产物；协调取消、重试、超时、恢复及结果未知。它不是通用 Workflow Engine。 | 阶段一建立最小闭环，持续扩展。 |
 | `agent-runtime` | 将结构化任务交给 Mastra Agent，管理模型调用、上下文、Run 状态及 Tool 调用结果。 | 阶段一。 |
 | `bot-customization` | 管理 SOUL、行为规则、Skills、模型、启用的 Tools，以及配置版本与生效规则。 | 阶段一使用单 Bot、受控文件配置；后续扩展。 |
-| `tool-integration` | 管理自定义 Tool 契约、参数校验、逐次授权、凭证、超时、防重复、结果确认和操作记录；支持本地代码、HTTP 或 MCP 连接器。 | 阶段一建立只读知识 Tool，后续扩展。 |
+| `tool-integration` | 管理自定义 Tool 契约、参数校验、逐次授权、凭证、超时、防重复、结果确认和操作记录；可连接固定本地代码或外部服务。 | 阶段一知识 Tool 固定使用受控 Python 脚本调用 HTTP Retrieval API，后续按真实需求扩展。 |
 | `knowledge-management` | 企业资料导入、解析状态、更新、删除、检索测试和来源维护。 | 阶段一复用 RAGFlow。 |
 | `knowledge-qa` | 服务端确定检索范围，通过知识 Tool 检索 RAGFlow，依据内部证据作答；员工回复不展示来源或内部 ID。 | 阶段一目标。 |
 | `knowledge-acl` | 按部门、员工、文档和回复场景限制知识访问，并处理权限撤销和组织变化。 | 任何受限资料上线前完成。 |
@@ -616,17 +617,17 @@ FakeDriver 只能用于离线逻辑测试，不能证明真实身份、跨来源
 
 `mastra-runtime-bootstrap` 是 `agent-runtime` 在阶段一中的搭建任务，不是顶层产品模块。它负责装配唯一 Mastra 实例、启动 Mastra Server、提供就绪与关闭生命周期，并让 Kairo 在同一 Node.js 进程内直接调用该实例。正式环境只开放 Kairo 所需的本机接口和健康检查，不启用 Studio，也不开放可绕过 Kairo 的直接 Agent、Tool 或 Workflow 执行入口。开发环境可在 localhost 启用 Studio，但必须使用独立开发数据。
 
-Skills、Tools 与 MCP 的边界如下：
+Skills、Tools 与连接方式的边界如下：
 
 ```text
 SOUL / 行为规则：定义 Bot 的表达和工作边界
-Skill：说明某类任务应该怎样完成
-Tool：真正读取数据、计算、生成文件或执行操作
-MCP：Tool 的一种连接协议，不是 Agent 主运行时
+Skill：说明某类任务应该怎样完成；加载说明不等于获得脚本执行权
+Tool：真正读取数据、计算、生成文件或执行操作；专用 Tool 可固定调用一个批准脚本
+连接实现：阶段一知识 Tool 只通过固定 Python 脚本调用 RAGFlow HTTP Retrieval API
 Mastra Server：Agent 长期运行和对外提供 API 的服务入口
 ```
 
-人格、Skill、外部资料和模型输出均不能绕过服务端身份、知识权限、Tool 授权或审批规则。
+人格、Skill、外部资料和模型输出均不能绕过服务端身份、知识权限或 Tool 授权，也不能让 Agent 选择任意程序、脚本路径或命令。阶段一不向业务 Agent 暴露通用脚本执行能力。
 
 ### 5.3 组件职责边界
 
@@ -648,7 +649,7 @@ Mastra Server：Agent 长期运行和对外提供 API 的服务入口
 ```text
 企业 IM ⇄ Driver ⇄ private-chat-core → task-lifecycle → agent-runtime（Mastra）
                               │                │              │
-                              │                │              ├─ knowledge Tool → RAGFlow
+                              │                │              ├─ knowledge Tool → 固定 Python 脚本 → RAGFlow Retrieval API
                               │                │              ├─ file Tools → 受控处理/生成工具
                               │                │              └─ side-effect Tools → approval
                               │                │
@@ -658,7 +659,7 @@ Mastra Server：Agent 长期运行和对外提供 API 的服务入口
 
 **阶段一运行形态已确认：**`@kairo/driver`、Kairo 业务协调层与 Mastra 在安装 KK9 客户端的本机运行，并位于同一个 Node.js 进程。Kairo 通过进程内接口调用 Driver 和唯一 Mastra 实例。正式环境的 Mastra Server 只在 localhost 提供必要接口和健康检查，不启用 Studio，也不开放绕过 Kairo 的直接执行入口；开发环境使用独立数据库和测试 Dataset 启用 Studio。
 
-RAGFlow 和 PostgreSQL 已分别部署在内网服务器，Kairo 通过网络配置连接。RAGFlow 使用最终选定的单一 MCP 或 HTTP 连接器；PostgreSQL 使用标准连接配置。阶段一不需要 Kairo、Driver 与 Mastra 之间的 HTTP、stdio、任务队列或消息中间件。
+RAGFlow 和 PostgreSQL 已分别部署在内网服务器，Kairo 通过网络配置连接。阶段一知识链路固定为专用 `knowledge-search` Tool 调用批准的 Python 脚本，再访问 RAGFlow HTTP Retrieval API；不保留 MCP、备用 endpoint 或 TypeScript 平行 HTTP 实现。PostgreSQL 使用标准连接配置。阶段一不需要 Kairo、Driver 与 Mastra 之间的 HTTP、stdio、任务队列或消息中间件。
 
 现有 `packages/driver` 继续作为独立库；新建可运行应用 `apps/kairo`，阶段一业务模块先放在该应用内部，不提前拆成多个 package。阶段一通过项目 `pnpm` 脚本在本机手动启动，具体脚本名在技术计划中确定。文件如何跨机器流转属于阶段二问题。
 
@@ -692,7 +693,7 @@ RAGFlow 和 PostgreSQL 已分别部署在内网服务器，Kairo 通过网络配
 
 阶段一仅面向 allowlist 中的真实员工私聊，真实验收至少需要 2 名不同员工账号和 1 个 Bot 账号。使用统一、非敏感知识集；员工身份必须可信，近期上下文必须按员工隔离。不包含细粒度知识 ACL、长期个人记忆、群聊、文件任务或审批。
 
-阶段一首个自定义 Tool 是只读知识检索 Tool。`mastra-runtime-bootstrap` 作为 `agent-runtime` 的首个搭建任务，必须在真实知识问答闭环前完成。
+阶段一首个自定义 Tool 是只读 `knowledge-search`：Agent 依据定制 RAGFlow Skill 的说明决定查询内容，Tool 只接收 `query` 并固定调用 Python HTTP 检索脚本。`mastra-runtime-bootstrap` 作为 `agent-runtime` 的首个搭建任务，必须在真实知识问答闭环前完成。
 
 ### 7.3 阶段二：文件处理与交付
 
@@ -731,8 +732,8 @@ NATS、pg-boss、Redis、Better Auth、独立 OCR、MCP Server、对象存储和
 | 任务生命周期 | 阶段一的排队、4 分钟执行、10 分钟等待、重试、重启、`/new`、等待用户回答和发送结果不明确等行为已确认；阶段三再补审批暂停规则。 |
 | 长期记忆 | 后续记住什么、保留多久、如何查看和清除；多 Bot 与群聊怎样隔离？ |
 | Bot 配置 | 阶段一目录、维护者、校验、Git 版本和重启生效方式已确认；后续只需在出现真实需求时再讨论多 Bot、员工个性化或管理页面。 |
-| Tool 与 MCP | 阶段一知识 Tool 已确定分开返回答案和内部资料，并检查连接器返回格式；待 RAGFlow 部署联调后在 MCP 与 HTTP 中只保留一种。 |
-| 知识库 | 阶段一固定一个非敏感 Dataset；Embedding、重排、规模和格式由 RAGFlow 管理人员处理，最终效果由用户结合真实问题判断。 |
+| Skill 与知识 Tool | 阶段一已选定定制 RAGFlow Skill、专用 `knowledge-search` Tool 与固定 Python HTTP 检索脚本；T14 验证最小真实调用和结果合同，T27 实施正式链路。 |
+| 知识库 | 阶段一固定 ERP 非敏感 Dataset；知识资料、Embedding、重排、规模和格式由 RAGFlow 管理人员处理。检索调用暂用 Retrieval API 默认值，不复制默认数字，也不会自动套用网页设置；最终效果由用户结合真实问题判断。 |
 | 知识权限 | 受限资料何时上线；部门、员工、文档和群接收者权限怎样表达与撤销？ |
 | 文件输入 | 阶段二先支持哪一种真实任务；格式、大小、数量、加密识别、临时保留和删除规则是什么？ |
 | 文件输出 | 模板、排版、公式、图表、图片生成、保留、再次下载和过期分别需要做到什么程度？ |
