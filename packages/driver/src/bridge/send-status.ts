@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   SendOperationRecord,
   SendOperationStore,
@@ -27,7 +27,17 @@ export interface NativeSendStatusObservation {
 export function createNativeMessageKey(kind: string, operationId?: string): string {
   const normalizedOperationId = operationId?.trim();
   if (normalizedOperationId) {
-    return `kairo:operation:${encodeURIComponent(normalizedOperationId)}`;
+    const key = `kairo:operation:${encodeURIComponent(normalizedOperationId)}`;
+    // 保留已有合法键供历史回查；KK9 的 msgFlag 最多允许 64 个字符。
+    if (key.length <= 64) return key;
+    // 原生历史查询过滤 %C%；同时避开 SQLite LIKE 可能折叠的小写 c。
+    // . 和 ~ 不在 Base64URL 字母表中，替换保持一一对应与完整摘要长度。
+    const digest = createHash('sha256')
+      .update(normalizedOperationId)
+      .digest('base64url')
+      .replaceAll('C', '.')
+      .replaceAll('c', '~');
+    return `k:op:${digest}`;
   }
   return `kairo:${kind}:${randomUUID()}`;
 }

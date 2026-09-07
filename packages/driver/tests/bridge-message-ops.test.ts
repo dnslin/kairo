@@ -20,6 +20,35 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     vi.useRealTimers();
   });
 
+  describe('原生发送键长度约束', () => {
+    it('保留已有64字符合法键并压缩超长和中文操作ID', () => {
+      const boundaryId = 'a'.repeat(64 - 'kairo:operation:'.length);
+      expect(createNativeMessageKey('text', boundaryId)).toBe(`kairo:operation:${boundaryId}`);
+      for (const operationId of [
+        `${boundaryId}b`,
+        't12-real-readonly-317612f3-37ca-49c6-bb46-703b9f7ca1b5',
+        '中文任务/'.repeat(100),
+      ]) {
+        expect(
+          Buffer.byteLength(createNativeMessageKey('text', operationId), 'utf8')
+        ).toBeLessThanOrEqual(64);
+      }
+    });
+
+    it('摘要键不包含会被原生历史过滤的C或c', () => {
+      const operationId = `t12-flag-history-1788740170841-${'x'.repeat(50)}-6`;
+      expect(createNativeMessageKey('text', operationId)).not.toMatch(/[Cc]/);
+    });
+
+    it('超长操作ID保持稳定且不丢弃尾部差异', () => {
+      const prefix = '共同前缀'.repeat(100);
+      const first = createNativeMessageKey('text', `${prefix}甲`);
+      expect(createNativeMessageKey('text', ` ${prefix}甲 `)).toBe(first);
+      expect(createNativeMessageKey('image', `${prefix}甲`)).toBe(first);
+      expect(createNativeMessageKey('text', `${prefix}乙`)).not.toBe(first);
+    });
+  });
+
   describe('getRecentMessages 消息历史拉取', () => {
     it('应在私聊会话 int2024 中通过 IPC getMessages 提取并标准化历史消息', async () => {
       const mockCdp = {
@@ -267,7 +296,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     });
     it('图片 legacy 成功缺少原生 ID 时保留成功语义', async () => {
       const tmpFile = path.resolve('tmp', 't07-legacy-image-no-id.png');
-      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      if (!fs.existsSync(path.dirname(tmpFile)))
+        fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -292,7 +322,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('图片 legacy 完整成功结果字段原样保留', async () => {
       const tmpFile = path.resolve('tmp', 't07-legacy-image-fields-success.png');
-      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      if (!fs.existsSync(path.dirname(tmpFile)))
+        fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -323,7 +354,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('图片 legacy 完整失败结果字段原样保留', async () => {
       const tmpFile = path.resolve('tmp', 't07-legacy-image-fields-failure.png');
-      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      if (!fs.existsSync(path.dirname(tmpFile)))
+        fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -353,7 +385,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
 
     it('图片 legacy 插入无 data 时保留触发前失败语义', async () => {
       const tmpFile = path.resolve('tmp', 't07-legacy-image-no-data.png');
-      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      if (!fs.existsSync(path.dirname(tmpFile)))
+        fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -395,7 +428,6 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         fs.unlinkSync(tmpFile);
       }
     });
-
   });
 
   describe('发送事务失败边界', () => {
@@ -1624,7 +1656,7 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     });
 
     it('原生消息存在且属于目标会话时返回已送达', async () => {
-      const operationId = 'op-native-delivered';
+      const operationId = 't12-real-readonly-317612f3-37ca-49c6-bb46-703b9f7ca1b5';
       const store = new InMemorySendOperationStore();
       const fingerprint = createSendOperationFingerprint({
         targetSessionId: session.sesUUID,
@@ -1856,7 +1888,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     it('图片发送操作 ID 使用稳定原生关联键并确认真实消息 ID', async () => {
       const operationId = 'op-image-stable-key';
       const tmpFile = path.resolve('tmp', 't07-operation-image.png');
-      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      if (!fs.existsSync(path.dirname(tmpFile)))
+        fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -1929,7 +1962,8 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
     it('图片 operation-aware 文件预检异常可安全重试', async () => {
       const operationId = 'op-image-preflight-retry';
       const tmpFile = path.resolve('tmp', 't07-operation-image-preflight.png');
-      if (!fs.existsSync(path.dirname(tmpFile))) fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+      if (!fs.existsSync(path.dirname(tmpFile)))
+        fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
       fs.writeFileSync(
         tmpFile,
         Buffer.from(
@@ -1992,6 +2026,5 @@ describe('BridgeMessageOps 纯数据消息操作测试', () => {
         fs.unlinkSync(tmpFile);
       }
     });
-
   });
 });
