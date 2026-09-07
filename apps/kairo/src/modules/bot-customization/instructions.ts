@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { resolveAgentSkills } from '@mastra/core/skills';
 import { defaultBotDirectory } from '../../config/load.js';
 import type { BotConfig } from '../../config/schema.js';
 
@@ -18,6 +19,15 @@ export async function loadBotCustomization(
     readFile(join(directory, 'AGENTS.md'), 'utf8'),
     readFile(join(directory, 'SOUL.md'), 'utf8'),
   ]);
+  // 不传整个 skills 根目录，未列入配置的相邻目录不会被发现。
+  const skills = config.skills.map(name => join(directory, 'skills', name));
+  const discovered = await resolveAgentSkills(skills).list();
+  // Mastra 会记录解析错误并跳过该 Skill；正式启动不能把缺失能力当作成功。
+  for (const name of config.skills) {
+    if (!discovered.some(skill => skill.name === name)) {
+      throw new Error(`无法加载已启用 Skill：${join(directory, 'skills', name, 'SKILL.md')}`);
+    }
+  }
   return {
     instructions: [
       '# 服务端规则（最高优先级）',
@@ -36,7 +46,6 @@ export async function loadBotCustomization(
       '# SOUL（身份语气与表达）',
       soul.trim(),
     ].join('\n\n'),
-    // 不传整个 skills 根目录，未列入配置的相邻目录不会被发现。
-    skills: config.skills.map(name => join(directory, 'skills', name)),
+    skills,
   };
 }

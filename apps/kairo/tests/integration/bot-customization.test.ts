@@ -6,6 +6,7 @@ import { MastraLanguageModelV2Mock } from '@mastra/core/test-utils/llm-mock';
 import { describe, expect, it } from 'vitest';
 import { defaultBotDirectory, loadBotConfig } from '../../src/config/load.js';
 import { loadBotCustomization } from '../../src/modules/bot-customization/instructions.js';
+import { startKairo } from '../../src/index.js';
 
 async function fixture(run: (directory: string) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'kairo-customization-'));
@@ -36,6 +37,19 @@ describe('T16 原生 filesystem Skill 合同', () => {
     const skill = await agent.getSkill('reader-sim');
     expect(skill?.instructions).toContain('Transportation');
     expect(skill?.instructions).toContain('Anchor claims to the text');
+  });
+
+  it.each([
+    ['缺少 description', '---\nname: reader-sim\n---\n测试技能正文'],
+    ['name 与目录不符', '---\nname: other-skill\ndescription: 测试技能\n---\n测试技能正文'],
+  ])('已启用 Skill %s 时，在数据库和监听初始化前拒绝启动', async (_scenario, source) => {
+    await fixture(async directory => {
+      await writeFile(join(directory, 'skills', 'reader-sim', 'SKILL.md'), source);
+      // 空连接用于证明失败先于数据库初始化，而非启动后碰巧遇到其他错误。
+      await expect(
+        startKairo({ configDirectory: directory, databaseUrl: '', port: 0 })
+      ).rejects.toThrow(/reader-sim/);
+    });
   });
 
   it('未启用目录不能通过名称或绝对路径加载', async () => {
