@@ -8,6 +8,8 @@ import type { LoadedBotConfig } from './config/load.js';
 import { createMastraRuntime } from './mastra/runtime.js';
 import type { MastraRuntime } from './mastra/runtime.js';
 import { startHealthServer } from './modules/operability/health-server.js';
+import { loadBotCustomization } from './modules/bot-customization/instructions.js';
+import type { BotCustomization } from './modules/bot-customization/instructions.js';
 
 const logger = pino();
 const execFileAsync = promisify(execFile);
@@ -16,12 +18,14 @@ const repositoryDirectory = fileURLToPath(new URL('../../../', import.meta.url))
 export interface KairoApplication extends MastraRuntime, LoadedBotConfig {
   url: string;
   gitCommit: string;
+  customization: BotCustomization;
 }
 
 export async function startKairo(
   options: { databaseUrl?: string; port?: number; configDirectory?: string } = {}
 ): Promise<KairoApplication> {
   const configuration = await loadBotConfig(options.configDirectory);
+  const customization = await loadBotCustomization(configuration.config, options.configDirectory);
   const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
     cwd: repositoryDirectory,
   });
@@ -38,6 +42,7 @@ export async function startKairo(
       ...runtime,
       ...configuration,
       gitCommit,
+      customization,
       url: health.url,
       close(): Promise<void> {
         closing ??= (async (): Promise<void> => {

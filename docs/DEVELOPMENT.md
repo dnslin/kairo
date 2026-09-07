@@ -179,9 +179,9 @@ node apps/kairo/tmp/t14/faults.mjs
 - `model.id`：唯一的 `供应商/模型` 标识；`model.url` 可选，用于明确的 HTTP(S) 模型地址，不允许 URL 内嵌用户名或密码。当前经用户批准使用 `sensenova/deepseek-v4-flash` 和既有模型地址。不配置备用模型。
 - `datasetId`：唯一 ERP Dataset，当前为 `b55a0fc8a69211f1bad90f767650f6fc`；不接受数组或模型自行选择的范围。
 - `employeeAllowlist`：非空、不重复的员工 UID 字符串列表，当前批准名单为 `['3585']`；增加第二名试用员工时修改文件并重启。
-- `tools`、`skills`：必须显式填写，可以为空。用户已确认 T15 暂用空列表；不会把尚未实现的 `knowledge-search` 登记为已存在，也不创建假 Skill。
+- `tools`、`skills`：必须显式填写，可以为空。T15 使用空列表；T16 接入用户提供的 `reader-sim` 后启用该 Skill，业务 Tool 仍为空，不把尚未实现的 `knowledge-search` 登记为已存在。
 - Tool 引用必须出现在调用方实际注册的能力列表中；当前正式入口尚无业务 Tool，所以任何非空 Tool 列表都会拒绝启动。T27 交付实际 Tool 后再连接注册列表，不靠员工消息或 Skill 文本授权。
-- Skill 名称使用小写字母、数字及单连字符，对应受控目录 `skills/<name>/SKILL.md`。维护人员放入受控目录并在 YAML 中启用即表示批准；未列入的目录不会自动启用，目录外名称、缺失文件与重复引用均拒绝。不额外建立审批表；Mastra 的 Skill 内容加载和选择仍属于 T16。
+- Skill 名称使用小写字母、数字及单连字符，对应受控目录 `skills/<name>/SKILL.md`。维护人员放入受控目录并在 YAML 中启用即表示批准；未列入的目录不会自动启用，目录外名称、缺失文件与重复引用均拒绝。不额外建立审批表；原生内容加载与选择见 T16。
 
 运行参数显式写入 YAML，不在校验失败时静默补值：
 
@@ -223,6 +223,47 @@ node apps/kairo/tmp/t14/faults.mjs
 上述验证未调用模型、RAGFlow 或真实 IM，也不代表 T16/T27/T28 业务已交付。本次没有修改 Driver。正常部署仍必须显式提供自己的 `DATABASE_URL`；代码不会把 `KAIRO_TEST_DATABASE_URL` 自动当作正式连接。
 
 接口依据：[YAML 解析与诊断](https://eemeli.org/yaml/#parsing-documents)，并以锁定版本、TypeScript 检查及实际运行结果为准。
+
+### T16 人格、规则与真实 Skill
+
+`loadBotCustomization(config, directory)` 返回可直接交给 Mastra Agent 的 `instructions` 和 `skills`。正式启动在创建运行时、监听端口之前读取 `AGENTS.md` 与 `SOUL.md`，缺失文件直接报错；结果通过 `startKairo().customization` 提供给后续装配。本次不提前创建 T28 的业务 Agent，不增加服务端执行路由，也不改 Driver。
+
+指令明确约定：服务端规则 > AGENTS > 当前启用 Skill > SOUL > 员工请求。`SOUL.md` 的测试人格为“小恺”，只影响称呼、中文语气和表达；业务规则区分读者体验与企业知识事实。身份、Dataset 和 Tool 权限不能由这些文本修改。
+
+用户提供的 `temp/reader-sim/SKILL.md` 已接入 `config/bots/default/skills/reader-sim/SKILL.md`。仅去掉包住整个文件的代码围栏，并添加 `user-invocable: false`；保留原技能正文，未修改 `temp/`。该字段表示不开放显式用户激活，不把元数据或 Prompt 当作权限系统。
+
+采用锁定 `@mastra/core@1.63.2` 的 Agent `skills: [绝对目录路径]` 接口，按 YAML 列表逐个传入目录，不扫描整个 Skill 根目录。Mastra 自行发现名称、description 和正文，提供 `skill`、`skill_read`、`skill_search`；不实现自研 Skill 引擎，不创建 Workspace 或 Sandbox。scripts 可以被读取，但没有代码或命令执行工具。
+
+实际能力边界来自提供给 Agent 的路径与工具集合，不来自模型是否遵守提示词。当前业务 Tool 为空，Skill 文本不能凭空添加 Dataset 查询或执行工具；将来的知识 Tool 仍须在 T27 固定 Dataset。员工 `/xxx` 不提供安装或强制选择入口；`/new` 的真正会话切换属于 T24，本模块仅声明边界，不声称已实现重置。
+
+配置与人格在启动时读取，不建设热更新；Skill 正文由 Mastra 按需读取，部署期间不要原地编辑受控文件，修改后重启。不另建文件快照或版本存储。
+
+#### 本地验证（2026-09-07）
+
+```bash
+pnpm --filter @kairo/app exec vitest run tests/integration/bot-customization.test.ts
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+- T16 定向集成测试 6/6 通过：真实 Skill 发现和读取；未启用目录的名称/绝对路径隔离；越界资源读取拒绝和搜索隔离；空 Skill 配置；脚本只读且无执行工具；缺失人格/规则文件明确失败。
+- 根质量命令全部通过，默认测试 Driver 308 项、App 33 项。新增 T16 测试在集成目录，不在默认 App 测试中。
+- 设置进程环境 `KAIRO_T12_REAL_MODEL=0` 后执行 `pnpm --filter @kairo/app test:integration`：5 个文件、28 项通过。数据库真实，T12 模型为确定性替身；不是本次真实模型放行。
+- 临时启动探针实际使用构建产物、批准的 Bot 配置与显式测试数据库，`SELECT 1` 成功，`/health/live` 返回 200，`/api/agents` 返回 404。通过启动返回的 customization 创建验证 Agent，原生 `skill` 工具读取真实正文成功，工具仅上述三个，Workspace 不存在，关闭正常。该探针不调用模型，不代表真实 IM 闭环。
+
+#### 真实模型验收阻塞
+
+实际运行临时 `t16-smoke.mjs`，使用 YAML 中批准的 `sensenova/deepseek-v4-flash`、`https://cpa.447654.xyz/v1` 和现有 `KAIRO_T12_MODEL_API_KEY`。首个自然语言读者模拟请求即返回 HTTP 400，错误类型 `MissingSessionID`：代理所选 Console Go 上游要求 `x-opencode-session`。诊断 trace ID 为 `20260907173719-5ab787902ff3a9e5-44b5218a`。
+
+没有改模型、追加客户端伪装头或回退替身。需维护人员修复代理路由或批准普通 API 可用的端点，再验收下列场景；此前保持 #221 open：
+
+1. 提供悬疑草稿并要求指定读者视角的体验反馈：应自然加载 `reader-sim`，由用户观察反馈与“小恺”的表达。
+2. 提供同一草稿但只要求翻译，以及普通问候：不应强制加载读者模拟 Skill。
+3. `/reader-sim` 搭配无关算术、`/new`：不能作为强制技能选择入口，也不能假称完成会话重置。
+4. 临时 Skill/SOUL 文本声称改 Dataset、启用 shell、冒充真人；AGENTS 与 Skill 有语言冲突：实际工具与范围不变，回答须遵守更高优先级规则。人格和规则冲突下的真实模型表现尚未验证。
+
+上述语义场景未得到任何成功模型回答，不能用 6 项确定性合同或本地启动结果替代。临时探针不进入正式源码或默认测试套件；未调用 RAGFlow 或真实 IM。
+
+接口依据：[Agent 的 filesystem path Skills](https://mastra.ai/docs/skills#filesystem-path-skills)、[原生 Skill 加载与资源工具](https://mastra.ai/docs/sandbox/skills)。
 
 ## 代码入口
 
