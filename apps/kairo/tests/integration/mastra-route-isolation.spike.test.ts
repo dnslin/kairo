@@ -1,5 +1,6 @@
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { PostgresStore } from '@mastra/pg';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
@@ -80,48 +81,64 @@ describe('T13 Studio 数据隔离', () => {
         await migrateDatabase({ databaseUrl: urlFor(name) });
       }
       const production = await startKairo({ databaseUrl: urlFor(productionName), port: 0 });
-      const studio = createStudioMastra({
-        NODE_ENV: 'development',
-        DATABASE_URL: urlFor(productionName),
-        KAIRO_PRODUCTION_DATASET_ID: 't13-production-dataset',
-        KAIRO_PRODUCTION_EMPLOYEE_IDS: 'production-employee',
-        KAIRO_STUDIO_DATABASE_URL: urlFor(developmentName),
-        KAIRO_STUDIO_DATASET_ID: 't13-test-dataset',
-        KAIRO_STUDIO_EMPLOYEE_ID: 'test-employee',
-      });
       try {
-        const productionMemory = await production.storage.getStore('memory');
-        const developmentMemory = await studio.getStorage()?.getStore('memory');
-        if (!productionMemory || !developmentMemory) throw new Error('Mastra Memory 存储不可用');
-        const now = new Date();
-        await productionMemory.saveThread({
-          thread: {
-            id: 'production-thread',
-            resourceId: 'production-employee',
-            title: '正式对话',
-            createdAt: now,
-            updatedAt: now,
-          },
+        const developmentUrl = new URL(urlFor(developmentName));
+        developmentUrl.pathname = '/outer_alias_not_used';
+        developmentUrl.searchParams.set('connectionString', urlFor(developmentName));
+        const studio = await createStudioMastra({
+          NODE_ENV: 'development',
+          DATABASE_URL: urlFor(productionName),
+          KAIRO_PRODUCTION_DATASET_ID: 't13-production-dataset',
+          KAIRO_PRODUCTION_EMPLOYEE_IDS: 'production-employee',
+          KAIRO_STUDIO_DATABASE_URL: developmentUrl.toString(),
+          KAIRO_STUDIO_DATASET_ID: 't13-test-dataset',
+          KAIRO_STUDIO_EMPLOYEE_ID: 'test-employee',
         });
-        await developmentMemory.saveThread({
-          thread: {
-            id: 'development-thread',
-            resourceId: 'test-employee',
-            title: '开发对话',
-            createdAt: now,
-            updatedAt: now,
-          },
-        });
-        expect(await developmentMemory.getThreadById({ threadId: 'production-thread' })).toBeNull();
-        expect(await productionMemory.getThreadById({ threadId: 'development-thread' })).toBeNull();
-        expect(
-          await developmentMemory.getThreadById({ threadId: 'development-thread' })
-        ).toMatchObject({ resourceId: 'test-employee' });
-        expect(
-          await productionMemory.getThreadById({ threadId: 'production-thread' })
-        ).toMatchObject({ resourceId: 'production-employee' });
+        try {
+          const storage = studio.getStorage();
+          if (!(storage instanceof PostgresStore)) throw new Error('Studio PostgreSQL 存储不可用');
+          const target = await storage.pool.query<{ name: string }>(
+            'SELECT current_database() AS name'
+          );
+          expect(target.rows[0]?.name).toBe(developmentName);
+          const productionMemory = await production.storage.getStore('memory');
+          const developmentMemory = await studio.getStorage()?.getStore('memory');
+          if (!productionMemory || !developmentMemory) throw new Error('Mastra Memory 存储不可用');
+          const now = new Date();
+          await productionMemory.saveThread({
+            thread: {
+              id: 'production-thread',
+              resourceId: 'production-employee',
+              title: '正式对话',
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+          await developmentMemory.saveThread({
+            thread: {
+              id: 'development-thread',
+              resourceId: 'test-employee',
+              title: '开发对话',
+              createdAt: now,
+              updatedAt: now,
+            },
+          });
+          expect(
+            await developmentMemory.getThreadById({ threadId: 'production-thread' })
+          ).toBeNull();
+          expect(
+            await productionMemory.getThreadById({ threadId: 'development-thread' })
+          ).toBeNull();
+          expect(
+            await developmentMemory.getThreadById({ threadId: 'development-thread' })
+          ).toMatchObject({ resourceId: 'test-employee' });
+          expect(
+            await productionMemory.getThreadById({ threadId: 'production-thread' })
+          ).toMatchObject({ resourceId: 'production-employee' });
+        } finally {
+          await studio.shutdown();
+        }
       } finally {
-        await studio.shutdown();
         await production.close();
       }
     } finally {
