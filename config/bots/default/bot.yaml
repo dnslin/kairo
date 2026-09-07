@@ -1,0 +1,28 @@
+# 非凭证配置的唯一正式来源；修改后重启生效。
+model:
+  id: sensenova/deepseek-v4-flash
+  url: https://cpa.447654.xyz/v1
+datasetId: b55a0fc8a69211f1bad90f767650f6fc
+employeeAllowlist:
+  - '3585'
+# T16/T27 交付真实能力后再启用；不登记尚未实现的 Tool 或虚构 Skill。
+tools: []
+skills: []
+agent:
+  # Agent 循环上限，不是固定知识检索次数限制。
+  maxSteps: 20
+batching:
+  quietMs: 5000
+  maxWaitMs: 60000
+  maxMessages: 10
+  maxChars: 30000
+concurrency:
+  global: 3
+  perSessionQueue: 3
+timeouts:
+  queueMs: 600000
+  executionMs: 240000
+  progressMs: 10000
+  sendQueryMs: 30000
+  generalKnowledgeWaitMs: 600000
+  contextIdleMs: 7200000

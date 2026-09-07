@@ -1,22 +1,43 @@
+import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { pino } from 'pino';
+import { loadBotConfig } from './config/load.js';
+import type { LoadedBotConfig } from './config/load.js';
 import { createMastraRuntime } from './mastra/runtime.js';
 import type { MastraRuntime } from './mastra/runtime.js';
 import { startHealthServer } from './modules/operability/health-server.js';
 
-export interface KairoApplication extends MastraRuntime {
+const logger = pino();
+const execFileAsync = promisify(execFile);
+const repositoryDirectory = fileURLToPath(new URL('../../../', import.meta.url));
+
+export interface KairoApplication extends MastraRuntime, LoadedBotConfig {
   url: string;
+  gitCommit: string;
 }
 
 export async function startKairo(
-  options: { databaseUrl?: string; port?: number } = {}
+  options: { databaseUrl?: string; port?: number; configDirectory?: string } = {}
 ): Promise<KairoApplication> {
+  const configuration = await loadBotConfig(options.configDirectory);
+  const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
+    cwd: repositoryDirectory,
+  });
+  const gitCommit = stdout.trim();
   const runtime = createMastraRuntime(options.databaseUrl);
   try {
     const health = await startHealthServer(options.port);
+    logger.info(
+      { event: '配置已加载', gitCommit, configDigest: configuration.configDigest },
+      'Bot 配置校验通过'
+    );
     let closing: Promise<void> | undefined;
     return {
       ...runtime,
+      ...configuration,
+      gitCommit,
       url: health.url,
       close(): Promise<void> {
         closing ??= (async (): Promise<void> => {
