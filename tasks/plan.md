@@ -1,6 +1,6 @@
 # Kairo 阶段一企业知识问答技术实施计划
 
-> 状态：已确认；代码实现尚未开始
+> 状态：阶段一初始规划快照；当前进度以 GitHub Issues 为准，T15 本次实施见第 15 节
 > 日期：2026-09-03
 > 需求来源：[`docs/prd.md`](../docs/prd.md)、[`docs/SPEC-stage-1.md`](../docs/SPEC-stage-1.md)
 > 任务定义快照：[`tasks/todo.md`](./todo.md)
@@ -429,7 +429,7 @@ RAGFlow：
 
 任务与验收以 [T15 #220](https://github.com/dnslin/kairo/issues/220) 为准；本节只记录本次实施顺序，不另建任务状态来源。工作分支为 `feature/t15-bot-config`。上文是阶段一初始规划快照，本次以当前 SPEC 和 Issue 为准，不恢复旧 MCP 方案。
 
-### 当前事实与边界
+### 实施前事实与边界
 
 - 应用已有 `startKairo()`、进程内 Mastra 和 localhost 存活接口；没有正式配置目录、业务 Agent、知识 Tool 或用户真实 Skill。
 - 复用已锁定的 `yaml@2.9.0`、`zod@4.5.4` 和 `pino@9.14.0`，不新增依赖、配置框架、热更新或兼容层。
@@ -449,3 +449,11 @@ RAGFlow：
 - 用户已选择按建议实施：T15 允许显式空 `tools`、`skills` 列表；T16/T27 落地后再启用真实引用，不制造假 Tool 或正式 Skill。测试中的临时目录只用于验证配置读取，不用于真实 Skill 验收。
 - 正式初始值沿用已验证环境：主模型 `sensenova/deepseek-v4-flash`、ERP Dataset `b55a0fc8a69211f1bad90f767650f6fc`、员工 UID `3585`。凭证继续只保留在环境变量中。
 - 维护人员把 Skill 放入受控 `skills/` 目录并写入启用列表即表示批准；不另设审批表。Tool 名称还必须存在于应用实际注册列表，当前没有可启用的业务 Tool。
+
+### 本次执行结果
+
+- 已完成配置读取、严格校验、启动前阻断和 Git commit / 内容摘要记录，实现提交为 `ee6430fc021de64c9ba0c7d47a73faf6fccfe1ce`。
+- 根 build/typecheck/test/lint 全部通过：Driver 308 个测试、App 31 个测试，其中 T15 定向测试 22 个；受影响 T13 PostgreSQL 集成测试另有 3 个通过。原 `startKairo()` 调用无需迁移，原接口和关闭合同已实际回归。
+- 正式入口有效启动、凭证字段错误退出码 1、恢复后再次启动均已验证。真实测试数据库可用；修改文件不热更新，重启后读取新值，恢复原文件后摘要相同。
+- 验证只向临时进程提供测试数据库连接，不改写正式数据库环境设置；未调用模型、RAGFlow 或 IM，不把配置交付当作业务 Agent 交付。
+- 详细使用说明、执行命令与结果见 `docs/DEVELOPMENT.md` 的 T15 章节。临时程序和验证进程已清理；GitHub Issue 保持 open，等待分支交付与合并，不以本地完成提前关闭。

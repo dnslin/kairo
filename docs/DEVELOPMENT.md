@@ -84,7 +84,7 @@ pnpm --filter @kairo/app start
 
 `start` 使用 Node 直接执行 `dist/index.js`，读取根目录 `.env` 中的 `DATABASE_URL`；系统环境变量优先。`dev` 先构建再启动同一个入口，不启动 Studio。生产构建仅运行 TypeScript 编译，不执行 `mastra build --studio`，也不打包 Studio UI。
 
-`startKairo()` 创建进程内 Mastra 和 PostgreSQL storage，唯一监听地址为 `127.0.0.1:4110`。`GET /health/live` 返回 `200 {"status":"alive"}`；其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。该接口由 `modules/operability/health-server.ts` 提供，仅表示进程存活，不表示数据库、Driver 或 Agent 已就绪；T17 再接入依赖状态和 ready。当前不装配 T28 的业务 Agent。
+`startKairo()` 先加载并校验受控 Bot 配置、读取 Git commit，再创建进程内 Mastra 和 PostgreSQL storage，唯一监听地址为 `127.0.0.1:4110`。`GET /health/live` 返回 `200 {"status":"alive"}`；其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。该接口由 `modules/operability/health-server.ts` 提供，仅表示进程存活，不表示数据库、Driver 或 Agent 已就绪；T17 再接入依赖状态和 ready。当前不装配 T28 的业务 Agent。
 
 收到 Ctrl+C 或 SIGTERM 后先关闭健康端口，再等待 `mastra.shutdown()`。锁定的 `@mastra/core@1.63.2` 会在 shutdown 内关闭注册的 storage，不再重复调用 `storage.close()`。程序内调用方使用返回的 `close()`，重复或并发关闭共用同一个 Promise。
 
@@ -167,6 +167,52 @@ node apps/kairo/tmp/t14/faults.mjs
 本次已执行 `pnpm build && pnpm typecheck && pnpm test && pnpm lint`，全部通过。默认测试为 Driver 25 个文件 / 308 个测试、App 2 个文件 / 9 个测试；不包含 PostgreSQL 集成测试或真实 KK9 测试。本次未修改 Driver，也未把这些默认测试算作真实 ERP 链路证据。
 
 接口依据：[Mastra Skill 加载](https://mastra.ai/docs/sandbox/skills)、[工具执行上下文](https://mastra.ai/reference/tools/create-tool)、[RAGFlow Retrieval API](https://ragflow.io/docs/http_api_reference#retrieve-chunks)，并以锁定类型与上述实际输出为准。
+
+### T15 受控 Bot 配置
+
+正式业务配置唯一来自 `config/bots/default/bot.yaml`。`start` 和 `dev` 都在创建运行时、监听端口之前校验，不提供 CLI 或环境变量覆盖这份业务配置。路径按应用模块位置解析，不随启动工作目录改变；仓库启动需要 Git 和有效的 `.git`，无法读取当前 commit 时明确失败，不写虚构版本。
+
+`loadBotConfig()` 返回 `config` 与 `configDigest`；`startKairo()` 的返回值另含 `gitCommit`，供后续业务模块使用。程序内 `configDirectory` 参数用于隔离测试，正式命令不开放目录选择。文件修改不会改变已加载结果，必须重启生效；不监视文件，也不建设另一套配置来源。
+
+#### 字段与边界
+
+- `model.id`：唯一的 `供应商/模型` 标识；`model.url` 可选，用于明确的 HTTP(S) 模型地址，不允许 URL 内嵌用户名或密码。当前经用户批准使用 `sensenova/deepseek-v4-flash` 和既有模型地址。不配置备用模型。
+- `datasetId`：唯一 ERP Dataset，当前为 `b55a0fc8a69211f1bad90f767650f6fc`；不接受数组或模型自行选择的范围。
+- `employeeAllowlist`：非空、不重复的员工 UID 字符串列表，当前批准名单为 `['3585']`；增加第二名试用员工时修改文件并重启。
+- `tools`、`skills`：必须显式填写，可以为空。用户已确认 T15 暂用空列表；不会把尚未实现的 `knowledge-search` 登记为已存在，也不创建假 Skill。
+- Tool 引用必须出现在调用方实际注册的能力列表中；当前正式入口尚无业务 Tool，所以任何非空 Tool 列表都会拒绝启动。T27 交付实际 Tool 后再连接注册列表，不靠员工消息或 Skill 文本授权。
+- Skill 名称使用小写字母、数字及单连字符，对应受控目录 `skills/<name>/SKILL.md`。维护人员放入受控目录并在 YAML 中启用即表示批准；未列入的目录不会自动启用，目录外名称、缺失文件与重复引用均拒绝。不额外建立审批表；Mastra 的 Skill 内容加载和选择仍属于 T16。
+
+运行参数显式写入 YAML，不在校验失败时静默补值：
+
+| 字段 | 当前值 | 含义 |
+| --- | ---: | --- |
+| `agent.maxSteps` | 20 | Agent 循环上限，不是固定知识查询次数限制 |
+| `batching.quietMs` / `maxWaitMs` | 5000 / 60000 | 短静默与最长合并窗口，毫秒 |
+| `batching.maxMessages` / `maxChars` | 10 / 30000 | 输入上限；允许调小，不允许超过阶段一上限 |
+| `concurrency.global` / `perSessionQueue` | 3 / 3 | 全局执行并发与每会话排队容量 |
+| `timeouts.queueMs` / `executionMs` | 600000 / 240000 | 排队与执行期限，毫秒 |
+| `timeouts.progressMs` / `sendQueryMs` | 10000 / 30000 | 进度提示与发送查询等待，毫秒 |
+| `timeouts.generalKnowledgeWaitMs` / `contextIdleMs` | 600000 / 7200000 | 通用知识确认等待与上下文空闲，毫秒 |
+
+数值必须是正整数；静默不能超过合并窗口，进度提示必须早于执行截止。这些字段由后续对应业务模块消费，T15 不声称已经实现消息合并、任务调度或 Agent 循环。
+
+所有配置对象均拒绝未知字段，包括误写的 `password`、`apiKey`、`API_KEY`、`Authorization` 和数据库连接字段；凭证继续从环境变量提供。YAML 解析错误保留错误类别和行列，结构错误保留字段路径，不打印源文本或含原始输入的异常。重复 YAML 键和无法识别的标签同样报错，不静默忽略。
+
+启动使用现有 Pino 输出 `event: '配置已加载'`、`gitCommit`、`configDigest`，不输出配置值、员工正文或知识片段。摘要为受控目录全部文件的 SHA-256，包括存在的 SOUL、AGENTS、Skill 及其资源；未启用目录中的文件变化也会改变部署摘要。按相对路径排序并编码文件长度，不包含部署绝对路径或运行时间；文件字节、注释和换行变化都会改变摘要。启动记录入数据库由 T20 实施，本次不新建表或日志框架。
+
+#### 验证结果（2026-09-07）
+
+- 实现提交：`ee6430fc021de64c9ba0c7d47a73faf6fccfe1ce`。先建立失败测试，再实现校验；启动顺序测试在接入前因先报 PostgreSQL 配置错误而失败，接入后通过。
+- 实际执行 `pnpm --filter @kairo/app exec vitest run tests/unit/config.test.ts`：22 个测试通过；`pnpm --filter @kairo/app typecheck` 和 `pnpm --filter @kairo/app build` 通过。
+- 实际执行根命令 `pnpm build && pnpm typecheck && pnpm test && pnpm lint`：全部通过，默认测试为 Driver 308 个、App 31 个。
+- 在 `apps/kairo` 执行 `node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts tests/integration/mastra-route-isolation.spike.test.ts`：3 个真实 PostgreSQL 集成测试通过，原路由、关闭行为与 Studio 数据隔离不变。
+- 实际以 `node --env-file-if-exists=../../.env dist/index.js` 启动正式入口；向该验证进程注入现有测试连接作为 `DATABASE_URL`，存活接口返回 200。往正式 YAML 临时加入测试 `Authorization` 字段后，入口在监听前以退出码 1 拒绝；错误输出不含测试凭证，随后已恢复原文件并成功启动。
+- 临时程序 `tmp/t15-start-smoke.mjs` 用批准的真实配置和现有测试数据库执行 `SELECT 1`，确认主模型不被旧测试环境变量覆盖、原生执行路由为 404；文件中的 `maxSteps` 从 20 改成 21 时旧实例仍为 20，重启后为 21，恢复原文件后为 20。原配置摘要为 `e812947976ede2153a2711037d839a3f1c7618a4f8a2d9ebd3e4db8dec410043`，修改后的摘要不同，恢复后完全一致。该程序通过后删除，不成为正式启动命令。
+
+上述验证未调用模型、RAGFlow 或真实 IM，也不代表 T16/T27/T28 业务已交付。本次没有修改 Driver。正常部署仍必须显式提供自己的 `DATABASE_URL`；代码不会把 `KAIRO_TEST_DATABASE_URL` 自动当作正式连接。
+
+接口依据：[YAML 解析与诊断](https://eemeli.org/yaml/#parsing-documents)，并以锁定版本、TypeScript 检查及实际运行结果为准。
 
 ## 代码入口
 
