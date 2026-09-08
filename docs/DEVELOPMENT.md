@@ -30,6 +30,8 @@ pnpm format
 
 默认 `pnpm test` 中的 App 测试排除 `tests/integration/**`，不要求 PostgreSQL 连接。`pnpm --filter @kairo/app test:integration` 加载存在的仓库根 `.env`，也支持系统环境注入；无参数运行完整集成目录。追加文件名时只运行匹配文件，例如 `pnpm --filter @kairo/app test:integration -- tests/integration/task-store.test.ts`。入口只移除首个 pnpm 透传分隔符，独立 Vitest 配置限定 integration，文件未匹配时明确失败。全量集成仍可能包含已配置的真实模型调用，不用于 T19 定向验收。请使用专用测试数据库：既有发送操作测试会直接迁移和写入配置中的测试库，Mastra、T18/T19 使用随机临时库且需要创建、删除数据库的权限；T19 不回退到 `DATABASE_URL`，缺少 `KAIRO_TEST_DATABASE_URL` 明确失败。
 
+T19 全部账本回归现按合同拆分，使用 `pnpm --filter @kairo/app test:integration -- tests/integration/task-store` 同时匹配五个文件；指定 `task-store.test.ts` 只运行创建与状态门禁，不再代表完整 T19 验收。`db:migrate:test` 定向 `task-store-persistence.test.ts` 中的首次及重复迁移场景。新工作树没有 `.env` 时，应由当前进程显式提供 `KAIRO_TEST_DATABASE_URL`，不把缺少配置当作测试通过。
+
 Driver 真机辅助命令：
 
 ```bash
@@ -526,7 +528,7 @@ task 保存员工、Bot、会话、batch、thread、输入版本、创建配置�
 
 完整合法出边见 `SPEC-stage-1.md` 的任务状态表。普通 `transitionTask()` 只处理进入 sending 或终态的边；领取、采用、进入等待及回答恢复使用专用接口，不能绕过版本和字段合同。sending 已触发后不能以执行截止推断发送失败；本模块仅保存调用方确认的发送状态，不代替 Driver 的送达证据或 T21 查询。
 
-执行失败 `running → failed` 的输入必须提供 `expectedAttemptId`，类型使用联合分支表达必填条件；存储在现有任务行锁内确认当前指针非空且相等。旧 attempt 的迟到失败、缺失标识和 null 均拒绝，不更新任务；`finishAttempt()` 仍可补记旧错误。整任务取消和发送阶段失败沿用原语义，不增加数据库字段或兼容入口。
+执行失败 `running → failed` 的输入必须提供非空字符串 `expectedAttemptId`，类型使用联合分支表达必填条件；存储在现有任务行锁内确认该标识非空且与当前指针相等。旧 attempt 的迟到失败、缺失标识、null 和空字符串均拒绝，不更新任务；`finishAttempt()` 仍可补记旧错误。整任务取消和发送阶段失败沿用原语义，不增加数据库字段或兼容入口。
 
 #### 实际验证（2026-09-08）
 
@@ -573,6 +575,44 @@ pnpm --filter @kairo/app test
 ```
 
 定向回归修复前 2 项失败、修复后 2 项通过；完整真实 task-store 为 26/26，App typecheck/build、根 lint 和默认 App 91 项均通过。完整集成随机库为 `kairo_t19_9caf8e59c5234593ba071bea440d84a5`，两个后端 PID 为 22540、22541；沿用自建库核验和清理，不操作原库或 KK9。未变更迁移、未增加 attempt 重试调度或额外锁框架。
+
+#### PR #261 审查修复与测试重组
+
+审查修复最初在独立工作树完成，现按用户要求迁回 `dnslin/issue-226-t21-send-service`，随 PR #262 交付；下方独立工作树验证记录保留为历史证据。没有修改 Driver、T20 知识/Memory、迁移、任务公共类型或队列调度。生产变更只是在既有 `running → failed` 当前尝试比较中拒绝空字符串，使实现与已有“非空标识”合同一致；不引入全局 ID 校验。新增真实 PostgreSQL 回归先于修复执行，因预期 false、实际 true 失败；修复后拒绝空标识，替代为有效 attempt 后仍能正常失败。
+
+原回滚测试在事务第一条写入时用空问题范围触发 CHECK，不能证明已经完成的写入会被撤销。本轮用临时的“省略 BEGIN/COMMIT/ROLLBACK、业务 SQL 仍访问 PostgreSQL”的错误变异体实测：旧断言仍通过；改在最后一次 task 更新触发仅针对该随机 task 的 CHECK 后，错误变异体留下 wait 和 adopted 标记，正常实现完整回滚。永久回归保留后者，在 finally 删除自有测试约束，并用同一连接池、同一 waitId 成功重试。未改变生产事务实现。
+
+任务测试由一个 1625 行文件改为以下合同文件：
+
+| 文件 | 覆盖范围 |
+| --- | --- |
+| `task-store.test.ts` | 创建与领取、独立十状态矩阵、终态及跨任务门禁 |
+| `task-store-attempts.test.ts` | 输入版本、attempt 替代、失败绑定与迟到结果 |
+| `task-store-waits.test.ts` | 员工等待预算、回答归属与并发唯一消费 |
+| `task-store-deadlines.test.ts` | 各接口前一毫秒与恰好截止的独立场景 |
+| `task-store-persistence.test.ts` | 首次/重复迁移、新连接恢复和末步失败回滚 |
+
+共享 `tests/helpers/task-fixtures.ts` 只提供前置条件明确的场景：`runningFixture` 不创建 attempt，`runningWithSuccessfulAttempt` 明确包含成功结束的 attempt，ready/sending/waiting 夹具返回各自实际具有的非空标识。删除普通测试中的万能 `fixtureAt(status)` 和 `action` 字符串分派；穷举状态只留在真正的状态矩阵及十状态恢复测试中，不建立第二套通用状态机。
+
+每个合同文件通过原有 `createTaskTestDatabase()` 自建随机库，先核对目标与不同后端 PID 再迁移，结束时仅回收自己创建的库。下方是当前完整定向命令；上方 26 项验收和旧文件路径保留为当时实际执行的历史记录：
+
+```bash
+pnpm --filter @kairo/app test:integration -- tests/integration/task-store
+pnpm --filter @kairo/app db:migrate:test
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app build
+pnpm --filter @kairo/app test
+pnpm lint
+```
+
+本轮实际结果：
+
+- 未拆分前，空字符串回归修复前 1 项失败；修复后与末步回滚回归 2/2 通过，随后原完整套件加新回归 27/27 通过。两项原混合截止用例拆为八项独立接口用例，因此重组后为 `27 - 2 + 8 = 33`，不是删减原覆盖。
+- 新工作树不含 `.env`。本次实际使用 `node --env-file=../issue-226-t21-send-service/.env apps/kairo/scripts/test-integration.mjs -- tests/integration/task-store` 向该进程载入已有测试配置，五文件真实 PostgreSQL 33/33 通过；配置不复制入仓库，也不对原库执行迁移。五个自建库分别为 `kairo_t19_a891a29c3f2c41d4b243c47a090cf4ea`、`kairo_t19_38e94ac6a6f84bad88690c76cfb01821`、`kairo_t19_9a7ecfd28c57481ab97aa9c588903bda`、`kairo_t19_d9a425939c9148cdb1daf5b870602957`、`kairo_t19_3bbf1ce286e64b5eb7293167ef8cb7f8`，各文件 afterAll 正常回收自有连接和数据库。
+- `db:migrate:test` 通过已加载测试环境的 Node 父进程执行 `node --run db:migrate:test`：首次/重复迁移 1 项通过，另 2 项按名称筛选未执行。直接将 `--env-file` 与 `--run` 放在同一 Node 命令未向脚本提供配置，曾明确失败；随后改为先加载环境再启动子进程通过，没有把缺配置当作通过。
+- 实际执行根 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 全部通过；默认测试为 Driver 29 文件/330 项、App 9 文件/91 项。修改文件的 Prettier 检查通过。拆分中遗漏的夹具类型名、异构场景类型及合法后继类型已按编译错误修正，没有放宽 TypeScript 或 lint 规则。
+- 独立 `pnpm --filter @kairo/driver exec tsx --env-file=<原工作树的测试配置绝对路径> <修复工作树>/apps/kairo/tmp/rollback-review-probe.mjs` 使用生产 Store 构建产物和真实 PostgreSQL：空标识拒绝、有效替代尝试可失败；真实事务的末步失败不留下 wait/adopted，无事务变异体确实留下两项写入。最终烟测库 `kairo_t19_74f1b08ad211432db3c689896d8d32ac`（PID 23863/23864）已回收，临时探针交付时删除。
+- 普通质量审查和 thermo-nuclear 结构复审均未发现剩余阻塞，确认原断言、并发和恢复覆盖保留，原 Required 结构问题已解决。复审只读，不将审查意见冒称额外执行测试。未访问真实 KK9、模型/RAGFlow，也未验证操作系统强杀恢复。
 
 ### T21 统一出站发送协调器
 
