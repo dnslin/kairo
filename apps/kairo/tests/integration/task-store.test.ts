@@ -764,6 +764,39 @@ describe('T19 任务、执行尝试与员工等待 PostgreSQL 账本', () => {
     }
   });
 
+  it('空字符串当前尝试不能作为执行失败标识，替代为有效尝试后可正常失败', async () => {
+    const fixture = await runningFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 200 };
+    expect(
+      await storeA.startAttempt({
+        ...version,
+        attemptId: '',
+        expectedAttemptId: null,
+        runId: randomUUID(),
+        configDigest: '空标识边界',
+      })
+    ).not.toBeNull();
+    const before = await storeA.getTask(fixture.taskId);
+    expect(
+      await storeB.transitionTask({
+        ...version,
+        from: 'running',
+        to: 'failed',
+        expectedAttemptId: '',
+      })
+    ).toBe(false);
+    expect(await storeA.getTask(fixture.taskId)).toEqual(before);
+    const replacement = await startAttempt(fixture, storeB, { expectedAttemptId: '' });
+    expect(
+      await storeA.transitionTask({
+        ...version,
+        from: 'running',
+        to: 'failed',
+        expectedAttemptId: replacement.attemptId,
+      })
+    ).toBe(true);
+  });
+
   it('未结束、结束失败和重复结束不能伪造成功采用，结束时刻不能早于开始', async () => {
     const fixture = await runningFixture();
     const attempt = await startAttempt(fixture);
@@ -1604,19 +1637,28 @@ describe('T19 任务、执行尝试与员工等待 PostgreSQL 账本', () => {
       attemptId: attempt.attemptId,
       waitId: randomUUID(),
       question,
-      allowedQuestionIds: [],
+      allowedQuestionIds,
     };
     const before = {
       task: await storeA.getTask(fixture.taskId),
       attempt: await storeA.getAttempt(attempt.attemptId),
     };
-    // 使用真实 PostgreSQL 非空范围 CHECK 触发事务内错误，不替换查询或连接池。
-    await expect(storeA.waitForUser(input)).rejects.toMatchObject({ code: '23514' });
-    expect(await storeB.getTask(fixture.taskId)).toEqual(before.task);
-    expect(await storeB.getAttempt(attempt.attemptId)).toEqual(before.attempt);
-    expect(await storeB.getUserWait(input.waitId)).toBeNull();
-    // 同一 max:1 池继续成功提交，证明失败事务已经回滚并释放连接。
-    expect(await storeA.waitForUser({ ...input, allowedQuestionIds })).toBe(true);
+    // 只针对本次随机 task：让等待插入、attempt 采用先成功，最后的 task 更新再失败。
+    await database.poolA.query(`ALTER TABLE kairo.tasks ADD CONSTRAINT t19_forced_wait_failure
+      CHECK (task_id <> '${fixture.taskId}' OR status <> 'waiting_for_user')`);
+    try {
+      await expect(storeA.waitForUser(input)).rejects.toMatchObject({
+        code: '23514',
+        constraint: 't19_forced_wait_failure',
+      });
+      expect(await storeB.getTask(fixture.taskId)).toEqual(before.task);
+      expect(await storeB.getAttempt(attempt.attemptId)).toEqual(before.attempt);
+      expect(await storeB.getUserWait(input.waitId)).toBeNull();
+    } finally {
+      await database.poolA.query('ALTER TABLE kairo.tasks DROP CONSTRAINT t19_forced_wait_failure');
+    }
+    // 同一 max:1 池继续提交同一 waitId，验证没有残留写入或事务。
+    expect(await storeA.waitForUser(input)).toBe(true);
     expect(await storeB.getUserWait(input.waitId)).toMatchObject({
       allowedQuestionIds,
       closedAt: null,
