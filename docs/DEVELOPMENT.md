@@ -574,6 +574,54 @@ pnpm --filter @kairo/app test
 
 定向回归修复前 2 项失败、修复后 2 项通过；完整真实 task-store 为 26/26，App typecheck/build、根 lint 和默认 App 91 项均通过。完整集成随机库为 `kairo_t19_9caf8e59c5234593ba071bea440d84a5`，两个后端 PID 为 22540、22541；沿用自建库核验和清理，不操作原库或 KK9。未变更迁移、未增加 attempt 重试调度或额外锁框架。
 
+### T21 统一出站发送协调器
+
+`modules/im-transport/send-service.ts` 的 `createSendService()` 统一处理文本固定提示、排队、进度和最终回答；`send-policy.ts` 保存用途、状态、标识与预算合同。调用方提供现有任务/私聊账本、Driver Store、协调 Store、日志和 Driver 工厂。工厂必须把收到的 Store 交给同一个 Driver；连接、断开和 Pool 所有权仍属于装配方，协调器不会创建第二条 KK9 连接或自动迁移。正式业务装配与队列调度仍归后续任务，本次不修改应用入口、Driver、T20 知识/Memory、T24/T25 或 T32。
+
+#### 获批的持久化补充
+
+现有 Driver `SendOperationStore.claim()` 会占用实际发送资格，不能由协调器提前调用；它也不记录自动重试和查询预算。用户在本任务终端批准增加 `PostgresSendDispatchStore` 与 `000008-send-dispatches.sql`，只创建 `kairo.send_dispatches`。T20 已占用 000006/000007；本迁移只依赖已存在的 T19 tasks，不依赖 T20 未合并代码，不修改旧表或旧公共接口。
+
+- task 意图键为 `(taskId,purpose)`；无任务提示为 `(botId,sessionId,messageId,purpose)`。首次原子写入生成 UUID operationId；重复事件返回原记录，不生成新发送。摘要按固定字段顺序包含主体版本/thread、目标与正文；语义相同的对象字段重排不产生冲突，不同正文或版本拒绝复用。
+- `send_calls` 是调用前占用的发送预算，最多 2；`query_used` 是调用前占用的唯一查询机会。`revision` 条件更新只允许一个调用推进，终态不能再次更新。数据库错误直接传播，不假装 Driver 已明确失败。
+- `prepared → sending` 先保存预算与 operationId，再调用 Driver；确定失败为 `retryable` 或预算耗尽后的 `failed`。`delivered` 结束该发送；`unknown` 不立即重发。查询的绝对截止在首次占用发送预算时设为当前时间加 30000ms，后续失败、重启不延长它，因此返回 unknown 后等待不超过剩余三十秒。
+- 查询前保存 `querying/query_used=true`。查询后送达正常结束，失败只使用剩余的同 ID 重试预算；仍未知或已无查询机会的未知结果为 `send_unconfirmed`。这不是 Driver 的 failed，不会提交 Memory；维护日志保留 `send_unknown`。
+
+#### 重复调用、恢复与交付
+
+`send(request)` 处理普通事件：同实例并发共享结果，仍先核对请求摘要；其他实例看到 sending/querying 不抢占。`recover(request)` 只用于旧进程已停止后的恢复，不负责扫描、排队或调度。调用方沿用原请求正文与版本；协调表只保存摘要，不另存答案草稿。
+
+恢复 prepared 可发送；恢复已触发操作先沿用剩余时间查询。用户批准严格总次数语义：若查询机会已占用，但结果未保存就崩溃，恢复直接记未确认，不补查、不重发；这接受“预算已扣、实际查询尚未发生”的崩溃窗口。若失败查询结果已明确保存，恢复可以使用剩余一次发送预算，不再次查询。重试调用同样先占用预算；无法确认是否触发的中断不能获得额外重试机会。
+
+只有 final 推进 T19 `ready_to_send → sending → completed/failed/send_unconfirmed`；排队和进度各有独立 operationId，不结束任务。每次发送前检查任务版本、所处阶段和有效 context，在进入 sending 后再检查一次，覆盖 `/new` 插入该间隙。已触发 sending 不再按执行期限推断失败。接收结果时再次检查有效性：失效操作记 cancelled，Driver 的真实原生送达证据仍保留；终结任务不能被迟到结果复活。已知陈旧版本在占用意图键前拒绝，避免阻挡新版本答案。`close()` 只取消本协调器等待并禁止迟到推进，不关闭调用方资源。
+
+查询抛错时尽量保存未确认并结束任务，同时保留原始 cause；若收尾保存也失败，AggregateError 保留两个原因。异常或关闭不转为安全重发。协调终态与 task 终态之间的中断，可通过同请求恢复补齐 task 条件更新，不写正式 Memory。
+
+#### 数据库完全不可用的唯一例外
+
+`sendStorageFailure(event, storageError)` 仅接受 storage 类 AppError，正文固定复用 T17 `getFailureMessage('storage')`。operationId 由 Bot、会话、原始消息 ID 确定，同一进程跨服务实例只尝试一次；无重试、无查询、不创建任务、不补发。只有该入口登记的 operationId 使用同一 Driver 包装 Store 内的内存记录；普通发送仍访问 PostgreSQL，失败不会自动走此通道。该入口不读取数据库中的 context/task，因为该场景不能创建它们；传入事件来自后续入站处理方，不由本模块接收 IM。
+
+#### 实际验证（2026-09-08）
+
+```bash
+pnpm --filter @kairo/driver build
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/send-service.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm lint
+pnpm --filter @kairo/app build
+node --env-file=.env apps/kairo/tmp/t21-smoke.mjs
+```
+
+- 定向单元 41/41：全部 11 条三态后继路径、总发送/查询次数、同 ID、用途隔离、重复并发与摘要冲突、上下文竞争、过期与迟到结果、关闭/新实例恢复、查询结果已保存与未保存的中断窗口、固定故障提示进程内防重及复合异常保留。
+- 真实 PostgreSQL 定向集成 12/12：双连接竞争、Driver 调用前可读的协调记录、同 ID 重试、上下文切换、新连接恢复、同会话未确认后的下一任务成功、数据库完全不可用固定提示、SQL 23514 传播、重复迁移与终态当前 revision 不可覆盖。复用 `createTaskTestDatabase()`，所以日志保留 T19 前缀；实际本轮库为 `kairo_t19_456ee14a5f1741b0876b369e30115797`，后端 PID 23182/23183。先核对自建随机库与不同 PID，再迁移；不迁移 `.env` 指向的原库，不按前缀清理别人的库。
+- 首次集成启动先遇到 Driver 包未构建，补构建后得到协调器模块尚不存在的失败基线。单元首轮发现 Node promises 定时器未被全局假时钟接管；仅在测试中替换计时边界，保留取消语义。独立 Node 烟测另使用原生定时器实等，不靠此替身证明运行时。
+- 迟到交付与重试期限反例实际失败后修复；两份只读审查发现的摘要字段顺序、旧版本抢占用途键和查询错误被收尾覆盖，也均有修复前失败、修复后通过的回归。初次 lint 的全局 structuredClone、测试 async 无 await 和多余断言均已修正，未降低规则；最终 App typecheck/build 与根 lint 通过。
+- 普通 Node 烟测使用构建产物、真实 PostgreSQL 与 FakeDriver：旧协调器等五秒后关闭，新实例保留绝对截止，约 30040ms 时只查询一次、没有重新发送；同 ID 两次发送后送达、所有业务 Pool 不可用时固定提示一次且不创建 task 均通过。该轮自建库 `kairo_t21_smoke_09eb6a8c3336480099e7de69d7666755` 已删除。临时脚本用于本次证据，交付时删除，长期复现使用保留的测试命令。
+- 最终清理重复任务收尾查询后，重新执行定向 41/41、真实集成 12/12、App typecheck/build、根 lint 和新增 TypeScript 文件 Prettier 检查，均通过。`pnpm --filter @kairo/app test` 实际通过 10 文件/132 项。最终构建产物再次运行上述普通 Node 烟测，查询发生于约 30023ms，仍为一次发送、一次查询；随机库 `kairo_t21_smoke_698c451298b84a1aa4d5019c4ea48910`（PID 23191/23192）已删除。
+
+边界：本次证明协调模块、真实 PostgreSQL 与同进程新实例/新连接恢复，不冒称操作系统强杀或完整跨进程调度。T34 仍负责跨进程故障矩阵，T35 仍负责真实 KK9 delivered/failed/unknown。没有连接或修改真实 KK9 会话，没有调用模型/RAGFlow，没有修改 Driver 行为，因此未执行 Driver 真机脚本；不合并分支或关闭 issue。
+
 ## 代码入口
 
 | 任务                                                                                | 位置                                                            |
