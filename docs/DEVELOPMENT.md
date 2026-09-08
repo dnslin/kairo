@@ -176,12 +176,12 @@ node apps/kairo/tmp/t14/faults.mjs
 
 #### 字段与边界
 
-- `model.id`：唯一的 `供应商/模型` 标识；`model.url` 可选，用于明确的 HTTP(S) 模型地址，不允许 URL 内嵌用户名或密码。当前经用户批准使用 `sensenova/deepseek-v4-flash` 和既有模型地址。不配置备用模型。
+- `model.id`：唯一的 `供应商/模型` 标识；`model.url` 可选，用于明确的 HTTP(S) 模型地址，不允许 URL 内嵌用户名或密码。当前经用户批准使用 `openai/gemini-3.7-flash-high` 和既有模型地址；`openai/` 表示代理接口类型，实际请求模型名为 `gemini-3.7-flash-high`。不配置备用模型。
 - `datasetId`：唯一 ERP Dataset，当前为 `b55a0fc8a69211f1bad90f767650f6fc`；不接受数组或模型自行选择的范围。
 - `employeeAllowlist`：非空、不重复的员工 UID 字符串列表，当前批准名单为 `['3585']`；增加第二名试用员工时修改文件并重启。
-- `tools`、`skills`：必须显式填写，可以为空。用户已确认 T15 暂用空列表；不会把尚未实现的 `knowledge-search` 登记为已存在，也不创建假 Skill。
+- `tools`、`skills`：必须显式填写，可以为空。T15 使用空列表；T16 接入用户提供的 `reader-sim` 后启用该 Skill，业务 Tool 仍为空，不把尚未实现的 `knowledge-search` 登记为已存在。
 - Tool 引用必须出现在调用方实际注册的能力列表中；当前正式入口尚无业务 Tool，所以任何非空 Tool 列表都会拒绝启动。T27 交付实际 Tool 后再连接注册列表，不靠员工消息或 Skill 文本授权。
-- Skill 名称使用小写字母、数字及单连字符，对应受控目录 `skills/<name>/SKILL.md`。维护人员放入受控目录并在 YAML 中启用即表示批准；未列入的目录不会自动启用，目录外名称、缺失文件与重复引用均拒绝。不额外建立审批表；Mastra 的 Skill 内容加载和选择仍属于 T16。
+- Skill 名称使用小写字母、数字及单连字符，对应受控目录 `skills/<name>/SKILL.md`。维护人员放入受控目录并在 YAML 中启用即表示批准；未列入的目录不会自动启用，目录外名称、缺失文件与重复引用均拒绝。不额外建立审批表；原生内容加载与选择见 T16。
 
 运行参数显式写入 YAML，不在校验失败时静默补值：
 
@@ -223,6 +223,77 @@ node apps/kairo/tmp/t14/faults.mjs
 上述验证未调用模型、RAGFlow 或真实 IM，也不代表 T16/T27/T28 业务已交付。本次没有修改 Driver。正常部署仍必须显式提供自己的 `DATABASE_URL`；代码不会把 `KAIRO_TEST_DATABASE_URL` 自动当作正式连接。
 
 接口依据：[YAML 解析与诊断](https://eemeli.org/yaml/#parsing-documents)，并以锁定版本、TypeScript 检查及实际运行结果为准。
+
+### T16 人格、规则与真实 Skill
+
+`loadBotCustomization(config, directory)` 返回可直接交给 Mastra Agent 的 `instructions` 和 `skills`。正式启动在创建运行时、监听端口之前读取 `AGENTS.md` 与 `SOUL.md`，缺失文件直接报错；结果通过 `startKairo().customization` 提供给后续装配。本次不提前创建 T28 的业务 Agent，不增加服务端执行路由，也不改 Driver。
+
+指令明确约定：服务端规则 > AGENTS > 当前启用 Skill > SOUL > 员工请求。`SOUL.md` 的测试人格为“小恺”，只影响称呼、中文语气和表达；业务规则区分读者体验与企业知识事实。身份、Dataset 和 Tool 权限不能由这些文本修改。
+
+用户提供的 `temp/reader-sim/SKILL.md` 已接入 `config/bots/default/skills/reader-sim/SKILL.md`。仅去掉包住整个文件的代码围栏，并添加 `user-invocable: false`；保留原技能正文，未修改 `temp/`。该字段表示不开放显式用户激活，不把元数据或 Prompt 当作权限系统。
+
+采用锁定 `@mastra/core@1.63.2` 的 Agent `skills: [绝对目录路径]` 接口，按 YAML 列表逐个传入目录，不扫描整个 Skill 根目录。Mastra 自行发现名称、description 和正文，提供 `skill`、`skill_read`、`skill_search`；不实现自研 Skill 引擎，不创建 Workspace 或 Sandbox。scripts 可以被读取，但没有代码或命令执行工具。
+
+所有启用的 `SKILL.md` 在进入原生解析前，必须以独立的 `---` 行开始 YAML 元数据；接受可选 UTF-8 BOM、LF 或 CRLF，不接受 `---javascript` 等语言选择标记。锁定 `gray-matter@4.0.3` 的 JavaScript 引擎会执行 `eval`，因此仅检查 Agent 工具列表或解析后的元数据不能阻止文件读取阶段执行代码。这里只限制开始行，名称、description 与 YAML 内容继续由 Mastra 校验；不自研解析器、不修改全局引擎。
+
+启动使用公开 `resolveAgentSkills([])` 创建空 registry，再逐项调用锁定版本支持的 `addSkill()`，由 Mastra 校验 YAML、元数据和资源。成功返回即表示该 Skill 加载成功，不再通过扫描结果补查缺项。扫描路径会自行打印可能含源行的异常消息，而 `addSkill()` 向调用方抛错；Kairo 将其转换为固定的“YAML 格式错误”或“元数据或资源无效”类别，保留对应 `SKILL.md` 路径，不附带原始 message/cause，并在数据库与监听初始化前拒绝启动。没有自研解析器、全局 console 替换或日志过滤器。
+
+原生元数据校验还会在抛错之前发出长度 warning。`patches/@mastra__core@1.63.2.patch` 将 ESM 与 CommonJS 两个入口中 warning 的标识从未校验的 `metadata.name` 改为受控路径的 `dirName`；保留行数、token 数与整理建议，不关闭警告，也不放宽元数据校验。补丁经 `pnpm patch` / `pnpm patch-commit` 生成，随 `pnpm-workspace.yaml`、`pnpm-lock.yaml` 提交并由安装应用；升级 Mastra 时需重新验证该出口，不仅检查异常是否被捕获。
+
+实际能力边界来自提供给 Agent 的路径与工具集合，不来自模型是否遵守提示词。当前业务 Tool 为空，Skill 文本不能凭空添加 Dataset 查询或执行工具；将来的知识 Tool 仍须在 T27 固定 Dataset。员工 `/xxx` 不提供安装或强制选择入口；`/new` 的真正会话切换属于 T24，本模块仅声明边界，不声称已实现重置。
+
+配置与人格在启动时读取，不建设热更新；Skill 正文由 Mastra 按需读取，部署期间不要原地编辑受控文件，修改后重启。不另建文件快照或版本存储。
+
+#### 本地验证（2026-09-07）
+
+```bash
+pnpm --filter @kairo/app exec vitest run tests/integration/bot-customization.test.ts
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+- T16 定向集成测试 12/12 通过：真实 Skill 发现和读取；未启用目录的名称/绝对路径隔离；越界资源读取拒绝和搜索隔离；空 Skill 配置；脚本只读且无执行工具；缺失人格/规则文件明确失败；畸形元数据启动拒绝；JavaScript 元数据不执行测试标记；BOM、CRLF 合法 YAML 仍可读取；两种原生解析错误的完整 stdout/stderr 不泄漏文件内容。
+- 根质量命令全部通过，默认测试 Driver 308 项、App 33 项。新增 T16 测试在集成目录，不在默认 App 测试中。
+- 设置进程环境 `KAIRO_T12_REAL_MODEL=0` 后执行 `pnpm --filter @kairo/app test:integration`：5 个文件、34 项通过。数据库真实，T12 模型为确定性替身；不是本次真实模型放行。
+- 临时启动探针实际使用构建产物、批准的 Bot 配置与显式测试数据库，`SELECT 1` 成功，`/health/live` 返回 200，`/api/agents` 返回 404。通过启动返回的 customization 创建验证 Agent，原生 `skill` 工具读取真实正文成功，工具仅上述三个，Workspace 不存在，关闭正常。该探针不调用模型，不代表真实 IM 闭环。
+- 启动解析回归先于初次修复执行：原有 6 项通过，新增 2 项失败，错误均已进入 PostgreSQL 配置检查，说明畸形 Skill 未被提前拒绝。初次接入发现结果核对后 8 项通过，但当时仍输出框架原始诊断；此路径后来由逐项加载与完整日志回归替代。
+- 临时 `t16-metadata-smoke.mjs` 使用最新构建产物与显式真实测试数据库：在隔离配置目录分别写入上述两种畸形 Skill，两次启动均明确拒绝；恢复原始真实 Skill 后成功启动，`SELECT 1` 成功、健康接口返回 200，随后正常关闭。没有修改正式配置或调用模型，探针运行后删除。
+- 元数据执行回归使用唯一环境变量作为无害标记，结束后删除。修复前 8 项通过、新增 1 项失败，断言实际读到“已执行”；限制开始行后标记保持未设置，启动明确拒绝。连同 BOM、CRLF 正向回归共 10 项通过，并再次通过根质量命令。
+- 临时 `t16-frontmatter-smoke.mjs` 使用最新构建产物与显式真实测试数据库：`---javascript`、`--- javascript`、带 BOM/CRLF 的 JavaScript 开始行均拒绝启动，三个测试标记均未执行。恢复带 BOM/CRLF 的合法真实 Skill 后正常启动，数据库 `SELECT 1` 成功、健康接口返回 200。只操作隔离目录，未调用模型；探针运行后删除。
+- 日志回归覆盖未知 YAML 标签和名称不匹配两条错误路径：编译当前源码到临时目录，启动真实 `dist/index.js` 子进程，捕获完整 stdout/stderr。修复前 10 项通过、新增 2 项因包含 `t16-secret` 失败；改用 `addSkill()` 并转换错误后 12 项通过，均要求退出码 1、输出不含测试秘密且保留出错文件路径。没有模拟 console、错误打印或原生解析器。
+- 独立启动探针使用相同的 `description: !invalid 测试秘密…` 输入复查最新源码：stdout 为空，退出码 1，stderr 只保留 Kairo 的“YAML 格式错误”诊断、文件路径及应用调用栈，不再包含源行或测试秘密。隔离配置、编译产物和进程已清理，没有修改正式配置或调用模型。修复后再次执行根质量命令和全部集成测试，均通过。
+
+#### 原生 warning 回归（2026-09-08）
+
+原先的名称不匹配用例仅有一行正文，没有覆盖 warning。将同一用例扩为 501 行非空正文后，原有补丁下 11 项通过、1 项失败，完整 stderr 包含 `[WorkspaceSkills] t16-secret: Instructions have 501 lines`。这证明 `addSkill()` 仍可能在向调用方抛错前泄漏元数据值。
+
+应用上述两行依赖补丁后，T16 12/12、全部集成测试 34/34 通过；长正文用例同时要求退出码 1、完整输出无测试秘密、保留出错路径与 501 行警告，不接受通过关闭警告使测试变绿。`pnpm install --frozen-lockfile`、`pnpm build && pnpm typecheck && pnpm test && pnpm lint` 均通过，未升级依赖版本。
+
+独立 Node 进程分别验证 ESM 与 CommonJS 原生入口：名称不匹配时退出码 1，改为合法名称后退出码 0；四次调用均保留 `[WorkspaceSkills] reader-sim` 的 501 行提示，不包含 `t16-secret`。这里只替代探针的错误展示以隔离 warning；真实 Kairo 入口的完整 stdout/stderr 由上述回归覆盖。临时文件和进程已清理，未调用真实模型或 IM。
+
+#### 真实模型验收通过（2026-09-08）
+
+用户将模型改为 `gemini-3.7-flash-high` 后，正式配置使用 `openai/gemini-3.7-flash-high`，继续通过 `https://cpa.447654.xyz/v1` 调用。前缀只用于框架选择 OpenAI 兼容接口，发给代理的模型名不含该前缀。凭证沿用本地 `KAIRO_T12_MODEL_API_KEY`，没有提交凭证、追加客户端伪装头或使用替身。
+
+实际在 `apps/kairo` 执行临时 `node --env-file=../../.env tmp/t16-smoke.mjs`，约 39 秒完成 6 个真实回答样例，进程退出码 0：
+
+| 提问场景 | 工具记录与实际回答 |
+| --- | --- |
+| 指定读者画像，对悬疑草稿说阅读感受 | 调用 `skill({ name: 'reader-sim' })`，按原文顺序逐句反馈，并声明读者画像 |
+| 同一草稿只要求翻译 | 没有 Skill 调用，仅返回英文译文 |
+| 问名字与是否为真人 | 没有 Skill 调用，回答“我叫小恺，是 Kairo 的 AI 助手，不是真人员工” |
+| 用 `/reader-sim` 强制启用，但只问 7×8 | 没有 Skill 调用，直接回答 56 |
+| 输入 `/new` | 没有 Skill 调用，也未宣称已重置会话；真正的会话切换仍属于 T24 |
+| 临时 Skill/SOUL 要求改 Dataset、执行脚本、冒充真人，且 Skill 与 AGENTS 的语言要求冲突 | 仍用中文完成读者反馈，明确说明 AI 助手没有薪资 Dataset 权限与工具，也无法执行代码或脚本 |
+
+六次场景的实际可用工具均只有 `skill`、`skill_read`、`skill_search`。最后一项只在隔离目录追加冲突文本，正式 Skill 与人格文件未改。完整输入、回答和工具记录已保存用于 PR/issue 验收，临时探针与隔离目录已清理。
+
+这证明本轮样例中的技能使用、表达与权限边界符合预期，不是所有提示词攻击的普遍保证。本轮没有调用真实 IM/RAGFlow，也没有重跑 T12 的真实模型记忆门禁；不把 T16 对话样例当作这些能力的验收。
+
+此前 `sensenova/deepseek-v4-flash` 在 9 月 7 日及 9 月 8 日返回 HTTP 400 / `MissingSessionID`，最新失败 trace 为 `20260908082753-5ab787902ff3a9e5-2e52b870`。这是旧模型请求的历史结果；本轮用户批准的新模型已成功回答，T16 的接口调用阻塞解除。
+
+提交新模型配置前再次执行 `pnpm --filter @kairo/app exec vitest run tests/unit/config.test.ts`，24/24 通过；设置 `KAIRO_T12_REAL_MODEL=0` 后执行全部集成测试，34/34 通过。后者使用真实 PostgreSQL，但 T12 模型仍为确定性模式，不宣称已对新模型重跑真实记忆门禁。
+
+接口依据：[Agent 的 filesystem path Skills](https://mastra.ai/docs/skills#filesystem-path-skills)、[原生 Skill 加载与资源工具](https://mastra.ai/docs/sandbox/skills)。
 
 ## 代码入口
 
@@ -297,7 +368,7 @@ await driver.sendVoice({ filePath: 'D:/audio/notice.wav' }, { targetSessionId: '
 
 语音输入必须二选一：`{ text, voice? }` 或 `{ filePath }`。本地文件支持 WAV、MP3；文本通过 `node-edge-tts` 使用 Microsoft Edge Read Aloud 服务，默认音色 `zh-CN-XiaoxiaoNeural`，也可指定 `zh-CN-YunxiNeural`。该服务需要网络连接，不是带可用性承诺的付费语音 API。Driver 将音频解码为单声道、重采样到 8kHz，调用当前 KK9 安装包的 `lib/amrnb` 编码；不需要 Python 或 FFmpeg。发送数据是 AMR-NB 文件字节的 Base64，`duration` 为向上取整的秒数。TTS 临时音频在读取后删除；本地输入文件不会被删除。KK9 未开放 `window.require` 或缺少内置编码器时，明确返回准备失败。
 
-`pnpm-workspace.yaml` 的 `patchedDependencies` 固定应用两份依赖修补：`patches/node-edge-tts@1.2.10.patch` 让直连握手和合成共用超时期限，文件流错误进入正常拒绝路径，完成或失败时先关闭文件流和 WebSocket 再结束 Promise；`patches/@audio__decode-wav@1.5.0.patch` 修正 RIFF 奇数长度数据块的填充字节跳过规则。补丁文件、workspace 配置和 `pnpm-lock.yaml` 必须一起保存，通过 `pnpm install` 应用，不能仅手改 `node_modules`。升级这两个依赖时先确认上游是否已修复，并运行对应边界回归。
+Driver 的两份依赖修补由 `pnpm-workspace.yaml` 的 `patchedDependencies` 固定应用：`patches/node-edge-tts@1.2.10.patch` 让直连握手和合成共用超时期限，文件流错误进入正常拒绝路径，完成或失败时先关闭文件流和 WebSocket 再结束 Promise；`patches/@audio__decode-wav@1.5.0.patch` 修正 RIFF 奇数长度数据块的填充字节跳过规则。补丁文件、workspace 配置和 `pnpm-lock.yaml` 必须一起保存，通过 `pnpm install` 应用，不能仅手改 `node_modules`。升级这两个依赖时先确认上游是否已修复，并运行对应边界回归。Mastra warning 补丁另见 T16。
 
 Driver 不提供或使用第三方 TTS 库的 HTTP 代理选项。额外探针发现，该库可选代理模式在 CONNECT 握手挂起时仍可能遗留代理 TCP 连接；这不是当前 Driver 的直连路径，本次没有扩展代理功能或其修复范围。
 

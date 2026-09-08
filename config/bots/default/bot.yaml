@@ -1,13 +1,14 @@
 # 非凭证配置的唯一正式来源；修改后重启生效。
 model:
-  id: sensenova/deepseek-v4-flash
+  id: openai/gemini-3.7-flash-high
   url: https://cpa.447654.xyz/v1
 datasetId: b55a0fc8a69211f1bad90f767650f6fc
 employeeAllowlist:
   - '3585'
-# T16/T27 交付真实能力后再启用；不登记尚未实现的 Tool 或虚构 Skill。
+# 知识 Tool 由 T27 接入；此处仅启用已提供的真实阅读 Skill。
 tools: []
-skills: []
+skills:
+  - reader-sim
 agent:
   # Agent 循环上限，不是固定知识检索次数限制。
   maxSteps: 20
