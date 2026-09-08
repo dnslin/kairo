@@ -30,6 +30,8 @@ pnpm format
 
 默认 `pnpm test` 中的 App 测试排除 `tests/integration/**`，不要求 PostgreSQL 连接。`pnpm --filter @kairo/app test:integration` 加载存在的仓库根 `.env`，也支持系统环境注入；无参数运行完整集成目录。追加文件名时只运行匹配文件，例如 `pnpm --filter @kairo/app test:integration -- tests/integration/task-store.test.ts`。入口只移除首个 pnpm 透传分隔符，独立 Vitest 配置限定 integration，文件未匹配时明确失败。全量集成仍可能包含已配置的真实模型调用，不用于 T19 定向验收。请使用专用测试数据库：既有发送操作测试会直接迁移和写入配置中的测试库，Mastra、T18/T19 使用随机临时库且需要创建、删除数据库的权限；T19 不回退到 `DATABASE_URL`，缺少 `KAIRO_TEST_DATABASE_URL` 明确失败。
 
+T19 的完整任务账本回归使用 `pnpm --filter @kairo/app test:integration -- task-store`，匹配生命周期、attempt、等待和持久化四个测试文件。精确指定 `task-store.test.ts` 只运行生命周期组；迁移专题由 `db:migrate:test` 定向运行 `task-store-persistence.test.ts`。
+
 Driver 真机辅助命令：
 
 ```bash
@@ -574,6 +576,30 @@ pnpm --filter @kairo/app test
 
 定向回归修复前 2 项失败、修复后 2 项通过；完整真实 task-store 为 26/26，App typecheck/build、根 lint 和默认 App 91 项均通过。完整集成随机库为 `kairo_t19_9caf8e59c5234593ba071bea440d84a5`，两个后端 PID 为 22540、22541；沿用自建库核验和清理，不操作原库或 KK9。未变更迁移、未增加 attempt 重试调度或额外锁框架。
 
+#### PR #261 审查后的质量修正（2026-09-08）
+
+两项建议最初在独立 `pr261-quality-fixes` 工作区完成修正与验证；随后按用户要求应用到当前 T20 分支，并随现有 PR #263 交付，不再创建独立 PR。任务状态、业务 SQL、锁顺序、队列/执行期限和等待预算合同不变。以下72项等结果保留为独立工作区的执行历史，当前组合分支另行验证。
+
+- 测试结构：原 `task-store.test.ts` 为 1625 行，夹具、合法状态边和截止用例重复分派动作。现拆为生命周期、attempt、等待、持久化四个文件（535、572、490、236 行），共享具名 fixture 显式接收 store/chat，各文件独立创建和关闭随机测试库。正向迁移与截止动作直接调用公开方法，不再解释 action/from-to 字符串；nullable fixture 仅用于状态矩阵或恢复遍历。原26项中22项保留同名行为用例，其余4项展开为显式测试，18条合法边、独立十状态负向矩阵、并发、版本、期限和回滚断言均保留。现为55项，不把数量增加当作覆盖证明。
+- 事务错误：T18 原私有事务包装在 ROLLBACK 失败时覆盖原始操作错误，T19 已能保留两个错误；这是既有错误策略分叉，不是声称 T19 新引入了该错误。公共 createBatch/startAttempt 调用的确定性错误注入回归修复前1项失败、3项通过，修复后4/4通过，保留原始错误对象身份。
+- `db/transaction.ts` 提供唯一 `withTransaction(pool, operation)`，T18三个、T19五个调用点直接使用，删除两套私有包装。回滚成功原样抛原错误；回滚失败用 AggregateError 保存两次错误。BEGIN或回滚失败时按 pg 的 `release(true)` 销毁状态不明的连接，不加入重试、嵌套事务或事务框架。
+- 新增真实事务集成补足“已有成功写入后再失败”的验证：先 INSERT 和 UPDATE，再由 `SELECT 1/0` 产生22012，确认新增记录消失、旧值恢复，同一max:1池随后仍可提交。它不再仅靠首条INSERT自己的CHECK失败来证明回滚。
+
+独立修正工作区不复制凭证。以下实际命令只从本任务原工作区的已授权环境文件向子进程注入测试连接，所有迁移与写入仍发生于各自新建、已核对库名的随机库：
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm --filter @kairo/app exec vitest run tests/unit/transaction-errors.test.ts
+node --env-file=../issue-225-t20-knowledge-memory-store/.env apps/kairo/scripts/test-integration.mjs task-store tests/integration/private-chat-store.test.ts tests/integration/transaction.test.ts
+node --env-file=../issue-225-t20-knowledge-memory-store/.env "C:/Program Files/nodejs/node_modules/corepack/dist/pnpm.js" --filter @kairo/app db:migrate:test
+node --env-file=../issue-225-t20-knowledge-memory-store/.env apps/kairo/tmp/transaction-smoke.mjs
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+最终真实集成6文件72/72，其中任务55项、私聊15项、共享事务2项；迁移专题1项通过、2项按名称筛选未执行。默认测试Driver330/330、App95/95，最终完整四命令全部通过。首次完整门禁发现拆分后等待文件残留未使用的now导入，删除后原样重跑通过，没有禁用规则或缩小测试范围。
+
+普通Node烟测直接执行同一事务函数，创建随机库 `kairo_pr261_8d61e03876534104a2a80327fb883412`，backend PID从23752变为23753；验证正常提交、先写后错的完整回滚，以及仅主动关闭本次借出连接后仍保留操作/回滚两个错误、连接池重新借出新连接并成功提交。没有关闭其他连接或数据库服务，不将受控关闭称为自然断网/操作系统强杀恢复。烟测库在finally中删除，临时脚本验收后清理；没有修改迁移、Driver、真实KK9或其他工作区数据库。
+
 ### T20 知识证据、反馈、Memory commit 与启动账本
 
 迁移为 `000006-knowledge-records.sql` 与 `000007-memory-commits.sql`；`000005` 已属于 T19。2026-09-08 已向 T21 工作终端确认这两个编号由 T20 占用，T21 使用后续 `000008`，不依赖本工作区未合并代码。
@@ -646,7 +672,6 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 | 四项质量命令全部通过 | 最后一次原样执行 build/typecheck/test/lint，退出码 0；不把先前失败的执行记录算作成功。 |
 
 烟测结束后按精确库名及临时角色名只读核对，残留均为 0。临时脚本、SQL、业务核对输出和日志已移出仓库，保留在本次会话证据中；便携 psql 和下载包已删除，未安装数据库服务、未接管现有 DataGrip 窗口。长期复现使用上述已保留的集成测试；本节临时烟测命令是执行历史，不是新增生产命令。
-
 
 ## 代码入口
 

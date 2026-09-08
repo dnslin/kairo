@@ -18,7 +18,7 @@
     "test": "vitest run --config vitest.config.ts --passWithNoTests --exclude \"tests/integration/**\"",
     "e2e": "vitest run --config vitest.config.ts --passWithNoTests --dir tests/e2e",
     "db:mastra:verify": "pnpm --filter @kairo/app build && node --env-file=../../.env dist/db/export-mastra-schema.js",
-    "db:migrate:test": "node --env-file-if-exists=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts tests/integration/task-store.test.ts tests/integration/knowledge-record-store.test.ts --testNamePattern=首次及重复迁移",
+    "db:migrate:test": "node --env-file-if-exists=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts tests/integration/task-store-persistence.test.ts tests/integration/knowledge-record-store.test.ts --testNamePattern=首次及重复迁移",
     "test:integration": "node --env-file-if-exists=../../.env scripts/test-integration.mjs"
   },
   "dependencies": {
