@@ -295,6 +295,27 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 
 接口依据：[Agent 的 filesystem path Skills](https://mastra.ai/docs/skills#filesystem-path-skills)、[原生 Skill 加载与资源工具](https://mastra.ai/docs/sandbox/skills)。
 
+### T18 私聊账本
+
+`modules/private-chat-core/PostgresPrivateChatStore` 保存原始消息、聚合批次、context 和固定提示限频。实际入口为 `modules/private-chat-core/store.ts`，连接池由调用方持有和关闭；运行时不执行迁移，也不输出消息正文。新迁移使用 `000004-private-chat.sql`，因为 `000003` 已用于原生媒体发送操作。
+
+原始消息使用 `(session_id, message_id)` 唯一键，重复观察不覆盖首次内容；员工关联初始为空，只能写入与可信私聊 `0-<uid>` 匹配的员工 UID。context 按员工、Bot、会话隔离，失效后新建 thread 并递增版本，旧版本不能更新当前上下文。批次保存显式顺序及绝对截止时间；提示限频使用原子条件写入。存储不自动删除两小时前的历史，不实现 T22/T23/T24 的身份查询、聚合触发、空闲判定或 `/new` 编排。
+
+定向验收（在 `apps/kairo` 目录执行）：
+
+```bash
+node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts tests/integration/private-chat-store.test.ts
+```
+
+`.env` 必须提供 `KAIRO_TEST_DATABASE_URL`，账号需允许创建临时数据库。测试在同一 PostgreSQL 服务创建随机 `kairo_t18_<uuid>` 库，两个独立连接先核对实际库名及不同的后端进程 ID，再执行迁移；结束时仅关闭自有连接并删除本次创建的库。不迁移或清理连接配置中的原库，不回退到 `DATABASE_URL`，缺配置明确失败。仓库目前没有 `db:migrate:test` 脚本；本测试通过既有 `migrateDatabase()` 执行首次及重复迁移。
+
+#### 真实验证（2026-09-08）
+
+- 上述定向命令实际通过 15/15：首次及重复迁移、双连接原始消息防重、跨会话原生 ID、方向与附件持久化、可信员工关联、context 隔离与版本、批次顺序和绝对截止、重复及非法归属拒绝、建批事务回滚、提示限频边界与并发、旧历史保留。
+- 独立 `node --env-file=../../.env t18-smoke.mjs` 探针也通过：真实后端进程 ID 为 `20739`、`20740`；并发插入只有一个胜出者，关闭全部业务连接后用全新连接恢复原始正文、context、批次及消息顺序。这里验证连接重建，不声称覆盖操作系统强杀或完整进程恢复调度。
+- 探针库 `kairo_t18_smoke_7fe97978b4cb43a6b84b0df99bbe7631` 已删除；最终查询显示没有 `kairo_t18_` 前缀临时库残留。临时探针文件已删除，正文未输出到日志。未操作真实 KK9、模型或其他 worktree 服务。
+- 此前同一实现的 `pnpm build`、`pnpm typecheck`、`pnpm lint` 及默认测试已通过，默认测试为 Driver 308 项、App 33 项。本轮补齐真实数据库证据，未修改存储源码，也未重复运行无变化的离线质量检查。
+
 ## 代码入口
 
 | 任务                                                                                | 位置                                                            |
