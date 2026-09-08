@@ -84,9 +84,9 @@ pnpm --filter @kairo/app start
 
 `start` 使用 Node 直接执行 `dist/index.js`，读取根目录 `.env` 中的 `DATABASE_URL`；系统环境变量优先。`dev` 先构建再启动同一个入口，不启动 Studio。生产构建仅运行 TypeScript 编译，不执行 `mastra build --studio`，也不打包 Studio UI。
 
-`startKairo()` 先加载并校验受控 Bot 配置、读取 Git commit，再创建进程内 Mastra 和 PostgreSQL storage，默认监听 `127.0.0.1:4110`。T17 提供 `GET /health/live`、`GET /health/ready`、`GET /health/dependencies` 三个只读接口，其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。存活不等于业务就绪，状态来源和判定见下文 T17；当前不装配 T28 的业务 Agent。
+`startKairo()` 先加载并校验受控 Bot 配置、读取 Git commit，再创建进程内 Mastra、PostgreSQL storage 和应用拥有的真实 `KK9Driver`。默认先监听 `127.0.0.1:4110`，再连接 Driver。T17 提供 `GET /health/live`、`GET /health/ready`、`GET /health/dependencies` 三个只读接口，其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。存活不等于业务就绪，状态来源和判定见下文 T17；当前不装配 T28 的业务 Agent。
 
-收到 Ctrl+C 或 SIGTERM 后先关闭健康端口，再等待 `mastra.shutdown()`。锁定的 `@mastra/core@1.63.2` 会在 shutdown 内关闭注册的 storage，不再重复调用 `storage.close()`。程序内调用方使用返回的 `close()`，重复或并发关闭共用同一个 Promise。
+收到 Ctrl+C 或 SIGTERM 后依次关闭健康端口、应用自己的 Driver、Mastra；某个资源关闭失败不阻止其余资源回收，错误仍向调用者传播。锁定的 `@mastra/core@1.63.2` 会在 shutdown 内关闭注册的 storage，不再重复调用 `storage.close()`。程序内调用方使用返回的 `close()`，重复或并发关闭共用同一个 Promise。
 
 开发 Studio 使用根目录独立的 `.env.studio`（已被 Git 忽略），不会自动读取正式 `.env`。配置以下实际值：
 
@@ -297,7 +297,7 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 
 ### T17 应用日志、错误与本机健康接口
 
-初次交付仅修改应用 operability、启动入口及直接受影响测试；随后经用户明确授权，扩展接入 Driver 日志，见本节末尾。两轮都不修改 `private-chat-core` 或数据库迁移，不规定 T18 必须采用的新接口。保留 T15 的 Git commit 与配置摘要，未装配依赖如实报告未知，不提前实现真实 IM 接入。
+初次交付实现应用 operability，随后经用户批准接入 Driver 日志并补齐正式 Driver 装配。各轮不修改 `private-chat-core` 或数据库迁移，不规定 T18 必须采用的新接口。保留 T15 的 Git commit 与配置摘要；实际依赖状态和最新验收以本节末尾正式装配记录为准。
 
 #### 日志与错误
 
@@ -327,7 +327,7 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 
 正式入口每次状态请求使用实际存储池的连接配置新建短连接，仅执行 `SELECT 1` 并关闭；连接和查询分别限时 2 秒，不改变业务池参数。`pg-pool` 的 password 属性不可枚举，探针必须显式保留，不能只展开配置。Mastra 使用已初始化实例注册的存储标识和应用关闭状态判定，不以包装对象引用相等判断。PostgreSQL 检查证明连接和查询可用，不代表业务表已迁移。
 
-当前 Driver、模型和 RAGFlow 尚未装配，均为 `unknown`，因此正式入口的 ready 保持 503；配置中存在模型名或地址不等于服务可用。这是本轮获批的接入边界，不把可注入状态的 HTTP 测试算作真实依赖已正常，也不新建 monitor、插件注册或业务存储层。
+正式入口默认创建并连接真实 Driver，沿用 `CDP_URL`（默认 `http://127.0.0.1:9222`）和 `PAGE_MATCH`（默认 `renderer.html`），只接受回环 CDP 地址；不启动或重启 KK9。Driver 健康要求 CDP connected、EventBridge attached、连接身份属于本启动代次且连接 ID 一致。关键 health/error 事件后该实例保持 down，不原地重连或后台重试；重启应用创建新实例。初次连接失败仍提供 live 和依赖诊断，ready 为 503。模型和 RAGFlow 未装配时仍为 unknown；核心正常则 degraded/200，不伪报六项全部正常。
 
 正式启动后可执行：
 
@@ -369,7 +369,7 @@ Driver 在 Pino `hooks.logMethod` 中、任何正文格式化或 Error/toJSON �
 
 `startKairo()` 在加载配置前执行 `setDriverLogSink(createDriverLogSink(logger))`，将上述记录送入应用现有 Pino 模块。四个固定事件为 `Driver运行状态`、`Driver运行异常`、`Driver连接状态`、`Driver发送结果`。沿用 Driver 原有 `LOG_LEVEL` 过滤；进入应用接收函数时，trace/debug/info 归为 info，warn 保持 warn，error/fatal 归为 error，不为这次接入增加日志框架。
 
-日志接入不创建 Driver、不连接 KK9，也不改变健康状态来源；正式入口的 `driver` 仍为 `unknown`。基础消息和原生媒体发送在现有最终结果出口记录状态，保持发送、回退、Bot 消息关联和 recall 行为不变；`getSendStatus()` 仍只查询，不被记为再次发送。发送记录中的 `durationMs` 来自已有 `verifyLatencyMs`，不是整个业务任务的执行时长。
+日志扩展本身不创建连接；后续正式装配由 `startKairo()` 创建并拥有 Driver，健康读取该实例。基础消息和原生媒体发送在现有最终结果出口记录状态，保持发送、回退、Bot 消息关联和 recall 行为不变；`getSendStatus()` 仍只查询，不被记为再次发送。发送记录中的 `durationMs` 来自已有 `verifyLatencyMs`，不是整个业务任务的执行时长。
 
 Driver 注入渲染页的五条告警只输出 `[KairoDriver]` 前缀加固定中文字符串，不附带异常对象：前序 Hook 清理、CDP binding 派发、会话摘要更新、聊天窗口推送、Vue 滚动列表检查。`CdpClient` 在现有 `Runtime.consoleAPICalled` 事件路径仅识别这五条精确字符串，转入统一日志，丢弃附加参数；不采集 KK9 的其他控制台输出，不新增 Runtime.enable、binding、连接步骤或全局 console 替换。页面告警本身仍在页面控制台可见，但已无原始错误内容。
 
@@ -388,7 +388,7 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 
 临时 `node apps/kairo/tmp/t17-driver-smoke.mjs` 另以普通 Node 子进程启动构建产物，通过本机临时端口实际建立 HTTP/WebSocket，执行 CDP 连接、带秘密原因的断连、再次连接、Driver 告警与无关页面输出注入，并通过真实 `startKairo()` 安装日志出口。捕获的 stdout 全为 JSON，stderr 为空，日志呈现 up → down → up → down，保留同一 `runId`，不含测试秘密。此处 CDP 服务是本地协议替身，不是 KK9；应用 live 返回 200，该轮未访问数据库。临时脚本与自己的端口均已清理。
 
-上述扩展初次交付时尚未执行真实 KK9 收发；用户随后要求真机验证，本节下方补充实际结果。真实 Driver 正常后的生产 ready 仍未验证。独立 Studio 和 Skill 加载前的原生 warning 维持原边界；不操作 T18 进程、测试库或 PR，不使用自动关闭 #222 的关键字。
+上述扩展初次交付时尚未执行真实 KK9 收发；用户随后要求真机验证及正式装配，下方分别保留各轮实际结果。独立 Studio 和 Skill 加载前的原生 warning 维持原边界；不操作 T18 进程、测试库或 PR，不使用自动关闭 #222 的关键字。
 
 #### 追加真实 KK9 验证（2026-09-08）
 
@@ -425,6 +425,38 @@ node apps/kairo/tmp/t17-real-health.mjs
 上述命令均以退出码 0 结束。健康监听、数据库短连接、CDP 连接、测试消息及本次 Hook 已回收，临时脚本在证据记录后删除。本轮没有修改产品源码，未重复运行未改变源码的离线质量套件；前一轮 Driver 320/App 61 的质量结果保持为历史验证记录。
 
 边界：这次证明真实连接、UrlCard 送达确认、原生历史、防重、状态查询、撤回、日志过滤和本机健康访问。没有执行阶段一全量入站矩阵、其他媒体类型、真实故障注入的 unknown/failed、自然断网恢复、接收方视觉确认、真实模型/RAGFlow 或员工失败说明；也没有验证六项真实依赖全部正常的生产 ready。PR 仍保留对应未验证项。
+
+#### 正式应用拥有 Driver 的验收（2026-09-08）
+
+`startKairo()` 返回自己拥有的 `driver`，先订阅错误/健康事件，再连接；测试只能通过显式工厂注入已有 `IKK9Driver`，CLI 不提供替身或禁用开关。SDK disconnect 清理本实例仍拥有的 Hook、订阅、观察器和 binding，不删除后来实例的资源；CDP 已失联时释放本机资源，由下一代接管清理遗留 Hook。握手使用既有超时配置，重复关闭复用同一操作。
+
+本轮实际命令：
+
+```bash
+pnpm --filter @kairo/driver exec vitest run --root ../.. packages/driver/tests/event-bridge-lifecycle.test.ts packages/driver/tests/cdp-lifecycle.test.ts packages/driver/tests/driver-health.test.ts packages/driver/tests/event-bridge.test.ts packages/driver/tests/cdp-client.test.ts packages/driver/tests/driver-lifecycle-logging.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/application-driver.test.ts tests/unit/operability-startup.test.ts
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+pnpm lint && pnpm --filter @kairo/app build
+node apps/kairo/tmp/t17-owned-driver-real.mjs
+# 在 apps/kairo 目录启动默认 CLI；临时预加载器仅为当前进程设置既有测试数据库连接。
+node --import ./tmp/t17-cli-env.mjs dist/index.js
+```
+
+SDK 定向回归 41 项、App 装配与健康回归 26 项通过；完整 build/typecheck/test 通过，Driver 330 项、App 86 项。首次 lint 指出一个受长度检查保护的索引和三个无 await 的测试替身，修正后单独执行 lint 与 App build 通过。握手测试最初的服务器半开连接问题也已修正。这里不把首次整串命令说成全部成功。
+
+真实探针不注入测试 Driver、不覆盖 SDK connect/disconnect，也不手工替 SDK 清理 Hook：
+
+- 只读确认 UID 5761 且不存在其他 Hook/binding。首次因当前界面没有活动会话而在发送前停止；随后通过真实 Driver 唯一核对 `int2024 / 0-3585`，明确指定目标，不切换界面。
+- 正式应用监听 `127.0.0.1:13034`，ready 200/degraded；配置、PostgreSQL、Mastra、Driver 为 up，模型/RAGFlow unknown。
+- 通过 `application.driver` 发送 UrlCard，正式 ID `135821251`、delivered、确认耗时 523ms，状态回查成功并已撤回。日志保留 ID、runId、状态与耗时，不含卡片正文、链接或凭证。
+- 只终止本应用自己的 WebSocket，Driver down、ready 503/not_ready，live 200，应用未崩溃。
+- 关闭后重新启动，新代 Driver 在 `127.0.0.1:13041` 恢复 up、ready 200/degraded；正常关闭后 Hook/binding 均不存在，登录身份与原界面状态不变。
+- 指向未监听的本机 CDP 端口，初次连接失败仍有 live 200、ready 503、driver down；错误归为 driver。
+- 默认 CLI 实际监听 `127.0.0.1:4110`，ready 返回相同的核心 up/degraded 状态；Ctrl+C 后退出码 0。监督工具的 Windows PTY 将中文日志解码为乱码，中文就绪模式超时；读取稳定的 `status: started` 字段与真实 HTTP 确认启动，不属于应用启动失败。
+
+上述真机探针和 CLI 的数据库访问仅执行健康只读查询，不修改测试表或迁移。另补跑 `pnpm --filter @kairo/app exec vitest run tests/integration/bot-customization.test.ts`，12/12 通过；在 apps/kairo 目录用 `node --import ./tmp/t17-cli-env.mjs ../../node_modules/vitest/vitest.mjs run tests/integration/mastra-route-isolation.spike.test.ts`，3/3 通过。后者显式注入测试 Driver，只在自身创建的随机数据库运行既有迁移、写入并回收，不操作其他工作树的测试库。第一次误用 App 目录下不存在的 Vitest 路径，改为根工作区入口后通过。测试消息和本任务进程、连接、端口均回收，临时探针在记录后删除。非回环访问证据沿用上一轮同一健康服务器实现的真实拒绝连接结果，不声称本轮从另一台机器重新验证。
+
+本轮补齐真实 Driver 正常后的正式 ready 验收；仍未调用真实模型/RAGFlow、验证六项真实依赖全部 up、全量入站矩阵或向员工实际发送中文失败说明。保留 #222 和 PR #260 的相应未验证项，不合并或关闭。
 
 ## 代码入口
 

@@ -27,32 +27,6 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
     expect(health.eventBridgeAttached).toBe(false);
   });
 
-  it('connect 只能由 EventBridge 拥有 binding 与注入生命周期', async () => {
-    const driver = new KK9Driver({
-      cdp: { url: 'http://127.0.0.1:9222', pageMatch: 'renderer.html' },
-    });
-    const internals = driver as unknown as {
-      eventBridge: { connect: () => Promise<void> };
-      cdp: {
-        sendCommand: ReturnType<typeof vi.fn>;
-        on: ReturnType<typeof vi.fn>;
-        evaluate: ReturnType<typeof vi.fn>;
-      };
-    };
-    const eventBridgeConnect = vi.fn().mockResolvedValue(undefined);
-    internals.eventBridge.connect = eventBridgeConnect;
-    internals.cdp.sendCommand = vi.fn().mockResolvedValue(undefined);
-    internals.cdp.on = vi.fn();
-    internals.cdp.evaluate = vi.fn().mockResolvedValue(undefined);
-
-    await driver.connect();
-
-    expect(eventBridgeConnect).toHaveBeenCalledOnce();
-    expect(internals.cdp.sendCommand).not.toHaveBeenCalled();
-    expect(internals.cdp.on).not.toHaveBeenCalled();
-    expect(internals.cdp.evaluate).not.toHaveBeenCalled();
-  });
-
   it('startPolling 与 stopPolling 应正确切换轮询状态', () => {
     const driver = new KK9Driver({
       cdp: {

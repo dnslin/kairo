@@ -87,11 +87,13 @@ export class CdpClient extends EventEmitter {
 
     try {
       const target = await this.discoverTarget();
+      if (this.isIntentionallyClosed) throw new CdpError('CDP 连接已主动取消');
       if (!target.webSocketDebuggerUrl) {
         throw new CdpError(`目标页面缺少 webSocketDebuggerUrl: ${target.title}`);
       }
 
       await this.connectWebSocket(target.webSocketDebuggerUrl);
+      if (this.isIntentionallyClosed) throw new CdpError('CDP 连接已主动取消');
       this.connectedAt = Date.now();
       this.connectionIdentity = {
         startupGenerationId: this.startupGenerationId,
@@ -107,6 +109,7 @@ export class CdpClient extends EventEmitter {
         'CDP 客户端连接成功'
       );
     } catch (err) {
+      await this.closeWebSocket();
       this.connectionIdentity = null;
       this.connectedAt = 0;
       this.setStatus('disconnected');
@@ -134,13 +137,7 @@ export class CdpClient extends EventEmitter {
       this.pending.delete(id);
     }
 
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-        this.ws.close();
-      }
-      this.ws = null;
-    }
+    await this.closeWebSocket();
 
     this.connectionIdentity = null;
     this.connectedAt = 0;
@@ -150,6 +147,20 @@ export class CdpClient extends EventEmitter {
       'CDP 客户端已主动断开'
     );
     await Promise.resolve();
+  }
+
+  private async closeWebSocket(): Promise<void> {
+    const ws = this.ws;
+    this.ws = null;
+    if (!ws) return;
+    if (ws.readyState !== WebSocket.CLOSED) {
+      // 主动释放本机句柄，不等待不可达对端完成关闭握手。
+      await new Promise<void>(resolve => {
+        ws.once('close', () => resolve());
+        ws.terminate();
+      });
+    }
+    ws.removeAllListeners();
   }
 
   public async sendCommand<T = unknown>(
@@ -257,13 +268,13 @@ export class CdpClient extends EventEmitter {
 
   private connectWebSocket(wsUrl: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl, { handshakeTimeout: this.config.timeoutMs ?? 5000 });
+      this.ws = ws;
       let settled = false;
 
       ws.on('open', () => {
         if (!settled) {
           settled = true;
-          this.ws = ws;
           this.setupWsHandlers(ws);
           resolve();
         }
@@ -273,7 +284,7 @@ export class CdpClient extends EventEmitter {
         if (!settled) {
           settled = true;
           reject(err);
-        } else {
+        } else if (!this.isIntentionallyClosed && this.ws === ws) {
           log.warn(
             {
               event: 'Driver运行异常',
@@ -333,7 +344,7 @@ export class CdpClient extends EventEmitter {
     });
 
     ws.on('close', () => {
-      this.handleDisconnect('WebSocket closed', ws);
+      if (!this.isIntentionallyClosed) this.handleDisconnect('WebSocket closed', ws);
     });
   }
 
@@ -373,7 +384,6 @@ export class CdpClient extends EventEmitter {
       socket &&
       (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
     ) {
-      socket.removeAllListeners();
       socket.terminate();
     }
     this.ws = null;

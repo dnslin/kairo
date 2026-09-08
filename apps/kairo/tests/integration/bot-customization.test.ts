@@ -8,10 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Agent } from '@mastra/core/agent';
 import { MastraLanguageModelV2Mock } from '@mastra/core/test-utils/llm-mock';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { defaultBotDirectory, loadBotConfig } from '../../src/config/load.js';
 import { loadBotCustomization } from '../../src/modules/bot-customization/instructions.js';
 import { startKairo } from '../../src/index.js';
+import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
 async function fixture(run: (directory: string) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'kairo-customization-'));
@@ -50,19 +51,22 @@ describe('T16 原生 filesystem Skill 合同', () => {
   ])('已启用 Skill %s 时，在数据库和监听初始化前拒绝启动', async (_scenario, source) => {
     await fixture(async directory => {
       await writeFile(join(directory, 'skills', 'reader-sim', 'SKILL.md'), source);
+      const driverFactory = vi.fn(() => new ApplicationTestDriver());
       // 空连接用于证明失败先于数据库初始化，而非启动后碰巧遇到其他错误。
       await expect(
-        startKairo({ configDirectory: directory, databaseUrl: '', port: 0 })
+        startKairo({ configDirectory: directory, databaseUrl: '', port: 0, driverFactory })
       ).rejects.toMatchObject({
         type: 'configuration',
         cause: expect.objectContaining({ message: expect.stringContaining('reader-sim') }),
       });
+      expect(driverFactory).not.toHaveBeenCalled();
     });
   });
 
   it('在原生解析之前拒绝 JavaScript 元数据，不执行其中的测试标记', async () => {
     await fixture(async directory => {
       const marker = `KAIRO_T16_${randomUUID().replaceAll('-', '')}`;
+      const driverFactory = vi.fn(() => new ApplicationTestDriver());
       try {
         await writeFile(
           join(directory, 'skills', 'reader-sim', 'SKILL.md'),
@@ -72,8 +76,10 @@ describe('T16 原生 filesystem Skill 合同', () => {
           configDirectory: directory,
           databaseUrl: '',
           port: 0,
+          driverFactory,
         }).catch((error: unknown) => error);
         expect(process.env[marker]).toBeUndefined();
+        expect(driverFactory).not.toHaveBeenCalled();
         expect(result).toBeInstanceOf(Error);
         expect(result).toMatchObject({
           type: 'configuration',

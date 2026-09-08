@@ -136,13 +136,18 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
         'DRIVER_INVALIDATED'
       );
     }
-    await this.eventBridge.connect();
+    try {
+      await this.eventBridge.connect();
+    } catch (error) {
+      this.invalidated = true;
+      throw error;
+    }
   }
 
-  public async disconnect(): Promise<void> {
+  public disconnect(): Promise<void> {
     this.invalidated = true;
     this.stopPolling();
-    await this.eventBridge.disconnect();
+    return this.eventBridge.disconnect();
   }
 
   /**
@@ -800,7 +805,6 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
   private wireCdpEvents(): void {
     this.cdp.on('status', (status: ConnectionStatus) => this.emit('status', status));
     this.cdp.on('heartbeat', (uptime: number) => this.emit('heartbeat', uptime));
-    this.cdp.on('error', (err: Error) => this.emit('error', err));
     this.cdp.on('connection_lost', (event: CdpConnectionLostEvent) => {
       this.invalidated = true;
       const health: DriverHealthEvent = {
@@ -820,6 +824,9 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
       this.invalidated = true;
       this.emit('health', event);
     });
-    this.eventBridge.on('error', (err: Error) => this.emit('error', err));
+    this.eventBridge.on('error', (err: Error) => {
+      this.invalidated = true;
+      this.emit('error', err);
+    });
   }
 }

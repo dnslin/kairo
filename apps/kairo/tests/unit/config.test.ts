@@ -7,9 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { stringify } from 'yaml';
 import { loadBotConfig } from '../../src/config/load.js';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { botConfigSchema } from '../../src/config/schema.js';
 import { startKairo } from '../../src/index.js';
+import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
 function validConfig() {
   return {
@@ -155,12 +156,14 @@ describe('T15 受控配置读取', () => {
   it('错误配置先于数据库和端口初始化失败', async () => {
     await withConfig(async directory => {
       await writeFile(join(directory, 'bot.yaml'), 'employeeAllowlist: []\n');
+      const driverFactory = vi.fn(() => new ApplicationTestDriver());
       await expect(
-        startKairo({ configDirectory: directory, databaseUrl: '', port: 0 })
+        startKairo({ configDirectory: directory, databaseUrl: '', port: 0, driverFactory })
       ).rejects.toMatchObject({
         type: 'configuration',
         cause: expect.objectContaining({ message: expect.stringContaining('Bot 配置校验失败') }),
       });
+      expect(driverFactory).not.toHaveBeenCalled();
     });
   });
 

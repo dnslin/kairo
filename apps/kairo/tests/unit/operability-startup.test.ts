@@ -3,6 +3,7 @@ import type { Socket } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
+import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
 describe('T17 正式入口的真实健康路径', () => {
   it('数据库握手挂起时健康请求有界失败，live 不受影响且未接入依赖保持未知', async () => {
@@ -19,6 +20,7 @@ describe('T17 正式入口的真实健康路径', () => {
       application = await startKairo({
         databaseUrl: `postgresql://probe:不能泄露的测试密码@127.0.0.1:${address.port}/t17_probe`,
         port: 0,
+        driverFactory: () => new ApplicationTestDriver(),
       });
       const pending = fetch(`${application.url}/health/ready`, {
         signal: AbortSignal.timeout(5000),
@@ -35,7 +37,7 @@ describe('T17 正式入口的真实健康路径', () => {
           configuration: 'up',
           postgres: 'down',
           mastra: 'up',
-          driver: 'unknown',
+          driver: 'up',
           ragflow: 'unknown',
           model: 'unknown',
         },

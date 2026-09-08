@@ -7,6 +7,7 @@ import type { KairoApplication } from '../../src/index.js';
 import { createStudioMastra } from '../../src/mastra/dev-server.js';
 import { createPostgresPool } from '../../src/db/pool.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
+import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
 const databaseUrl = process.env.KAIRO_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error('缺少 KAIRO_TEST_DATABASE_URL，不能执行 T13 集成测试');
@@ -22,21 +23,25 @@ describe('T13 生产路由隔离', () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('MASTRA_STUDIO', 'true');
     vi.stubEnv('KAIRO_STUDIO_DATABASE_URL', databaseUrl);
-    const application = await startKairo({ databaseUrl, port: 0 });
+    const application = await startKairo({
+      databaseUrl,
+      port: 0,
+      driverFactory: () => new ApplicationTestDriver(),
+    });
     applications.push(application);
     expect(new URL(application.url).hostname).toBe('127.0.0.1');
     const live = await fetch(`${application.url}/health/live`);
     expect(live.status).toBe(200);
     expect(await live.json()).toEqual({ status: 'alive' });
     const ready = await fetch(`${application.url}/health/ready`);
-    expect(ready.status).toBe(503);
+    expect(ready.status).toBe(200);
     expect(await ready.json()).toEqual({
-      status: 'not_ready',
+      status: 'degraded',
       dependencies: {
         configuration: 'up',
         postgres: 'up',
         mastra: 'up',
-        driver: 'unknown',
+        driver: 'up',
         ragflow: 'unknown',
         model: 'unknown',
       },
@@ -44,7 +49,7 @@ describe('T13 生产路由隔离', () => {
     const dependencies = await fetch(`${application.url}/health/dependencies`);
     expect(dependencies.status).toBe(200);
     expect(await dependencies.json()).toMatchObject({
-      dependencies: { postgres: 'up', driver: 'unknown' },
+      dependencies: { postgres: 'up', driver: 'up' },
     });
     for (const [method, path] of [
       ['GET', '/'],
@@ -62,7 +67,11 @@ describe('T13 生产路由隔离', () => {
   });
 
   it('关闭释放实际端口和数据库连接，重复关闭不会重新执行', async () => {
-    const application = await startKairo({ databaseUrl, port: 0 });
+    const application = await startKairo({
+      databaseUrl,
+      port: 0,
+      driverFactory: () => new ApplicationTestDriver(),
+    });
     applications.push(application);
     await application.storage.db.query('SELECT 1');
     await Promise.all([application.close(), application.close()]);
@@ -97,7 +106,11 @@ describe('T13 Studio 数据隔离', () => {
         created.push(name);
         await migrateDatabase({ databaseUrl: urlFor(name) });
       }
-      const production = await startKairo({ databaseUrl: urlFor(productionName), port: 0 });
+      const production = await startKairo({
+        databaseUrl: urlFor(productionName),
+        port: 0,
+        driverFactory: () => new ApplicationTestDriver(),
+      });
       try {
         const developmentUrl = new URL(urlFor(developmentName));
         developmentUrl.pathname = '/outer_alias_not_used';

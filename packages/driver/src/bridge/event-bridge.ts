@@ -47,6 +47,9 @@ export class KK9EventBridge extends EventEmitter {
   private isConnecting = false;
   private lastAttachError: Error | null = null;
   private injectionIdentity: CdpConnectionIdentity | null = null;
+  // 健康身份会在断线时清空，清理责任必须保留到本实例关闭。
+  private cleanupConnectionId: string | null = null;
+  private disconnectPromise: Promise<void> | null = null;
   private readonly knownMessageKeys = new Set<string>();
   private readonly knownRecalledMessageKeys = new Set<string>();
   private readonly knownBotSentMessageKeys: Set<string>;
@@ -128,6 +131,9 @@ export class KK9EventBridge extends EventEmitter {
    * 连接 CDP 并完成原生事件桥注入
    */
   public async connect(): Promise<void> {
+    if (this.disconnectPromise) {
+      throw new Error('EventBridge 已关闭，禁止原地重连');
+    }
     if (this.getStatus() === 'connected' && this.attached) {
       return;
     }
@@ -151,6 +157,13 @@ export class KK9EventBridge extends EventEmitter {
         { binding: this.bindingName, startupGenerationId: this.startupGenerationId },
         'KK9 原生事件直连桥就绪'
       );
+    } catch (error) {
+      try {
+        await this.disconnect();
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'EventBridge 连接失败且清理失败');
+      }
+      throw error;
     } finally {
       this.isConnecting = false;
     }
@@ -159,17 +172,79 @@ export class KK9EventBridge extends EventEmitter {
   /**
    * 主动断开连接并清理事件桥
    */
-  public async disconnect(): Promise<void> {
+  public disconnect(): Promise<void> {
+    this.disconnectPromise ??= this.closeOwnedResources();
+    return this.disconnectPromise;
+  }
+
+  private async closeOwnedResources(): Promise<void> {
     this.attached = false;
     this.injectionIdentity = null;
-    await this.cdp.disconnect();
+    const errors: unknown[] = [];
+    try {
+      if (this.cleanupConnectionId !== null && this.cdp.getStatus() !== 'connected') {
+        // 失联是已知状态，不把未执行的远端清理伪装成新的关闭异常。
+        log.warn(
+          {
+            event: 'Driver运行异常',
+            status: 'down',
+            errorType: 'driver',
+            startupGenerationId: this.startupGenerationId,
+          },
+          'CDP 已失联，远端 Hook 留待新代接管时清理'
+        );
+      } else if (this.cleanupConnectionId !== null) {
+        const result = await this.cdp.evaluate<{ owned: boolean; error?: string }>(
+          this.buildInBrowserCleanupScript(this.cleanupConnectionId)
+        );
+        if (result?.owned) {
+          if (result.error) errors.push(new Error(`EventBridge 清理失败: ${result.error}`));
+          await this.cdp.sendCommand('Runtime.removeBinding', { name: this.bindingName });
+        }
+      }
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      this.cleanupConnectionId = null;
+      try {
+        await this.cdp.disconnect();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, 'EventBridge 资源清理失败');
     log.info({ startupGenerationId: this.startupGenerationId }, 'KK9 原生事件直连桥已断开');
+  }
+
+  private buildInBrowserCleanupScript(connectionId: string): string {
+    return `(() => {
+      const cleanup = window.__kairo_bridge_cleanup;
+      if (typeof cleanup === 'function' &&
+          (cleanup.generationId !== ${JSON.stringify(this.startupGenerationId)} ||
+           cleanup.connectionId !== ${JSON.stringify(connectionId)})) {
+        return { owned: false };
+      }
+      const binding = window[${JSON.stringify(this.bindingName)}];
+      let error;
+      try {
+        if (typeof cleanup === 'function') cleanup();
+      } catch (cause) {
+        error = String(cause);
+      } finally {
+        if (window[${JSON.stringify(this.bindingName)}] === binding) {
+          delete window[${JSON.stringify(this.bindingName)}];
+        }
+      }
+      return { owned: true, error };
+    })()`;
   }
 
   /**
    * 重新注入 CDP Binding 与渲染进程 Hook 脚本
    */
   public async reattach(): Promise<boolean> {
+    if (this.disconnectPromise) return false;
     const connectionIdentity = this.getCdpConnectionIdentity();
     if (this.attached && this.sameConnectionIdentity(this.injectionIdentity, connectionIdentity)) {
       return true;
@@ -187,6 +262,7 @@ export class KK9EventBridge extends EventEmitter {
     try {
       await this.cdp.sendCommand('Runtime.enable');
       await this.cdp.sendCommand('Runtime.addBinding', { name: this.bindingName });
+      this.cleanupConnectionId = connectionIdentity?.connectionId ?? '';
 
       const hookScript = this.buildInBrowserHookScript(connectionIdentity);
       const injectionResult = await this.cdp.evaluate<{
@@ -194,6 +270,7 @@ export class KK9EventBridge extends EventEmitter {
         busFound?: boolean;
         sessionsHooked?: number;
       }>(hookScript);
+      if (this.disconnectPromise) throw new Error('EventBridge 注入期间已关闭');
       if (!injectionResult?.ok || injectionResult.busFound !== true) {
         throw new Error(
           `EventBridge 注入返回无效: ok=${String(injectionResult?.ok)}, busFound=${String(injectionResult?.busFound)}, sessionsHooked=${String(injectionResult?.sessionsHooked)}`
@@ -598,6 +675,22 @@ export class KK9EventBridge extends EventEmitter {
         const bus = getBus();
         const unbindFns = [];
         const hookedSessions = new Set();
+        let observer = null;
+        const cleanup = () => {
+          const errors = [];
+          for (const unbind of unbindFns.splice(0)) {
+            try { unbind(); } catch (error) { errors.push(error); }
+          }
+          if (observer) {
+            try { observer.disconnect(); } catch (error) { errors.push(error); }
+            observer = null;
+          }
+          if (window.__kairo_bridge_cleanup === cleanup) delete window.__kairo_bridge_cleanup;
+          if (errors.length) throw new AggregateError(errors, 'EventBridge Hook 清理失败');
+        };
+        cleanup.generationId = ${generationId};
+        cleanup.connectionId = ${connectionId};
+        window.__kairo_bridge_cleanup = cleanup;
 
         function resolveSenderName(senderId, msgId, sesUUID) {
           const main = getMainPageVm();
@@ -652,11 +745,7 @@ export class KK9EventBridge extends EventEmitter {
         function onBus(event, handler) {
           if (!bus || typeof bus.$on !== 'function') return;
           bus.$on(event, handler);
-          unbindFns.push(() => {
-            try {
-              bus.$off(event, handler);
-            } catch (e) {}
-          });
+          unbindFns.push(() => bus.$off(event, handler));
         }
 
         function parseRecallFromMsg(m, defaultSessionId) {
@@ -802,12 +891,18 @@ export class KK9EventBridge extends EventEmitter {
                 }
                 return origAdd.apply(this, arguments);
               };
+              const hookedAdd = vm.addRevokeMsg;
+              unbindFns.push(() => {
+                if (vm.addRevokeMsg === hookedAdd) {
+                  vm.addRevokeMsg = origAdd;
+                  delete vm.__kairo_revoke_active;
+                }
+              });
             }
           });
         }
         hookChatContentInstances();
         // 5. DOM 变动监听器（作为系统气泡撤回提示的终极兜底守卫）
-        let observer = null;
         try {
           observer = new MutationObserver((mutations) => {
             hookChatContentInstances();
@@ -842,14 +937,6 @@ export class KK9EventBridge extends EventEmitter {
           observer.observe(document.body, { childList: true, subtree: true });
         } catch {}
 
-        window.__kairo_bridge_cleanup = () => {
-          unbindFns.forEach(fn => {
-            try { fn(); } catch (e) {}
-          });
-          if (observer) {
-            try { observer.disconnect(); } catch (e) {}
-          }
-        };
 
         return { ok: true, busFound: !!bus, sessionsHooked: hookedSessions.size };
       })()
