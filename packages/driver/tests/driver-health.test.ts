@@ -69,6 +69,40 @@ describe('KK9Driver 结构化健康事实合同', () => {
     await expect(driver.connect()).rejects.toThrow('禁止原地重连');
   });
 
+  it('只监听Driver.error即可接住一次CDP错误，之后禁止原地重连', async () => {
+    const driver = createDriver();
+    const internals = driver as unknown as DriverInternals;
+    const errors: Error[] = [];
+    const cause = new Error('底层连接异常');
+    driver.on('error', error => errors.push(error));
+
+    internals.cdp.emit('error', cause);
+    expect(errors).toEqual([cause]);
+    await expect(driver.connect()).rejects.toThrow('禁止原地重连');
+  });
+
+  it('底层失联同时产生健康事实和单次error，后续心跳不能恢复此实例', async () => {
+    const driver = createDriver();
+    const internals = driver as unknown as DriverInternals;
+    const errors: Error[] = [];
+    const health: DriverHealthEvent[] = [];
+    const cause = new Error('连接已断开');
+    driver.on('error', error => errors.push(error));
+    driver.on('health', event => health.push(event));
+
+    internals.cdp.emit('connection_lost', {
+      startupGenerationId: 'gen-health-01',
+      connectionIdentity,
+      observedAt: 123,
+      cause,
+    } satisfies CdpConnectionLostEvent);
+    internals.cdp.emit('error', cause);
+    internals.cdp.emit('heartbeat', 456);
+    expect(errors).toEqual([cause]);
+    expect(health).toEqual([expect.objectContaining({ kind: 'cdp_invalidated', cause })]);
+    await expect(driver.connect()).rejects.toThrow('禁止原地重连');
+  });
+
   it('转发 EventBridge 身份失效而不依赖日志文本解析', () => {
     const driver = createDriver();
     const events: DriverHealthEvent[] = [];

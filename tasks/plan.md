@@ -457,3 +457,33 @@ RAGFlow：
 - 正式入口有效启动、凭证字段错误退出码 1、恢复后再次启动均已验证。真实测试数据库可用；修改文件不热更新，重启后读取新值，恢复原文件后摘要相同。
 - 验证只向临时进程提供测试数据库连接，不改写正式数据库环境设置；未调用模型、RAGFlow 或 IM，不把配置交付当作业务 Agent 交付。
 - 详细使用说明、执行命令与结果见 `docs/DEVELOPMENT.md` 的 T15 章节。临时程序和验证进程已清理；GitHub Issue 保持 open，等待分支交付与合并，不以本地完成提前关闭。
+
+## 16. T17 正式 Driver 装配补齐计划（2026-09-08）
+
+关联 #222 与 PR #260。用户已要求先规划并继续补齐：应用必须拥有真实 Driver，而不是只在测试程序里连接 Driver。对外状态继续记录在该 issue/PR，本轮执行进度用终端任务清单，不另建业务任务或修改 T18 的账本与迁移。
+
+### 事实与决策
+
+- 已有应用日志、健康服务以及 `IKK9Driver`、健康快照和健康事件合同，直接复用，不创建新 Driver 接口或恢复框架。
+- `startKairo()` 创建并拥有 Driver；默认使用真实 `KK9Driver`，程序内测试通过显式工厂注入已有接口的测试实现。正式 CLI 不提供 Fake/禁用 Driver 的开关。
+- 沿用现有基础设施变量 `CDP_URL`、`PAGE_MATCH`，默认 `http://127.0.0.1:9222` 和 `renderer.html`；仅连接回环 CDP，不启动、终止或重启 KK9。不向受控 Bot YAML 增加传输配置，不改变员工身份/业务规则合同。
+- Driver 初次连接失败时，保留 live 与依赖诊断，明确记录 Driver 错误并保持 ready 503；不伪报启动就绪、不回退到替身。失效实例不原地重连，不添加后台重试；重启应用创建新实例。
+- Driver 健康要求 CDP connected、EventBridge attached、两端非空连接身份属于同一启动代次且连接 ID 一致。关键 health/error 事件使本实例保持 down，单次发送返回 failed 不自动等同于连接失效。
+- Driver up 且配置/PostgreSQL/Mastra 正常时，未接入的模型/RAGFlow 仍为 unknown，因此总状态为 degraded、ready HTTP 200，不声称六项真实依赖全部正常。
+
+### 实施步骤与验收
+
+1. **SDK 生命周期补足**：在 `event-bridge.ts`、`driver.ts`、`cdp/client.ts` 及对应回归中，保证 disconnect 清理本实例仍拥有的 Hook/binding，不清理更新实例的资源；页面已不可达时仍释放本机连接。修正 Driver 对 EventBridge error 的单次转发，握手复用既有超时值。验证新旧实例关闭顺序、真实错误事件、握手挂起和重复关闭，不新增公开重试 API。
+2. **正式入口装配**：在应用入口创建 Driver、先订阅错误与健康事件，再进行连接；健康回调实时读取该实例，初次失败不关闭 live。关闭顺序与启动失败清理覆盖健康端口、Driver、Mastra，任何资源关闭失败也不能阻止其他资源回收，错误仍向调用者传播。应用返回自己拥有的 Driver。对应 App 单元/集成调用显式隔离测试依赖，不能自动访问 KK9。
+3. **离线门禁**：执行 SDK 定向回归、App 启动与健康回归、build/typecheck/test/lint；验证核心正常时 degraded 200、Driver 失效后 not_ready 503、live 不受影响、错误对象不泄漏、启动失败/监听失败的资源回收。
+4. **正式入口真机验收**：先只读确认真实 KK9 和既有 Hook 边界；用真实 `startKairo()`、真实 PostgreSQL 与真实 Driver 验证启动及健康状态，不使用独立 Driver 冒充应用依赖。只中断本应用自己的 WebSocket模拟连接失效，不重启 KK9或触碰其他工作树连接；验证 live/ready 转换、关闭、再次启动与最终 Hook 清理。若做定向消息验证，只操作已核对的 5761 → int2024/0-3585 和本次测试消息。
+5. **交付**：更新开发文档、PR 和 issue 的当前事实与未验证项，提交推送；不自动合并或关闭 issue，不把模型/RAGFlow、业务 Agent 或全量入站矩阵算作已完成。
+
+SDK 资源关闭与应用入口装配可以按文件边界并行；共用合同是既有 `IKK9Driver`，SDK 不依赖 App，App 不读取 SDK 私有字段。临时真机故障探针可定位自身连接用于测试，但不把测试入口加入产品 API。
+
+### 实施结果
+
+- SDK 生命周期与正式应用装配已完成；SDK 定向 41 项、App 装配与健康 26 项通过。完整 build/typecheck/test 通过（Driver 330、App 86），修正首次 lint 问题后 lint 与 App build 通过；受影响 Skill 集成 12 项、真实 PostgreSQL 路由隔离 3 项通过。
+- 真实 `startKairo()` 自己拥有 Driver：启动 degraded/200；仅本应用 WebSocket 断开后 not_ready/503、live 200；重启新代恢复 degraded/200；正常关闭清理 Hook/binding。初次 CDP 失败仍保持 live。通过 application.driver 发送的消息 135821251 确认送达且已撤回。
+- 默认 CLI 实际访问 127.0.0.1:4110 得到核心依赖 up、degraded；Ctrl+C 正常退出码 0。模型/RAGFlow 仍 unknown，不把结果写成全部依赖 ready。
+- 详细命令、首次失败修正和验证边界已更新 docs/DEVELOPMENT.md；保留 issue/PR 未验证项，不合并或关闭。

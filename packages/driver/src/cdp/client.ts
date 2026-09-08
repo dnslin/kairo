@@ -12,6 +12,14 @@ import { createChildLogger } from '../utils/logger.js';
 
 const log = createChildLogger('cdp-client');
 
+const RENDERER_DIAGNOSTICS: Readonly<Record<string, 'warn' | 'error'>> = {
+  '[KairoDriver] 前序Hook清理异常': 'warn',
+  '[KairoDriver] 事件派发到CDP binding失败': 'error',
+  '[KairoDriver] 会话摘要更新失败': 'warn',
+  '[KairoDriver] 聊天窗口推送失败': 'warn',
+  '[KairoDriver] Vue滚动列表检查失败': 'warn',
+};
+
 interface CdpTarget {
   id: string;
   title: string;
@@ -79,11 +87,13 @@ export class CdpClient extends EventEmitter {
 
     try {
       const target = await this.discoverTarget();
+      if (this.isIntentionallyClosed) throw new CdpError('CDP 连接已主动取消');
       if (!target.webSocketDebuggerUrl) {
         throw new CdpError(`目标页面缺少 webSocketDebuggerUrl: ${target.title}`);
       }
 
       await this.connectWebSocket(target.webSocketDebuggerUrl);
+      if (this.isIntentionallyClosed) throw new CdpError('CDP 连接已主动取消');
       this.connectedAt = Date.now();
       this.connectionIdentity = {
         startupGenerationId: this.startupGenerationId,
@@ -95,16 +105,22 @@ export class CdpClient extends EventEmitter {
       this.setStatus('connected');
       this.startHeartbeat();
       log.info(
-        { title: target.title, url: target.url, startupGenerationId: this.startupGenerationId },
+        { event: 'Driver连接状态', status: 'up', startupGenerationId: this.startupGenerationId },
         'CDP 客户端连接成功'
       );
     } catch (err) {
+      await this.closeWebSocket();
       this.connectionIdentity = null;
       this.connectedAt = 0;
       this.setStatus('disconnected');
       const error = err instanceof Error ? err : new Error(String(err));
       log.error(
-        { err: error.message, startupGenerationId: this.startupGenerationId },
+        {
+          event: 'Driver连接状态',
+          status: 'down',
+          startupGenerationId: this.startupGenerationId,
+          errorType: 'driver',
+        },
         'CDP 连接失败'
       );
       throw new CdpError(`CDP 连接失败: ${error.message}`, error);
@@ -121,19 +137,30 @@ export class CdpClient extends EventEmitter {
       this.pending.delete(id);
     }
 
-    if (this.ws) {
-      this.ws.removeAllListeners();
-      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-        this.ws.close();
-      }
-      this.ws = null;
-    }
+    await this.closeWebSocket();
 
     this.connectionIdentity = null;
     this.connectedAt = 0;
     this.setStatus('disconnected');
-    log.info({ startupGenerationId: this.startupGenerationId }, 'CDP 客户端已主动断开');
+    log.info(
+      { event: 'Driver连接状态', status: 'down', startupGenerationId: this.startupGenerationId },
+      'CDP 客户端已主动断开'
+    );
     await Promise.resolve();
+  }
+
+  private async closeWebSocket(): Promise<void> {
+    const ws = this.ws;
+    this.ws = null;
+    if (!ws) return;
+    if (ws.readyState !== WebSocket.CLOSED) {
+      // 主动释放本机句柄，不等待不可达对端完成关闭握手。
+      await new Promise<void>(resolve => {
+        ws.once('close', () => resolve());
+        ws.terminate();
+      });
+    }
+    ws.removeAllListeners();
   }
 
   public async sendCommand<T = unknown>(
@@ -209,7 +236,7 @@ export class CdpClient extends EventEmitter {
 
   private async discoverTarget(): Promise<CdpTarget> {
     const url = `${this.config.url.replace(/\/+$/, '')}/json`;
-    log.debug({ url }, '正在探测 CDP 渲染目标');
+    log.debug({ startupGenerationId: this.startupGenerationId }, '正在探测 CDP 渲染目标');
 
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
@@ -241,13 +268,13 @@ export class CdpClient extends EventEmitter {
 
   private connectWebSocket(wsUrl: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(wsUrl, { handshakeTimeout: this.config.timeoutMs ?? 5000 });
+      this.ws = ws;
       let settled = false;
 
       ws.on('open', () => {
         if (!settled) {
           settled = true;
-          this.ws = ws;
           this.setupWsHandlers(ws);
           resolve();
         }
@@ -257,8 +284,15 @@ export class CdpClient extends EventEmitter {
         if (!settled) {
           settled = true;
           reject(err);
-        } else {
-          log.warn({ err: err.message }, 'WebSocket 运行中报错');
+        } else if (!this.isIntentionallyClosed && this.ws === ws) {
+          log.warn(
+            {
+              event: 'Driver运行异常',
+              errorType: 'driver',
+              startupGenerationId: this.startupGenerationId,
+            },
+            'WebSocket 运行中报错'
+          );
           this.emit('error', err);
         }
       });
@@ -291,17 +325,43 @@ export class CdpClient extends EventEmitter {
             resolve(res.result);
           }
         } else if (!res.id && res.method) {
+          if (res.method === 'Runtime.consoleAPICalled') {
+            this.logRendererDiagnostic(res.params);
+          }
           this.emit('event', res.method, res.params);
           this.emit(res.method, res.params);
         }
-      } catch (err) {
-        log.warn({ err: String(err) }, '解析 CDP 消息失败');
+      } catch {
+        log.warn(
+          {
+            event: 'Driver运行异常',
+            errorType: 'driver',
+            startupGenerationId: this.startupGenerationId,
+          },
+          '解析 CDP 消息失败'
+        );
       }
     });
 
-    ws.on('close', (code, reason) => {
-      log.warn({ code, reason: reason.toString() }, 'CDP WebSocket 连接断开');
-      this.handleDisconnect('WebSocket closed', ws);
+    ws.on('close', () => {
+      if (!this.isIntentionallyClosed) this.handleDisconnect('WebSocket closed', ws);
+    });
+  }
+
+  private logRendererDiagnostic(params?: Record<string, unknown>): void {
+    const args = params?.['args'];
+    if (!Array.isArray(args)) return;
+    const first: unknown = args[0];
+    if (!first || typeof first !== 'object') return;
+    const argument = first as { type?: unknown; value?: unknown };
+    if (argument.type !== 'string' || typeof argument.value !== 'string') return;
+    if (!Object.hasOwn(RENDERER_DIAGNOSTICS, argument.value)) return;
+    const level = RENDERER_DIAGNOSTICS[argument.value];
+    if (!level) return;
+    log[level]({
+      event: 'Driver运行异常',
+      errorType: 'driver',
+      startupGenerationId: this.startupGenerationId,
     });
   }
 
@@ -324,13 +384,21 @@ export class CdpClient extends EventEmitter {
       socket &&
       (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
     ) {
-      socket.removeAllListeners();
       socket.terminate();
     }
     this.ws = null;
     this.connectionIdentity = null;
     this.connectedAt = 0;
     this.setStatus('disconnected');
+    log.warn(
+      {
+        event: 'Driver连接状态',
+        status: 'down',
+        errorType: 'driver',
+        startupGenerationId: this.startupGenerationId,
+      },
+      'CDP 连接已断开'
+    );
 
     if (!this.isIntentionallyClosed) {
       const event: CdpConnectionLostEvent = {
@@ -356,8 +424,15 @@ export class CdpClient extends EventEmitter {
           await this.evaluate('1');
           const uptime = this.getUptimeMs();
           this.emit('heartbeat', uptime);
-        } catch (err) {
-          log.warn({ err: String(err) }, '心跳检测失败');
+        } catch {
+          log.warn(
+            {
+              event: 'Driver运行异常',
+              errorType: 'driver',
+              startupGenerationId: this.startupGenerationId,
+            },
+            '心跳检测失败'
+          );
           this.handleDisconnect('Heartbeat check failed');
         }
       })();
