@@ -574,6 +574,80 @@ pnpm --filter @kairo/app test
 
 定向回归修复前 2 项失败、修复后 2 项通过；完整真实 task-store 为 26/26，App typecheck/build、根 lint 和默认 App 91 项均通过。完整集成随机库为 `kairo_t19_9caf8e59c5234593ba071bea440d84a5`，两个后端 PID 为 22540、22541；沿用自建库核验和清理，不操作原库或 KK9。未变更迁移、未增加 attempt 重试调度或额外锁框架。
 
+### T20 知识证据、反馈、Memory commit 与启动账本
+
+迁移为 `000006-knowledge-records.sql` 与 `000007-memory-commits.sql`；`000005` 已属于 T19。2026-09-08 已向 T21 工作终端确认这两个编号由 T20 占用，T21 使用后续 `000008`，不依赖本工作区未合并代码。
+
+#### 存储接口与边界
+
+- `modules/knowledge-qa/PostgresKnowledgeRecordStore`（文件 `knowledge-record-store.ts`）保存每次 Tool 调用的 query、task/attempt/boot/tool ID、同 task 唯一次序、开始时刻、耗时、结果类别和原始结果 JSON；证据与查询在一个事务提交。类别包含 found、empty、format_error、service_error、auth_error、parameter_error、cancelled、timeout；冲突由证据的 conflict 标记保存，不把格式错误或服务错误记为空资料。
+- 证据保存文档 ID/名称、片段 ID/正文、页码、原始 positions 和相似度。Dataset 保存在查询上；attempt 使用 task/attempt 复合外键。未知页码为 null，DOCX positions 不推算为物理页码。结果解析与类别判断由 T27 的受控调用方负责，本模块不实现检索或外部响应解析。
+- `recordFormalAnswer()` 保存已清洗的正式原问题与实际送达正文、首次 deliveredAt、发送 operation、原生消息 ID、boot 和采用证据。插入核对既有发送账本为 delivered 且目标会话与 task 相同；跨 task 证据由复合外键拒绝，整个写入回滚。正式回答无更新接口，同 task 重复写入明确报唯一约束错误，不覆盖首次正文和时刻。答案检查与实际发送仍属于 T29/T21。
+- `recordFeedback()` 只关联已记录正式回答，内部证据通过该回答的关联表保留。`suggestedAnswer` 可为空，验证状态固定为 unverified，不提供变为企业知识或写入 Memory 的接口。反馈语义判断、追问和处理编排仍属于 T31。
+- `getQuery/getEvidence/getFormalAnswer/getFeedback` 按 ID 读取；`listQueries/listEvidence/listAnswerEvidence/listFeedback` 按 taskId 和显式 `{ limit, offset }` 分页。调用按 callIndex、证据按调用/片段位置、反馈按 createdAt/feedbackId 确定排序；相关唯一键、外键和查询列均有索引。正文只在业务表，不进入普通日志。
+- `modules/agent-runtime/PostgresMemoryCommitStore` 只从 formal_answers 创建一 task 一条 pending 记录；问答和身份分别联查正式回答与 task，不再次复制正文、不接收员工更正文本。`createCommit()` 重复调用读取首次记录，缺正式回答返回 null；`advanceCommit()` 只允许 pending→saved→observed，重复、跳步、倒退或旧状态返回 false，SQL 错误仍向上传播。保存首次 createdAt/savedAt/observedAt，数据库约束时间顺序。
+- 用户在 T20 终端确认继续采用 T12 的 `JSON.stringify([threadId, taskId, role])` 正式消息 ID，不采用 T32 issue 快照中包含 inputVersion 的描述。ID 由不可变任务身份派生，正式问答时间仍沿用首次 deliveredAt。T20 不调用 saveMessages/observe，不扫描待提交记录，不实施 T32 恢复或任务/context 有效性裁决。
+- 所有公开时间均为 Unix 毫秒，数据库使用 timestamptz；Pool 由调用方拥有。没有自动清理、TTL、后台重试、兼容层或迁移时删除历史数据。
+
+#### 正式启动与关闭
+
+`modules/operability/PostgresRuntimeBootStore` 保存 bootId、Git commit、configDigest、startedAt、closedAt 和 starting/running/closed/failed。相同 bootId 保留首次元数据，运行和关闭采用条件更新，终态不可改写；列表按 startedAt/bootId 分页。
+
+`startKairo()` 在配置和真实定制校验后写 starting，启动完成写 running，关闭资源后写 closed；启动主流程或资源关闭失败时写 failed。返回值新增 bootId 和只供程序内诊断的 bootError。独立大小为 1 的启动账本池复用 Mastra 的实际连接配置，连接/查询限时 2 秒，在 Mastra 关闭后保存最终关闭结果，再关闭自身连接；不执行 DDL。
+
+用户确认沿用 T17 的诊断行为：启动账本写入失败仍提供 live，但本启动代次固定 not_ready/503，记录 storage 错误并保留原 cause，不自动重试；数据库恢复后必须重新启动应用。失败锁同时参与异步状态推进前及健康查询完成后的判定。数据库无法写入时不能保证有完整 boot 记录，不伪造成功记录或回退到普通日志保存业务正文。
+
+原 T13 生产路由测试曾只对配置中的原库做只读探测。由于启动现会写 boot，该测试已改用既有随机临时库夹具；不能再直接对共享原库执行带启动写入的测试。T20 复用 T19 夹具，所以部分验收库名前缀仍为 `kairo_t19_`；迁移前先核对实际库名和两个不同 backend PID，只删除本次自建库，不清理其他同前缀库。
+
+#### 实际验证（2026-09-08）
+
+已实际执行：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @kairo/app db:migrate:test
+pnpm --filter @kairo/app test:integration -- tests/integration/knowledge-record-store.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/memory-commit-store.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/runtime-boot-store.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/runtime-boot-startup.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/operability-startup.test.ts tests/unit/application-driver.test.ts
+node apps/kairo/tmp/t20-smoke-run.mjs
+```
+
+- 锁定安装通过。迁移命令同时筛选 T19 与 T20 的“首次及重复迁移”：2 项通过、29 项未执行，不能把筛选结果当全量通过。
+- 知识/反馈 5/5、Memory 10/10、boot 存储 12/12、启动集成最终 4/4 通过；覆盖五类检索结果、同 task 多次调用、分页、双连接竞争、跨任务引用拒绝、SQL 错误与事务回滚、反馈隔离、首次时刻/消息 ID 和状态前进。T17 受影响离线启动/Driver 26/26 通过，保留原有 ready 判定断言，只补充新的启动账本数据库夹具。
+- 启动接入回归在实现前为 3 项失败；首次运行先遇到本工作区 Driver 尚未构建，构建既有依赖后才得到上述行为失败。独立审查另发现“启动账本池连接失败后被 markRunning 解除失败锁”的反例：仅终止已核对属于当前随机库的单条自有账本连接，修复前预期 503、实际 200；修复后该回归和全部启动集成通过。没有终止数据库服务、其他连接或 KK9。
+- 独立普通 Node 烟测使用最新构建产物和随机库 `kairo_t20_smoke_e01022fc12b6494a8aa357ab9d49e579`。迁移使用测试管理账号 postgres，两个 schema 的 owner 均为 postgres；随后创建临时非超级用户运行账号，只授予 schema USAGE 和业务表 DML，不授予 DDL 权限。另在这个随机库安装遇到 DDL 就报错的 event trigger，正式应用仍成功启动、live/ready 均为 200，正常关闭。这里证明运行无 DDL，不是声称实际执行的 DDL 被静默吞掉。
+- 烟测双连接 PID 为 23034/23035；按 taskId `29655744-459c-4ad4-a538-6daec03d4103` 以每页 2 条读回 5 次查询，顺序为 found/empty/format_error/service_error/found，耗时 10.5–14.5ms；两条证据分别保存 PDF 页码样本和未知物理页码的 DOCX 原始 positions，后一条带 conflict。数据是存储合同的合成样本，不是本轮真实 RAGFlow 请求或 PDF 解析验收。
+- 关闭全部业务写入连接后，独立 `psql 18.6 -X -v ON_ERROR_STOP=1 -v task_id=… -A -t -f t20-record-check.sql` 通过运行账号重新连接，联查原始消息、batch、context、task、attempt、send、query/evidence、正式问答、feedback、Memory commit 和 boot。实际有 1 条原始消息、1 个采用 attempt、5 次查询、2 条证据、1 条未验证反馈，commit 为 observed、boot 为 closed。问答与员工更正分别读取，commit 仍只对应正式问答。
+- 普通应用 stdout 中捕获 8 条 JSON 日志，保留 taskId/runId/toolId、耗时、Git/config 摘要；不含合成问题、回答、知识片段或凭证标记，stderr 为空。psql 的合成业务正文核对输出与普通日志分开保存，不把业务查询输出冒称无正文。
+
+本轮不调用真实 KK9、主模型或 RAGFlow，不验证 T27 检索、T29 回答、T31 反馈编排、T32 正式 save/observe 与恢复。Checkpoint B 的真实 SOUL/AGENTS/Skill 加载及权限边界沿用本文件 T16 的 12 项原生集成和 6 个批准真实模型样例证据；不把确定性夹具当作本轮真实模型放行。
+
+#### 最终回归与 Checkpoint B
+
+最终实际执行下列完整命令，全部通过：
+
+```bash
+pnpm --filter @kairo/app test:integration -- tests/integration/private-chat-store.test.ts tests/integration/task-store.test.ts tests/integration/knowledge-record-store.test.ts tests/integration/memory-commit-store.test.ts tests/integration/runtime-boot-store.test.ts tests/integration/runtime-boot-startup.test.ts tests/integration/mastra-route-isolation.spike.test.ts tests/integration/bot-customization.test.ts
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+集成为 8 个文件、87/87；默认测试为 Driver 330/330、App 91/91。早期门禁曾发现一处测试 messageType 推导过宽、两处多余非空断言及一处无 await 的测试替身，修正后通过。另一次完整门禁在 App 测试中途由 Tinypool 报 `ERR_IPC_CHANNEL_CLOSED`，当次未执行后续 lint；单独重跑 App 91/91，随后原样重跑上述完整四命令成功。未更改测试配置、关闭异常或缩小测试范围；该次测试进程退出原因未复现，不能声称已修复测试框架。
+
+| Checkpoint B 项目 | 实际证据与边界 |
+| --- | --- |
+| 无效配置阻止 ready | 最终默认配置/完整 CLI 错误回归通过；校验仍发生在数据库和监听之前。T20 另验证启动账本失败后 live 可达、ready 固定 503。 |
+| SOUL、AGENTS、真实 Skill 可加载且不能扩权 | 本轮 bot-customization 12/12；批准模型的 6 个真实样例明确引用上文 T16 历史证据，不宣称本轮重新调用真实模型。 |
+| 迁移账号建立 kairo/mastra，运行无 DDL | 独立烟测中 postgres 迁移、双 schema owner 核对；临时受限运行账号加拒绝 DDL 的测试触发器，真实应用启动/关闭成功。 |
+| 全部业务记录按 ID 查询 | psql 以 taskId 联查原始消息、batch、context、task、attempt、send、query/evidence、feedback、Memory commit、boot；应用分页 API 逐页无遗漏。 |
+| 唯一约束与条件更新并发 | 本轮 T18 15/15、T19 26/26，及 T20 查询次序/事务、Memory 创建与状态、boot 启动与关闭的双连接回归。 |
+| 普通日志无正文或凭证 | 独立烟测 8 条真实应用日志抽查；最终默认日志隐私回归及真实 Skill 完整 stdout/stderr 回归通过。 |
+| 四项质量命令全部通过 | 最后一次原样执行 build/typecheck/test/lint，退出码 0；不把先前失败的执行记录算作成功。 |
+
+烟测结束后按精确库名及临时角色名只读核对，残留均为 0。临时脚本、SQL、业务核对输出和日志已移出仓库，保留在本次会话证据中；便携 psql 和下载包已删除，未安装数据库服务、未接管现有 DataGrip 窗口。长期复现使用上述已保留的集成测试；本节临时烟测命令是执行历史，不是新增生产命令。
+
+
 ## 代码入口
 
 | 任务                                                                                | 位置                                                            |

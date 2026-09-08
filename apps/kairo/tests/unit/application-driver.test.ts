@@ -6,9 +6,10 @@ import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
 import * as runtimeModule from '../../src/mastra/runtime.js';
 import * as healthModule from '../../src/modules/operability/health-server.js';
+import { PostgresRuntimeBootStore } from '../../src/modules/operability/runtime-boot-store.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
-// 本文件只隔离 PostgreSQL 短连接；应用仍持有实际 Mastra、健康监听和注入的 Driver。
+// 本文件隔离 PostgreSQL 健康查询和启动账本；账本真读写由 T20 集成测试覆盖。
 vi.mock('pg', async importOriginal => {
   const actual = await importOriginal<typeof Pg>();
   return {
@@ -34,6 +35,14 @@ const startHealth = healthModule.startHealthServer;
 beforeEach(() => {
   vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '');
   vi.stubEnv('RAGFLOW_API_KEY', '');
+  vi.spyOn(PostgresRuntimeBootStore.prototype, 'startBoot').mockImplementation(input =>
+    Promise.resolve({
+      inserted: true,
+      boot: { ...input, status: 'starting', closedAt: null },
+    })
+  );
+  vi.spyOn(PostgresRuntimeBootStore.prototype, 'markRunning').mockResolvedValue(true);
+  vi.spyOn(PostgresRuntimeBootStore.prototype, 'closeBoot').mockResolvedValue(true);
 });
 
 afterEach(async () => {
