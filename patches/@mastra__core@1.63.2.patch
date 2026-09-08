@@ -1,0 +1,26 @@
+diff --git a/dist/workspace-skills-CWLbD3Z8.cjs b/dist/workspace-skills-CWLbD3Z8.cjs
+index 6ab16ed3f58a45b9871eb2b4cf2048667af850d1..9f5f2dd255c7a5d073a185bfbcfa7cd386e0ced7 100644
+--- a/dist/workspace-skills-CWLbD3Z8.cjs
++++ b/dist/workspace-skills-CWLbD3Z8.cjs
+@@ -2301,7 +2301,7 @@ var WorkspaceSkillsImpl = class WorkspaceSkillsImpl {
+ 	*/
+ 	#validateSkillMetadata(metadata, dirName, instructions) {
+ 		const result = validateSkillMetadata(metadata, dirName, instructions);
+-		if (result.warnings.length > 0) for (const warning of result.warnings) console.warn(`[WorkspaceSkills] ${metadata.name}: ${warning}`);
++		if (result.warnings.length > 0) for (const warning of result.warnings) console.warn(`[WorkspaceSkills] ${dirName}: ${warning}`);
+ 		return result;
+ 	}
+ 	/**
+diff --git a/dist/workspace-skills-Dt0p50IG.js b/dist/workspace-skills-Dt0p50IG.js
+index 2a4eb62b04a5ab205e5aa143ebb4fdeac0ce4499..4c1b2c4e18d65ea5fd74e265c37a92c7e4aa9fd1 100644
+--- a/dist/workspace-skills-Dt0p50IG.js
++++ b/dist/workspace-skills-Dt0p50IG.js
+@@ -2294,7 +2294,7 @@ var WorkspaceSkillsImpl = class WorkspaceSkillsImpl {
+ 	*/
+ 	#validateSkillMetadata(metadata, dirName, instructions) {
+ 		const result = validateSkillMetadata(metadata, dirName, instructions);
+-		if (result.warnings.length > 0) for (const warning of result.warnings) console.warn(`[WorkspaceSkills] ${metadata.name}: ${warning}`);
++		if (result.warnings.length > 0) for (const warning of result.warnings) console.warn(`[WorkspaceSkills] ${dirName}: ${warning}`);
+ 		return result;
+ 	}
+ 	/**

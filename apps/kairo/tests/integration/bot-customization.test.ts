@@ -217,11 +217,19 @@ describe('T16 Skill 启动失败的完整日志', () => {
   });
 
   it.each([
-    ['未知 YAML 标签', '---\nname: reader-sim\ndescription: !invalid t16-secret\n---\n测试正文'],
-    ['元数据名称不匹配', '---\nname: t16-secret\ndescription: 测试技能\n---\n测试正文'],
-  ])(
+    [
+      '未知 YAML 标签',
+      '---\nname: reader-sim\ndescription: !invalid t16-secret\n---\n测试正文',
+      false,
+    ],
+    [
+      '元数据名称不匹配并触发长正文警告',
+      `---\nname: t16-secret\ndescription: 测试技能\n---\n${'测试正文\n'.repeat(501)}`,
+      true,
+    ],
+  ] as const)(
     '%s 拒绝启动且完整输出没有文件内容',
-    async (_scenario, source) => {
+    async (_scenario, source, hasLineWarning) => {
       await writeFile(skillFile, source);
       const result = await new Promise<{ code: string | number; stdout: string; stderr: string }>(
         resolve => {
@@ -236,6 +244,7 @@ describe('T16 Skill 启动失败的完整日志', () => {
       expect(result.code).toBe(1);
       expect(result.stdout + result.stderr).not.toContain('t16-secret');
       expect(result.stderr).toContain(skillFile);
+      if (hasLineWarning) expect(result.stderr).toMatch(/\b501\b/);
     },
     15000
   );

@@ -238,6 +238,8 @@ node apps/kairo/tmp/t14/faults.mjs
 
 启动使用公开 `resolveAgentSkills([])` 创建空 registry，再逐项调用锁定版本支持的 `addSkill()`，由 Mastra 校验 YAML、元数据和资源。成功返回即表示该 Skill 加载成功，不再通过扫描结果补查缺项。扫描路径会自行打印可能含源行的异常消息，而 `addSkill()` 向调用方抛错；Kairo 将其转换为固定的“YAML 格式错误”或“元数据或资源无效”类别，保留对应 `SKILL.md` 路径，不附带原始 message/cause，并在数据库与监听初始化前拒绝启动。没有自研解析器、全局 console 替换或日志过滤器。
 
+原生元数据校验还会在抛错之前发出长度 warning。`patches/@mastra__core@1.63.2.patch` 将 ESM 与 CommonJS 两个入口中 warning 的标识从未校验的 `metadata.name` 改为受控路径的 `dirName`；保留行数、token 数与整理建议，不关闭警告，也不放宽元数据校验。补丁经 `pnpm patch` / `pnpm patch-commit` 生成，随 `pnpm-workspace.yaml`、`pnpm-lock.yaml` 提交并由安装应用；升级 Mastra 时需重新验证该出口，不仅检查异常是否被捕获。
+
 实际能力边界来自提供给 Agent 的路径与工具集合，不来自模型是否遵守提示词。当前业务 Tool 为空，Skill 文本不能凭空添加 Dataset 查询或执行工具；将来的知识 Tool 仍须在 T27 固定 Dataset。员工 `/xxx` 不提供安装或强制选择入口；`/new` 的真正会话切换属于 T24，本模块仅声明边界，不声称已实现重置。
 
 配置与人格在启动时读取，不建设热更新；Skill 正文由 Mastra 按需读取，部署期间不要原地编辑受控文件，修改后重启。不另建文件快照或版本存储。
@@ -259,6 +261,14 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 - 临时 `t16-frontmatter-smoke.mjs` 使用最新构建产物与显式真实测试数据库：`---javascript`、`--- javascript`、带 BOM/CRLF 的 JavaScript 开始行均拒绝启动，三个测试标记均未执行。恢复带 BOM/CRLF 的合法真实 Skill 后正常启动，数据库 `SELECT 1` 成功、健康接口返回 200。只操作隔离目录，未调用模型；探针运行后删除。
 - 日志回归覆盖未知 YAML 标签和名称不匹配两条错误路径：编译当前源码到临时目录，启动真实 `dist/index.js` 子进程，捕获完整 stdout/stderr。修复前 10 项通过、新增 2 项因包含 `t16-secret` 失败；改用 `addSkill()` 并转换错误后 12 项通过，均要求退出码 1、输出不含测试秘密且保留出错文件路径。没有模拟 console、错误打印或原生解析器。
 - 独立启动探针使用相同的 `description: !invalid 测试秘密…` 输入复查最新源码：stdout 为空，退出码 1，stderr 只保留 Kairo 的“YAML 格式错误”诊断、文件路径及应用调用栈，不再包含源行或测试秘密。隔离配置、编译产物和进程已清理，没有修改正式配置或调用模型。修复后再次执行根质量命令和全部集成测试，均通过。
+
+#### 原生 warning 回归（2026-09-08）
+
+原先的名称不匹配用例仅有一行正文，没有覆盖 warning。将同一用例扩为 501 行非空正文后，原有补丁下 11 项通过、1 项失败，完整 stderr 包含 `[WorkspaceSkills] t16-secret: Instructions have 501 lines`。这证明 `addSkill()` 仍可能在向调用方抛错前泄漏元数据值。
+
+应用上述两行依赖补丁后，T16 12/12、全部集成测试 34/34 通过；长正文用例同时要求退出码 1、完整输出无测试秘密、保留出错路径与 501 行警告，不接受通过关闭警告使测试变绿。`pnpm install --frozen-lockfile`、`pnpm build && pnpm typecheck && pnpm test && pnpm lint` 均通过，未升级依赖版本。
+
+独立 Node 进程分别验证 ESM 与 CommonJS 原生入口：名称不匹配时退出码 1，改为合法名称后退出码 0；四次调用均保留 `[WorkspaceSkills] reader-sim` 的 501 行提示，不包含 `t16-secret`。这里只替代探针的错误展示以隔离 warning；真实 Kairo 入口的完整 stdout/stderr 由上述回归覆盖。临时文件和进程已清理，未调用真实模型或 IM。
 
 #### 真实模型验收阻塞
 
@@ -348,7 +358,7 @@ await driver.sendVoice({ filePath: 'D:/audio/notice.wav' }, { targetSessionId: '
 
 语音输入必须二选一：`{ text, voice? }` 或 `{ filePath }`。本地文件支持 WAV、MP3；文本通过 `node-edge-tts` 使用 Microsoft Edge Read Aloud 服务，默认音色 `zh-CN-XiaoxiaoNeural`，也可指定 `zh-CN-YunxiNeural`。该服务需要网络连接，不是带可用性承诺的付费语音 API。Driver 将音频解码为单声道、重采样到 8kHz，调用当前 KK9 安装包的 `lib/amrnb` 编码；不需要 Python 或 FFmpeg。发送数据是 AMR-NB 文件字节的 Base64，`duration` 为向上取整的秒数。TTS 临时音频在读取后删除；本地输入文件不会被删除。KK9 未开放 `window.require` 或缺少内置编码器时，明确返回准备失败。
 
-`pnpm-workspace.yaml` 的 `patchedDependencies` 固定应用两份依赖修补：`patches/node-edge-tts@1.2.10.patch` 让直连握手和合成共用超时期限，文件流错误进入正常拒绝路径，完成或失败时先关闭文件流和 WebSocket 再结束 Promise；`patches/@audio__decode-wav@1.5.0.patch` 修正 RIFF 奇数长度数据块的填充字节跳过规则。补丁文件、workspace 配置和 `pnpm-lock.yaml` 必须一起保存，通过 `pnpm install` 应用，不能仅手改 `node_modules`。升级这两个依赖时先确认上游是否已修复，并运行对应边界回归。
+Driver 的两份依赖修补由 `pnpm-workspace.yaml` 的 `patchedDependencies` 固定应用：`patches/node-edge-tts@1.2.10.patch` 让直连握手和合成共用超时期限，文件流错误进入正常拒绝路径，完成或失败时先关闭文件流和 WebSocket 再结束 Promise；`patches/@audio__decode-wav@1.5.0.patch` 修正 RIFF 奇数长度数据块的填充字节跳过规则。补丁文件、workspace 配置和 `pnpm-lock.yaml` 必须一起保存，通过 `pnpm install` 应用，不能仅手改 `node_modules`。升级这两个依赖时先确认上游是否已修复，并运行对应边界回归。Mastra warning 补丁另见 T16。
 
 Driver 不提供或使用第三方 TTS 库的 HTTP 代理选项。额外探针发现，该库可选代理模式在 CONNECT 握手挂起时仍可能遗留代理 TCP 连接；这不是当前 Driver 的直连路径，本次没有扩展代理功能或其修复范围。
 
