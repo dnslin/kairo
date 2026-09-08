@@ -388,7 +388,43 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 
 临时 `node apps/kairo/tmp/t17-driver-smoke.mjs` 另以普通 Node 子进程启动构建产物，通过本机临时端口实际建立 HTTP/WebSocket，执行 CDP 连接、带秘密原因的断连、再次连接、Driver 告警与无关页面输出注入，并通过真实 `startKairo()` 安装日志出口。捕获的 stdout 全为 JSON，stderr 为空，日志呈现 up → down → up → down，保留同一 `runId`，不含测试秘密。此处 CDP 服务是本地协议替身，不是 KK9；应用 live 返回 200，该轮未访问数据库。临时脚本与自己的端口均已清理。
 
-本扩展没有执行真实 KK9 收发或对应真机脚本，也没有验证真实 Driver 正常后的 ready。独立 Studio 和 Skill 加载前的原生 warning 仍维持原边界；不操作 T18 进程、测试库或 PR。PR 需明确标记这些未验证项，不使用自动关闭 #222 的关键字。
+上述扩展初次交付时尚未执行真实 KK9 收发；用户随后要求真机验证，本节下方补充实际结果。真实 Driver 正常后的生产 ready 仍未验证。独立 Studio 和 Skill 加载前的原生 warning 维持原边界；不操作 T18 进程、测试库或 PR，不使用自动关闭 #222 的关键字。
+
+#### 追加真实 KK9 验证（2026-09-08）
+
+本轮测试针对提交 `1d0e500`，使用当前机器的真实 KK9，不再是 CDP 协议替身。只读探针先通过 `127.0.0.1:9222/json` 找到正式 renderer，再用真实 `CdpClient` 两次连接、读取状态和主动断开。沿用真机脚本的 `.main-page` 选择器核对实际登录 UID 为 `5761`，当前会话为 `int2024 / 0-3585`；开始时不存在 Kairo Hook 或 binding，未接管其他会话。
+
+执行命令：
+
+```powershell
+node apps/kairo/tmp/t17-real-readonly.mjs
+$env:KK9_MEDIA_CONFIRM = '5761:0-3585:int2024'
+$env:KK9_MEDIA_TARGET_ID = '0-3585'
+$env:KK9_MEDIA_TARGET_NAME = 'int2024'
+$env:KK9_MEDIA_KEEP = '0'
+$env:KK9_MEDIA_KEY_CASES = '0'
+$env:CDP_URL = 'http://127.0.0.1:9222'
+$env:PAGE_MATCH = 'renderer.html'
+pnpm --filter @kairo/driver exec tsx ../../apps/kairo/tmp/t17-real-media.ts UrlCard
+node apps/kairo/tmp/t17-real-readonly.mjs
+node apps/kairo/tmp/t17-real-health.mjs
+```
+
+`t17-real-media.ts` 是临时验证包装器，安装真实应用日志接收函数后执行仓库现有 `examples/e2e-media.ts` 的 UrlCard 分支。没有替换 CDP 响应或消息结果。包装器在真实 connect 后持有本次 Hook/binding 的对象引用，在调用真实 disconnect 后清理自己的引用；仅在全局仍指向这些对象时删除对应入口，不清理后来替换的其他 Hook。原脚本的身份/目标门禁、发送、查询、防重与撤回逻辑均照常执行。
+
+实际结果：
+
+- 唯一测试标记 `Kairo媒体验收-1788833263349`；operationId 为 `media-UrlCard-662238e1-c341-4d8c-9f5b-5790d5071bcc`。
+- 真正发送一条卡片，返回 `delivered`、正式消息 ID `135813651`；确认耗时 `538ms`。
+- 同 operationId 重放返回同一 ID，状态回查为 delivered；`queryChatMessage` 和 `searchMessages` 均包含该消息，公开历史类型为 `url-card`。
+- 脚本成功撤回 `135813651`。随后只读复查仍为 UID 5761、会话 `int2024 / 0-3585`，Hook 与 binding 均不存在；仅关闭本轮的 CDP 连接，没有重启 KK9。
+- 捕获 13 条 Driver 应用日志，两条发送结果记录对应同一消息（初次发送与防重重放），只含 ID、runId、事件、状态和耗时，不含卡片正文、验收标记或消息链接。原真机脚本自己的验收诊断会显示测试标记与该条测试历史正文；这里不把它误称为应用生产日志，也不声称完整 CLI stdout 无正文。
+
+另以真实 `startKairo()` 启动本任务独立健康监听 `127.0.0.1:5860`，使用既有测试连接仅执行只读 `SELECT 1`，不写表或执行迁移。实际 live 200、ready 503、dependencies 200；配置/PostgreSQL/Mastra 为 up，driver/model/ragflow 为 unknown。同时存在的独立探针确实连接真实 KK9，但没有把这条外部连接伪装成应用已装配的 Driver。经本机 `100.90.167.77`、`172.16.3.76`、`172.30.224.1` 访问该端口均 `ECONNREFUSED`，不是从另一台机器发起访问。
+
+上述命令均以退出码 0 结束。健康监听、数据库短连接、CDP 连接、测试消息及本次 Hook 已回收，临时脚本在证据记录后删除。本轮没有修改产品源码，未重复运行未改变源码的离线质量套件；前一轮 Driver 320/App 61 的质量结果保持为历史验证记录。
+
+边界：这次证明真实连接、UrlCard 送达确认、原生历史、防重、状态查询、撤回、日志过滤和本机健康访问。没有执行阶段一全量入站矩阵、其他媒体类型、真实故障注入的 unknown/failed、自然断网恢复、接收方视觉确认、真实模型/RAGFlow 或员工失败说明；也没有验证六项真实依赖全部正常的生产 ready。PR 仍保留对应未验证项。
 
 ## 代码入口
 
