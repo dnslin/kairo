@@ -1,21 +1,63 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { getHealthSnapshot } from './health.js';
+import type { HealthDependencies } from './health.js';
+import { AppError, getErrorType } from './errors.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger();
 
 export interface HealthServer {
   url: string;
   close(): Promise<void>;
 }
 
-export async function startHealthServer(port = 4110): Promise<HealthServer> {
+export async function startHealthServer({
+  port = 4110,
+  host = '127.0.0.1',
+  readDependencies,
+}: {
+  port?: number;
+  host?: string;
+  readDependencies: () => Promise<HealthDependencies> | HealthDependencies;
+}): Promise<HealthServer> {
+  if (host !== '127.0.0.1' && host !== 'localhost') {
+    throw new AppError('configuration');
+  }
   const server = createServer((request, response) => {
-    // 存活不代表业务就绪；依赖状态和 ready 由 T17 接入。
-    if (request.method === 'GET' && request.url === '/health/live') {
-      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      response.end(JSON.stringify({ status: 'alive' }));
-    } else {
+    if (request.method !== 'GET') {
       response.writeHead(404);
       response.end();
+      return;
     }
+    if (request.url === '/health/live') {
+      response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ status: 'alive' }));
+      return;
+    }
+    if (request.url !== '/health/ready' && request.url !== '/health/dependencies') {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    void Promise.resolve()
+      .then(readDependencies)
+      .then(dependencies => {
+        const snapshot = getHealthSnapshot(dependencies);
+        const statusCode =
+          request.url === '/health/ready' && snapshot.status === 'not_ready' ? 503 : 200;
+        response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify(snapshot));
+      })
+      .catch(error => {
+        logger.error({
+          event: '依赖检查失败',
+          errorType: getErrorType(error),
+          status: 'not_ready',
+        });
+        response.writeHead(503, { 'content-type': 'application/json; charset=utf-8' });
+        response.end(JSON.stringify({ status: 'not_ready', error: '依赖状态读取失败' }));
+      });
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -25,11 +67,14 @@ export async function startHealthServer(port = 4110): Promise<HealthServer> {
     });
   });
   const address = server.address() as AddressInfo;
+  let closing: Promise<void> | undefined;
   return {
     url: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
+    close: (): Promise<void> => {
+      closing ??= new Promise<void>((resolve, reject) => {
         server.close(error => (error ? reject(error) : resolve()));
-      }),
+      });
+      return closing;
+    },
   };
 }

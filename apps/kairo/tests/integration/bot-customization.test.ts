@@ -53,7 +53,10 @@ describe('T16 原生 filesystem Skill 合同', () => {
       // 空连接用于证明失败先于数据库初始化，而非启动后碰巧遇到其他错误。
       await expect(
         startKairo({ configDirectory: directory, databaseUrl: '', port: 0 })
-      ).rejects.toThrow(/reader-sim/);
+      ).rejects.toMatchObject({
+        type: 'configuration',
+        cause: expect.objectContaining({ message: expect.stringContaining('reader-sim') }),
+      });
     });
   });
 
@@ -72,7 +75,10 @@ describe('T16 原生 filesystem Skill 合同', () => {
         }).catch((error: unknown) => error);
         expect(process.env[marker]).toBeUndefined();
         expect(result).toBeInstanceOf(Error);
-        expect(result).toHaveProperty('message', expect.stringContaining('SKILL.md'));
+        expect(result).toMatchObject({
+          type: 'configuration',
+          cause: expect.objectContaining({ message: expect.stringContaining('SKILL.md') }),
+        });
       } finally {
         delete process.env[marker];
       }
@@ -243,7 +249,14 @@ describe('T16 Skill 启动失败的完整日志', () => {
       );
       expect(result.code).toBe(1);
       expect(result.stdout + result.stderr).not.toContain('t16-secret');
-      expect(result.stderr).toContain(skillFile);
+      const records = result.stdout
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      expect(records).toContainEqual(
+        expect.objectContaining({ event: '应用启动失败', errorType: 'configuration' })
+      );
+      expect(result.stdout).not.toContain('stack');
       if (hasLineWarning) expect(result.stderr).toMatch(/\b501\b/);
     },
     15000

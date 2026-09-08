@@ -84,7 +84,7 @@ pnpm --filter @kairo/app start
 
 `start` 使用 Node 直接执行 `dist/index.js`，读取根目录 `.env` 中的 `DATABASE_URL`；系统环境变量优先。`dev` 先构建再启动同一个入口，不启动 Studio。生产构建仅运行 TypeScript 编译，不执行 `mastra build --studio`，也不打包 Studio UI。
 
-`startKairo()` 先加载并校验受控 Bot 配置、读取 Git commit，再创建进程内 Mastra 和 PostgreSQL storage，唯一监听地址为 `127.0.0.1:4110`。`GET /health/live` 返回 `200 {"status":"alive"}`；其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。该接口由 `modules/operability/health-server.ts` 提供，仅表示进程存活，不表示数据库、Driver 或 Agent 已就绪；T17 再接入依赖状态和 ready。当前不装配 T28 的业务 Agent。
+`startKairo()` 先加载并校验受控 Bot 配置、读取 Git commit，再创建进程内 Mastra 和 PostgreSQL storage，默认监听 `127.0.0.1:4110`。T17 提供 `GET /health/live`、`GET /health/ready`、`GET /health/dependencies` 三个只读接口，其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。存活不等于业务就绪，状态来源和判定见下文 T17；当前不装配 T28 的业务 Agent。
 
 收到 Ctrl+C 或 SIGTERM 后先关闭健康端口，再等待 `mastra.shutdown()`。锁定的 `@mastra/core@1.63.2` 会在 shutdown 内关闭注册的 storage，不再重复调用 `storage.close()`。程序内调用方使用返回的 `close()`，重复或并发关闭共用同一个 Promise。
 
@@ -294,6 +294,72 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 提交新模型配置前再次执行 `pnpm --filter @kairo/app exec vitest run tests/unit/config.test.ts`，24/24 通过；设置 `KAIRO_T12_REAL_MODEL=0` 后执行全部集成测试，34/34 通过。后者使用真实 PostgreSQL，但 T12 模型仍为确定性模式，不宣称已对新模型重跑真实记忆门禁。
 
 接口依据：[Agent 的 filesystem path Skills](https://mastra.ai/docs/skills#filesystem-path-skills)、[原生 Skill 加载与资源工具](https://mastra.ai/docs/sandbox/skills)。
+
+### T17 应用日志、错误与本机健康接口
+
+本任务仅修改应用 operability、启动入口及直接受影响测试；不修改 Driver、`private-chat-core` 或数据库迁移，不规定 T18 必须采用的新接口。经用户确认，保留 T15 的 Git commit 与配置摘要，未装配依赖如实报告未知，不提前实现真实 IM 接入。
+
+#### 日志与错误
+
+`createLogger()` 复用 Pino，提供 `info(fields)`、`warn(fields)`、`error(fields)`。记录八类关联标识：`messageId`、`sessionId`、`employeeId`、`contextId`、`taskId`、`runId`、`toolId`、`evidenceId`，以及 `durationMs`、固定 `status`、`errorType`、中文 `event`、`gitCommit`、`configDigest`。Pino 自带级别与时间；不附带主机名、PID、整个配置或任意自由消息。
+
+日志入口先选取白名单标量，再交给 Pino；`redact` 同时覆盖 password、token、apiKey、authorization，以及 question/answer/content/prompt/messages/knowledge/snippet/chunks 等正文键。原始 Error、cause、stack、msg、额外参数及嵌套对象不序列化，对象不能冒充关联 ID。调用方必须提供真实标识，不能把正文塞进 ID 字符串；不通过扫描员工内容猜测它是不是标识。
+
+`MastraOperabilityLogger` 通过框架现有 `setLogger()` 接入正式运行时，保留可关联字段，将框架自由消息转为固定中文事件，不关闭框架错误输出。独立开发 Studio 与 T16 Skill 加载前的原生行数警告不在此接入点；原有 Skill 警告补丁和完整输出隐私回归保留，不使用全局 console 替换。
+
+`AppError.type` 区分 `configuration`、`identity`、`storage`、`driver`、`model`、`knowledge`、`timeout`、`cancelled`、`send_unknown`；无法识别的异常归为 `internal`，不靠错误正文猜类别。`getFailureMessage()` 返回固定中文员工说明；发送不明要求核实实际送达，不宣称失败，也不建议自动重发。`AppError.cause` 仅供程序内诊断。
+
+启动错误按阶段分类，CLI 记录 `应用启动失败` 与 `errorType` 并以非零状态退出，不再整段打印底层异常。因此 T15/T16 历史记录中的 stderr 路径/原始调用栈不再是当前 CLI 合同；程序内仍可沿 cause 查看已有的字段、行列或文件诊断。完整启动回归继续验证拒绝启动和不泄露正文/凭证，不关闭原生 warning。本任务不实现员工消息发送链路。
+
+#### 健康判定与访问边界
+
+状态对象固定包含 `configuration`、`postgres`、`mastra`、`driver`、`ragflow`、`model` 六项；每项为 `up`、`down` 或 `unknown`。四项核心依赖必须全为 `up`；其中任何一项未正常，优先返回 `not_ready`。核心正常但模型或 RAGFlow 未正常时返回 `degraded`；六项全正常才为 `ready`。
+
+| 请求 | 状态码与含义 |
+| --- | --- |
+| `GET /health/live` | 200，`{"status":"alive"}`；不访问依赖 |
+| `GET /health/ready` | `not_ready` 为 503；`ready`、`degraded` 为 200，正文包含总状态与六项依赖 |
+| `GET /health/dependencies` | 正常读取状态返回 200，即使当前未就绪；正文同上 |
+| 状态源抛错 | 503、固定中文诊断，并记录稳定错误分类；不返回原始异常 |
+| 其他路径或方法 | 404；不提供执行、写入、管理或调试接口 |
+
+`startHealthServer({ port, host, readDependencies })` 只接受 `127.0.0.1`、`localhost`，两者实际均绑定 IPv4 `127.0.0.1`，非允许 host 在监听前拒绝。默认端口 4110；程序内测试可用 `port: 0` 获取独立端口。`close()` 幂等，等待实际监听关闭。
+
+正式入口每次状态请求使用实际存储池的连接配置新建短连接，仅执行 `SELECT 1` 并关闭；连接和查询分别限时 2 秒，不改变业务池参数。`pg-pool` 的 password 属性不可枚举，探针必须显式保留，不能只展开配置。Mastra 使用已初始化实例注册的存储标识和应用关闭状态判定，不以包装对象引用相等判断。PostgreSQL 检查证明连接和查询可用，不代表业务表已迁移。
+
+当前 Driver、模型和 RAGFlow 尚未装配，均为 `unknown`，因此正式入口的 ready 保持 503；配置中存在模型名或地址不等于服务可用。这是本轮获批的接入边界，不把可注入状态的 HTTP 测试算作真实依赖已正常，也不新建 monitor、插件注册或业务存储层。
+
+正式启动后可执行：
+
+```powershell
+curl.exe http://127.0.0.1:4110/health/live
+curl.exe -i http://127.0.0.1:4110/health/ready
+curl.exe http://127.0.0.1:4110/health/dependencies
+# 用本机实际网卡 IPv4 地址替换，访问应失败；不要停掉其他工作树的占用进程。
+curl.exe --connect-timeout 3 http://本机局域网地址:4110/health/live
+```
+
+#### 本地验证（2026-09-08）
+
+已执行运维三个定向测试文件，26/26 通过；受影响的 T16 Skill 启动集成 12/12、T13 真实 PostgreSQL 路由隔离 3/3 通过。根 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 通过，默认测试 Driver 308 项、App 59 项；根测试不包含 PostgreSQL 集成目录或真实 KK9。
+
+```bash
+pnpm --filter @kairo/app exec vitest run tests/unit/operability.test.ts tests/unit/operability-logging.test.ts tests/unit/operability-startup.test.ts
+pnpm --filter @kairo/app exec vitest run tests/integration/bot-customization.test.ts
+pnpm --filter @kairo/app typecheck && pnpm --filter @kairo/app test && pnpm lint
+```
+
+最后一条在真实探针的 password 修复后再次执行并通过，App 仍为 59/59。T13 集成由临时探针将 `KAIRO_TEST_DATABASE_URL` 显式指向本任务独立库后执行 `pnpm exec vitest run tests/integration/mastra-route-isolation.spike.test.ts`；不会自动借用其他工作树的测试目标。
+
+临时 `node apps/kairo/tmp/t17-smoke.mjs` 使用本工作树构建产物与独立随机临时数据库：实际监听 `127.0.0.1:5908`，live 200、ready 503，配置/PostgreSQL/Mastra 为 up，其余 unknown；从本机访问 `100.90.167.77`、`172.16.3.76`、`172.17.176.1` 的同端口均为 `ECONNREFUSED`。这是本机通过非回环地址访问，不声称已在另一台局域网机器发起请求。
+
+同一探针在另一个独立 HTTP 服务上注入状态，实际得到 ready 200、degraded 200、not_ready 503；这只验证状态与 HTTP 合同。日志抽查保留 taskId 与 send_unknown，不含注入的问答正文、知识片段、密码或令牌。T13 集成测试使用本任务新建数据库，并只在它自行创建的随机库执行既有迁移；没有修改迁移文件或其他工作树测试数据。
+
+首轮真实探针因遗漏非枚举 password 而把 PostgreSQL 误判 down；显式保留后上述真实查询与路由合同通过。此前定向测试还发现 Mastra 包装存储的引用比较误判，以及一条长度错误的测试 Git ID，均已修正。每轮探针结束均回收自己的数据库与监听。
+
+本次未连接、停止或更改真实 KK9 会话，未调用真实模型/RAGFlow，未验证真实六依赖全部正常时的 ready，也未实际向员工发送失败说明；不以本轮结果关闭这些验收缺口或关闭 #222。临时探针与结果文件在验收后删除，不成为新的正式启动流程。
+
+接口依据：[存活与就绪的区别](https://kubernetes.io/docs/concepts/workloads/pods/probes/)、仓库锁定 Pino 的 `docs/redaction.md`、Mastra `setLogger/getStorage` 类型与 `pg-pool` 实际实现；以本轮运行结果为准。
 
 ## 代码入口
 

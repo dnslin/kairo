@@ -18,7 +18,7 @@ afterEach(async () => {
 });
 
 describe('T13 生产路由隔离', () => {
-  it('生产环境即使带 Studio 变量也只开放本机存活接口', async () => {
+  it('生产环境即使带 Studio 变量也只开放本机只读健康接口', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('MASTRA_STUDIO', 'true');
     vi.stubEnv('KAIRO_STUDIO_DATABASE_URL', databaseUrl);
@@ -28,13 +28,30 @@ describe('T13 生产路由隔离', () => {
     const live = await fetch(`${application.url}/health/live`);
     expect(live.status).toBe(200);
     expect(await live.json()).toEqual({ status: 'alive' });
+    const ready = await fetch(`${application.url}/health/ready`);
+    expect(ready.status).toBe(503);
+    expect(await ready.json()).toEqual({
+      status: 'not_ready',
+      dependencies: {
+        configuration: 'up',
+        postgres: 'up',
+        mastra: 'up',
+        driver: 'unknown',
+        ragflow: 'unknown',
+        model: 'unknown',
+      },
+    });
+    const dependencies = await fetch(`${application.url}/health/dependencies`);
+    expect(dependencies.status).toBe(200);
+    expect(await dependencies.json()).toMatchObject({
+      dependencies: { postgres: 'up', driver: 'unknown' },
+    });
     for (const [method, path] of [
       ['GET', '/'],
       ['GET', '/api/agents'],
       ['POST', '/api/agents/test/generate'],
       ['POST', '/api/tools/test/execute'],
       ['POST', '/api/workflows/test/start'],
-      ['GET', '/health/ready'],
     ] as const) {
       const response = await fetch(`${application.url}${path}`, { method });
       expect(response.status, path).toBe(404);

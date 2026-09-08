@@ -157,7 +157,10 @@ describe('T15 受控配置读取', () => {
       await writeFile(join(directory, 'bot.yaml'), 'employeeAllowlist: []\n');
       await expect(
         startKairo({ configDirectory: directory, databaseUrl: '', port: 0 })
-      ).rejects.toThrow(/Bot 配置校验失败/);
+      ).rejects.toMatchObject({
+        type: 'configuration',
+        cause: expect.objectContaining({ message: expect.stringContaining('Bot 配置校验失败') }),
+      });
     });
   });
 
@@ -205,7 +208,7 @@ describe('T15 受控配置读取', () => {
   });
 });
 
-describe('T15 启动失败的完整 stderr', () => {
+describe('T15 启动失败的完整输出', () => {
   let directory: string;
   let applicationDirectory: string;
   let configFile: string;
@@ -254,16 +257,16 @@ describe('T15 启动失败的完整 stderr', () => {
         config.model.url = `http://[${secret}`;
         return stringify(config);
       },
-      /model\.url/,
+      'configuration',
     ],
     [
       'YAML 复杂键',
       (secret: string) => `${stringify(validConfig())}? [${secret}]\n: ignored\n`,
-      /NON_STRING_KEY/,
+      'configuration',
     ],
   ] as const)(
     '%s 拒绝启动且完整输出不含测试凭证',
-    async (_scenario, source, diagnostic) => {
+    async (_scenario, source, errorType) => {
       const secret = 'T15_STDERR_TEST_CREDENTIAL';
       await writeFile(configFile, source(secret));
       const result = await new Promise<{ code: string | number; stdout: string; stderr: string }>(
@@ -278,7 +281,12 @@ describe('T15 启动失败的完整 stderr', () => {
       );
       expect(result.code).toBe(1);
       expect(result.stdout + result.stderr).not.toContain(secret);
-      expect(result.stderr).toMatch(diagnostic);
+      const records = result.stdout
+        .trim()
+        .split('\n')
+        .map(line => JSON.parse(line) as Record<string, unknown>);
+      expect(records).toContainEqual(expect.objectContaining({ event: '应用启动失败', errorType }));
+      expect(result.stdout + result.stderr).not.toContain('stack');
     },
     15000
   );
