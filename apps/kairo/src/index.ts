@@ -4,13 +4,18 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Client } from 'pg';
+import { setDriverLogSink } from '@kairo/driver';
 import { loadBotConfig } from './config/load.js';
 import type { LoadedBotConfig } from './config/load.js';
 import { createMastraRuntime } from './mastra/runtime.js';
 import type { MastraRuntime } from './mastra/runtime.js';
 import { startHealthServer } from './modules/operability/health-server.js';
 import type { HealthDependencies } from './modules/operability/health.js';
-import { createLogger, MastraOperabilityLogger } from './modules/operability/logger.js';
+import {
+  createLogger,
+  createDriverLogSink,
+  MastraOperabilityLogger,
+} from './modules/operability/logger.js';
 import { AppError, getErrorType } from './modules/operability/errors.js';
 import type { AppErrorType } from './modules/operability/errors.js';
 import { loadBotCustomization } from './modules/bot-customization/instructions.js';
@@ -29,6 +34,8 @@ export interface KairoApplication extends MastraRuntime, LoadedBotConfig {
 export async function startKairo(
   options: { databaseUrl?: string; port?: number; configDirectory?: string } = {}
 ): Promise<KairoApplication> {
+  // 仅安装进程级日志出口，不创建 Driver 或连接 KK9。
+  setDriverLogSink(createDriverLogSink(logger));
   let stage: AppErrorType = 'configuration';
   let runtime: MastraRuntime | undefined;
   try {

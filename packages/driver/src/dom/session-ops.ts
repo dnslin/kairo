@@ -93,8 +93,8 @@ export class SessionOps {
               };
             }).filter(s => s.id.length > 0);
           }
-        } catch (e) {
-          console.warn('[KK9Driver] Vue virtual scroller inspect failed:', e);
+        } catch {
+          console.warn('[KairoDriver] Vue滚动列表检查失败');
         }
 
         // 2. 降级回退：遍历当前可视 DOM

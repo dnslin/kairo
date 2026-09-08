@@ -63,7 +63,8 @@ export { DEFAULT_SELECTORS, resolveSelectors } from './dom/selectors.js';
 
 // 异常与日志
 export { DriverError, CdpError, DomError, SendError } from './utils/errors.js';
-export { logger, createChildLogger } from './utils/logger.js';
+export { logger, createChildLogger, setDriverLogSink } from './utils/logger.js';
+export type { DriverLogEntry, DriverLogSink } from './utils/logger.js';
 
 // 纯净类型系统导出
 export type {

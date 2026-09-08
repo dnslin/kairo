@@ -181,12 +181,14 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
   }
 
   private unresolvedTargetResult(target: string): SendResult {
-    return {
+    const result: SendResult = {
       success: false,
       status: 'failed',
       error: `目标会话无法唯一解析 [${target}]`,
       isPreTrigger: true,
     };
+    this.recordSendResult(result);
+    return result;
   }
 
   public async getCurrentSession(): Promise<KK9Session | null> {
@@ -236,6 +238,31 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     );
   }
 
+  private recordSendResult(result: SendResult, sessionId?: string): void {
+    const status =
+      result.status ??
+      (result.success && result.messageId
+        ? 'delivered'
+        : result.isPreTrigger === true
+          ? 'failed'
+          : 'unknown');
+    const fields = {
+      event: 'Driver发送结果',
+      status,
+      messageId: result.messageId,
+      sessionId,
+      startupGenerationId: this.startupGenerationId,
+      durationMs: result.verifyLatencyMs,
+      errorType:
+        status === 'delivered' ? undefined : status === 'unknown' ? 'send_unknown' : 'driver',
+    };
+    if (status === 'delivered') {
+      log.info(fields);
+    } else {
+      log.warn(fields);
+    }
+  }
+
   private rememberBotSentMessage(result: SendResult, targetSessionId?: string): void {
     if (!result.success || !result.messageId) return;
     const sessionId = targetSessionId?.trim();
@@ -245,6 +272,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
 
   private attachNativeRecall(result: SendResult, targetSessionId?: string): SendResult {
     this.rememberBotSentMessage(result, targetSessionId);
+    this.recordSendResult(result, targetSessionId);
     if (!result.success || !result.messageId) return result;
 
     const messageId = result.messageId;
@@ -374,9 +402,11 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     ) {
       const domRes = await this.domSendOps.sendText(text, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
+      this.recordSendResult(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
     this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
+    this.recordSendResult(res, resolvedOptions.targetSessionId);
     return res;
   }
 
@@ -399,9 +429,11 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     ) {
       const domRes = await this.domSendOps.sendRichText(content, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
+      this.recordSendResult(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
     this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
+    this.recordSendResult(res, resolvedOptions.targetSessionId);
     return res;
   }
 
@@ -425,9 +457,11 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     ) {
       const domRes = await this.domSendOps.sendReply(replyTo, content, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
+      this.recordSendResult(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
     this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
+    this.recordSendResult(res, resolvedOptions.targetSessionId);
     return res;
   }
 
@@ -447,9 +481,11 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     ) {
       const domRes = await this.domSendOps.sendFile(filePath, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
+      this.recordSendResult(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
     this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
+    this.recordSendResult(res, resolvedOptions.targetSessionId);
     return res;
   }
   /**
@@ -475,9 +511,11 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     ) {
       const domRes = await this.domSendOps.sendImage(imagePath, resolvedOptions);
       this.rememberBotSentMessage(domRes, resolvedOptions.targetSessionId);
+      this.recordSendResult(domRes, resolvedOptions.targetSessionId);
       return domRes;
     }
     this.rememberBotSentMessage(res, resolvedOptions.targetSessionId);
+    this.recordSendResult(res, resolvedOptions.targetSessionId);
     return res;
   }
 

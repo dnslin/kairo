@@ -1,5 +1,6 @@
 import { pino, type DestinationStream } from 'pino';
 import { MastraLogger } from '@mastra/core/logger';
+import type { DriverLogSink } from '@kairo/driver';
 import { getErrorType } from './errors.js';
 import type { AppErrorType } from './errors.js';
 
@@ -12,6 +13,10 @@ const events = {
   依赖检查失败: true,
   运行状态: true,
   运行失败: true,
+  Driver运行状态: true,
+  Driver运行异常: true,
+  Driver连接状态: true,
+  Driver发送结果: true,
 } as const;
 
 const statuses = {
@@ -24,6 +29,8 @@ const statuses = {
   failed: true,
   started: true,
   closed: true,
+  delivered: true,
+  received: true,
 } as const;
 
 const errorTypes: Record<AppErrorType, true> = {
@@ -138,6 +145,10 @@ export function createLogger(destination?: DestinationStream): AppLogger {
       logger.error(selectFields(fields));
     },
   };
+}
+
+export function createDriverLogSink(output: AppLogger): DriverLogSink {
+  return entry => output[entry.level](entry);
 }
 
 // Mastra 的 message 与附加参数可能含模型正文；只沿用关联字段，不转发原文。

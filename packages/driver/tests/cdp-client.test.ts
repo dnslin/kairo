@@ -3,6 +3,7 @@ import { WebSocketServer } from 'ws';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { CdpClient } from '../src/cdp/client.js';
 import { CdpError } from '../src/utils/errors.js';
+import { setDriverLogSink, type DriverLogEntry } from '../src/utils/logger.js';
 
 describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
   let httpServer: http.Server;
@@ -201,5 +202,127 @@ describe('CdpClient 核心通信与状态机测试 (Mock WS Server)', () => {
     expect(statusList).not.toContain('reconnecting');
     expect(client.getStatus()).toBe('disconnected');
     await client.disconnect();
+  });
+  it('连接日志只保留状态与启动代次，连接失败仍保留业务错误详情', async () => {
+    const entries: DriverLogEntry[] = [];
+    setDriverLogSink(entry => entries.push(entry));
+    const client = new CdpClient(
+      { url: `http://127.0.0.1:${port}`, pageMatch: 'renderer.html' },
+      { startupGenerationId: '日志连接代次' }
+    );
+    try {
+      await client.connect();
+      await client.disconnect();
+      const failedClient = new CdpClient(
+        { url: `http://127.0.0.1:${port}`, pageMatch: '测试秘密目标' },
+        { startupGenerationId: '日志失败代次' }
+      );
+      await expect(failedClient.connect()).rejects.toThrow('测试秘密目标');
+      expect(entries.filter(entry => entry.event === 'Driver连接状态')).toEqual([
+        { level: 'info', event: 'Driver连接状态', status: 'up', runId: '日志连接代次' },
+        { level: 'info', event: 'Driver连接状态', status: 'down', runId: '日志连接代次' },
+        {
+          level: 'error',
+          event: 'Driver连接状态',
+          status: 'down',
+          runId: '日志失败代次',
+          errorType: 'driver',
+        },
+      ]);
+      expect(JSON.stringify(entries)).not.toContain('测试秘密目标');
+      expect(JSON.stringify(entries)).not.toContain('renderer.html');
+      expect(JSON.stringify(entries)).not.toContain('127.0.0.1');
+    } finally {
+      await client.disconnect();
+      setDriverLogSink(undefined);
+    }
+  });
+
+  it('只转接五条精确Driver渲染诊断，忽略页面正文及附加参数', async () => {
+    const entries: DriverLogEntry[] = [];
+    const client = new CdpClient(
+      { url: `http://127.0.0.1:${port}`, pageMatch: 'renderer.html' },
+      { startupGenerationId: '渲染诊断代次' }
+    );
+    await client.connect();
+    setDriverLogSink(entry => entries.push(entry));
+    try {
+      const connectedSockets = [...wss.clients].filter(socket => socket.readyState === 1);
+      const socket = connectedSockets[connectedSockets.length - 1]!;
+      const diagnostics = [
+        '[KairoDriver] 前序Hook清理异常',
+        '[KairoDriver] 事件派发到CDP binding失败',
+        '[KairoDriver] 会话摘要更新失败',
+        '[KairoDriver] 聊天窗口推送失败',
+        '[KairoDriver] Vue滚动列表检查失败',
+      ];
+      const values = [...diagnostics, 'KK9页面测试秘密', `${diagnostics[0]} 测试秘密后缀`];
+      const received = new Promise<void>(resolve => {
+        let count = 0;
+        client.on('Runtime.consoleAPICalled', () => {
+          if (++count === values.length) resolve();
+        });
+      });
+      for (const value of values) {
+        socket.send(
+          JSON.stringify({
+            method: 'Runtime.consoleAPICalled',
+            params: {
+              type: 'warning',
+              args: [
+                { type: 'string', value },
+                { type: 'object', description: '测试秘密异常正文', objectId: '测试秘密对象' },
+              ],
+            },
+          })
+        );
+      }
+      await received;
+      expect(entries).toEqual(
+        diagnostics.map((_, index) => ({
+          level: index === 1 ? 'error' : 'warn',
+          event: 'Driver运行异常',
+          errorType: 'driver',
+          runId: '渲染诊断代次',
+        }))
+      );
+      expect(JSON.stringify(entries)).not.toContain('测试秘密');
+    } finally {
+      setDriverLogSink(undefined);
+      await client.disconnect();
+    }
+  });
+  it('意外断线输出down但不泄漏WebSocket关闭原因', async () => {
+    const entries: DriverLogEntry[] = [];
+    const client = new CdpClient(
+      { url: `http://127.0.0.1:${port}`, pageMatch: 'renderer.html' },
+      { startupGenerationId: '意外断线代次' }
+    );
+    await client.connect();
+    setDriverLogSink(entry => entries.push(entry));
+    try {
+      const lost = new Promise<void>(resolve => {
+        client.once('connection_lost', () => {
+          resolve();
+        });
+      });
+      const connectedSockets = [...wss.clients].filter(socket => socket.readyState === 1);
+      connectedSockets[connectedSockets.length - 1]!.close(1011, '测试秘密关闭原因');
+      await lost;
+      expect(client.getStatus()).toBe('disconnected');
+      expect(entries).toEqual([
+        {
+          level: 'warn',
+          event: 'Driver连接状态',
+          status: 'down',
+          errorType: 'driver',
+          runId: '意外断线代次',
+        },
+      ]);
+      expect(JSON.stringify(entries)).not.toContain('测试秘密');
+    } finally {
+      setDriverLogSink(undefined);
+      await client.disconnect();
+    }
   });
 });

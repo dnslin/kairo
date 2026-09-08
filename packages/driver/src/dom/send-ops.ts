@@ -118,7 +118,10 @@ export class SendOps {
       return res;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      log.warn({ err: errMsg }, '发送前校验脚本执行异常，执行 Fail-Closed 拦截');
+      log.warn(
+        { event: 'Driver运行异常', errorType: 'driver' },
+        '发送前校验脚本执行异常，执行 Fail-Closed 拦截'
+      );
       return {
         canSend: false,
         reason: 'unknown',
@@ -135,7 +138,7 @@ export class SendOps {
       return { success: true };
     } catch (bringErr) {
       const msg = bringErr instanceof Error ? bringErr.message : String(bringErr);
-      log.warn({ err: bringErr }, `bringToFront 激活${contextLabel}失败 (触发前失败)`);
+      log.warn({ event: 'Driver运行异常', errorType: 'driver' }, '发送窗口激活失败，发送未触发');
       return {
         success: false,
         result: {
@@ -160,7 +163,10 @@ export class SendOps {
 
   private postTriggerFailure(label: string, error: unknown, startTime: number): SendResult {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    log.error({ err: errorMsg }, `${label}发送后响应丢失，结果为 unknown`);
+    log.error(
+      { event: 'Driver运行异常', status: 'unknown', errorType: 'send_unknown' },
+      '发送后响应丢失，结果未知'
+    );
     return {
       success: false,
       status: 'unknown',
@@ -199,8 +205,8 @@ export class SendOps {
     try {
       const res = await this.cdp.evaluate<boolean>(script);
       return Boolean(res);
-    } catch (err) {
-      log.warn({ err: String(err) }, '激活引用消息目标异常');
+    } catch {
+      log.warn({ event: 'Driver运行异常', errorType: 'driver' }, '激活引用消息目标异常');
       return false;
     }
   }
@@ -417,12 +423,22 @@ export class SendOps {
   public async sendFile(filePath: string, options: SendFileOptions = {}): Promise<SendResult> {
     const fullPath = path.resolve(filePath);
     if (!fs.existsSync(fullPath)) {
-      return { success: false, status: 'failed', error: `文件不存在: ${fullPath}`, isPreTrigger: true };
+      return {
+        success: false,
+        status: 'failed',
+        error: `文件不存在: ${fullPath}`,
+        isPreTrigger: true,
+      };
     }
 
     const stats = fs.statSync(fullPath);
     if (stats.isDirectory()) {
-      return { success: false, status: 'failed', error: `不能发送目录: ${fullPath}`, isPreTrigger: true };
+      return {
+        success: false,
+        status: 'failed',
+        error: `不能发送目录: ${fullPath}`,
+        isPreTrigger: true,
+      };
     }
     if (stats.size > MAX_FILE_SIZE_BYTES) {
       return {

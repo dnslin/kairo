@@ -156,13 +156,13 @@ export async function sendNativeStructuredMessage(
       const sessionEventId = targetSes.sesUUID || String(targetSes.id);
       try {
         if (store) store.commit('updateSesLastMsg', { sesUUID: sessionEventId, message: confirmedMessage });
-      } catch (updateError) {
-        console.warn('原生消息已送达，但更新会话摘要失败', updateError);
+      } catch {
+        console.warn('[KairoDriver] 会话摘要更新失败');
       }
       try {
         if (bus) bus.$emit(sessionEventId + '-msg', [confirmedMessage]);
-      } catch (updateError) {
-        console.warn('原生消息已送达，但推送聊天窗口失败', updateError);
+      } catch {
+        console.warn('[KairoDriver] 聊天窗口推送失败');
       }
 
       return { success: true, messageId: String(confirmedMessage.id) };

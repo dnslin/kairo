@@ -204,6 +204,12 @@ describe('T16 Skill 启动失败的完整日志', () => {
       join(applicationDirectory, 'node_modules'),
       'junction'
     );
+    await mkdir(join(directory, 'packages'));
+    await symlink(
+      join(repository, 'packages', 'driver'),
+      join(directory, 'packages', 'driver'),
+      'junction'
+    );
     const compiler = createRequire(import.meta.url).resolve('typescript/bin/tsc');
     await promisify(execFile)(
       process.execPath,

@@ -297,7 +297,7 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 
 ### T17 应用日志、错误与本机健康接口
 
-本任务仅修改应用 operability、启动入口及直接受影响测试；不修改 Driver、`private-chat-core` 或数据库迁移，不规定 T18 必须采用的新接口。经用户确认，保留 T15 的 Git commit 与配置摘要，未装配依赖如实报告未知，不提前实现真实 IM 接入。
+初次交付仅修改应用 operability、启动入口及直接受影响测试；随后经用户明确授权，扩展接入 Driver 日志，见本节末尾。两轮都不修改 `private-chat-core` 或数据库迁移，不规定 T18 必须采用的新接口。保留 T15 的 Git commit 与配置摘要，未装配依赖如实报告未知，不提前实现真实 IM 接入。
 
 #### 日志与错误
 
@@ -360,6 +360,35 @@ pnpm --filter @kairo/app typecheck && pnpm --filter @kairo/app test && pnpm lint
 本次未连接、停止或更改真实 KK9 会话，未调用真实模型/RAGFlow，未验证真实六依赖全部正常时的 ready，也未实际向员工发送失败说明；不以本轮结果关闭这些验收缺口或关闭 #222。临时探针与结果文件在验收后删除，不成为新的正式启动流程。
 
 接口依据：[存活与就绪的区别](https://kubernetes.io/docs/concepts/workloads/pods/probes/)、仓库锁定 Pino 的 `docs/redaction.md`、Mastra `setLogger/getStorage` 类型与 `pg-pool` 实际实现；以本轮运行结果为准。
+
+#### 获批扩展：Driver 日志接入（2026-09-08）
+
+Driver 原先使用模块级 Pino 和 `createChildLogger()`，本轮沿用进程级作用域，新增公开的 `setDriverLogSink(sink | undefined)`、`DriverLogEntry`、`DriverLogSink`，不向各层构造函数追加参数。安装后，先前已创建和之后创建的 Driver 子日志都会进入同一接收函数；传入 `undefined` 恢复独立 Pino 出口。它不是每个 Driver 实例各自的日志配置。
+
+Driver 在 Pino `hooks.logMethod` 中、任何正文格式化或 Error/toJSON 序列化之前，选取固定事件、`messageId/sessionId/employeeId/runId`、耗时、状态和错误类别。`startupGenerationId` 对应日志 `runId`，不会输出页面标题、URL、WebSocket 原始关闭原因、sender 对象或自由消息。接收状态 `received` 保留；发送 `unknown` 明确使用 `send_unknown`，不变成 `failed`。独立出口也不再打印原始异常和业务正文；子日志的 module bindings 不绕过字段白名单。
+
+`startKairo()` 在加载配置前执行 `setDriverLogSink(createDriverLogSink(logger))`，将上述记录送入应用现有 Pino 模块。四个固定事件为 `Driver运行状态`、`Driver运行异常`、`Driver连接状态`、`Driver发送结果`。沿用 Driver 原有 `LOG_LEVEL` 过滤；进入应用接收函数时，trace/debug/info 归为 info，warn 保持 warn，error/fatal 归为 error，不为这次接入增加日志框架。
+
+日志接入不创建 Driver、不连接 KK9，也不改变健康状态来源；正式入口的 `driver` 仍为 `unknown`。基础消息和原生媒体发送在现有最终结果出口记录状态，保持发送、回退、Bot 消息关联和 recall 行为不变；`getSendStatus()` 仍只查询，不被记为再次发送。发送记录中的 `durationMs` 来自已有 `verifyLatencyMs`，不是整个业务任务的执行时长。
+
+Driver 注入渲染页的五条告警只输出 `[KairoDriver]` 前缀加固定中文字符串，不附带异常对象：前序 Hook 清理、CDP binding 派发、会话摘要更新、聊天窗口推送、Vue 滚动列表检查。`CdpClient` 在现有 `Runtime.consoleAPICalled` 事件路径仅识别这五条精确字符串，转入统一日志，丢弃附加参数；不采集 KK9 的其他控制台输出，不新增 Runtime.enable、binding、连接步骤或全局 console 替换。页面告警本身仍在页面控制台可见，但已无原始错误内容。
+
+实际执行：
+
+```bash
+pnpm --filter @kairo/driver exec vitest run --root ../.. packages/driver/tests/driver-log-sink.test.ts packages/driver/tests/driver-lifecycle-logging.test.ts packages/driver/tests/cdp-client.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/operability-driver.test.ts tests/unit/operability-logging.test.ts tests/unit/operability-startup.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/config.test.ts tests/integration/bot-customization.test.ts
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+上述定向测试依次为 18/18、15/15、36/36；最后一次完整质量命令全部通过，Driver 27 个文件/320 项、App 7 个文件/61 项。新增 Driver 测试使用真实 Pino 子进程完整输出、本地 HTTP/WebSocket，以及已有 VM 执行真正的注入脚本；覆盖接收函数无旁路、敏感字段、正常连接/断线、三种发送结果、确认送达后 UI 失败不变成发送失败，以及五条渲染诊断。
+
+扩展首次完整验证发现临时启动夹具没有保留 pnpm 的 Driver 工作区相对目录，Node 在应用加载前报 `ERR_MODULE_NOT_FOUND`。T15/T16 夹具现补齐临时 `packages/driver` 指向本工作树的链接，继续使用真实包导出，不复制依赖、不改生产解析、不放宽脱敏与错误分类断言；修复后 36 项启动/Skill 回归及完整质量命令通过。
+
+临时 `node apps/kairo/tmp/t17-driver-smoke.mjs` 另以普通 Node 子进程启动构建产物，通过本机临时端口实际建立 HTTP/WebSocket，执行 CDP 连接、带秘密原因的断连、再次连接、Driver 告警与无关页面输出注入，并通过真实 `startKairo()` 安装日志出口。捕获的 stdout 全为 JSON，stderr 为空，日志呈现 up → down → up → down，保留同一 `runId`，不含测试秘密。此处 CDP 服务是本地协议替身，不是 KK9；应用 live 返回 200，该轮未访问数据库。临时脚本与自己的端口均已清理。
+
+本扩展没有执行真实 KK9 收发或对应真机脚本，也没有验证真实 Driver 正常后的 ready。独立 Studio 和 Skill 加载前的原生 warning 仍维持原边界；不操作 T18 进程、测试库或 PR。PR 需明确标记这些未验证项，不使用自动关闭 #222 的关键字。
 
 ## 代码入口
 

@@ -230,6 +230,12 @@ describe('T15 启动失败的完整输出', () => {
       join(applicationDirectory, 'node_modules'),
       'junction'
     );
+    await mkdir(join(directory, 'packages'));
+    await symlink(
+      join(repository, 'packages', 'driver'),
+      join(directory, 'packages', 'driver'),
+      'junction'
+    );
     // 编译当前源码到临时目录，避免回归测试误用旧 dist。
     const compiler = createRequire(import.meta.url).resolve('typescript/bin/tsc');
     await promisify(execFile)(
@@ -284,8 +290,11 @@ describe('T15 启动失败的完整输出', () => {
       const records = result.stdout
         .trim()
         .split('\n')
+        .filter(Boolean)
         .map(line => JSON.parse(line) as Record<string, unknown>);
-      expect(records).toContainEqual(expect.objectContaining({ event: '应用启动失败', errorType }));
+      expect(records, result.stderr).toContainEqual(
+        expect.objectContaining({ event: '应用启动失败', errorType })
+      );
       expect(result.stdout + result.stderr).not.toContain('stack');
     },
     15000

@@ -211,7 +211,11 @@ export class KK9EventBridge extends EventEmitter {
       const cause = err instanceof Error ? err : new Error(String(err));
       this.lastAttachError = cause;
       log.warn(
-        { err: cause.message, startupGenerationId: this.startupGenerationId },
+        {
+          event: 'Driver运行异常',
+          errorType: 'driver',
+          startupGenerationId: this.startupGenerationId,
+        },
         '注入原生事件桥 Hook 失败'
       );
       this.attached = false;
@@ -556,8 +560,8 @@ export class KK9EventBridge extends EventEmitter {
         if (typeof window.__kairo_bridge_cleanup === 'function') {
           try {
             window.__kairo_bridge_cleanup();
-          } catch (e) {
-            console.warn('[KK9EventBridge] 清理前序 Hook 异常:', e);
+          } catch {
+            console.warn('[KairoDriver] 前序Hook清理异常');
           }
         }
 
@@ -565,8 +569,8 @@ export class KK9EventBridge extends EventEmitter {
           if (typeof window[${JSON.stringify(binding)}] === 'function') {
             try {
               window[${JSON.stringify(binding)}](JSON.stringify({ generationId: ${generationId}, connectionId: ${connectionId}, type, data, timestamp: Date.now() }));
-            } catch (e) {
-              console.error('[KK9EventBridge] 无法派发事件到 CDP binding:', e);
+            } catch {
+              console.error('[KairoDriver] 事件派发到CDP binding失败');
             }
           }
         }
