@@ -26,9 +26,9 @@ pnpm format
 
 以上四条根质量命令同时覆盖 `@kairo/driver` 与 `@kairo/app`；`pnpm format` 当前只格式化 Driver 文件。
 
-`@kairo/app` 的 `typecheck` 使用 `apps/kairo/tsconfig.typecheck.json`，覆盖 `src`、`tests` 和 `vitest.config.ts`，不生成文件；`build` 仍使用 `apps/kairo/tsconfig.json`，只编译 `src`。应用直接声明 `@types/node` 与 `@types/pg`，数据库代码使用 `pg` 提供的类型接口，不再手写第三方模块声明。
+`@kairo/app` 的 `typecheck` 使用 `apps/kairo/tsconfig.typecheck.json`，覆盖 `src`、`tests`、`vitest.config.ts` 和 `vitest.integration.config.ts`，不生成文件；`build` 仍使用 `apps/kairo/tsconfig.json`，只编译 `src`。应用直接声明 `@types/node` 与 `@types/pg`，数据库代码使用 `pg` 提供的类型接口，不再手写第三方模块声明。
 
-默认 `pnpm test` 中的 App 测试排除 `tests/integration/**`，不要求 PostgreSQL 连接。显式执行 `pnpm --filter @kairo/app test:integration` 会加载仓库根目录 `.env` 并运行完整集成目录，覆盖发送操作存储与 Mastra 存储；缺少 `KAIRO_TEST_DATABASE_URL` 时 Mastra 集成测试会明确失败。请使用专用测试数据库：发送操作测试会在该库执行迁移和读写，Mastra 测试还需要创建、删除临时数据库的权限。
+默认 `pnpm test` 中的 App 测试排除 `tests/integration/**`，不要求 PostgreSQL 连接。`pnpm --filter @kairo/app test:integration` 加载存在的仓库根 `.env`，也支持系统环境注入；无参数运行完整集成目录。追加文件名时只运行匹配文件，例如 `pnpm --filter @kairo/app test:integration -- tests/integration/task-store.test.ts`。入口只移除首个 pnpm 透传分隔符，独立 Vitest 配置限定 integration，文件未匹配时明确失败。全量集成仍可能包含已配置的真实模型调用，不用于 T19 定向验收。请使用专用测试数据库：既有发送操作测试会直接迁移和写入配置中的测试库，Mastra、T18/T19 使用随机临时库且需要创建、删除数据库的权限；T19 不回退到 `DATABASE_URL`，缺少 `KAIRO_TEST_DATABASE_URL` 明确失败。
 
 Driver 真机辅助命令：
 
@@ -505,7 +505,7 @@ node --env-file=.env --import ./apps/kairo/tmp/t17-cli-env.mjs apps/kairo/dist/i
 node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vitest.config.ts tests/integration/private-chat-store.test.ts
 ```
 
-`.env` 必须提供 `KAIRO_TEST_DATABASE_URL`，账号需允许创建临时数据库。测试在同一 PostgreSQL 服务创建随机 `kairo_t18_<uuid>` 库，两个独立连接先核对实际库名及不同的后端进程 ID，再执行迁移；结束时仅关闭自有连接并删除本次创建的库。不迁移或清理连接配置中的原库，不回退到 `DATABASE_URL`，缺配置明确失败。仓库目前没有 `db:migrate:test` 脚本；本测试通过既有 `migrateDatabase()` 执行首次及重复迁移。
+`.env` 必须提供 `KAIRO_TEST_DATABASE_URL`，账号需允许创建临时数据库。测试在同一 PostgreSQL 服务创建随机 `kairo_t18_<uuid>` 库，两个独立连接先核对实际库名及不同的后端进程 ID，再执行迁移；结束时仅关闭自有连接并删除本次创建的库。不迁移或清理连接配置中的原库，不回退到 `DATABASE_URL`，缺配置明确失败。T18 交付时尚无 `db:migrate:test` 脚本；本测试通过既有 `migrateDatabase()` 执行首次及重复迁移。T19 新增的定向迁移命令见下节。
 
 #### 真实验证（2026-09-08）
 
@@ -513,6 +513,66 @@ node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vit
 - 独立 `node --env-file=../../.env t18-smoke.mjs` 探针也通过：真实后端进程 ID 为 `20739`、`20740`；并发插入只有一个胜出者，关闭全部业务连接后用全新连接恢复原始正文、context、批次及消息顺序。这里验证连接重建，不声称覆盖操作系统强杀或完整进程恢复调度。
 - 探针库 `kairo_t18_smoke_7fe97978b4cb43a6b84b0df99bbe7631` 已删除；最终查询显示没有 `kairo_t18_` 前缀临时库残留。临时探针文件已删除，正文未输出到日志。未操作真实 KK9、模型或其他 worktree 服务。
 - 此前同一实现的 `pnpm build`、`pnpm typecheck`、`pnpm lint` 及默认测试已通过，默认测试为 Driver 308 项、App 33 项。本轮补齐真实数据库证据，未修改存储源码，也未重复运行无变化的离线质量检查。
+
+### T19 任务、attempt 与员工等待账本
+
+入口为 `modules/task-lifecycle/PostgresTaskStore`，实际文件为 `modules/task-lifecycle/store.ts`；迁移 `000005-tasks.sql` 新建 `kairo.tasks`、`kairo.task_attempts`、`kairo.user_waits`。复用 T18 的 ready batch、thread 和可信身份，不创建 collecting task，不重复生成同 batch 的任务。运行时不迁移、不接收 IM 或执行 Agent，连接池仍由调用方管理。
+
+task 保存员工、Bot、会话、batch、thread、输入版本、创建配置摘要及队列/执行绝对截止；attempt 保存独立 attemptId、runId、实际配置摘要、输入版本、开始/结束、AppErrorType 和采用标记。task 的配置摘要表示创建时配置，attempt 的摘要表示该次实际配置，不建设配置兼容层。所有时间接口为 Unix 毫秒，数据库为 timestamptz；queued 的执行截止为空，只有领取成功才建立。
+
+`claimTask()` 用单条条件 UPDATE 领取。跨 task/attempt/wait 的操作在同一事务内先锁 task，比较状态与输入版本；采用结果还比较当前 attempt 指针、成功结束记录和未到执行期限。`updateInputVersion()` 仅对 queued/running 生效，并清除当前 attempt 指针，不重置期限或自动重跑；正常新消息仍应进入下一批。终态没有出边，迟到 attempt 只可补记审计。数据库异常原样传播，不包装成 false。
+
+等待记录保存问题正文、授权适用的问题/缺失子问题 ID、inputVersion、十分钟绝对截止、剩余执行预算及原始回答消息关联。用户于本任务终端批准：等待不消耗执行预算；同意后用剩余毫秒恢复同一 running task，拒绝或新问题替换时 cancelled，到期 timed_out。重启不延长任何期限。同一 Bot/私聊只能有一个开放等待；同一原始回答只消费一次。回答须为匹配员工/会话、在等待开始后观察到且非未来的入站消息。语义同意判断、问题 ID 分配、提示实际发送和定时触发由后续调用方负责，T19 不实现这些编排。
+
+完整合法出边见 `SPEC-stage-1.md` 的任务状态表。普通 `transitionTask()` 只处理进入 sending 或终态的边；领取、采用、进入等待及回答恢复使用专用接口，不能绕过版本和字段合同。sending 已触发后不能以执行截止推断发送失败；本模块仅保存调用方确认的发送状态，不代替 Driver 的送达证据或 T21 查询。
+
+执行失败 `running → failed` 的输入必须提供 `expectedAttemptId`，类型使用联合分支表达必填条件；存储在现有任务行锁内确认当前指针非空且相等。旧 attempt 的迟到失败、缺失标识和 null 均拒绝，不更新任务；`finishAttempt()` 仍可补记旧错误。整任务取消和发送阶段失败沿用原语义，不增加数据库字段或兼容入口。
+
+#### 实际验证（2026-09-08）
+
+从仓库根执行：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @kairo/app db:migrate:test
+pnpm --filter @kairo/app test:integration -- tests/integration/task-store.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm lint
+pnpm --filter @kairo/app build
+node --env-file=.env apps/kairo/tmp/t19-smoke.mjs
+pnpm --filter @kairo/app test
+```
+
+- 测试迁移命令在随机库执行首次迁移，并定向验证重复迁移不改变已保存 task/attempt/wait：1 项通过，其余 23 项按测试名筛选未执行，不冒称全量通过。
+- task-store 定向集成最终 24/24 通过：十状态全部合法边、独立 10×10 状态矩阵、终态不倒退、真实双连接领取与 attempt 替代竞争、旧输入版本不能采用、失败结束审计、等待预算、身份/问题范围/原始回答、同会话唯一等待及回答仅消费一次、各截止边界，以及连接重建后全部字段与毫秒截止保留。
+- 最终集成库 `kairo_t19_8b79953195df438aae8ad39d984d4ff9`，真实后端 PID 为 22220、22221。迁移前先核对两连接的实际目标及不同 PID；管理连接只创建/删除本次随机库，不迁移 `.env` 中的原库。
+- 首轮集成 22/23 通过，真实并发发现不同 Bot 的两条等待争同一回答时败方抛唯一键错误。修复为先锁这条原始回答，再在下一条语句的新快照中检查消费记录；原用例保留，修复后返回一胜一负，不吞数据库错误。
+- 首次 typecheck 报测试数组可能越界；改为明确双元素元组及真实查询行存在性检查后，App typecheck、根 lint、App build 均通过，默认 App 测试 9 文件/91 项通过。未降低 TypeScript 或 lint 规则，未变更依赖版本。
+- 独立普通 Node 烟测使用构建产物和随机库 `kairo_t19_smoke_4367774ca3864fda8a2070c0774d4250`，PID 22190、22191；领取结果 `[true,false]`，关闭全部写入连接后新建连接恢复任务/attempt/wait，同意等待后预算保持，最终 sending→completed，迟到采用及终态取消均拒绝。
+- 两份独立只读审查未发现可证实的存储合同缺陷；测试审查指出原用例只覆盖“终止与结束审计竞争”和“关闭池错误”。已补实际双连接取消/采用竞争，并用真实 PostgreSQL CHECK 失败验证 SQL 错误码 23514 向上传播、任务/attempt 不变、无半截 wait，同一 max:1 池回滚后仍可成功提交。随后重新执行迁移、24 项定向集成、typecheck 和根 lint，全部通过。
+- 新增代码的 Prettier 检查及 `node --check apps/kairo/scripts/test-integration.mjs` 通过。只读查询本次六个精确临时库名，残留为 0；没有按前缀清理其他数据库。
+- `pnpm --filter @kairo/app test:integration -- tests/integration/t19-not-a-real-test.test.ts` 是故意使用不存在文件的负向烟测：退出码 1，报告未找到测试，没有执行其他集成文件。两个临时 Node 探针已在验收后删除，上述探针命令是执行历史；长期复现使用保留的迁移和 task-store 集成命令。
+
+这些证据验证真实 PostgreSQL 持久化、连接重建和存储级竞争，不声称完成操作系统强杀故障矩阵、调度恢复、实际 Agent 运行或 IM 送达。没有操作真实 KK9、模型/RAGFlow、其他工作区进程或数据库；T20/T21/T24/T25/T26/T30 未提前实现。
+
+#### 旧 attempt 迟到失败修复（2026-09-08）
+
+上述初次 24 项测试和独立审查漏掉了同输入版本下旧失败终止新 attempt 的路径。Advisor 提出反例后，已用真实 PostgreSQL 两连接核实：B 替代 A 后，A 的 running→failed 原先返回 true，任务变成 failed，B 的成功结果无法采用。本轮不再将此前的通过结果视为该路径已被覆盖。
+
+新增两条永久回归先于修复执行，均因预期 false、实际 true 而失败；加入任务锁内的当前指针比较并更新失败迁移调用后，两条均通过。覆盖旧 A 失败审计保留、任务与 B 不受影响、B 成功采用，以及尚无当前 attempt、缺失/null/错误标识的拒绝与当前 attempt 合法失败。
+
+实际执行：
+
+```bash
+pnpm --filter @kairo/app test:integration -- tests/integration/task-store.test.ts --testNamePattern="旧尝试迟到失败|执行失败必须明确"
+pnpm --filter @kairo/app test:integration -- tests/integration/task-store.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm lint
+pnpm --filter @kairo/app build
+pnpm --filter @kairo/app test
+```
+
+定向回归修复前 2 项失败、修复后 2 项通过；完整真实 task-store 为 26/26，App typecheck/build、根 lint 和默认 App 91 项均通过。完整集成随机库为 `kairo_t19_9caf8e59c5234593ba071bea440d84a5`，两个后端 PID 为 22540、22541；沿用自建库核验和清理，不操作原库或 KK9。未变更迁移、未增加 attempt 重试调度或额外锁框架。
 
 ## 代码入口
 

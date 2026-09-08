@@ -487,3 +487,53 @@ SDK 资源关闭与应用入口装配可以按文件边界并行；共用合同�
 - 真实 `startKairo()` 自己拥有 Driver：启动 degraded/200；仅本应用 WebSocket 断开后 not_ready/503、live 200；重启新代恢复 degraded/200；正常关闭清理 Hook/binding。初次 CDP 失败仍保持 live。通过 application.driver 发送的消息 135821251 确认送达且已撤回。
 - 默认 CLI 实际访问 127.0.0.1:4110 得到核心依赖 up、degraded；Ctrl+C 正常退出码 0。模型/RAGFlow 仍 unknown，不把结果写成全部依赖 ready。
 - 详细命令、首次失败修正和验证边界已更新 docs/DEVELOPMENT.md；保留 issue/PR 未验证项，不合并或关闭。
+
+## 17. T19 任务账本实施计划（2026-09-08）
+
+任务与验收来源为 [#224](https://github.com/dnslin/kairo/issues/224)，不重复验收已合并的 T17/T18，不实现后续调度、发送、恢复或通用知识判断服务。
+
+### 已确认合同
+
+- 用户在本任务终端确认：等待员工不消耗执行预算；进入等待保存剩余毫秒数，恢复后以剩余预算形成新的执行绝对截止时间。进程重启本身不改变队列、执行或等待截止时间。
+- 用户拒绝或新问题替换旧等待时，旧任务为 cancelled；等待到期为 timed_out；同意后同一任务回到 running，不直接 completed。
+- 等待绑定 taskId、inputVersion、当前问题/缺失子问题标识及问题正文；员工回答关联原始消息键。授权不是允许回复的词语列表，不成为会话偏好；文字识别由 T30 负责。
+- context ID 沿用 T18 的 threadId，身份从 ready batch 及其 context 派生；不创建 collecting task，不另建 context 标识。任务初始输入版本为 1，显式变更仅允许 queued/running，并清除旧执行尝试的采用资格；普通新消息进入下一批，不由本模块修改正在执行的输入。
+- task 保存建任务时的配置摘要；attempt 保存实际运行配置摘要、runId、输入版本及起止/错误/采用记录，供重启使用当前配置时追溯，不增加配置版本框架。
+- 连接池归调用方；复用 pg、既有迁移器、AppErrorType 和 T18 毫秒时间接口。数据库错误向调用方传播；条件不匹配返回 false/null，不能把数据库错误伪装成竞争失败。
+
+### 状态转换表
+
+| 当前状态 | 允许的后继 |
+| --- | --- |
+| queued | running、cancelled、timed_out |
+| running | waiting_for_user、ready_to_send、failed、cancelled、timed_out |
+| waiting_for_user | running、cancelled、timed_out |
+| ready_to_send | sending、cancelled、timed_out |
+| sending | completed、failed、cancelled、send_unconfirmed |
+| completed、failed、cancelled、timed_out、send_unconfirmed | 无 |
+
+领取、采用 attempt、进入等待、恢复等待分别使用专用原子接口，不允许普通状态更新绕过其字段和版本条件。重试和恢复产生新的 attempt，不让任务倒退至 queued；sending 内的发送重试不改变任务状态。发送已经触发后不再以执行超时推断发送失败；30 秒查询归 T21。
+
+### 实施顺序与验收
+
+1. **创建与领取**：新增 000005-tasks.sql、task-lifecycle/types.ts 和 store.ts；从非空 ready batch 建立唯一任务，保存完整归属、输入版本、配置摘要和队列绝对截止。queued 领取使用条件更新，首次开始时设置执行绝对截止。先建立真实 PostgreSQL 创建/双连接领取用例，运行失败基线后实现。
+2. **尝试与等待**：开始 attempt 需比较当前 attempt 标识及输入版本；结束记录可在任务终止后保留，但采用结果必须匹配当前 running、当前 attempt、当前输入版本和未过执行期限。等待原子保存问题范围、剩余预算及 now+600000 的绝对截止；回答必须匹配本员工/会话的原始入站消息，接受/拒绝只消费一次等待。同一 Bot 私聊只保留一个未关闭等待。
+3. **完整状态合同**：真实 PostgreSQL 覆盖表中所有边；遍历其余跨状态/同态迁移并拒绝；终态不能领取、采用、等待或改输入。验证输入版本变化、同版本新 attempt 替代旧 attempt、取消/超时与迟到结果竞争。
+4. **隔离与恢复**：复用 T18 随机临时数据库模式；先核对实际数据库名及两个不同后端进程 ID 再迁移，不能迁移配置中的原库。关闭自有连接并重新连接验证 task、attempt、等待和毫秒截止；等待恢复只使用持久化剩余预算。结束仅删除本次创建的库，不强制断开其他连接。
+5. **命令与质量**：补齐 db:migrate:test，显式定向运行 task-store 集成测试（现有 test:integration 的目录参数不能误扩大到真实模型测试）；执行 App typecheck/build、默认 App 测试、根 lint 和新增文件格式检查。另用普通 Node 进程对构建产物做数据库烟测，不连接 KK9、模型或 RAGFlow。
+
+迁移与存储由主代理实现；接口固定后，测试隔离/命令入口与任务集成用例可按不同文件独立实施。所有并发编辑阶段不执行构建、lint 或测试，由主代理在集成后统一验证。完成后更新开发文档与 Orca comment，不合并分支或关闭 issue。
+
+### 实施结果
+
+- 三表迁移、十状态存储、attempt 采用条件、等待暂停预算与回答关联均已实施；不增加运行时调度或依赖。测试与存储按固定接口并行编写，首轮运行时已有实现，实际结果为 22/23；不是预实现的失败基线。真实回答消费竞争失败已修复并保留回归。
+- 最终 `db:migrate:test` 为 1 项通过/23 项定向排除；task-store 真实 PostgreSQL 集成为 24/24，App typecheck/build、根 lint、默认 App 91 项测试、新增文件格式与脚本语法检查通过。
+- 独立构建产物烟测确认双连接只有一方领取、全部写入连接关闭后状态与截止保留、等待后剩余预算恢复、最终 completed 和终态保护。证据仅覆盖存储与连接重建，不包含强杀故障矩阵、Agent、IM 或恢复调度。
+- 两份独立只读审查未发现存储实现的合同缺陷；补齐测试审查发现的实际取消/采用竞争及真实 SQL 失败回滚验证。没有通过捕获异常、放宽断言或增加兼容框架解决问题。
+- 本任务创建的六个精确临时库名最终只读查询均无残留；两个临时 Node 探针已删除，本地被忽略的 `.env` 仅保留测试连接以便复跑。实际命令、结果与边界见 `docs/DEVELOPMENT.md` 的 T19 节；没有合并分支或关闭 issue。
+
+### 追加修复：旧 attempt 迟到失败
+
+Advisor 指出的同版本 A 被 B 替代后仍能以 running→failed 终止 B 的缺陷已真实复现，先前 24 项用例和审查未覆盖此路径。修复为该迁移强制携带 expectedAttemptId，并在现有任务行锁内比较非空 currentAttemptId；整任务取消及发送阶段失败不增加这一条件，旧尝试仍可补记结束审计。没有新增迁移或兼容层。
+
+两条新增真实 PostgreSQL 回归修复前均失败、修复后均通过；全量 task-store 26/26，类型检查、根 lint、App build 及默认 App 91 项通过。当前结果以 `docs/DEVELOPMENT.md` 的追加修复节为准。

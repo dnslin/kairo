@@ -331,9 +331,10 @@ Driver 与 KK9 断开时：
 
 #### 阶段一任务状态
 
+`collecting` 由 message batch 表达；非空 ready batch 才形成 queued task，不重复创建空任务。
+
 | 内部状态 | 普通中文含义 |
 | --- | --- |
-| `collecting` | 正在等待员工是否继续发送 |
 | `queued` | 已形成任务，正在排队 |
 | `running` | Agent 正在处理 |
 | `waiting_for_user` | Bot 已提问，正在等员工选择 |
@@ -347,6 +348,21 @@ Driver 与 KK9 断开时：
 
 `send_unconfirmed` 只是内部名字；员工不需要看到该英文词。
 
+T19 的持久化状态出边固定如下；专用操作还必须满足当前输入版本、执行尝试及截止时间条件：
+
+| 当前状态 | 允许的后继 |
+| --- | --- |
+| queued | running、cancelled、timed_out |
+| running | waiting_for_user、ready_to_send、failed、cancelled、timed_out |
+| waiting_for_user | running、cancelled、timed_out |
+| ready_to_send | sending、cancelled、timed_out |
+| sending | completed、failed、cancelled、send_unconfirmed |
+| completed、failed、cancelled、timed_out、send_unconfirmed | 无，终态不可倒退 |
+
+只读重试或重启恢复创建同一 running 任务的新 attempt，不退回 queued。迟到的 attempt 可以补记结束与错误，但只有当前版本、当前 attempt 的有效结果可以被采用。发送已触发后，不以执行期限推断发送失败。
+
+`running → failed` 必须携带非空当前尝试标识 `expectedAttemptId`，并在同一任务行锁内与 `currentAttemptId` 匹配。被替代的旧 attempt 只能补记失败审计，不能终止新的 attempt；整任务取消和 sending 阶段的发送失败不绑定执行 attempt。
+
 #### 时间规则
 
 | 场景 | 时间 |
@@ -356,6 +372,8 @@ Driver 与 KK9 断开时：
 | 执行超过多久发送一次等待提示 | 10 秒 |
 | 发送结果不明确时最长等待 | 30 秒 |
 | 等待员工选择通用知识 | 10 分钟 |
+
+等待员工不消耗四分钟执行预算：进入 waiting_for_user 时保存剩余执行毫秒数及十分钟绝对等待截止；同意后仍是同一任务，以“恢复时刻 + 剩余预算”设置下一段执行绝对截止。拒绝或新问题替换旧等待时为 cancelled，等待到期为 timed_out。重启本身不延长任何期限。
 
 Agent 在 10 秒内完成时直接回复。超过 10 秒只发送一次“正在查询企业知识，请稍候”，之后只在完成、失败或取消时通知。
 
@@ -603,10 +621,11 @@ Bot 等待员工回答时：
 
 - 同一私聊只允许一个等待中的问题；
 - 下一条明确的“可以”或“不用”属于该问题；
-- 员工直接提出新问题时，旧问题结束，新问题正常处理；
-- 最多等待 10 分钟；
+- 员工明确拒绝，或直接提出新问题时，旧任务进入 cancelled；新问题按普通流程处理；
+- 最多等待 10 分钟；到期旧任务进入 timed_out；
 - `/new` 立即取消等待；
 - 已排队任务不能越过等待中的问题。
+- 等待记录绑定 taskId、inputVersion、问题正文及当前问题/缺失子问题标识，员工回答关联原始消息的 sessionId/messageId；这些标识不是允许回复的词语列表，也不形成会话级偏好。
 
 #### 资料冲突
 
