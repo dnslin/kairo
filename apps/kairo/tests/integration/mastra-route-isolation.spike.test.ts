@@ -1,7 +1,7 @@
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { PostgresStore } from '@mastra/pg';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
 import { createStudioMastra } from '../../src/mastra/dev-server.js';
@@ -13,6 +13,10 @@ const databaseUrl = process.env.KAIRO_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error('缺少 KAIRO_TEST_DATABASE_URL，不能执行 T13 集成测试');
 
 const applications: KairoApplication[] = [];
+beforeEach(() => {
+  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '');
+  vi.stubEnv('RAGFLOW_API_KEY', '');
+});
 afterEach(async () => {
   await Promise.all(applications.splice(0).map(application => application.close()));
   vi.unstubAllEnvs();

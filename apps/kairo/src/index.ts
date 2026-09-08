@@ -22,6 +22,8 @@ import { AppError, getErrorType } from './modules/operability/errors.js';
 import type { AppErrorType } from './modules/operability/errors.js';
 import { loadBotCustomization } from './modules/bot-customization/instructions.js';
 import type { BotCustomization } from './modules/bot-customization/instructions.js';
+import { startDependencyChecks } from './modules/operability/dependency-checks.js';
+import type { DependencyChecks } from './modules/operability/dependency-checks.js';
 
 const logger = createLogger();
 const execFileAsync = promisify(execFile);
@@ -49,6 +51,7 @@ export async function startKairo(
   let runtime: MastraRuntime | undefined;
   let driver: IKK9Driver | undefined;
   let health: HealthServer | undefined;
+  let external: DependencyChecks | undefined;
   let closing: Promise<void> | undefined;
   let driverInvalidated = false;
   const close = (): Promise<void> => {
@@ -57,6 +60,7 @@ export async function startKairo(
       const failures: AppError[] = [];
       // 逐一回收属于本应用的资源；某一步失败不能跳过后续步骤。
       for (const [resource, errorType] of [
+        [external?.close.bind(external), 'internal'],
         [health?.close.bind(health), 'configuration'],
         [driver?.disconnect.bind(driver), 'driver'],
         [runtime?.close.bind(runtime), 'storage'],
@@ -157,9 +161,7 @@ export async function startKairo(
               ? 'up'
               : 'down',
           driver: readDriverStatus(),
-          // 尚未装配的外部服务保持未知，不以配置值推断可用。
-          ragflow: 'unknown',
-          model: 'unknown',
+          ...(external?.read() ?? { model: 'unknown', ragflow: 'unknown' }),
         };
         if (closing || pool.ending || pool.ended) {
           dependencies.postgres = 'down';
@@ -193,6 +195,7 @@ export async function startKairo(
         return dependencies;
       },
     });
+    external = startDependencyChecks(configuration.config, logger);
     stage = 'driver';
     try {
       await activeDriver.connect();

@@ -1,9 +1,15 @@
 import { createServer } from 'node:net';
 import type { Socket } from 'node:net';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
+
+beforeEach(() => {
+  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '');
+  vi.stubEnv('RAGFLOW_API_KEY', '');
+});
+afterEach(() => vi.unstubAllEnvs());
 
 describe('T17 正式入口的真实健康路径', () => {
   it('数据库握手挂起时健康请求有界失败，live 不受影响且未接入依赖保持未知', async () => {

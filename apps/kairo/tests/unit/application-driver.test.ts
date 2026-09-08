@@ -1,7 +1,7 @@
 import { FakeKK9Driver } from '@kairo/driver';
 import type { DriverHealthKind, DriverHealthSnapshot } from '@kairo/driver';
 import type * as Pg from 'pg';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
 import * as runtimeModule from '../../src/mastra/runtime.js';
@@ -31,6 +31,10 @@ const databaseUrl = 'postgresql://test:test@127.0.0.1:1/application_driver_unit'
 const applications: KairoApplication[] = [];
 const createRuntime = runtimeModule.createMastraRuntime;
 const startHealth = healthModule.startHealthServer;
+beforeEach(() => {
+  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '');
+  vi.stubEnv('RAGFLOW_API_KEY', '');
+});
 
 afterEach(async () => {
   await Promise.allSettled(applications.splice(0).map(application => application.close()));
