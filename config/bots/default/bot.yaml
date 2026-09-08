@@ -1,6 +1,6 @@
 # 非凭证配置的唯一正式来源；修改后重启生效。
 model:
-  id: sensenova/deepseek-v4-flash
+  id: openai/gemini-3.7-flash-high
   url: https://cpa.447654.xyz/v1
 datasetId: b55a0fc8a69211f1bad90f767650f6fc
 employeeAllowlist:
