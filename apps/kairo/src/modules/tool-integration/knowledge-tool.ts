@@ -138,10 +138,7 @@ export function createKnowledgeTool(
       { taskId, attemptId, inputVersion, contextVersion },
       task => {
         const stopped =
-          task.status !== 'running' ||
-          task.currentAttemptId !== attemptId ||
-          task.inputVersion !== inputVersion ||
-          task.executionDeadline === null
+          task.status !== 'running' || task.executionDeadline === null
             ? 'stale_task'
             : signal?.aborted
               ? signal.reason instanceof Error && signal.reason.name === 'TimeoutError'

@@ -1159,3 +1159,24 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 补充等待期间回归后，最终再次执行完整质量四命令全部通过：Driver 330/330、App 303/303（含发送单元 61 项）。随后原样重跑发送与上下文数据库组合，3 文件、46/46；其中发送19项、上下文27项。初次45/46及中间App302项保留为执行历史，不当作最终结果；没有重跑不受此次修复影响的完整知识/任务账本集成。
 
 独立命令 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-recovery-fixed-smoke.ts` 实际通过：两次真实协调写入 CHECK 失败后，新实例恢复为 delivered、task=completed；原证据时间与恢复 resultAt 均为 1788935606889，空闲偏移 0ms，发送一次、查询零次，三小时后的新请求正确切换 thread。使用真实 PostgreSQL、生产协调器、FakeDriver 和受控时钟，不是 KK9 或操作系统强杀。烟测库 `kairo_t19_05de3d2af1dc497daface77c2745695f`、连接 PID 29997/29998，已删除并按精确库名核对残留 0。临时烟测脚本在验收后删除；本轮仍不合并 PR、不关闭 issue，也不代替 T35 放行。
+
+### PR #266 双审查后的 Optional 精简与真机前提
+
+用户要求先以真机证据确认索引问题，再决定正式修复。审查中的十万历史 SQL 对照不能替代 KK9 入站证据；当前未新增索引迁移，也未修改业务库。已通过 `127.0.0.1:9222/json` 发现真实 KK9，并由独立烟测 Driver 核对 Bot5761、员工3585、私聊0-3585/int2024 与本工作区授权配置。临时监听等待员工发送 `T24-索引真机核验`；仅收到该真实 inbound 并通过 T22 后，才在自建隔离库比较空库、十万合成历史及临时索引，不能把可信结果的重复计时称作多条新入站，不能把合成历史称作当前业务库数据。此阶段尚未取得指定员工消息，不宣称真机复现成功或 T35 放行。Windows 首次直接启动 pnpm 的 PTY 返回193，改用 cmd.exe 后真实连接及监听就绪。
+
+Optional 逐项处理：
+
+- 取消事务保留原状：复用任务 ID 数组没有减少 SQL 往返，却增加 JS 数据复制和单调用方事务接口；现有同事务锁序及生命周期 SQL 保持不变，不为迁移代码位置新增抽象。
+- 发送单测由1151行拆成基础286行、竞争156行、恢复423行；共用328行的 `tests/helpers/send-service-fixture.ts`。六个原 describe 分组已逐字比较，测试正文与断言全部保留；假时钟、Node promises 定时器替身、service关闭及mock清理由同一 setup 管理，每个测试文件显式注册。后续完整发送单测使用 `tests/unit/send-service` 前缀，不再只运行基础文件。
+- Tool 交付回调删除重复的 inputVersion/currentAttemptId 比较；输入版本、attempt 和 context 仍由生产 `withTaskOutput` 在锁内检查，Tool仍检查running、截止时间和AbortSignal。未增加或削弱测试，原失效资料不交付回归继续通过。
+
+实际验证：
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/knowledge-tool.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests/integration/send-service.test.ts tests/integration/ragflow-connector.test.ts
+```
+
+Tool29/29，拆分发送61/61（25+14+22）；最终根四命令全部通过，Driver330、App303（18文件）。真实 PostgreSQL 组合4文件51/51，含上下文27、发送19、知识Tool5；知识路径使用真实Python与受控HTTP，不是ERP真机。中间一次清理导入误删START，typecheck明确失败；恢复导入后重新执行上述完整质量链通过，没有放宽检查。AST比对尝试因Eval运行时无法解析typescript包失败，改用六个完整测试分组逐字对照成功，不声称AST核验已通过。
