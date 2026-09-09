@@ -20,6 +20,14 @@ let tasks: PostgresTaskStore;
 let dispatches: PostgresSendDispatchStore;
 const logger = createLogger({ write(): void {} });
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(done => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 async function fixture(purpose: SendRequest['purpose'] = 'final', existingScope?: ContextScope) {
   const now = Date.now();
   const employeeId = randomUUID();
@@ -103,6 +111,42 @@ afterAll(async () => {
 });
 
 describe('T21 真实 PostgreSQL 发送协调', () => {
+  it('Driver 已持久送达但协调终态保存失败，恢复沿用首次证据时间', async () => {
+    const f = await fixture();
+    const operations = new PostgresSendOperationStore(database.poolA);
+    const original = dispatches.compareAndSet.bind(dispatches);
+    const failure = new Error('协调终态写入中断');
+    const interrupted = vi
+      .spyOn(dispatches, 'compareAndSet')
+      .mockImplementation((id, revision, update) => {
+        if (update.status === 'delivered') return Promise.reject(failure);
+        return original(id, revision, update);
+      });
+    const first = createSendService({
+      createDriver: store => new FakeKK9Driver(store),
+      driverStore: operations,
+      dispatches,
+      tasks,
+      contexts: chat,
+      logger,
+    });
+    await expect(first.send(f.request)).rejects.toBe(failure);
+    first.close();
+    interrupted.mockRestore();
+    const dispatch = await dispatches.ensure(createSendIntent(f.request, f.scope.sessionId));
+    expect(dispatch).toMatchObject({ status: 'sending', resultAt: null });
+    const evidence = await operations.get(dispatch.operationId);
+    expect(evidence?.status).toBe('delivered');
+    vi.spyOn(Date, 'now').mockReturnValue(evidence!.updatedAt + 10800000);
+    const second = service(database.poolB);
+    try {
+      const recovered = await second.recover(f.request);
+      expect(recovered.resultAt).toBe(evidence!.updatedAt);
+      expect((await chat.getCurrentContext(f.scope))?.idleSince).toBe(evidence!.updatedAt);
+    } finally {
+      second.close();
+    }
+  });
   it('两个真实连接竞争同一意图，调用 Driver 前已有唯一 operationId，重复事件不重发', async () => {
     const f = await fixture();
     const drivers: FakeKK9Driver[] = [];
@@ -188,6 +232,7 @@ describe('T21 真实 PostgreSQL 发送协调', () => {
       logger,
       tasks: {
         getTask: tasks.getTask.bind(tasks),
+        withTaskOutput: tasks.withTaskOutput.bind(tasks),
         transitionTask: async input => {
           const changed = await transition(input);
           if (changed && input.to === 'sending') {
@@ -220,6 +265,7 @@ describe('T21 真实 PostgreSQL 发送协调', () => {
       queryUsed: true,
       queryDueAt: Date.now() - 1000,
       messageId: null,
+      resultAt: null,
     });
     expect(querying).not.toBeNull();
     const pool = createPostgresPool(database.databaseUrl, { max: 1 });
@@ -230,8 +276,12 @@ describe('T21 真实 PostgreSQL 发送协调', () => {
         return driver;
       });
       const query = vi.spyOn(driver, 'getSendStatus');
+      const resultAt = Date.now();
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(resultAt);
       const recovered = await a.recover(f.request);
       expect(recovered).toMatchObject({ status: 'send_unconfirmed', queryUsed: true });
+      expect(recovered.resultAt).toBe(resultAt);
+      expect((await chat.getContext(f.context.threadId))?.idleSince).toBe(resultAt);
       expect(query).not.toHaveBeenCalled();
       expect(driver.recordedCalls).toEqual([]);
       expect((await tasks.getTask(f.taskId))?.status).toBe('send_unconfirmed');
@@ -250,6 +300,9 @@ describe('T21 真实 PostgreSQL 发送协调', () => {
         })
       ).toBeNull();
       expect(await dispatches.get(initial.operationId)).toEqual(recovered);
+      clock.mockReturnValue(resultAt + 3 * 60 * 60_000);
+      expect(await a.recover(f.request)).toEqual(recovered);
+      expect((await chat.getContext(f.context.threadId))?.idleSince).toBe(resultAt);
       a.close();
     } finally {
       await pool.end();
@@ -395,6 +448,170 @@ describe('T21 真实 PostgreSQL 发送协调', () => {
     );
     expect(countsAfter.rows).toEqual(countsBefore.rows);
     restored.close();
+  });
+
+  it('最终送达已保存但任务事务中断时，新连接恢复不刷新结果时刻或空闲起点', async () => {
+    const f = await fixture();
+    const resultAt = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(resultAt);
+    const interrupted = new Error('任务结束事务中断');
+    const transition = tasks.transitionTask.bind(tasks);
+    const old = createSendService({
+      createDriver: store => new FakeKK9Driver(store),
+      driverStore: new PostgresSendOperationStore(database.poolA),
+      dispatches,
+      contexts: chat,
+      logger,
+      tasks: {
+        getTask: tasks.getTask.bind(tasks),
+        withTaskOutput: tasks.withTaskOutput.bind(tasks),
+        transitionTask: input => {
+          if (input.to === 'completed') throw interrupted;
+          return transition(input);
+        },
+      },
+    });
+    await expect(old.send(f.request)).rejects.toBe(interrupted);
+    const saved = await dispatches.ensure(createSendIntent(f.request, f.scope.sessionId));
+    expect(saved).toMatchObject({ status: 'delivered', resultAt });
+    expect((await tasks.getTask(f.taskId))?.status).toBe('sending');
+    old.close();
+    vi.spyOn(Date, 'now').mockReturnValue(resultAt + 3 * 60 * 60_000);
+    const next = service(database.poolB);
+    expect(await next.recover(f.request)).toEqual(saved);
+    expect((await chat.getContext(f.context.threadId))?.idleSince).toBe(resultAt);
+    expect((await tasks.getTask(f.taskId))?.endedAt).toBe(resultAt + 3 * 60 * 60_000);
+    vi.spyOn(Date, 'now').mockReturnValue(resultAt + 4 * 60 * 60_000);
+    expect(await next.recover(f.request)).toEqual(saved);
+    expect((await chat.getContext(f.context.threadId))?.idleSince).toBe(resultAt);
+    next.close();
+  });
+
+  it('真实交付锁等待期间 /new 先提交时，旧任务不再调用 Driver', async () => {
+    const f = await fixture();
+    const waiting = deferred<void>();
+    const release = deferred<void>();
+    let driver!: FakeKK9Driver;
+    const outbound = createSendService({
+      createDriver: store => {
+        driver = new FakeKK9Driver(store);
+        return driver;
+      },
+      driverStore: new PostgresSendOperationStore(database.poolA),
+      dispatches,
+      contexts: chat,
+      logger,
+      tasks: {
+        getTask: tasks.getTask.bind(tasks),
+        transitionTask: tasks.transitionTask.bind(tasks),
+        withTaskOutput: async (input, output) => {
+          waiting.resolve();
+          await release.promise;
+          return tasks.withTaskOutput(input, output);
+        },
+      },
+    });
+    const pending = outbound.send(f.request);
+    try {
+      await waiting.promise;
+      const other = new PostgresPrivateChatStore(database.poolB);
+      await other.invalidateContext(f.scope, f.context.version, Date.now());
+      const next = await other.createContext(f.scope, Date.now());
+      release.resolve();
+      expect((await pending).status).toBe('cancelled');
+      expect(driver.recordedCalls).toEqual([]);
+      expect((await tasks.getTask(f.taskId))?.status).toBe('cancelled');
+      expect((await other.getContext(next.threadId))?.idleSince).toBe(next.idleSince);
+    } finally {
+      release.resolve();
+      outbound.close();
+      await pending.catch(() => undefined);
+    }
+  });
+
+  it('带 thread 的事件提示在预检查后失效时，由真实 context 交付锁拒绝', async () => {
+    const f = await fixture();
+    const waiting = deferred<void>();
+    const release = deferred<void>();
+    let driver!: FakeKK9Driver;
+    const outbound = createSendService({
+      createDriver: store => {
+        driver = new FakeKK9Driver(store);
+        return driver;
+      },
+      driverStore: new PostgresSendOperationStore(database.poolA),
+      dispatches,
+      tasks,
+      logger,
+      contexts: {
+        getContext: chat.getContext.bind(chat),
+        getRawMessage: chat.getRawMessage.bind(chat),
+        withContextOutput: async (threadId, output) => {
+          waiting.resolve();
+          await release.promise;
+          return chat.withContextOutput(threadId, output);
+        },
+      },
+    });
+    const pending = outbound.send({
+      subject: { kind: 'event', botId: f.scope.botId, ...f.message, threadId: f.context.threadId },
+      purpose: 'notice:输入提示',
+      text: '请补充信息',
+    });
+    try {
+      await waiting.promise;
+      await new PostgresPrivateChatStore(database.poolB).invalidateContext(
+        f.scope,
+        f.context.version,
+        Date.now()
+      );
+      release.resolve();
+      expect((await pending).status).toBe('cancelled');
+      expect(driver.recordedCalls).toEqual([]);
+      expect((await tasks.getTask(f.taskId))?.status).toBe('ready_to_send');
+    } finally {
+      release.resolve();
+      outbound.close();
+      await pending.catch(() => undefined);
+    }
+  });
+
+  it('单连接池交付 Driver 后不等待旧回执，/new 可先提交且迟到送达不能复活任务', async () => {
+    const f = await fixture();
+    const pool = createPostgresPool(database.databaseUrl, { max: 1 });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let driver!: FakeKK9Driver;
+    const outbound = service(pool, store => {
+      driver = new FakeKK9Driver(store);
+      driver.setSendBehavior({
+        mode: 'custom',
+        handler: async () => {
+          entered.resolve();
+          await release.promise;
+          return { success: true, status: 'delivered', messageId: '旧回执' };
+        },
+      });
+      return driver;
+    });
+    const pending = outbound.send(f.request);
+    try {
+      await entered.promise;
+      const other = new PostgresPrivateChatStore(database.poolB);
+      await other.invalidateContext(f.scope, f.context.version, Date.now());
+      const next = await other.createContext(f.scope, Date.now());
+      expect((await tasks.getTask(f.taskId))?.status).toBe('sending');
+      release.resolve();
+      expect((await pending).status).toBe('cancelled');
+      expect(driver.recordedCalls).toHaveLength(1);
+      expect((await tasks.getTask(f.taskId))?.status).toBe('cancelled');
+      expect((await other.getContext(next.threadId))?.idleSince).toBe(next.idleSince);
+    } finally {
+      release.resolve();
+      outbound.close();
+      await pending.catch(() => undefined);
+      await pool.end();
+    }
   });
 
   it('真实 SQL 约束错误原样传播且不留下半截预算，重复迁移保留记录', async () => {

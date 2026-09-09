@@ -1,6 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setTimeout as delay, setImmediate as nextTurn } from 'node:timers/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { noopObserve } from '@mastra/core/tools';
 import { retrieveKnowledge } from '../../src/modules/tool-integration/python-retrieval.js';
@@ -11,6 +11,70 @@ import {
 import { createKnowledgeTool } from '../../src/modules/tool-integration/knowledge-tool.js';
 import type { KnowledgeQueryInput } from '../../src/modules/knowledge-qa/knowledge-record-store.js';
 import { createLogger } from '../../src/modules/operability/logger.js';
+import type { Task, TaskStore } from '../../src/modules/task-lifecycle/types.js';
+import type { ChatContext } from '../../src/modules/private-chat-core/types.js';
+
+function taskFixture(executionDeadline = Date.now() + 10000) {
+  const now = Date.now();
+  const context: ChatContext = {
+    employeeId: '员工',
+    botId: '机器人',
+    sessionId: '会话',
+    threadId: '上下文',
+    version: 7,
+    createdAt: now,
+    invalidatedAt: null,
+    idleSince: null,
+  };
+  const attemptId = '尝试';
+  const task: Task = {
+    employeeId: context.employeeId,
+    botId: context.botId,
+    sessionId: context.sessionId,
+    threadId: context.threadId,
+    taskId: '任务',
+    batchId: '批次',
+    inputVersion: 3,
+    configDigest: '配置摘要',
+    status: 'running',
+    createdAt: now,
+    updatedAt: now,
+    queueDeadline: executionDeadline,
+    executionStartedAt: now,
+    executionDeadline,
+    currentAttemptId: attemptId,
+    endedAt: null,
+  };
+  const tasks: Pick<TaskStore, 'withTaskOutput'> = {
+    withTaskOutput(input, output) {
+      if (
+        context.invalidatedAt !== null ||
+        context.threadId !== task.threadId ||
+        input.taskId !== task.taskId ||
+        input.inputVersion !== task.inputVersion ||
+        (input.contextVersion !== undefined && input.contextVersion !== context.version) ||
+        (input.attemptId !== undefined && input.attemptId !== task.currentAttemptId)
+      ) {
+        return Promise.resolve(null);
+      }
+      return Promise.resolve({ value: output(task) });
+    },
+  };
+  return {
+    task,
+    context,
+    tasks,
+    scope: {
+      taskId: task.taskId,
+      attemptId,
+      inputVersion: task.inputVersion,
+      contextVersion: context.version,
+      bootId: '启动',
+      executionDeadline,
+      nextCallIndex: () => 1,
+    },
+  };
+}
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -79,6 +143,53 @@ function assertReaped(run: RetrievalRun): void {
 }
 
 describe('固定 Python 检索合同', () => {
+  it('Tool 在交付锁内完成消费者可见输出，不等待 COMMIT 响应', async () => {
+    const { settings } = await service(found);
+    const f = taskFixture();
+    let entered!: () => void;
+    const gateEntered = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const commit = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const tasks: Pick<TaskStore, 'withTaskOutput'> = {
+      async withTaskOutput(_input, output) {
+        const value = output(f.task);
+        entered();
+        await commit;
+        return { value };
+      },
+    };
+    const binding = createKnowledgeTool(
+      settings,
+      f.scope,
+      { recordQuery: () => Promise.resolve() },
+      createLogger({ write(): void {} }),
+      tasks
+    );
+    let delivered = false;
+    const execution = binding.tool.execute!(
+      { query: '交付边界' },
+      { observe: noopObserve, abortSignal: new AbortController().signal }
+    );
+    const work = Promise.resolve(execution).then(output => {
+      delivered = true;
+      return output;
+    });
+    try {
+      await gateEntered;
+      // 只让当前微任务队列排空，不按毫秒猜测执行耗时；COMMIT 仍由显式信号挂起。
+      await nextTurn();
+      expect(delivered).toBe(true);
+      f.context.invalidatedAt = Date.now();
+    } finally {
+      release();
+      await work;
+      await binding.settled();
+    }
+  });
   it('只有有效空数组才是无资料，真实请求只发送问题与固定 Dataset', async () => {
     const { requests, settings } = await service(empty);
     const result = await retrieveKnowledge('采购订单', settings, { deadline: Date.now() + 10000 });
@@ -217,16 +328,11 @@ describe('固定 Python 检索合同', () => {
       const { settings } = await service(found);
       const controller = new AbortController();
       const executionDeadline = Date.now() + 10000;
+      const fixture = taskFixture(executionDeadline);
       const records: KnowledgeQueryInput[] = [];
       const binding = createKnowledgeTool(
         settings,
-        {
-          taskId: '任务',
-          attemptId: '尝试',
-          bootId: '启动',
-          executionDeadline,
-          nextCallIndex: () => 1,
-        },
+        fixture.scope,
         {
           recordQuery: async input => {
             records.push(input);
@@ -238,7 +344,8 @@ describe('固定 Python 检索合同', () => {
               );
           },
         },
-        { info: () => {}, warn: () => {}, error: () => {} }
+        { info: () => {}, warn: () => {}, error: () => {} },
+        fixture.tasks
       );
       const output = await binding.tool.execute!(
         { query: '采购步骤' },
@@ -256,25 +363,86 @@ describe('固定 Python 检索合同', () => {
     }
   );
 
-  it('直接 Tool 调用不能把额外 null 或 undefined 字段清洗成合法输入', async () => {
-    const { settings, requests } = await service(empty);
+  it.each(['上下文', '尝试', '输入版本', '任务终态'] as const)(
+    '账本等待期间%s失效且信号未取消时保留真实证据但不交付迟到资料',
+    async mode => {
+      const { settings } = await service(found);
+      const fixture = taskFixture();
+      const controller = new AbortController();
+      const records: KnowledgeQueryInput[] = [];
+      const binding = createKnowledgeTool(
+        settings,
+        fixture.scope,
+        {
+          recordQuery: async input => {
+            records.push(input);
+            await delay(5);
+            if (mode === '上下文') {
+              fixture.context.invalidatedAt = Date.now();
+              fixture.context.version++;
+            } else if (mode === '尝试') fixture.task.currentAttemptId = '新尝试';
+            else if (mode === '输入版本') fixture.task.inputVersion++;
+            else fixture.task.status = 'completed';
+          },
+        },
+        { info: () => {}, warn: () => {}, error: () => {} },
+        fixture.tasks
+      );
+      const output = await binding.tool.execute!(
+        { query: '采购步骤' },
+        { observe: noopObserve, abortSignal: controller.signal }
+      );
+      await binding.settled();
+      expect(controller.signal.aborted).toBe(false);
+      expect(output).toMatchObject({ kind: 'cancelled', materials: [] });
+      expect(records).toMatchObject([
+        { resultCategory: 'found', evidence: [{ content: found.data.chunks[0]!.content }] },
+      ]);
+    }
+  );
+
+  it('交付闸门读取失败不吞错，落账事实仍保留且 settled 暴露原始故障', async () => {
+    const { settings } = await service(found);
+    const fixture = taskFixture();
+    const failure = new Error('受控任务存储故障');
+    fixture.tasks.withTaskOutput = () => Promise.reject(failure);
     const records: KnowledgeQueryInput[] = [];
     const binding = createKnowledgeTool(
       settings,
-      {
-        taskId: '任务',
-        attemptId: '尝试',
-        bootId: '启动',
-        executionDeadline: Date.now() + 10000,
-        nextCallIndex: () => 1,
-      },
+      fixture.scope,
       {
         recordQuery: input => {
           records.push(input);
           return Promise.resolve();
         },
       },
-      { info: () => {}, warn: () => {}, error: () => {} }
+      { info: () => {}, warn: () => {}, error: () => {} },
+      fixture.tasks
+    );
+    await Promise.allSettled([
+      binding.tool.execute!({ query: '采购步骤' }, { observe: noopObserve }),
+    ]);
+    await expect(binding.settled()).rejects.toMatchObject({ errors: [failure] });
+    expect(records).toMatchObject([
+      { resultCategory: 'found', evidence: [{ content: found.data.chunks[0]!.content }] },
+    ]);
+  });
+
+  it('直接 Tool 调用不能把额外 null 或 undefined 字段清洗成合法输入', async () => {
+    const { settings, requests } = await service(empty);
+    const records: KnowledgeQueryInput[] = [];
+    const fixture = taskFixture();
+    const binding = createKnowledgeTool(
+      settings,
+      fixture.scope,
+      {
+        recordQuery: input => {
+          records.push(input);
+          return Promise.resolve();
+        },
+      },
+      { info: () => {}, warn: () => {}, error: () => {} },
+      fixture.tasks
     );
     for (const datasetId of [null, undefined]) {
       const input = { query: '采购步骤', datasetId };
@@ -303,13 +471,11 @@ describe('固定 Python 检索合同', () => {
     const records: KnowledgeQueryInput[] = [];
     let logs = '';
     let callIndex = 0;
+    const fixture = taskFixture();
     const binding = createKnowledgeTool(
       settings,
       {
-        taskId: '任务',
-        attemptId: '尝试',
-        bootId: '启动',
-        executionDeadline: Date.now() + 10000,
+        ...fixture.scope,
         nextCallIndex: () => ++callIndex,
       },
       {
@@ -322,7 +488,8 @@ describe('固定 Python 检索合同', () => {
         write: text => {
           logs += text;
         },
-      })
+      }),
+      fixture.tasks
     );
     const query = '采购订单 $(whoami); --dataset-ids secret';
     const output = await binding.tool.execute!({ query }, { observe: noopObserve });

@@ -27,6 +27,7 @@ import type {
 import {
   TASK_TRANSITIONS,
   type Task,
+  type TaskOutputScope,
   type TaskStore,
   type TransitionTaskInput,
 } from '../../src/modules/task-lifecycle/types.js';
@@ -76,6 +77,7 @@ class MemoryDispatches implements SendDispatchStore {
         sendCalls: 0,
         queryUsed: false,
         queryDueAt: null,
+        resultAt: null,
         messageId: null,
         revision: 0,
       };
@@ -134,6 +136,9 @@ function fixture(sendStatuses: SendStatus[] = ['delivered'], queryStatus: SendSt
     task: Task;
     context: ChatContext;
     transitionHook?: (input: TransitionTaskInput) => void;
+    taskOutputHook?: () => void | Promise<void>;
+    contextOutputHook?: () => void | Promise<void>;
+    outputCommitHook?: () => void | Promise<void>;
   } = {
     task: {
       taskId: '任务一',
@@ -169,11 +174,31 @@ function fixture(sendStatuses: SendStatus[] = ['delivered'], queryStatus: SendSt
     purpose: 'final',
     text: '业务回答正文',
   };
-  const tasks: Pick<TaskStore, 'getTask' | 'transitionTask'> = {
+  const tasks: Pick<TaskStore, 'getTask' | 'transitionTask' | 'withTaskOutput'> = {
     getTask: vi.fn(taskId =>
       Promise.resolve(taskId === state.task.taskId ? { ...state.task } : null)
     ),
-    transitionTask: vi.fn(input => {
+    withTaskOutput: async <T>(input: TaskOutputScope, output: (task: Task) => T) => {
+      await state.taskOutputHook?.();
+      const task = state.task;
+      const context = state.context;
+      if (
+        task.taskId !== input.taskId ||
+        task.inputVersion !== input.inputVersion ||
+        task.threadId !== context.threadId ||
+        task.employeeId !== context.employeeId ||
+        task.botId !== context.botId ||
+        task.sessionId !== context.sessionId ||
+        context.invalidatedAt !== null ||
+        (input.contextVersion !== undefined && input.contextVersion !== context.version) ||
+        (input.attemptId !== undefined && input.attemptId !== task.currentAttemptId)
+      )
+        return null;
+      const value = output({ ...task });
+      await state.outputCommitHook?.();
+      return { value };
+    },
+    transitionTask: vi.fn((input: TransitionTaskInput) => {
       const allowed: readonly string[] = TASK_TRANSITIONS[state.task.status];
       if (
         input.taskId !== state.task.taskId ||
@@ -184,6 +209,14 @@ function fixture(sendStatuses: SendStatus[] = ['delivered'], queryStatus: SendSt
         return Promise.resolve(false);
       state.transitionHook?.(input);
       state.task = { ...state.task, status: input.to, updatedAt: input.now };
+      if (TASK_TRANSITIONS[input.to].length === 0) {
+        state.task.endedAt = input.now;
+        if (state.context.invalidatedAt === null)
+          state.context.idleSince = Math.max(
+            state.context.idleSince ?? -Infinity,
+            input.idleSince ?? input.now
+          );
+      }
       return Promise.resolve(true);
     }),
   };
@@ -198,10 +231,17 @@ function fixture(sendStatuses: SendStatus[] = ['delivered'], queryStatus: SendSt
     employeeId: state.task.employeeId,
     processingResult: null,
   };
-  const contexts: Pick<PrivateChatStore, 'getContext' | 'getRawMessage'> = {
+  const contexts: Pick<PrivateChatStore, 'getContext' | 'getRawMessage' | 'withContextOutput'> = {
     getContext: vi.fn(threadId =>
       Promise.resolve(threadId === state.context.threadId ? { ...state.context } : null)
     ),
+    withContextOutput: async <T>(threadId: string, output: (context: ChatContext) => T) => {
+      await state.contextOutputHook?.();
+      if (state.context.threadId !== threadId || state.context.invalidatedAt !== null) return null;
+      const value = output({ ...state.context });
+      await state.outputCommitHook?.();
+      return { value };
+    },
     getRawMessage: vi.fn(key =>
       Promise.resolve(
         key.sessionId === raw.sessionId && key.messageId === raw.messageId ? { ...raw } : null
@@ -466,7 +506,158 @@ describe('意图隔离与并发幂等', () => {
   });
 });
 
+describe('最终判定时刻与空闲起点', () => {
+  it('Driver 回执先于交付事务提交时，等待数据库不推迟送达起点', async () => {
+    const f = fixture();
+    const commit = deferred<void>();
+    f.state.outputCommitHook = () => commit.promise;
+    const { service } = f.open();
+    const pending = service.send(f.request);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.sends[0]).toHaveBeenCalledTimes(1);
+    expect([...f.dispatches.records.values()][0]?.resultAt).toBeNull();
+    vi.setSystemTime(START + 90_000);
+    commit.resolve();
+    const result = await pending;
+    expect(result.resultAt).toBe(START);
+    expect(f.state.context.idleSince).toBe(START);
+    expect(f.state.task.endedAt).toBe(START + 90_000);
+  });
+
+  it('未知发送尚未最终判定时没有空闲起点，查询未知才开始计时', async () => {
+    const f = fixture(['unknown']);
+    const { service } = f.open();
+    const pending = service.send(f.request);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect([...f.dispatches.records.values()][0]).toMatchObject({
+      status: 'unknown',
+      resultAt: null,
+    });
+    expect(f.state.context.idleSince).toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toMatchObject({ status: 'send_unconfirmed', resultAt: START + 30_000 });
+    expect(f.state.context.idleSince).toBe(START + 30_000);
+  });
+
+  it.each(['delivered', 'unknown'] as const)(
+    '%s 结果已持久化但任务未结束，恢复沿用首次结果时刻',
+    async observed => {
+      const f = fixture([observed]);
+      const interrupted = new Error('保存最终结果后任务事务中断');
+      f.state.transitionHook = input => {
+        if (input.to === 'completed' || input.to === 'send_unconfirmed') throw interrupted;
+      };
+      const old = f.open();
+      const pending = old.service.send(f.request);
+      const rejected = expect(pending).rejects.toBe(interrupted);
+      await vi.advanceTimersByTimeAsync(observed === 'unknown' ? 30_000 : 0);
+      await rejected;
+      const resultAt = Date.now();
+      const saved = [...f.dispatches.records.values()][0]!;
+      expect(saved.resultAt).toBe(resultAt);
+      expect(f.state.context.idleSince).toBeNull();
+      old.service.close();
+      f.state.transitionHook = undefined;
+      vi.setSystemTime(resultAt + 3 * 60 * 60_000);
+      const next = f.open();
+      expect(await next.service.recover(f.request)).toEqual(saved);
+      expect(f.state.context.idleSince).toBe(resultAt);
+      expect(f.state.task.endedAt).toBe(Date.now());
+      vi.setSystemTime(Date.now() + 60_000);
+      expect(await next.service.recover(f.request)).toEqual(saved);
+      expect(f.state.context.idleSince).toBe(resultAt);
+      expect(f.sends[1]).not.toHaveBeenCalled();
+      expect(f.queries[1]).not.toHaveBeenCalled();
+    }
+  );
+
+  it('缺少真实判定时刻的既有送达结果明确拒绝恢复，不猜测历史时间', async () => {
+    const f = fixture();
+    f.state.task.status = 'sending';
+    const saved = await f.seed({ status: 'delivered', messageId: '旧记录', resultAt: null });
+    const { service } = f.open();
+    await expect(service.recover(f.request)).rejects.toThrow();
+    expect(await f.dispatches.get(saved.operationId)).toEqual(saved);
+    expect(f.state.context.idleSince).toBeNull();
+    expect(f.state.task.status).toBe('sending');
+    expect(f.sends[0]).not.toHaveBeenCalled();
+  });
+
+  it('明确失败恢复以任务结束时刻计空闲，不使用发送判定时刻', async () => {
+    const f = fixture();
+    f.state.task.status = 'sending';
+    await f.seed({ status: 'failed', resultAt: START - 5_000 });
+    const { service } = f.open();
+    await service.recover(f.request);
+    expect(f.state.task.status).toBe('failed');
+    expect(f.state.task.endedAt).toBe(START);
+    expect(f.state.context.idleSince).toBe(START);
+  });
+});
+
 describe('任务和上下文竞争', () => {
+  it.each(['queued', 'progress', 'final', 'notice:说明'] as const)(
+    '%s 在交付锁获取前上下文失效时不调用 Driver',
+    async purpose => {
+      const f = fixture();
+      f.state.task.status =
+        purpose === 'queued' ? 'queued' : purpose === 'final' ? 'ready_to_send' : 'running';
+      f.state.taskOutputHook = () => {
+        f.state.context.invalidatedAt = Date.now();
+      };
+      const { service } = f.open();
+      expect((await service.send({ ...f.request, purpose })).status).toBe('cancelled');
+      expect(f.sends[0]).not.toHaveBeenCalled();
+      expect(f.state.context.idleSince).toBeNull();
+    }
+  );
+
+  it.each(['queued', 'progress', 'final'] as const)(
+    '%s 在交付前期限经过时不使用预检查快照',
+    async purpose => {
+      const f = fixture();
+      f.state.task.status =
+        purpose === 'queued' ? 'queued' : purpose === 'progress' ? 'running' : 'ready_to_send';
+      f.state.taskOutputHook = () => {
+        vi.setSystemTime(START + 60_000);
+      };
+      const { service } = f.open();
+      expect((await service.send({ ...f.request, purpose })).status).toBe('cancelled');
+      expect(f.sends[0]).not.toHaveBeenCalled();
+    }
+  );
+
+  it('交付锁内任务已经取消时拒绝固定提示，不仅检查上下文有效性', async () => {
+    const f = fixture();
+    f.state.taskOutputHook = () => {
+      f.state.task.status = 'cancelled';
+    };
+    const { service } = f.open();
+    expect((await service.send({ ...f.request, purpose: 'notice:说明' })).status).toBe('cancelled');
+    expect(f.sends[0]).not.toHaveBeenCalled();
+  });
+
+  it('原始事件提示在交付锁前作废 thread 时不能迟到发送', async () => {
+    const f = fixture();
+    f.state.contextOutputHook = () => {
+      f.state.context.invalidatedAt = Date.now();
+    };
+    const { service } = f.open();
+    const result = await service.send({
+      subject: {
+        kind: 'event',
+        botId: f.state.context.botId,
+        sessionId: f.state.context.sessionId,
+        messageId: '原始消息一',
+        threadId: f.state.context.threadId,
+      },
+      purpose: 'notice:输入提示',
+      text: '请补充信息',
+    });
+    expect(result.status).toBe('cancelled');
+    expect(f.sends[0]).not.toHaveBeenCalled();
+  });
+
   it('ready_to_send 转换过程中 /new 作废上下文时不触发 Driver', async () => {
     const f = fixture();
     f.state.transitionHook = input => {

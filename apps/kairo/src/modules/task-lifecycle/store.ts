@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { withTransaction } from '../../db/transaction.js';
 import { TASK_TRANSITIONS } from './types.js';
+import { lockCurrentContext } from '../private-chat-core/context-lock.js';
 import type {
   AdoptAttemptInput,
   ClaimTaskInput,
@@ -13,6 +14,7 @@ import type {
   TaskStatus,
   TaskStore,
   TaskVersion,
+  TaskOutputScope,
   TransitionTaskInput,
   UserWait,
   WaitForUserInput,
@@ -125,12 +127,25 @@ function mapWait(row: WaitRow): UserWait {
 export class PostgresTaskStore implements TaskStore {
   public constructor(private readonly pool: Pool) {}
 
-  /** 所有跨表变更先锁同一任务行；等待者读取提交后的状态与版本。 */
+  /** 固定锁顺序为 context → task → attempt/wait，避免切换与状态推进交叉。 */
   private async lockTask(
     client: PoolClient,
-    input: TaskVersion,
-    statuses: TaskStatus[]
+    input: Pick<TaskVersion, 'taskId' | 'inputVersion'> & { contextVersion?: number },
+    statuses: TaskStatus[],
+    allowInvalid = false
   ): Promise<Task | null> {
+    const context = await client.query<{ version: number; invalidated_at: Date | null }>(
+      `SELECT c.version, c.invalidated_at FROM kairo.contexts c
+       JOIN kairo.tasks t USING (thread_id) WHERE t.task_id = $1 FOR UPDATE OF c`,
+      [input.taskId]
+    );
+    const row = context.rows[0];
+    if (
+      !row ||
+      (!allowInvalid && row.invalidated_at !== null) ||
+      (input.contextVersion !== undefined && input.contextVersion !== row.version)
+    )
+      return null;
     const result = await client.query<TaskRow>(
       `SELECT * FROM kairo.tasks
        WHERE task_id = $1 AND input_version = $2 AND status = ANY($3::text[])
@@ -163,8 +178,15 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   public async createTask(input: CreateTaskInput): Promise<Task | null> {
-    const result = await this.pool.query<TaskRow>(
-      `INSERT INTO kairo.tasks
+    return withTransaction(this.pool, async client => {
+      const owner = await client.query<{ thread_id: string }>(
+        'SELECT thread_id FROM kairo.message_batches WHERE batch_id = $1',
+        [input.batchId]
+      );
+      if (!owner.rows[0] || (await lockCurrentContext(client, owner.rows[0].thread_id)) === null)
+        return null;
+      const result = await client.query<TaskRow>(
+        `INSERT INTO kairo.tasks
          (task_id, batch_id, thread_id, employee_id, bot_id, session_id,
           input_version, config_digest, status, created_at, updated_at, queue_deadline)
        SELECT $1, b.batch_id, b.thread_id, b.employee_id, b.bot_id, b.session_id,
@@ -173,15 +195,16 @@ export class PostgresTaskStore implements TaskStore {
        WHERE b.batch_id = $2 AND b.status = 'ready' AND c.invalidated_at IS NULL
          AND EXISTS (SELECT 1 FROM kairo.batch_messages m WHERE m.batch_id = b.batch_id)
        ON CONFLICT DO NOTHING RETURNING *`,
-      [
-        input.taskId,
-        input.batchId,
-        input.configDigest,
-        new Date(input.now),
-        new Date(input.queueDeadline),
-      ]
-    );
-    return result.rows[0] ? mapTask(result.rows[0]) : null;
+        [
+          input.taskId,
+          input.batchId,
+          input.configDigest,
+          new Date(input.now),
+          new Date(input.queueDeadline),
+        ]
+      );
+      return result.rows[0] ? mapTask(result.rows[0]) : null;
+    });
   }
 
   public async getTask(taskId: string): Promise<Task | null> {
@@ -193,19 +216,22 @@ export class PostgresTaskStore implements TaskStore {
 
   public async claimTask(input: ClaimTaskInput): Promise<boolean> {
     if (input.executionMs <= 0) throw new Error('执行预算必须大于零');
-    const result = await this.pool.query(
-      `UPDATE kairo.tasks SET status = 'running', updated_at = $3,
+    return withTransaction(this.pool, async client => {
+      if (!(await this.lockTask(client, input, ['queued']))) return false;
+      const result = await client.query(
+        `UPDATE kairo.tasks SET status = 'running', updated_at = $3,
          execution_started_at = $3, execution_deadline = $4
        WHERE task_id = $1 AND input_version = $2 AND status = 'queued'
          AND queue_deadline > $3`,
-      [
-        input.taskId,
-        input.inputVersion,
-        new Date(input.now),
-        new Date(input.now + input.executionMs),
-      ]
-    );
-    return result.rowCount === 1;
+        [
+          input.taskId,
+          input.inputVersion,
+          new Date(input.now),
+          new Date(input.now + input.executionMs),
+        ]
+      );
+      return result.rowCount === 1;
+    });
   }
 
   public async transitionTask(input: TransitionTaskInput): Promise<boolean> {
@@ -218,7 +244,12 @@ export class PostgresTaskStore implements TaskStore {
     )
       return false;
     return withTransaction(this.pool, async client => {
-      const task = await this.lockTask(client, input, [input.from]);
+      const task = await this.lockTask(
+        client,
+        input,
+        [input.from],
+        input.to === 'cancelled' || input.to === 'timed_out'
+      );
       if (!task) return false;
       // 执行失败只结束发出失败的当前尝试；整任务取消与发送结果不绑定此指针。
       if (
@@ -263,20 +294,26 @@ export class PostgresTaskStore implements TaskStore {
           input.to === 'sending' ? null : new Date(input.now),
         ]
       );
+      if (updated.rowCount === 1 && input.to !== 'sending') {
+        await this.recordIdleSince(client, task.threadId, input.idleSince ?? input.now);
+      }
       return updated.rowCount === 1;
     });
   }
 
   public async updateInputVersion(input: TaskVersion): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE kairo.tasks SET input_version = input_version + 1,
+    return withTransaction(this.pool, async client => {
+      if (!(await this.lockTask(client, input, ['queued', 'running']))) return false;
+      const result = await client.query(
+        `UPDATE kairo.tasks SET input_version = input_version + 1,
          current_attempt_id = NULL, updated_at = $3
        WHERE task_id = $1 AND input_version = $2
          AND ((status = 'queued' AND queue_deadline > $3)
            OR (status = 'running' AND execution_deadline > $3))`,
-      [input.taskId, input.inputVersion, new Date(input.now)]
-    );
-    return result.rowCount === 1;
+        [input.taskId, input.inputVersion, new Date(input.now)]
+      );
+      return result.rowCount === 1;
+    });
   }
 
   public async startAttempt(input: StartAttemptInput): Promise<TaskAttempt | null> {
@@ -439,7 +476,32 @@ export class PostgresTaskStore implements TaskStore {
           new Date(input.now + wait.remainingExecutionMs),
         ]
       );
+      if (!accepted) await this.recordIdleSince(client, task.threadId, input.now);
       return true;
+    });
+  }
+
+  private async recordIdleSince(client: PoolClient, threadId: string, now: number): Promise<void> {
+    await client.query(
+      `UPDATE kairo.contexts SET idle_since = GREATEST(idle_since, $2)
+       WHERE thread_id = $1 AND invalidated_at IS NULL`,
+      [threadId, new Date(now)]
+    );
+  }
+
+  public async withTaskOutput<T>(
+    input: TaskOutputScope,
+    output: (task: Task) => T
+  ): Promise<{ value: T } | null> {
+    return withTransaction(this.pool, async client => {
+      const task = await this.lockTask(
+        client,
+        input,
+        Object.keys(TASK_TRANSITIONS) as TaskStatus[]
+      );
+      if (!task || (input.attemptId !== undefined && input.attemptId !== task.currentAttemptId))
+        return null;
+      return { value: output(task) };
     });
   }
 }

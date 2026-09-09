@@ -6,6 +6,8 @@ import { ModelRouterLanguageModel, type MastraModelConfig } from '@mastra/core/l
 import { loadBotConfig } from '../../src/config/load.js';
 import { loadBotCustomization } from '../../src/modules/bot-customization/instructions.js';
 import { PostgresPrivateChatStore } from '../../src/modules/private-chat-core/store.js';
+import type { ContextScope } from '../../src/modules/private-chat-core/types.js';
+import type { ContextService } from '../../src/modules/private-chat-core/context-service.js';
 import { PostgresTaskStore } from '../../src/modules/task-lifecycle/store.js';
 import { PostgresRuntimeBootStore } from '../../src/modules/operability/runtime-boot-store.js';
 import {
@@ -40,6 +42,8 @@ export async function runKnowledgeProbe(
     executionMs?: number;
     toolInputs?: Record<string, unknown>[];
     realModel?: boolean;
+    scope?: ContextScope;
+    contextService?: ContextService;
   } = {}
 ): Promise<KnowledgeProbeResult> {
   const { config, configDigest } = await loadBotConfig(undefined, Object.keys(knowledgeTools));
@@ -49,8 +53,8 @@ export async function runKnowledgeProbe(
   const tasks = new PostgresTaskStore(database.poolA);
   const boots = new PostgresRuntimeBootStore(database.poolA);
   const store = new PostgresKnowledgeRecordStore(database.poolA);
-  const employeeId = randomUUID();
-  const scope = { employeeId, botId: randomUUID(), sessionId: `0-${employeeId}` };
+  const employeeId = options.scope?.employeeId ?? randomUUID();
+  const scope = options.scope ?? { employeeId, botId: randomUUID(), sessionId: `0-${employeeId}` };
   const message = { sessionId: scope.sessionId, messageId: randomUUID() };
   await chat.insertRawMessage({
     ...message,
@@ -71,17 +75,18 @@ export async function runKnowledgeProbe(
   });
   await chat.setBatchStatus(batch.batchId, 'ready');
   const taskId = randomUUID();
-  await tasks.createTask({
+  const createdTask = await tasks.createTask({
     taskId,
     batchId: batch.batchId,
     configDigest,
     now,
     queueDeadline: now + 600000,
   });
+  assert.ok(createdTask);
   assert.equal(
     await tasks.claimTask({
       taskId,
-      inputVersion: 1,
+      inputVersion: createdTask.inputVersion,
       now,
       executionMs: options.executionMs ?? config.timeouts.executionMs,
     }),
@@ -92,7 +97,7 @@ export async function runKnowledgeProbe(
     taskId,
     attemptId,
     runId: randomUUID(),
-    inputVersion: 1,
+    inputVersion: createdTask.inputVersion,
     now,
     expectedAttemptId: null,
     configDigest,
@@ -114,12 +119,15 @@ export async function runKnowledgeProbe(
     {
       taskId,
       attemptId,
+      inputVersion: task.inputVersion,
+      contextVersion: context.version,
       bootId,
       executionDeadline: task.executionDeadline,
       nextCallIndex: () => ++callIndex,
     },
     store,
-    logger
+    logger,
+    tasks
   );
   let step = 0;
   const modelInputs: string[] = [];
@@ -195,6 +203,8 @@ export async function runKnowledgeProbe(
   const mastra = new Mastra({ agents: { probe: agent } });
   mastra.setLogger({ logger: new MastraOperabilityLogger(logger) });
   let text = '';
+  const executionController = new AbortController();
+  let releaseExecution: (() => void) | undefined;
   const deadlineController = new AbortController();
   const deadlineTimer = setTimeout(
     () => {
@@ -202,10 +212,18 @@ export async function runKnowledgeProbe(
     },
     Math.max(0, task.executionDeadline - Date.now())
   );
-  const taskSignal = options.signal
-    ? AbortSignal.any([options.signal, deadlineController.signal])
-    : deadlineController.signal;
+  const taskSignal = AbortSignal.any([
+    executionController.signal,
+    deadlineController.signal,
+    ...(options.signal ? [options.signal] : []),
+  ]);
   try {
+    if (options.contextService) {
+      releaseExecution = await options.contextService.registerExecution(
+        { taskId, inputVersion: task.inputVersion, attemptId, contextVersion: context.version },
+        executionController
+      );
+    }
     try {
       const response = await agent.generate(
         options.realModel
@@ -243,6 +261,7 @@ export async function runKnowledgeProbe(
       await binding.settled();
     } finally {
       try {
+        releaseExecution?.();
         await mastra.shutdown();
       } finally {
         await boots.closeBoot(bootId, { status: 'closed', closedAt: Date.now() });

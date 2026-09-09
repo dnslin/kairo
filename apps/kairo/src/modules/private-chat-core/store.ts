@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Pool } from 'pg';
 import { withTransaction } from '../../db/transaction.js';
+import { lockCurrentContext } from './context-lock.js';
 import type {
   ChatContext,
   ContextScope,
@@ -9,6 +10,7 @@ import type {
   MessageKey,
   NoticeKey,
   PrivateChatStore,
+  PreparedContext,
   RawMessage,
   RawMessageInput,
 } from './types.js';
@@ -167,8 +169,17 @@ export class PostgresPrivateChatStore implements PrivateChatStore {
   }
 
   public async createContext(scope: ContextScope, createdAt: number): Promise<ChatContext> {
+    return (await this.prepareContext(scope, () => createdAt, { reset: false, idleMs: null }))
+      .context;
+  }
+
+  public async prepareContext(
+    scope: ContextScope,
+    clock: () => number,
+    options: { reset: boolean; idleMs: number | null }
+  ): Promise<PreparedContext> {
     return withTransaction(this.pool, async client => {
-      // 同一范围首次创建时没有可锁行；事务级锁将版本分配与有效 thread 创建串行化。
+      // 首次创建没有可锁行；沿用范围锁分配版本，再锁当前 context。
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
         JSON.stringify(['private-chat-context', scope.employeeId, scope.botId, scope.sessionId]),
       ]);
@@ -176,21 +187,89 @@ export class PostgresPrivateChatStore implements PrivateChatStore {
       const current = await client.query<ContextRow>(
         `SELECT * FROM kairo.contexts
          WHERE employee_id = $1 AND bot_id = $2 AND session_id = $3
-           AND invalidated_at IS NULL`,
+           AND invalidated_at IS NULL FOR UPDATE`,
         parameters
       );
-      if (current.rows[0]) return mapContext(current.rows[0]);
+      const now = clock();
+      const old = current.rows[0];
+      let hadUnfinishedWork = false;
+      if (old) {
+        const work = await client.query<{ busy: boolean }>(
+          `SELECT EXISTS (SELECT 1 FROM kairo.tasks WHERE thread_id = $1
+             AND status IN ('queued', 'running', 'waiting_for_user', 'ready_to_send', 'sending'))
+           OR EXISTS (SELECT 1 FROM kairo.message_batches b WHERE thread_id = $1
+             AND (status = 'collecting' OR (status = 'ready'
+               AND NOT EXISTS (SELECT 1 FROM kairo.tasks t WHERE t.batch_id = b.batch_id)))) AS busy`,
+          [old.thread_id]
+        );
+        hadUnfinishedWork = work.rows[0]!.busy;
+        const expired =
+          options.idleMs !== null &&
+          old.idle_since !== null &&
+          !hadUnfinishedWork &&
+          now - old.idle_since.getTime() > options.idleMs;
+        if (!options.reset && !expired) {
+          return { context: mapContext(old), invalidatedThreadId: null, hadUnfinishedWork };
+        }
+        // context 锁阻止新工作；只锁未完成任务，不扫描锁定已结束的历史任务行。
+        await client.query(
+          `SELECT task_id FROM kairo.tasks WHERE thread_id = $1
+           AND status IN ('queued', 'running', 'waiting_for_user', 'ready_to_send', 'sending')
+           ORDER BY task_id FOR UPDATE`,
+          [old.thread_id]
+        );
+        await client.query(
+          `UPDATE kairo.message_batches b SET status = 'discarded'
+           WHERE thread_id = $1 AND (status = 'collecting' OR (status = 'ready'
+             AND NOT EXISTS (SELECT 1 FROM kairo.tasks t WHERE t.batch_id = b.batch_id)))`,
+          [old.thread_id]
+        );
+        await client.query(
+          `UPDATE kairo.user_waits SET closed_at = $2, resolution = 'cancelled'
+           WHERE closed_at IS NULL AND task_id IN
+             (SELECT task_id FROM kairo.tasks WHERE thread_id = $1)`,
+          [old.thread_id, new Date(now)]
+        );
+        await client.query(
+          `UPDATE kairo.tasks SET status = 'cancelled', ended_at = $2, updated_at = $2
+           WHERE thread_id = $1 AND status IN
+             ('queued', 'running', 'waiting_for_user', 'ready_to_send', 'sending')`,
+          [old.thread_id, new Date(now)]
+        );
+        await client.query(`UPDATE kairo.contexts SET invalidated_at = $2 WHERE thread_id = $1`, [
+          old.thread_id,
+          new Date(now),
+        ]);
+      }
       const created = await client.query<ContextRow>(
         `INSERT INTO kairo.contexts
            (employee_id, bot_id, session_id, thread_id, version, created_at)
          SELECT $1, $2, $3, $4, COALESCE(MAX(version), 0) + 1, $5
          FROM kairo.contexts WHERE employee_id = $1 AND bot_id = $2 AND session_id = $3
          RETURNING *`,
-        [...parameters, randomUUID(), new Date(createdAt)]
+        [...parameters, randomUUID(), new Date(now)]
       );
       const row = created.rows[0];
       if (!row) throw new Error('数据库未返回新建上下文');
-      return mapContext(row);
+      return {
+        context: mapContext(row),
+        invalidatedThreadId: old?.thread_id ?? null,
+        hadUnfinishedWork,
+      };
+    });
+  }
+
+  public async withContextOutput<T>(
+    threadId: string,
+    output: (context: ChatContext) => T
+  ): Promise<{ value: T } | null> {
+    return withTransaction(this.pool, async client => {
+      const result = await client.query<ContextRow>(
+        'SELECT * FROM kairo.contexts WHERE thread_id = $1 AND invalidated_at IS NULL FOR UPDATE',
+        [threadId]
+      );
+      const row = result.rows[0];
+      return row ? { value: output(mapContext(row)) } : null;
     });
   }
 
@@ -230,6 +309,9 @@ export class PostgresPrivateChatStore implements PrivateChatStore {
 
   public async createBatch(input: CreateBatchInput): Promise<MessageBatch> {
     return withTransaction(this.pool, async client => {
+      if ((await lockCurrentContext(client, input.threadId)) === null) {
+        throw new Error('批次需要有效上下文和身份匹配的员工入站消息');
+      }
       const result = await client.query<BatchRow>(
         `INSERT INTO kairo.message_batches
            (batch_id, thread_id, employee_id, bot_id, session_id,
@@ -285,6 +367,12 @@ export class PostgresPrivateChatStore implements PrivateChatStore {
     quietDeadline: number
   ): Promise<boolean> {
     return withTransaction(this.pool, async client => {
+      const owner = await client.query<{ thread_id: string }>(
+        'SELECT thread_id FROM kairo.message_batches WHERE batch_id = $1',
+        [batchId]
+      );
+      if (!owner.rows[0] || (await lockCurrentContext(client, owner.rows[0].thread_id)) === null)
+        return false;
       const batch = await client.query<BatchRow>(
         `SELECT * FROM kairo.message_batches
          WHERE batch_id = $1 AND status = 'collecting' FOR UPDATE`,
@@ -316,12 +404,20 @@ export class PostgresPrivateChatStore implements PrivateChatStore {
     batchId: string,
     status: Exclude<MessageBatch['status'], 'collecting'>
   ): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE kairo.message_batches SET status = $2
-       WHERE batch_id = $1 AND status = 'collecting'`,
-      [batchId, status]
-    );
-    return result.rowCount === 1;
+    return withTransaction(this.pool, async client => {
+      const owner = await client.query<{ thread_id: string }>(
+        'SELECT thread_id FROM kairo.message_batches WHERE batch_id = $1',
+        [batchId]
+      );
+      if (!owner.rows[0] || (await lockCurrentContext(client, owner.rows[0].thread_id)) === null)
+        return false;
+      const result = await client.query(
+        `UPDATE kairo.message_batches SET status = $2
+         WHERE batch_id = $1 AND status = 'collecting'`,
+        [batchId, status]
+      );
+      return result.rowCount === 1;
+    });
   }
 
   public async listCollectingBatches(scope: ContextScope): Promise<MessageBatch[]> {

@@ -4,6 +4,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createTaskTestDatabase, type TaskTestDatabase } from '../helpers/task-database.js';
 import { runKnowledgeProbe } from '../helpers/knowledge-verification.js';
 import { PostgresKnowledgeRecordStore } from '../../src/modules/knowledge-qa/knowledge-record-store.js';
+import { PostgresPrivateChatStore } from '../../src/modules/private-chat-core/store.js';
+import { PostgresTaskStore } from '../../src/modules/task-lifecycle/store.js';
 
 let database: TaskTestDatabase;
 beforeAll(async () => {
@@ -121,6 +123,44 @@ describe('Mastra Skill → 专用 Tool → 真实 Python → 受控 HTTP → 真
       expect(requests).toEqual([]);
       expect(result.queries).toEqual([]);
       expect(result.evidence).toEqual([]);
+    });
+  }, 30000);
+
+  it('落账后切换真实上下文且信号未取消时，旧资料不进入下一轮模型', async () => {
+    await withRetrieval(async apiUrl => {
+      const controller = new AbortController();
+      const chat = new PostgresPrivateChatStore(database.poolB);
+      const tasks = new PostgresTaskStore(database.poolB);
+      const recordQuery = PostgresKnowledgeRecordStore.prototype.recordQuery;
+      const recording = vi
+        .spyOn(PostgresKnowledgeRecordStore.prototype, 'recordQuery')
+        .mockImplementation(async function (this: PostgresKnowledgeRecordStore, input) {
+          await recordQuery.call(this, input);
+          const task = await tasks.getTask(input.taskId);
+          if (!task) throw new Error('知识查询所属任务不存在');
+          const switched = await chat.prepareContext(task, () => Date.now(), {
+            reset: true,
+            idleMs: null,
+          });
+          expect(switched.invalidatedThreadId).toBe(task.threadId);
+        });
+      try {
+        const result = await runKnowledgeProbe(
+          database,
+          { apiUrl, apiKey: 'kairo-integration-key', datasetId: '固定ERP' },
+          ['采购步骤'],
+          { signal: controller.signal }
+        );
+        expect(controller.signal.aborted).toBe(false);
+        expect(result.queries.map(query => query.resultCategory)).toEqual(['found']);
+        expect(result.evidence).toMatchObject([{ documentId: 'document-internal' }]);
+        expect(result.modelInputs.at(-1)).toContain('cancelled');
+        for (const input of result.modelInputs) {
+          expect(input).not.toContain(result.evidence[0]!.content);
+        }
+      } finally {
+        recording.mockRestore();
+      }
     });
   }, 30000);
 

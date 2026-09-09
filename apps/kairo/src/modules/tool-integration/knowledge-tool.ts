@@ -8,6 +8,7 @@ import type {
 } from '../knowledge-qa/knowledge-record-store.js';
 import { AppError } from '../operability/errors.js';
 import type { AppLogger } from '../operability/logger.js';
+import type { TaskStore } from '../task-lifecycle/types.js';
 import {
   knowledgeInputSchema,
   type RetrievalRun,
@@ -40,6 +41,8 @@ export type KnowledgeToolOutput = z.infer<typeof outputSchema>;
 export interface KnowledgeTaskScope {
   taskId: string;
   attemptId: string;
+  inputVersion: number;
+  contextVersion: number;
   bootId: string;
   executionDeadline: number;
   /** 调用方按同 task 分配序号；恢复或新 attempt 不能从 1 重置。 */
@@ -66,13 +69,26 @@ export function createKnowledgeTool(
   settings: RetrievalSettings,
   scope: KnowledgeTaskScope,
   store: Pick<PostgresKnowledgeRecordStore, 'recordQuery'>,
-  logger: AppLogger
+  logger: AppLogger,
+  tasks: Pick<TaskStore, 'withTaskOutput'>
 ): KnowledgeToolBinding {
   const fixedSettings = { ...settings };
-  const { taskId, attemptId, bootId, executionDeadline, nextCallIndex } = scope;
-  const pending = new Set<Promise<KnowledgeToolOutput>>();
+  const {
+    taskId,
+    attemptId,
+    inputVersion,
+    contextVersion,
+    bootId,
+    executionDeadline,
+    nextCallIndex,
+  } = scope;
+  const pending = new Set<Promise<void>>();
   const failures: unknown[] = [];
-  async function search(query: string, signal?: AbortSignal): Promise<KnowledgeToolOutput> {
+  async function search(
+    query: string,
+    signal: AbortSignal | undefined,
+    publish: (output: KnowledgeToolOutput) => void
+  ): Promise<void> {
     const queryId = randomUUID();
     const callIndex = nextCallIndex();
     const startedAt = Date.now();
@@ -117,44 +133,54 @@ export function createKnowledgeTool(
     } catch (cause) {
       throw new AppError('storage', { cause });
     }
-    // 落账保留实际检索事实；等待存储期间任务失效后，资料不再交付给模型。
-    const stopped = signal?.aborted
-      ? signal.reason instanceof Error && signal.reason.name === 'TimeoutError'
-        ? 'timeout'
-        : 'cancelled'
-      : Date.now() >= executionDeadline
-        ? 'timeout'
-        : undefined;
-    const kind = stopped ?? result.kind;
-    logger.info({
-      event: '运行状态',
-      taskId,
-      toolId: 'knowledge-search',
-      durationMs,
-      status: kind === 'found' || kind === 'empty' ? 'received' : 'failed',
-      ...(kind === 'timeout' || kind === 'cancelled'
-        ? { errorType: kind }
-        : kind === 'found' || kind === 'empty'
-          ? {}
-          : { errorType: 'knowledge' as const }),
-    });
-    return {
-      kind,
-      queryId,
-      message: messages[kind],
-      httpStatus: result.httpStatus,
-      apiCode: result.apiCode,
-      reason: stopped
-        ? stopped === 'timeout'
-          ? 'deadline'
-          : 'abort'
-        : 'error' in result
-          ? result.error.reason
-          : null,
-      materials: stopped
-        ? []
-        : evidence.map(({ evidenceId, content }) => ({ evidenceId, content })),
-    };
+    // 落账保留实际检索事实；有效上下文和任务持锁期间同步决定是否交付资料。
+    const output = await tasks.withTaskOutput(
+      { taskId, attemptId, inputVersion, contextVersion },
+      task => {
+        const stopped =
+          task.status !== 'running' ||
+          task.currentAttemptId !== attemptId ||
+          task.inputVersion !== inputVersion ||
+          task.executionDeadline === null
+            ? 'stale_task'
+            : signal?.aborted
+              ? signal.reason instanceof Error && signal.reason.name === 'TimeoutError'
+                ? 'deadline'
+                : 'abort'
+              : Date.now() >= Math.min(executionDeadline, task.executionDeadline)
+                ? 'deadline'
+                : undefined;
+        publish(deliver(stopped));
+      }
+    );
+    if (output === null) publish(deliver('stale_task'));
+
+    function deliver(stopped?: 'deadline' | 'abort' | 'stale_task'): KnowledgeToolOutput {
+      const kind = stopped ? (stopped === 'deadline' ? 'timeout' : 'cancelled') : result.kind;
+      logger.info({
+        event: '运行状态',
+        taskId,
+        toolId: 'knowledge-search',
+        durationMs,
+        status: kind === 'found' || kind === 'empty' ? 'received' : 'failed',
+        ...(kind === 'timeout' || kind === 'cancelled'
+          ? { errorType: kind }
+          : kind === 'found' || kind === 'empty'
+            ? {}
+            : { errorType: 'knowledge' as const }),
+      });
+      return {
+        kind,
+        queryId,
+        message: messages[kind],
+        httpStatus: result.httpStatus,
+        apiCode: result.apiCode,
+        reason: stopped ?? ('error' in result ? result.error.reason : null),
+        materials: stopped
+          ? []
+          : evidence.map(({ evidenceId, content }) => ({ evidenceId, content })),
+      };
+    }
   }
   const tool = createTool({
     id: 'knowledge-search',
@@ -166,7 +192,14 @@ export function createKnowledgeTool(
       // 直接程序调用与 Mastra 调用共享同一个严格输入边界。
       const parsed = knowledgeInputSchema.safeParse(input);
       if (!parsed.success) throw new AppError('knowledge');
-      const running = search(parsed.data.query, context?.abortSignal);
+      let publish!: (output: KnowledgeToolOutput) => void;
+      let reject!: (error: unknown) => void;
+      const delivered = new Promise<KnowledgeToolOutput>((resolve, fail) => {
+        publish = resolve;
+        reject = fail;
+      });
+      // 对消费者的交付发生在行锁内；事务完成和失败另由 settled 跟踪。
+      const running = search(parsed.data.query, context?.abortSignal, publish);
       pending.add(running);
       void running.then(
         () => {
@@ -175,9 +208,10 @@ export function createKnowledgeTool(
         error => {
           pending.delete(running);
           failures.push(error);
+          reject(error);
         }
       );
-      return running;
+      return delivered;
     },
   });
   return {
