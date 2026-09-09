@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { defaultBotDirectory, loadBotConfig } from '../../src/config/load.js';
 import { loadBotCustomization } from '../../src/modules/bot-customization/instructions.js';
 import { startKairo } from '../../src/index.js';
+import { knowledgeTools } from '../../src/modules/tool-integration/knowledge-tool.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
 async function fixture(run: (directory: string) => Promise<void>) {
@@ -25,7 +26,7 @@ async function fixture(run: (directory: string) => Promise<void>) {
 }
 
 async function agentFor(directory = defaultBotDirectory) {
-  const { config } = await loadBotConfig(directory);
+  const { config } = await loadBotConfig(directory, Object.keys(knowledgeTools));
   return new Agent({
     id: 't16-contract',
     name: 'T16 合同',
@@ -38,8 +39,10 @@ describe('T16 原生 filesystem Skill 合同', () => {
   it('发现用户真实技能，并通过原生接口读取正文', async () => {
     const agent = await agentFor();
     const skills = await agent.listSkills();
-    expect(skills.map(skill => skill.name)).toEqual(['reader-sim']);
-    expect(skills[0]?.description).toContain('first-time reader persona');
+    expect(skills.map(skill => skill.name).sort()).toEqual(['erp-search', 'reader-sim']);
+    expect(skills.find(skill => skill.name === 'reader-sim')?.description).toContain(
+      'first-time reader persona'
+    );
     const skill = await agent.getSkill('reader-sim');
     expect(skill?.instructions).toContain('Transportation');
     expect(skill?.instructions).toContain('Anchor claims to the text');
@@ -110,7 +113,10 @@ describe('T16 原生 filesystem Skill 合同', () => {
         '---\nname: disabled\ndescription: 未批准能力\n---\n未批准资料'
       );
       const agent = await agentFor(directory);
-      expect((await agent.listSkills()).map(skill => skill.name)).toEqual(['reader-sim']);
+      expect((await agent.listSkills()).map(skill => skill.name).sort()).toEqual([
+        'erp-search',
+        'reader-sim',
+      ]);
       expect(await agent.getSkill('disabled')).toBeNull();
       expect(await agent.getSkill(disabled)).toBeNull();
       expect(await agent.getSkill(join(disabled, 'SKILL.md'))).toBeNull();
@@ -142,7 +148,7 @@ describe('T16 原生 filesystem Skill 合同', () => {
   });
 
   it('禁用全部 Skill 后不向 Agent 提供技能或资源工具', async () => {
-    const { config } = await loadBotConfig();
+    const { config } = await loadBotConfig(undefined, Object.keys(knowledgeTools));
     config.skills = [];
     const agent = new Agent({
       id: 't16-no-skills',
@@ -178,7 +184,7 @@ describe('T16 原生 filesystem Skill 合同', () => {
 
   it('缺少人格或规则文件时明确失败，不静默使用默认文本', async () => {
     await fixture(async directory => {
-      const { config } = await loadBotConfig(directory);
+      const { config } = await loadBotConfig(directory, Object.keys(knowledgeTools));
       await rm(join(directory, 'SOUL.md'));
       await expect(loadBotCustomization(config, directory)).rejects.toThrow(/SOUL\.md/);
       await writeFile(join(directory, 'SOUL.md'), '测试人格');

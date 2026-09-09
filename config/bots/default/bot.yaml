@@ -5,10 +5,12 @@ model:
 datasetId: b55a0fc8a69211f1bad90f767650f6fc
 employeeAllowlist:
   - '3585'
-# 知识 Tool 由 T27 接入；此处仅启用已提供的真实阅读 Skill。
-tools: []
+# 这里只登记已实现能力；正式业务 Agent 由 T28 装配。
+tools:
+  - knowledge-search
 skills:
   - reader-sim
+  - erp-search
 agent:
   # Agent 循环上限，不是固定知识检索次数限制。
   maxSteps: 20

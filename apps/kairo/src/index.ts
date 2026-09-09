@@ -26,6 +26,7 @@ import type { BotCustomization } from './modules/bot-customization/instructions.
 import { startDependencyChecks } from './modules/operability/dependency-checks.js';
 import type { DependencyChecks } from './modules/operability/dependency-checks.js';
 import { PostgresRuntimeBootStore } from './modules/operability/runtime-boot-store.js';
+import { knowledgeTools } from './modules/tool-integration/knowledge-tool.js';
 
 const logger = createLogger();
 const execFileAsync = promisify(execFile);
@@ -111,7 +112,7 @@ export async function startKairo(
     return closing;
   };
   try {
-    const configuration = await loadBotConfig(options.configDirectory);
+    const configuration = await loadBotConfig(options.configDirectory, Object.keys(knowledgeTools));
     const customization = await loadBotCustomization(configuration.config, options.configDirectory);
     const cdp = options.cdp ?? {
       url: process.env.CDP_URL ?? 'http://127.0.0.1:9222',

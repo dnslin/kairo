@@ -174,7 +174,7 @@ node apps/kairo/tmp/t14/faults.mjs
 
 正式业务配置唯一来自 `config/bots/default/bot.yaml`。`start` 和 `dev` 都在创建运行时、监听端口之前校验，不提供 CLI 或环境变量覆盖这份业务配置。路径按应用模块位置解析，不随启动工作目录改变；仓库启动需要 Git 和有效的 `.git`，无法读取当前 commit 时明确失败，不写虚构版本。
 
-`loadBotConfig()` 返回 `config` 与 `configDigest`；`startKairo()` 的返回值另含 `gitCommit`，供后续业务模块使用。程序内 `configDirectory` 参数用于隔离测试，正式命令不开放目录选择。文件修改不会改变已加载结果，必须重启生效；不监视文件，也不建设另一套配置来源。
+`loadBotConfig(directory, availableTools)` 返回 `config` 与 `configDigest`；可用 Tool 清单由调用方注入，默认空清单，不从配置模块反向导入业务实现。正式入口使用 `loadBotConfig(undefined, Object.keys(knowledgeTools))`。`startKairo()` 的返回值另含 `gitCommit`，供后续业务模块使用。程序内 `configDirectory` 参数用于隔离测试，正式命令不开放目录选择。文件修改不会改变已加载结果，必须重启生效；不监视文件，也不建设另一套配置来源。
 
 #### 字段与边界
 
@@ -961,3 +961,100 @@ pnpm --filter @kairo/driver e2e:media
 离线回归：`pnpm --filter @kairo/driver test`。`native-media.test.ts` 在 VM 中实际执行 renderer 发送脚本；`voice-ops.test.ts` 实际解码 WAV/MP3、重采样并执行编码调用脚本，仅替换网络 TTS 和 KK9 编码器边界。`tests/fixtures/voice.mp3` 为 Edge TTS 生成的“测试”二字，用于无网络的 MP3 回归。PostgreSQL 合同定向命令见 `apps/kairo/tests/integration/send-operation-store.test.ts`。
 
 新增回归覆盖 ChatRecord 的嵌套内容快照、直接 Bridge 的语音目标绑定、合法 RIFF 填充以及 spike 的目标门禁和未知结果。`node-edge-tts-boundary.test.ts` 保留真实依赖与文件流，使用本地挂起的 TLS 连接或替换 WebSocket 网络边界，验证直连握手超时、合成超时、文件错误、异常关闭及正常结束后的资源释放；不访问外网。原生预插入、发送和正式 ID 确认统一由 renderer 的 `submitNativeMessage` 执行，各入口仍保留自己的内容准备、确认策略和 UI 通知。
+
+## T27 定制知识 Skill 与固定 Python 检索
+
+正式检索只保留 `erp-search` Skill → `knowledge-search` Tool → 固定 `search.py` → RAGFlow `/api/v1/retrieval`。用户已批准 T17 的知识健康检查也改用同一 Python 入口；其五分钟周期、三十秒检查期限、空结果正常和关闭等待语义不变，健康检查不写业务账本、不立即重试。没有 TypeScript HTTP 检索、MCP、备用 API、命令执行 Tool 或管理脚本。
+
+### 配置与运行环境
+
+- 保留现有 Node.js 与 pnpm 要求；需要 `python` 可执行文件。实际验证为 Node.js 24.14.0、Python 3.14.3。Python 只用标准库，不需要 pip 安装。部署前执行 `python --version`，再执行下面的完整验收；运行时解释器缺失、启动失败、非零退出或输出不可读都会明确失败，不切换实现。
+- `config/bots/default/bot.yaml` 登记实际 `knowledge-search` 工厂并启用 `erp-search`，保留原 `reader-sim`。启动与验收入口将 `Object.keys(knowledgeTools)` 显式注入配置加载；缺少或为空的能力清单拒绝知识 Tool。这里只声明已经实现的任务绑定能力，不等于已创建 T28 正式业务 Agent。
+- ERP Dataset 唯一来自 YAML 的 `datasetId`；不读取员工或模型提供的 Dataset，不用环境变量覆盖业务范围。
+- 运行进程通过既有 `.env` 或进程环境提供 `RAGFLOW_API_KEY`；`RAGFLOW_API_URL` 沿用已批准的 `http://rag.union.com/`，允许维护人员指定服务根基址。URL 不含凭证。凭证不进入 YAML、Skill、命令行、模型或普通日志。
+- Node 固定执行 `python -I -B <受控目录>/skills/erp-search/scripts/search.py`，不启用 shell；query 由 stdin 输入。解释器子环境仅包含必要操作系统字段及三项 RAGFlow 配置，不继承数据库/模型凭证。`-B` 避免在受控配置目录生成字节码影响配置摘要。
+- HTTP body 只有 `question`、单元素 `dataset_ids`。不传历史、Memory、employee/session/task ID，不设置 top-k、阈值、页数或其他数字默认值。接口默认值不会自动跟随网页设置。
+- 上游 `ragflow-skill@1.0.8` 的必要请求和字段映射被裁剪到单一脚本；来源、固定摘要、许可证及差异见 [`SOURCE.md`](../config/bots/default/skills/erp-search/SOURCE.md)，许可证为发布元数据声明的 MIT-0。
+
+### 程序合同与证据
+
+`createKnowledgeTool(settings, scope, store, logger)` 返回 `{ tool, settled }`。服务端将已加载配置转换为 `RetrievalSettings`，通过闭包绑定 taskId、attemptId、bootId、原任务 executionDeadline 和 `nextCallIndex()`；模型唯一输入是严格的 `{ query }`。后续装配方须按同 task 维护调用次序，不能在新 attempt 或恢复时从 1 重置；本任务不自建调度或恢复器。
+
+`retrieveKnowledge(query, settings, { deadline, signal })` 是业务 Tool 与健康检查共用的固定脚本入口。Node 是唯一重试层：仅网络、429、5xx 最多再试一次；首次、重试和后续查询都使用同一 task 绝对截止。重试资格由结果类别、错误原因和 HTTP 状态推导，Python 输出不再携带重复的 `retryable` 字段。Python 无独立重试或短网络超时。健康调用显式 `retry:false`，保留原合同。
+
+AbortSignal 终止实际 Python，等待 `close` 与管道回收后返回；无在途进程时不启动新进程。Mastra 取消可能先结束 Agent 输出，因此调用方在结束一次运行时仍须 `await binding.settled()`，确保检索已回收且审计落账。独立验收也把原任务截止传给整个 Agent；不声称本地终止取消了远端 RAGFlow 计算。
+
+成功和失败采用明确结果类别：found、empty、auth_error、parameter_error、service_error、format_error、cancelled、timeout。只有合法成功 chunks 为空才是 empty；缺失 data/chunks/total、非对象片段、正文或元数据类型错误明确失败。HTTP 状态与业务码分别保留；`apiCode` 限定为 JavaScript 可精确表示的整数范围 `[-9007199254740991, 9007199254740991]`，Python 排除布尔值和浮点数。超范围码将 `apiCode` 置 null，脱敏后的 `raw` 改用 JSON 文本精确保留数字，不能覆盖已知 HTTP 分类；HTTP 200 的超范围码明确归格式错误。未知业务错误不猜分类、不重试。截断的 401/403/400/422 响应仍保留 HTTP 类别，网络失败保留异常类型和可用 errno/verifyCode，不记录可能泄密的异常全文。
+
+每次 Tool 调用通过 T20 `recordQuery()` 原子保存 query、开始顺序、耗时、结果类别及证据；原始响应和各次 Python 尝试（含 PID/退出码/耗时/结果）放入既有 rawResult。正文仅进入业务表及作为参考资料的 Tool 返回，不进入普通日志、正式 Memory 或系统指令。模型收到资料正文和本地证据关联号，不收到原始响应、文档/Dataset 标识或诊断正文。证据保留文档名称、ID、片段 ID、原始 positions 和相似度；未知物理页码为 null，DOCX positions 不推断页码。
+
+落账等待期间若任务取消或截止，账本仍保留实际取得的检索结果和证据；Tool 交付前再次检查任务状态，返回 cancelled/timeout 与空 materials，不向模型交付迟到资料。该门禁不新增定时器或第二笔审计写入。
+
+锁定 Mastra `1.63.2` 的既有 pnpm 补丁同时修正输入清洗：只删除校验明确指出的错误空值字段，不再因根级校验错误而递归删除所有空值。严格 schema 因此不会把未知的 `datasetId:null` 等输入变成合法查询。ESM/CommonJS 两种产物同步修复，已声明 optional/nullable 字段仍保持原有行为；不增加工具包装器或放宽 query-only schema。
+
+### 独立验收入口
+
+不需要启动生产应用或连接 KK9。数据库使用现有 `createTaskTestDatabase()` 创建独立随机库，核对两个连接的实际库名/PID后迁移；只删除自身创建的库，不改共享数据库。下面 `<配置文件绝对路径>` 指包含测试数据库和相应凭证的本地文件，不把凭证值写到命令行。
+
+```powershell
+# 默认执行真实 ERP；缺少 key 明确失败，不自动变成本地测试。
+pnpm --filter @kairo/driver exec tsx --env-file=<配置文件绝对路径> ../../apps/kairo/scripts/verify-knowledge.ts
+# 显式本地故障矩阵：真实 Mastra/Skill/Tool/Python/PostgreSQL，HTTP 为本地受控响应。
+pnpm --filter @kairo/driver exec tsx --env-file=<配置文件绝对路径> ../../apps/kairo/scripts/verify-knowledge.ts --local
+# 批准真实模型面对本地恶意检索资料；使用 YAML 主模型及 KAIRO_T12_MODEL_API_KEY。
+pnpm --filter @kairo/driver exec tsx --env-file=<配置文件绝对路径> ../../apps/kairo/scripts/verify-knowledge-model.ts
+
+pnpm --filter @kairo/app test -- tests/unit/knowledge-tool.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/ragflow-connector.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app build
+```
+
+主验收入口使用确定性模型只驱动 Skill/Tool 调用，不能证明真实模型的检索决策或员工答案质量。正常有资料/空资料/错误 key/Dataset 及取消后恢复均由完整 Agent→Skill→Tool→Python 直接访问 ERP。参数、业务与格式错误、断线与限流恢复、两次上限、挂起/取消及原任务四分钟截止使用明确的本地代理；代理逐次核对最少请求字段。删除 question、503/429/断线/挂起均明确属于本地注入，不冒充远端自行发生故障。输出的“代理请求数”为 0 表示这次直连不经过代理，不表示未发起 Python 请求。
+
+真实模型独立入口验证实际加载 Skill、实际调用知识 Tool、恶意资料确实进入模型以及该样例的员工回答不含内部 ID/来源列表/注入口令。它使用本地合成资料，不冒充 ERP 文档；只证明本轮样例，不承诺所有提示词攻击均被阻断，也不实现正式 T28/T29/IM 链路。
+
+### 本轮已执行结果（2026-09-09）
+
+- `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 全部通过；Driver 330 项、App 210 项。默认测试不包含 PostgreSQL 集成或真实 KK9。
+- 主仓库测试配置显式注入后，运行 `node --env-file=D:/Person/kairo/.env apps/kairo/scripts/test-integration.mjs -- tests/integration/ragflow-connector.test.ts tests/integration/knowledge-record-store.test.ts tests/integration/bot-customization.test.ts tests/integration/mastra-route-isolation.spike.test.ts tests/integration/runtime-boot-startup.test.ts`：5 文件/28 项通过。知识链路 4 项含真实 PostgreSQL、真实 Python、本地 HTTP、取消落账与存储失败后的资源回收。
+- 本地独立入口 `--local` 实际通过全部矩阵；最后一次四分钟等待记录耗时 239973ms，随后新请求成功，所有完成尝试 PID 已不存在。网络/429/503 恢复各两次，连续 503 不超过两次，取消后不再重试。以上为本地受控 HTTP，非 ERP 样本。
+- `verify-knowledge-model.ts` 使用批准的 `openai/gemini-3.7-flash-high` 实际成功两轮，每轮查询一次；真实回答仅含采购步骤，没有注入口令、命令、内部 ID 或来源列表。第二轮包含修正后的整轮 task 绝对截止。
+- 审查发现的三条缺陷先复现失败，再修复：非法业务码不能覆盖已知 HTTP 临时错误、截断认证响应不能变为可重试网络错误、网络失败保留安全诊断。修复后 Python 40 项与检索 18 项全部通过；不把首次失败说成通过。
+- 用户在本工作树配置 key 后，真实 `verify-knowledge.ts` 全矩阵通过（255.31 秒）：ERP 有资料为 HTTP 200/code 0、30 条证据；无资料为合法空数组；错误 key 为 HTTP 401/code 401；错误 Dataset 与缺少 question 均为 HTTP 200/code 102，但分别归 auth_error/parameter_error，均仅一次。只读版本入口实际自报 v0.27.1，不以源码版本推定部署版本。
+- 参数场景先实际失败：未确认消息时保守归 service_error。独立 Agent→Tool→Python→代理→ERP 探针取得精确 `` `question` is required. ``，新增回归先失败后修正；同码未知消息仍保留为不可重试服务错误。Python 全部 41 项与检索 18 项通过，未保留临时诊断脚本。
+- 真实矩阵中的 429/503/断线由本地代理注入，随后第二次请求取得真实 ERP 的 30 条证据；连续 503 两次后终止。代理先收到真实 ERP 成功响应再扣留回复，主动取消和原任务四分钟截止均回收 Python；截止记录为 239978ms，之后新请求再次 found。没有声称这些故障来自远端自然停机，也未声称取消了远端计算。
+- 实际发出的代理请求逐次断言只有 question/dataset_ids；无历史、Memory 或员工/会话/task 字段。DOCX 实样本 positions 为 `[[20,19,19,19,19]]`，原值保留，pageNumbers 为 null；不宣称已核对 PDF 物理页码或文档历史解析版本。
+- 构建产物独立健康烟测实际调用批准模型和同一 Python ERP 检索，得到 `{model:'up',ragflow:'up'}`，随后正常关闭；未启动应用 Driver、访问数据库或 KK9。临时健康脚本已删除。
+- 用户指定的 `pnpm --filter @kairo/app test -- tests/unit/knowledge-tool.test.ts` 实际通过 211 项 App 测试：现有 test 脚本透传 `--` 后运行了全 App，而非只运行该文件；真正定向的 `exec vitest run tests/unit/knowledge-tool.test.ts` 为 18 项。未为此修改无关测试运行框架。
+- `pnpm --filter @kairo/app test:integration -- tests/integration/ragflow-connector.test.ts` 为 4/4；`db:migrate:test` 为 2 项通过、6 项定向排除。末次 App typecheck/build 与根 lint 均通过。原始结果每个 Python 尝试仅保存一份，避免重复序列化最后一份正文；精简后知识数据库集成再次 4/4。
+- 最后一轮独立真实入口包含正常直连 ERP 和代理故障两部分，253.94 秒全部通过；直连有资料约 1199ms、空结果约 620ms、错误 key 约 138ms。真实响应后挂起的四分钟截止记录 239974ms，之后完整链路直连再次返回 30 条证据。所用随机库为 `kairo_t19_111654ec02c84eea8642e0a6167f7d48`，两个连接 PID 为 28177/28178，入口结束正常回收。
+- 独立 Node/pg 只读查询按本轮输出记录的 16 个精确自建库名核对，残留 0；没有扫描或删除其他同前缀库。参数、健康和清理探针已删除，受控 Skill 目录没有生成 Python 字节码。
+
+本任务不修改 Driver/T22 模块，不启动真实 KK9，不执行远端资料管理或服务重启，不合并、不关闭 issue。
+
+### PR 发布前补充：事件循环中的绝对截止
+
+发现仅检查 AbortSignal 会漏掉同步 JSON/Zod 校验跨过 deadline 的情况：定时器回调尚未执行，Promise 续体就可能接受迟到结果或启动重试。固定入口现于每次启动和接受结果/决定重试前再次比较原任务绝对时间；到期即触发同一截止信号，不新增预算或重试层。已结束进程的原始结果保留在尝试证据中，但最终 Tool 返回 timeout，不向模型交付迟到资料。
+
+新增三条回归使用真实 Python 和受控 HTTP，在同步校验内推进时钟并保持截止定时器未执行；分别覆盖迟到成功、迟到 503 不能重试，以及入口校验后到期不启动首个进程。修复前 3/3 失败，修复后进程/知识 Tool/健康组合 42/42 通过；知识数据库集成再次 4/4。
+
+发布前重新执行 `pnpm build && pnpm typecheck && pnpm test && pnpm lint`，全部通过，Driver 330 项、App 214 项。该追加修复不改变 Python HTTP 请求、结果字段或数据库表。
+
+### PR #265 复核后的修复与优化（2026-09-09）
+
+先核实再修改：此前受控真实 Python 探针已确认账本等待后的迟到资料交付、超范围业务码丢失 HTTP 分类、额外 null 字段被 Mastra 清洗三项。本轮另以预加载故障注入运行实际 `verify-knowledge-model.ts`，畸形 JSON 确实从 HTTP 回调逃逸并留下自建库；只读核实后仅清理该探针自建库。配置反向导入属于确定的结构问题，不冒称运行故障。
+
+修复采用上述交付门禁、安全整数合同、Mastra 定点空值清洗及能力清单注入。验收脚本将请求读取、JSON/断言和监听错误传入可等待的失败流程，取消并等待本轮验收，分别清理服务器和数据库；原始错误与清理错误均保留。删除可推导的 `retryable`；保留跨 Python/Node 的独立格式校验，不放宽输出、退出码或固定 Dataset 的检查。
+
+本轮实际验证：
+
+- `pnpm --filter @kairo/app exec vitest run tests/unit/knowledge-tool.test.ts tests/unit/python-search.test.ts tests/unit/python-process.test.ts tests/unit/dependency-checks.test.ts tests/unit/config.test.ts`：5 文件、128 项通过，分别 23/57/13/11/24 项。新增回归覆盖账本等待期间截止/取消/超时信号、直接 Tool 的未知 null/undefined 字段，以及超范围码保留精确数字与 HTTP 503 的两次上限。
+- `node --env-file=.env apps/kairo/scripts/test-integration.mjs -- tests/integration/ragflow-connector.test.ts tests/integration/knowledge-record-store.test.ts tests/integration/bot-customization.test.ts tests/integration/mastra-route-isolation.spike.test.ts tests/integration/runtime-boot-startup.test.ts`：5 文件、28 项通过，含实际 Agent 注入额外 null 字段后不发检索请求、不写查询证据。
+- `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 的构建、类型检查、Driver 330 项测试通过；首轮 App 测试工作进程出现 `ERR_IPC_CHANNEL_CLOSED`，整条串联命令失败且未执行 lint。随后设置 `NODE_OPTIONS=--trace-uncaught --trace-warnings`，原样执行 `pnpm --filter @kairo/app test`，14 文件、235 项通过；单独 `pnpm lint` 通过。没有修改工作进程数量、测试范围或错误处理；首次 IPC 关闭的根因未定位，不宣称已修复测试框架。
+- 临时普通 Node 烟测分别通过 ESM/CommonJS 真实 `createTool` 入口：已声明 optional 的 null 仍按缺省处理，nullable 保留 null；未知 null 字段拒绝执行。没有为知识 Tool 增加包装器或旁路校验。
+- 实际模型验收脚本的三种预加载故障烟测（畸形 JSON、监听失败、服务器关闭回调失败）均明确非零退出、保留错误；逐个精确库名只读核对无残留。故障探针禁止真实模型外网并响应 AbortSignal，没有用假 Python 输出替代知识验收；这部分采用实际 CLI 烟测，没有新增通用测试框架。
+- 批准真实模型 `openai/gemini-3.7-flash-high` 的独立样例再次通过：实际加载 Skill、调用知识 Tool 一次，Python 返回 found，回答只有采购步骤；不含内部标识、来源列表、注入口令或命令。只证明本轮本地恶意资料样例，不等于 ERP 真实资料或正式 IM 验收。
+- 两份独立只读复审分别检查取消/验收生命周期与输入/数值/配置合同，均未发现 Required 问题；审查员未运行测试，运行证据以上述实际命令为准。
+- 本轮完整真实 ERP 入口 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-232-t27-knowledge-tool/.env ../../apps/kairo/scripts/verify-knowledge.ts`：254.76 秒全部通过。直连有资料 30 条、空结果、错误 key、错误 Dataset 和真实参数错误均符合合同；本地 429/503/断线后第二次取得真实 ERP，连续 503 仅两次。代理扣留真实响应后的主动取消与四分钟截止均回收 Python；截止记录 239982.8595ms，随后新请求直连 ERP 再次 found。隔离库为 `kairo_t19_e8925bcc7f484a558665f863b2fc0d86`，连接 PID 28580/28581。
+- 本轮按输出记录的 9 个精确自建库名执行独立只读查询，残留 0；不扫描或删除其他同前缀库。临时输入烟测、异常/清理探针及 pnpm 补丁编辑目录已删除。锁文件内容比对确认仅 Mastra 补丁哈希及其引用改变，没有升级依赖版本。

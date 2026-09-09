@@ -537,3 +537,46 @@ SDK 资源关闭与应用入口装配可以按文件边界并行；共用合同�
 Advisor 指出的同版本 A 被 B 替代后仍能以 running→failed 终止 B 的缺陷已真实复现，先前 24 项用例和审查未覆盖此路径。修复为该迁移强制携带 expectedAttemptId，并在现有任务行锁内比较非空 currentAttemptId；整任务取消及发送阶段失败不增加这一条件，旧尝试仍可补记结束审计。没有新增迁移或兼容层。
 
 两条新增真实 PostgreSQL 回归修复前均失败、修复后均通过；全量 task-store 26/26，类型检查、根 lint、App build 及默认 App 91 项通过。当前结果以 `docs/DEVELOPMENT.md` 的追加修复节为准。
+
+## 18. T27 固定 Python 知识检索链路（2026-09-09）
+
+任务状态以 [#232](https://github.com/dnslin/kairo/issues/232) 为准；依据 [T14 完整证据](https://github.com/dnslin/kairo/issues/219#issuecomment-5567272438)、T15/T16 配置、T17 日志及 T20 账本实施。不修改 T22 入口/身份/会话，不提前装配 T28/T29，不操作真实 KK9。
+
+### 已确认边界与实现决策
+
+- 用户批准把 T17 的 RAGFlow 健康检查也切换为同一个固定 Python 入口；保留五分钟周期和三十秒期限，不写业务查询账本、不改变模型检查。仓库不再保留 TypeScript HTTP 检索实现。
+- 受控目录新增 `erp-search` Skill；只指导最少 query 和企业资料使用。裁剪 ragflow-skill 1.0.8（发布许可证 MIT-0）的 common.py 请求处理与 search.py 字段映射为单一 search.py；不下载或暴露管理能力，不新增 Python 第三方依赖。
+- Node 固定启动 `python` 与受控脚本，关闭 shell，通过 stdin 传 query。Dataset 来自已加载 YAML；地址与凭证来自受控服务环境。模型没有程序、路径、Dataset 或 HTTP 参数入口。
+- Python 每次只做一次 Retrieval 请求，正文仅 question/dataset_ids。TypeScript 是唯一重试层，网络/429/5xx 最多再试一次；认证、参数、无资料、格式错误、取消不重试。未知业务错误明确失败并保留诊断，不仅靠 code 102 分类。
+- 使用 task 已有 executionDeadline，所有查询和重试共享截止时刻，不从 Tool 调用重新给四分钟。AbortSignal 与截止共同终止实际 Python，等待 close 和管道回收再结束；不声称远端计算取消。
+- Python 与 TypeScript 分别校验外部响应及进程输出边界。成功必须有有效 data/chunks；保留原始响应、HTTP/业务码、片段和文档标识、名称、positions、相似度。未知物理页码为 null。
+- Tool 绑定服务端 task/attempt/boot、调用次序分配和 T20 recordQuery；内部网络尝试及耗时保存在既有 rawResult，不加表。资料作为 Tool 数据返回，诊断和正文仅进业务表；普通日志沿用白名单标识、状态和耗时，凭证不进模型或日志。
+- 不新增会话取消调度、配置热更新、执行框架、备用实现或检索调参项。独立验证 Agent 不注册到生产 Mastra 路由。
+
+### 实施顺序与验收矩阵
+
+1. **固定 Python 与进程合同**：先以本地 HTTP 服务和真实 Python 建立失败测试，再实现有资料/无资料、严格结构、分类、进程错误和回收。覆盖 Python 不存在、脚本启动失败、非零退出、非 JSON、stdout/stderr 读取异常；不把假 Python 输出当真实链路验收。
+2. **专用 Tool 与账本**：严格拒绝 query 外字段；真实 Python 结果写入随机临时 PostgreSQL 库，核对同 task 调用顺序、耗时、类别、原始诊断及证据，正文不进入普通日志。资料中的命令或切换 Dataset 文本不能改变程序与目标。
+3. **Skill 与健康切换**：沿用 Mastra filesystem Skills 和 createTool；独立 Agent 真正调用 skill 后调用 knowledge-search。切换 T17，验证正常、空结果、异常、缺凭证、周期、关闭与超时语义；更新受影响配置调用点，不装配正式业务 Agent。
+4. **真实 ERP 样本**：完整 Agent/Skill/Tool/Python 链路验证有结果、无结果、错误 key、错误 Dataset/权限及参数错误，记录 HTTP 200 业务错误；positions 保留原值，不以 DOCX 推断物理页码。不得创建/修改 Dataset 或重启远端服务。
+5. **受控故障矩阵**：真实 Python 经本地 HTTP 故障服务验证缺失 data/chunks、非对象 chunk、正文/元数据类型、未知业务错误、429/5xx、断线恢复和连续失败最多两次。真实 ERP 转发代理用于最少请求字段核对、在途挂起/取消/超时与取消后恢复；代理行为与真实服务结果分别标注。
+6. **预算与注入**：首次/重试/后续查询均不重置 task 截止；真正等待四分钟总预算的独立场景与快速截止单元测试分别记录。取消后等待进程退出，无后台重试；额外参数与 query 内命令均不能修改 Dataset、凭证、脚本或参数，模型上下文不含凭证，最终员工说明不输出内部 ID/来源列表。
+7. **质量与交付**：执行 issue 两个定向单元/集成命令、App typecheck/build、根 build/typecheck/test/lint 和受影响 Skill/健康/配置/账本测试。数据库复用已有随机库隔离，关闭自有连接并删除自建库。更新开发文档、许可来源及 Orca comment，记录实际命令和未验证项；未经授权不合并、不关闭 issue。
+
+### 环境与待确认项
+
+- 已确认 Python 3.14.3 和现有 Node/Mastra/zod/pg 依赖；无需安装检索 SDK。
+- 初始当前工作树无 .env，主仓库测试配置无 RAGFlow key；向用户询问后，用户选择并在当前工作树配置凭证。仅从本地进程读取，未输出或提交。真实 ERP 全矩阵已通过，实际命令与真实/本地证据边界见 docs/DEVELOPMENT.md 的 T27 节。
+- T14 已确认真实 ERP 的 DOCX positions 不能映射物理页码；本任务保留未知，不虚构 PDF 样本或历史解析版本。
+
+### 实施结果
+
+固定 Python、严格 Tool、任务原截止/取消、一次重试、T20 原始结果/证据及定制 Skill 已落地；T17 健康检查按用户批准切换同一入口，无 TypeScript 检索旁路。既有依赖足够，未新增库、迁移、执行框架或调参项。
+
+完整本地矩阵、真实 ERP 矩阵及批准模型面对本地恶意资料的样例均已实际执行；四分钟 task 截止不是缩短的测试时间。根质量命令、定向单元/数据库集成、迁移幂等及构建产物健康烟测通过。首轮失败与审查修复、精确命令/计数及未声称覆盖的 PDF/远端取消/IM 边界均记录到开发文档。本分支不合并，不关闭 issue。
+
+### PR #265 复核修复
+
+按“先核实、再规划实施”完成四项已复现行为问题与配置反向依赖修正：落账后的交付截止/取消门禁、Python/Node 安全整数范围及精确诊断、Mastra 严格输入的未知空值拒绝、验收回调错误传播与资源回收、配置能力清单由入口注入。删除可推导的 retryable 状态；保留真正跨边界的格式与执行目标校验。
+
+定向 128 项、真实 PostgreSQL 集成 28 项通过；完整真实 ERP 矩阵 254.76 秒通过，原任务四分钟截止 239982.8595ms，恢复请求 found；批准模型面对本地恶意资料样例通过。构建、类型检查、Driver 330 项和 lint 通过；App 首轮遇到 Vitest IPC 关闭，保留该失败记录，添加诊断选项后原命令 235 项通过，未修改测试范围或框架。两份独立只读复审无 Required。详细命令、故障烟测与边界见 `docs/DEVELOPMENT.md` 的 PR #265 复核节。

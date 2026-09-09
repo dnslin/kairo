@@ -1,5 +1,89 @@
+diff --git a/dist/tool-BwroCWv4.js b/dist/tool-BwroCWv4.js
+index 87218459283e15ae1a7d174e0634d852dfd7e61b..1cfd793055cb82916359257aab9518c0577a39b9 100644
+--- a/dist/tool-BwroCWv4.js
++++ b/dist/tool-BwroCWv4.js
+@@ -188,28 +188,6 @@ function convertUndefinedToNull(input) {
+ 	return result;
+ }
+ /**
+-* Recursively strips null/undefined values from object properties.
+-* This handles LLMs (e.g. Gemini) that send null for .optional() fields,
+-* where Zod expects undefined, not null. By stripping nullish values,
+-* we let Zod treat them as "not provided" which matches .optional() semantics.
+-* (GitHub #12362)
+-*
+-* @param input The input to process
+-* @returns The processed input with null/undefined values stripped from objects
+-*/
+-function stripNullishValues(input) {
+-	if (input === null || input === void 0) return;
+-	if (typeof input !== "object") return input;
+-	if (Array.isArray(input)) return input.map((item) => item === null ? null : stripNullishValues(item));
+-	if (!isPlainObject(input)) return input;
+-	const result = {};
+-	for (const [key, value] of Object.entries(input)) {
+-		if (value === null || value === void 0) continue;
+-		result[key] = stripNullishValues(value);
+-	}
+-	return result;
+-}
+-/**
+ * Strip null/undefined values only at specific paths that caused validation errors.
+ * Preserves null for .nullable() fields that are valid.
+ */
+@@ -311,7 +289,7 @@ function validateToolInput(schema, input, toolId) {
+ 		const value = getValueAtPath(normalizedInput, issue.path);
+ 		return value === null || value === void 0;
+ 	}).map((issue) => issue.path?.map((p) => typeof p === "object" && "key" in p ? String(p.key) : String(p)).join(".")).filter((p) => !!p));
+-	const strippedInput = failingNullPaths.size > 0 ? stripNullishValuesAtPaths(input, failingNullPaths) : stripNullishValues(input);
++	const strippedInput = failingNullPaths.size > 0 ? stripNullishValuesAtPaths(input, failingNullPaths) : input;
+ 	const normalizedStripped = normalizeNullishInput(schema, strippedInput);
+ 	const retryValidation = safeValidate(schema, normalizedStripped);
+ 	if ("value" in retryValidation) return { data: retryValidation.value };
+diff --git a/dist/tool-DyGWe9X6.cjs b/dist/tool-DyGWe9X6.cjs
+index 168f30ddc924ac04e33b8cca0512feb602f794ed..0bf7271420c521189812ce4262df91a1bcc93651 100644
+--- a/dist/tool-DyGWe9X6.cjs
++++ b/dist/tool-DyGWe9X6.cjs
+@@ -188,28 +188,6 @@ function convertUndefinedToNull(input) {
+ 	return result;
+ }
+ /**
+-* Recursively strips null/undefined values from object properties.
+-* This handles LLMs (e.g. Gemini) that send null for .optional() fields,
+-* where Zod expects undefined, not null. By stripping nullish values,
+-* we let Zod treat them as "not provided" which matches .optional() semantics.
+-* (GitHub #12362)
+-*
+-* @param input The input to process
+-* @returns The processed input with null/undefined values stripped from objects
+-*/
+-function stripNullishValues(input) {
+-	if (input === null || input === void 0) return;
+-	if (typeof input !== "object") return input;
+-	if (Array.isArray(input)) return input.map((item) => item === null ? null : stripNullishValues(item));
+-	if (!isPlainObject(input)) return input;
+-	const result = {};
+-	for (const [key, value] of Object.entries(input)) {
+-		if (value === null || value === void 0) continue;
+-		result[key] = stripNullishValues(value);
+-	}
+-	return result;
+-}
+-/**
+ * Strip null/undefined values only at specific paths that caused validation errors.
+ * Preserves null for .nullable() fields that are valid.
+ */
+@@ -311,7 +289,7 @@ function validateToolInput(schema, input, toolId) {
+ 		const value = getValueAtPath(normalizedInput, issue.path);
+ 		return value === null || value === void 0;
+ 	}).map((issue) => issue.path?.map((p) => typeof p === "object" && "key" in p ? String(p.key) : String(p)).join(".")).filter((p) => !!p));
+-	const strippedInput = failingNullPaths.size > 0 ? stripNullishValuesAtPaths(input, failingNullPaths) : stripNullishValues(input);
++	const strippedInput = failingNullPaths.size > 0 ? stripNullishValuesAtPaths(input, failingNullPaths) : input;
+ 	const normalizedStripped = normalizeNullishInput(schema, strippedInput);
+ 	const retryValidation = safeValidate(schema, normalizedStripped);
+ 	if ("value" in retryValidation) return { data: retryValidation.value };
 diff --git a/dist/workspace-skills-CWLbD3Z8.cjs b/dist/workspace-skills-CWLbD3Z8.cjs
-index 6ab16ed3f58a45b9871eb2b4cf2048667af850d1..9f5f2dd255c7a5d073a185bfbcfa7cd386e0ced7 100644
+index 6ab16ed3f58a45b9871eb2b4cf2048667af850d1..58554fd525cac6bd8e45c00b282c0ab4f6da50aa 100644
 --- a/dist/workspace-skills-CWLbD3Z8.cjs
 +++ b/dist/workspace-skills-CWLbD3Z8.cjs
 @@ -2301,7 +2301,7 @@ var WorkspaceSkillsImpl = class WorkspaceSkillsImpl {
@@ -12,7 +96,7 @@ index 6ab16ed3f58a45b9871eb2b4cf2048667af850d1..9f5f2dd255c7a5d073a185bfbcfa7cd3
  	}
  	/**
 diff --git a/dist/workspace-skills-Dt0p50IG.js b/dist/workspace-skills-Dt0p50IG.js
-index 2a4eb62b04a5ab205e5aa143ebb4fdeac0ce4499..4c1b2c4e18d65ea5fd74e265c37a92c7e4aa9fd1 100644
+index 2a4eb62b04a5ab205e5aa143ebb4fdeac0ce4499..5b3fba485e6c3261e67b6dfd9826dad37d272e87 100644
 --- a/dist/workspace-skills-Dt0p50IG.js
 +++ b/dist/workspace-skills-Dt0p50IG.js
 @@ -2294,7 +2294,7 @@ var WorkspaceSkillsImpl = class WorkspaceSkillsImpl {

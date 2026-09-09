@@ -10,6 +10,7 @@ import { loadBotConfig } from '../../src/config/load.js';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { botConfigSchema } from '../../src/config/schema.js';
 import { startKairo } from '../../src/index.js';
+import { knowledgeTools } from '../../src/modules/tool-integration/knowledge-tool.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
 function validConfig() {
@@ -125,13 +126,16 @@ describe('T15 受控配置读取', () => {
     });
   });
 
-  it('拒绝尚未实现或未注册的 Tool', async () => {
+  it('未注入能力清单时拒绝声明的 Tool，显式注入真实工厂表后接受', async () => {
     await withConfig(async directory => {
       await writeFile(
         join(directory, 'bot.yaml'),
         stringify({ ...validConfig(), tools: ['knowledge-search'] })
       );
       await expect(loadBotConfig(directory)).rejects.toThrow(/tools/);
+      expect((await loadBotConfig(directory, Object.keys(knowledgeTools))).config.tools).toEqual([
+        'knowledge-search',
+      ]);
     });
   });
 
