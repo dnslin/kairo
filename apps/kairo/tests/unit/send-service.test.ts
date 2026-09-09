@@ -740,6 +740,98 @@ describe('任务和上下文竞争', () => {
 });
 
 describe('关闭和显式恢复', () => {
+  it.each(['有效', '任务取消', '上下文失效'] as const)(
+    '查询预算已用但已持久送达：%s时不重查、不重发且不刷新空闲',
+    async state => {
+      const f = fixture();
+      f.state.task.status = state === '任务取消' ? 'cancelled' : 'sending';
+      const row = await f.seed({
+        status: 'querying',
+        sendCalls: 1,
+        queryUsed: true,
+        queryDueAt: START + 30_000,
+      });
+      await f.driverStore.claim({
+        operationId: row.operationId,
+        fingerprint: {
+          targetSessionId: f.state.task.sessionId,
+          messageType: 'text',
+          contentDigest: '已送达答案摘要',
+        },
+      });
+      await f.driverStore.update(row.operationId, {
+        status: 'delivered',
+        messageId: '持久送达编号',
+      });
+      if (state === '上下文失效') f.state.context.invalidatedAt = START + 1;
+      vi.setSystemTime(START + 3 * 60 * 60_000);
+      const { service } = f.open();
+      const result = await service.recover(f.request);
+      expect(result.status).toBe(state === '有效' ? 'delivered' : 'cancelled');
+      expect(f.state.task.status).toBe(state === '有效' ? 'completed' : 'cancelled');
+      expect(f.state.context.idleSince).toBe(state === '有效' ? START : null);
+      if (state === '有效') expect(result.resultAt).toBe(START);
+      expect(await f.driverStore.get(row.operationId)).toMatchObject({
+        status: 'delivered',
+        updatedAt: START,
+        messageId: '持久送达编号',
+      });
+      expect(f.queries[0]).not.toHaveBeenCalled();
+      expect(f.sends[0]).not.toHaveBeenCalled();
+    }
+  );
+
+  it('查询预算已用时读取持久证据失败仍传播，不假装未确认并结束任务', async () => {
+    const f = fixture();
+    f.state.task.status = 'sending';
+    const row = await f.seed({
+      status: 'querying',
+      sendCalls: 1,
+      queryUsed: true,
+      queryDueAt: START + 30_000,
+    });
+    const failure = new Error('持久送达证据读取失败');
+    vi.spyOn(f.driverStore, 'get').mockRejectedValueOnce(failure);
+    const { service } = f.open();
+    await expect(service.recover(f.request)).rejects.toBe(failure);
+    expect(await f.dispatches.get(row.operationId)).toEqual(row);
+    expect(f.state.task.status).toBe('sending');
+    expect(f.state.context.idleSince).toBeNull();
+    expect(f.queries[0]).not.toHaveBeenCalled();
+    expect(f.sends[0]).not.toHaveBeenCalled();
+  });
+  it('等待查询期间才保存送达证据，保留原回执时间且不再查询 Driver', async () => {
+    const f = fixture();
+    f.state.task.status = 'sending';
+    const row = await f.seed({
+      status: 'sending',
+      sendCalls: 1,
+      queryUsed: false,
+      queryDueAt: START + 30_000,
+    });
+    await f.driverStore.claim({
+      operationId: row.operationId,
+      fingerprint: {
+        targetSessionId: f.state.task.sessionId,
+        messageType: 'text',
+        contentDigest: '在途答案摘要',
+      },
+    });
+    const { service } = f.open({ query: id => Promise.resolve(observation('delivered', id)) });
+    const pending = service.recover(f.request);
+    await vi.advanceTimersByTimeAsync(5000);
+    await f.driverStore.update(row.operationId, { status: 'delivered', messageId: '已送达消息' });
+    await vi.advanceTimersByTimeAsync(25000);
+    const recovered = await pending;
+    expect(recovered).toMatchObject({
+      status: 'delivered',
+      resultAt: START + 5000,
+      queryUsed: false,
+    });
+    expect(f.state.context.idleSince).toBe(START + 5000);
+    expect(f.queries[0]).not.toHaveBeenCalled();
+    expect(f.sends[0]).not.toHaveBeenCalled();
+  });
   it('关闭等待后新服务沿用绝对查询时间，不获得新的三十秒窗口', async () => {
     const f = fixture(['unknown'], 'delivered');
     const old = f.open();

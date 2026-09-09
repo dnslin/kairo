@@ -1061,7 +1061,7 @@ pnpm --filter @kairo/app build
 
 ## T24 `/new` 与近期上下文边界（2026-09-09）
 
-> 当前为草稿交付，尚不能合并：追加核实发现再次恢复会跳过持久送达证据，错误标记 send_unconfirmed 并刷新空闲起点。下方已通过测试未覆盖这条路径；详见本节末尾“追加核实：再次恢复阻塞”。
+> 当前 PR 保持草稿待审。追加发现的再次恢复缺陷已按用户要求修复，并通过永久回归、真实 PostgreSQL 和独立烟测验证；历史失败与修复证据见本节末尾。T35 真机放行仍未执行，不合并、不关闭 issue。
 
 ### 入口与正式装配边界
 
@@ -1120,7 +1120,7 @@ pnpm --filter @kairo/app db:migrate:test
 - `node --env-file=.env apps/kairo/tmp/t24-check-databases.mjs` 只读核对本轮输出记录的 32 个精确随机库名，残留 0；未扫描或删除其他前缀库。该核验脚本随后删除，用户提供的本工作区 `.env` 保留且不提交。
 - 两份独立只读审查的三项 Required 均已通过失败/修复回归处理；没有把审查意见当作执行证据。未授权或调用跨模型外部 CLI。复杂度审查保留真实需要的事务锁、版本门禁和实例登记，不新增总线、调度器、脚本管理、依赖包或兼容回退。
 
-### 追加核实：再次恢复阻塞（尚未修复）
+### 追加核实：再次恢复阻塞（修复前记录）
 
 Advisor 指出 `send-service.ts` 的 queryUsed=true 分支会在读取原生送达证据之前直接保存 send_unconfirmed。已用生产发送协调器、真实 PostgreSQL、FakeDriver，以及只作用于自建随机库的 CHECK 约束实际复现：
 
@@ -1132,4 +1132,30 @@ Advisor 指出 `send-service.ts` 的 queryUsed=true 分支会在读取原生送�
 
 执行命令为 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-recovery-interruption-probe.ts`。这是受控 SQL 故障与应用时钟推进，不是操作系统强杀、真实 KK9 或实等三小时。随机库 `kairo_t19_aae1a27117cd4db4910cfb26f2a1647e`、连接 PID 29854/29855，已删除并以精确库名只读确认残留 0；临时复现脚本已删除。
 
-本轮按用户要求只核实问题，未修复生产代码、未补永久回归。建议先读取并采用持久 delivered 及原时间，再处理查询预算耗尽；仍需保留 task/context 有效性检查，不增加 Driver 查询或重发。提交与 PR 必须明确保留该阻塞，不能用前述通过计数作为可以合并的结论。
+上述为提交 aa0af5e 时的核实结果：当时未修复生产代码、未补永久回归，因此以草稿 PR #266 交付。用户随后要求执行修复，实际变更和验证见下节；保留这段记录，不把历史通过计数当作当时已经覆盖缺陷的证明。
+
+### 再次恢复修复与验证
+
+`query()` 现在首先读取现有 Driver Store：有持久 delivered 时，直接把原消息 ID 与 updatedAt 交给既有 observe/finishTask 流程，然后才考虑查询预算或查询截止。读取已知事实不是再次调用 Driver；即使 queryUsed=true 或恢复再次中断，也不降为未确认、不刷新原送达时刻。observe 仍校验 task/context；取消或失效时协调结果为 cancelled，原生送达证据不变。证据读取失败原样传播，不伪造 send_unconfirmed。没有新迁移、兼容层、重试或 Driver 行为修改。
+
+新增四条单元回归修复前全部失败，修复后完整发送单元 60/60：查询预算已用且已有证据时的正常恢复、任务取消、context 失效，以及证据读取异常。真实 PostgreSQL 通过 CHECK 使初次 send 与首次 recover 的协调 delivered 写入连续失败，移除约束后再次恢复仍 completed、原 idleSince 不变，实际发送一次、Driver 查询零次；另覆盖 querying/queryUsed=true 的持久快照及 `/new` 取消后的恢复。
+
+补查等待路径时还发现：只把证据读取提前会漏掉等待三十秒期间才落账的回执，使第五秒的送达时间被记为第三十秒。新增“等待查询期间”回归先失败，再让等待结束后复用同一 adoptStoredDelivery 重新读取和采用，最终不调用 Driver 查询、空闲起点仍为第五秒。不增加轮询、计时器或重试。
+
+既有“恢复前未知、查询得到 delivered”集成夹具原先在查询前就把 delivered 写入原生表；本轮改为实际查询时才保存观测，保留一次查询及同 ID 重试断言，而非把旧断言改成零次来掩盖缺陷。初次组合为 45/46，唯一失败由这个不再符合未知前提的夹具引起；修正后完整发送集成 19/19，同轮上下文两文件 27/27。
+
+实际执行：
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service.test.ts --testNamePattern=查询预算已用
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service.test.ts --testNamePattern=等待查询期间
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/send-service.test.ts tests/integration/new-context
+pnpm --filter @kairo/app test:integration -- tests/integration/send-service.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+补充等待期间回归后，最终再次执行完整质量四命令全部通过：Driver 330/330、App 303/303（含发送单元 61 项）。随后原样重跑发送与上下文数据库组合，3 文件、46/46；其中发送19项、上下文27项。初次45/46及中间App302项保留为执行历史，不当作最终结果；没有重跑不受此次修复影响的完整知识/任务账本集成。
+
+独立命令 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-recovery-fixed-smoke.ts` 实际通过：两次真实协调写入 CHECK 失败后，新实例恢复为 delivered、task=completed；原证据时间与恢复 resultAt 均为 1788935606889，空闲偏移 0ms，发送一次、查询零次，三小时后的新请求正确切换 thread。使用真实 PostgreSQL、生产协调器、FakeDriver 和受控时钟，不是 KK9 或操作系统强杀。烟测库 `kairo_t19_05de3d2af1dc497daface77c2745695f`、连接 PID 29997/29998，已删除并按精确库名核对残留 0。临时烟测脚本在验收后删除；本轮仍不合并 PR、不关闭 issue，也不代替 T35 放行。

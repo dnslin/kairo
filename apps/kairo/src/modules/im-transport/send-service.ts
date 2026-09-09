@@ -238,7 +238,31 @@ export function createSendService(options: SendServiceOptions): SendService {
     return saved;
   }
 
+  async function adoptStoredDelivery(
+    request: SendRequest,
+    dispatch: SendDispatch
+  ): Promise<SendDispatch | null> {
+    // 读取既有送达事实不消耗 Driver 查询机会，也不能因恢复中断而刷新原时间。
+    const priorEvidence = await options.driverStore.get(dispatch.operationId);
+    if (priorEvidence?.status === 'delivered') {
+      return observe(
+        request,
+        dispatch,
+        {
+          success: true,
+          status: 'delivered',
+          operationId: priorEvidence.operationId,
+          messageId: priorEvidence.messageId,
+        },
+        priorEvidence.updatedAt
+      );
+    }
+    return null;
+  }
+
   async function query(request: SendRequest, dispatch: SendDispatch): Promise<SendDispatch> {
+    const delivered = await adoptStoredDelivery(request, dispatch);
+    if (delivered) return delivered;
     if (dispatch.queryUsed) {
       const saved = await change(dispatch, { status: 'send_unconfirmed' });
       if (saved)
@@ -253,25 +277,23 @@ export function createSendService(options: SendServiceOptions): SendService {
     }
     if (dispatch.queryDueAt === null) throw new Error('已触发发送缺少查询截止时间');
     const remaining = dispatch.queryDueAt - Date.now();
-    if (remaining > 0) await delay(remaining, undefined, { signal: shutdown.signal });
+    if (remaining > 0) {
+      await delay(remaining, undefined, { signal: shutdown.signal });
+      // 等待期间旧调用仍可能保存回执；查询前不能继续使用等待前的未知快照。
+      const deliveredWhileWaiting = await adoptStoredDelivery(request, dispatch);
+      if (deliveredWhileWaiting) return deliveredWhileWaiting;
+    }
     checkOpen();
     if (!(await valid(request, true))) {
       const saved = await change(dispatch, { status: 'cancelled' });
       return saved ?? current(dispatch);
     }
-    // 原生送达先于协调终态保存；恢复时沿用已持久化的首次送达证据，不能刷新空闲。
-    const priorEvidence = await options.driverStore.get(dispatch.operationId);
     await enterSending(request);
     const claimed = await change(dispatch, { status: 'querying', queryUsed: true });
     if (!claimed) return current(dispatch);
     let result: SendResult;
-    let observedAt: number;
     try {
       result = await driver.getSendStatus(claimed.operationId);
-      observedAt =
-        result.status === 'delivered' && priorEvidence?.status === 'delivered'
-          ? priorEvidence.updatedAt
-          : Date.now();
     } catch (cause) {
       const failure = new AppError('driver', { cause });
       if (!shutdown.signal.aborted) {
@@ -284,7 +306,7 @@ export function createSendService(options: SendServiceOptions): SendService {
       }
       throw failure;
     }
-    return observe(request, claimed, result, observedAt);
+    return observe(request, claimed, result);
   }
 
   async function sendOnce(request: SendRequest, dispatch: SendDispatch): Promise<SendDispatch> {
