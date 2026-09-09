@@ -38,8 +38,10 @@ describe('T16 原生 filesystem Skill 合同', () => {
   it('发现用户真实技能，并通过原生接口读取正文', async () => {
     const agent = await agentFor();
     const skills = await agent.listSkills();
-    expect(skills.map(skill => skill.name)).toEqual(['reader-sim']);
-    expect(skills[0]?.description).toContain('first-time reader persona');
+    expect(skills.map(skill => skill.name).sort()).toEqual(['erp-search', 'reader-sim']);
+    expect(skills.find(skill => skill.name === 'reader-sim')?.description).toContain(
+      'first-time reader persona'
+    );
     const skill = await agent.getSkill('reader-sim');
     expect(skill?.instructions).toContain('Transportation');
     expect(skill?.instructions).toContain('Anchor claims to the text');
@@ -110,7 +112,10 @@ describe('T16 原生 filesystem Skill 合同', () => {
         '---\nname: disabled\ndescription: 未批准能力\n---\n未批准资料'
       );
       const agent = await agentFor(directory);
-      expect((await agent.listSkills()).map(skill => skill.name)).toEqual(['reader-sim']);
+      expect((await agent.listSkills()).map(skill => skill.name).sort()).toEqual([
+        'erp-search',
+        'reader-sim',
+      ]);
       expect(await agent.getSkill('disabled')).toBeNull();
       expect(await agent.getSkill(disabled)).toBeNull();
       expect(await agent.getSkill(join(disabled, 'SKILL.md'))).toBeNull();

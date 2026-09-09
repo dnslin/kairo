@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks';
 import { ModelRouterLanguageModel } from '@mastra/core/llm';
 import type { BotConfig } from '../../config/schema.js';
+import { retrieveKnowledge } from '../tool-integration/python-retrieval.js';
 import { AppError, getErrorType } from './errors.js';
 import type { HealthDependencies } from './health.js';
 import type { AppLogger } from './logger.js';
@@ -15,7 +16,7 @@ export function startDependencyChecks(config: BotConfig, logger: AppLogger): Dep
   const state: ExternalHealth = { model: 'unknown', ragflow: 'unknown' };
   const lifetime = new AbortController();
   const modelKey = process.env.KAIRO_T12_MODEL_API_KEY;
-  const ragflowKey = process.env.RAGFLOW_API_KEY;
+  const ragflowKey = process.env.RAGFLOW_API_KEY ?? '';
   const ragflowUrl = process.env.RAGFLOW_API_URL ?? 'http://rag.union.com/';
   const pending = new Map<keyof ExternalHealth, Promise<void>>();
 
@@ -46,37 +47,17 @@ export function startDependencyChecks(config: BotConfig, logger: AppLogger): Dep
   }
 
   async function checkRagflow(signal: AbortSignal): Promise<void> {
-    const response = await fetch(new URL('/api/v1/retrieval', ragflowUrl), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${ragflowKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: '如何查询采购订单？', dataset_ids: [config.datasetId] }),
-      signal,
-    });
-    if (!response.ok) throw new AppError('knowledge');
-    const body: unknown = await response.json();
-    if (
-      typeof body !== 'object' ||
-      body === null ||
-      !('code' in body) ||
-      body.code !== 0 ||
-      !('data' in body) ||
-      typeof body.data !== 'object' ||
-      body.data === null ||
-      !('chunks' in body.data) ||
-      !Array.isArray(body.data.chunks)
-    )
-      throw new AppError('knowledge');
-    // 空检索结果是正常结果；仅验证片段合同，不记录或保存正文。
-    for (const chunk of body.data.chunks as unknown[]) {
-      if (
-        typeof chunk !== 'object' ||
-        chunk === null ||
-        !('content' in chunk) ||
-        typeof chunk.content !== 'string'
-      ) {
-        throw new AppError('knowledge');
-      }
-    }
+    const { result } = await retrieveKnowledge(
+      '如何查询采购订单？',
+      { apiUrl: ragflowUrl, apiKey: ragflowKey, datasetId: config.datasetId },
+      { deadline: Date.now() + 30000, signal, retry: false }
+    );
+    // 健康检查复用固定 Python 检索，不写业务账本，也不记录正文。
+    if (result.kind === 'found' || result.kind === 'empty') return;
+    throw new AppError(
+      result.kind === 'cancelled' || result.kind === 'timeout' ? result.kind : 'knowledge',
+      { cause: result }
+    );
   }
 
   function run(name: keyof ExternalHealth): void {

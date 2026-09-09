@@ -131,7 +131,8 @@ describe('T15 受控配置读取', () => {
         join(directory, 'bot.yaml'),
         stringify({ ...validConfig(), tools: ['knowledge-search'] })
       );
-      await expect(loadBotConfig(directory)).rejects.toThrow(/tools/);
+      await expect(loadBotConfig(directory, [])).rejects.toThrow(/tools/);
+      expect((await loadBotConfig(directory)).config.tools).toEqual(['knowledge-search']);
     });
   });
 
