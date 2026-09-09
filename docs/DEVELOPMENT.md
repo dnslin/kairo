@@ -776,6 +776,74 @@ node --env-file=.env apps/kairo/tmp/t21-smoke.mjs
 
 边界：本次证明协调模块、真实 PostgreSQL 与同进程新实例/新连接恢复，不冒称操作系统强杀或完整跨进程调度。T34 仍负责跨进程故障矩阵，T35 仍负责真实 KK9 delivered/failed/unknown。没有连接或修改真实 KK9 会话，没有调用模型/RAGFlow，没有修改 Driver 行为，因此未执行 Driver 真机脚本；不合并分支或关闭 issue。
 
+### T22 可调用私聊入站门禁（2026-09-09）
+
+用户在本任务终端批准：本次不接入 `index.ts` 正式消息订阅。`createIngress(options)` 返回可调用的异步消息处理函数；通过后返回 `{ status: 'accepted', botId, message }`，其中 `message` 是带可信 `employeeId` 的已保存原始消息。它不创建 context、batch、task、Memory 或知识调用，不处理 `/new`，也不提供假的后续回调。执行 `start` 尚不会自动处理真实员工消息，后续模块具备接收能力后再装配。
+
+`im-transport/driver-adapter.ts` 使用 Driver 必填的稳定原生 `id` 作为账本 `messageId`；标准化 Driver 同时提供相同的可选 `messageId`，应用不从 raw、正文或可选字段推测编号。保留原文、消息类型和已有附件元数据，观察时间取入口的 `Date.now()`，不把 IM 历史时间当成当前观察时间，不读取或下载附件。
+
+`private-chat-core/ingress.ts` 的顺序固定如下：
+
+1. outbound 直接忽略；unknown 仅记录带消息/会话 ID 的诊断，不写原始账本、不回复。
+2. inbound 先调用 T18 `insertRawMessage()`；`(sessionId,messageId)` 唯一冲突直接返回 duplicate，不查询员工、不覆盖首次正文或处理结果。
+3. 仅接受 `sessionType: 'private'` 且整个原始会话号严格为 `0-<ASCII数字UID>`；不 trim，拒绝尾部换行、纯数字、昵称、群聊、讨论组和服务号。这些不支持的入站仍保留原始账本和诊断，但不查档案、不回复。
+4. 只用该原始 sessionId 调用 `getEmployeeBySession()`；要求 `String(employee.id)` 与会话 UID 完全一致。正文、昵称、senderId 和会话显示名不能切换身份。档案为空或 UID 不匹配停止；查询异常保留 cause 并按 driver 类别向调用者传播，不伪装为空档案。
+5. 可信身份关联原始账本后检查启动配置传入的 employeeAllowlist；名单外回复固定试用提示，不建立下游业务。通过则记录 accepted 并返回可信消息。
+
+两种固定提示均使用 T21 `SendService.send()`，subject 为无 threadId 的原始 event，purpose 分别为 `notice:identity_failed` 与 `notice:not_allowed`；不直接调用 Driver 发送。身份失败窗口采用用户批准的固定 60000ms，键为 Bot、私聊和 `identity_failed`；从实际准备提示时起算，先原子占用再发送，失败不退还，重启不重置。不新增配置、迁移、存储实现、事件总线或兼容路径。存储/发送异常向上传播，不自动调用数据库故障发送例外。
+
+#### 实际验证
+
+初次离线验证时本工作树尚无 `.env`，以下命令只向测试进程加载主仓库已有环境，不复制凭证；集成测试只使用其中的 `KAIRO_TEST_DATABASE_URL` 创建随机临时库，不迁移或清理配置原库：
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/ingress.test.ts
+node --env-file=D:/Person/kairo/.env apps/kairo/scripts/test-integration.mjs -- tests/integration/ingress-dedup.test.ts
+node --env-file=D:/Person/kairo/.env apps/kairo/scripts/test-integration.mjs -- tests/integration/ingress-dedup.test.ts tests/integration/private-chat-store.test.ts tests/integration/send-service.test.ts
+pnpm --filter @kairo/app build
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app test
+pnpm lint
+node --env-file=D:/Person/kairo/.env apps/kairo/tmp/t22-smoke.mjs
+```
+
+- 最终精确定向单元 35/35；覆盖三方向、严格会话、方向/写入/查询/发送的顺序、双类型员工 UID、前导零、身份伪造、名单内外、附件元数据、完整提示窗口及异常传播。默认 App 单元 12 文件、171/171。
+- T22 真实 PostgreSQL 定向 7/7；双连接同键竞争仅一次 accepted、跨会话相同消息 ID 独立接纳、新实例新连接持久去重、真实 T21 固定提示送达、限频并发与 59999/60000ms 边界、失败与异常不退还窗口。查询真实业务和 Mastra 表，确认接纳/拒绝路径均不创建后续会话、任务、Memory 或知识数据。
+- 最终 T18/T21/T22 组合为 3 文件、34/34。T22 自建库 `kairo_t19_ce877143d61d4ec9a1918df0dbd8a3d5`，backend PID 27858/27859；T21 自建库 `kairo_t19_2bd928d8c2f542f5a080a3ba7bdcfc6d`，PID 27855/27856。沿用已有隔离助手，所以库名和助手日志保留 T19 前缀。
+- App build/typecheck、根 lint 均通过。首次 lint 发现测试替身的两个无 await 的 async 和清理数组的 any 返回，按真实类型修正，没有关闭规则。
+- 普通 Node 烟测直接运行构建产物、真实 PostgreSQL、真实 T21 协调器与 FakeKK9Driver；同键双连接一胜一负、跨会话接纳、伪造正文不换员工、两种固定提示、关闭全部业务连接后重建仍防重/限频，context/batch/task 均为空。烟测库 `kairo_t22_smoke_235743b7fe3a4027936bb5f4b4fa5818`，PID 27870/27871，已在 finally 删除。临时脚本在记录后删除，不新增正式命令。
+- 首轮单元 29/30：失败测试误将窗口从入口时间起算，查询耗时会缩短提示间隔；按批准的发送前占用语义修正测试，保留占用完成前不发送的断言。issue 原单元命令在当前 pnpm 下实际运行整个 App 单元目录，因此上方使用 exec 精确筛选；早期测试文件尚未存在时得到空测试，不计为通过。
+- 组合回归首次被 Tinypool 的 `ERR_IPC_CHANNEL_CLOSED` 中断，原样重跑 34/34；没有修改并发配置或跳过测试，未确认该进程错误的根因。只读检查确认上述 T22/T21 和烟测库无残留；另发现 `kairo_t18_2211dbcc3d6a4ee884db8da4d26c095b`，因首次中断前未记录其库名，无法确认归属，未按前缀删除或终止任何连接。
+
+上述初次离线证据不代表 T35 的双员工与 Bot 真机放行，也不代表操作系统强杀恢复或完整 IM 回答链。当时未连接真实 KK9、未调用模型/RAGFlow，未修改 Driver 行为，所以没有执行 Driver 真机脚本；T24/T27 及正式启动装配均未提前实现。未合并分支或关闭 issue。后续获批的真实验证见下节。
+
+#### 追加真实 KK9 与 RAGFlow 验收（2026-09-09）
+
+用户要求真实验证，并在当前工作树 `.env` 配置真机授权、测试数据库连接和 RAGFlow key。使用已提交的构建产物与临时 Node 验收程序，不修改产品源码、正式 YAML、T27 模块或 `index.ts`，不创建正式 Agent；本轮没有调用主模型。
+
+实际执行：
+
+```powershell
+node --env-file=.env apps/kairo/tmp/t22-real-preflight.mjs
+node --env-file=.env apps/kairo/tmp/t22-real-ingress.mjs
+node --env-file=.env apps/kairo/tmp/t22-real-ragflow.mjs
+```
+
+真机程序受监督运行，先读取真实登录 UID 与现存 Hook/binding，确认 Bot 为 `5761` 且没有其他 Hook 后才连接真实 `KK9Driver`。通过 Driver 唯一匹配 `0-3585 / int2024` 私聊，`getEmployeeBySession('0-3585')` 实际返回 UID `3585`，loginName/name 均为 `int2024`。发送和记录复用真实 T21 协调器及 PostgreSQL Store，没有 FakeDriver、伪造员工档案或替换发送结果。
+
+- 员工实际发送带标记 `T22-bdbff093` 和伪造身份正文的消息；Driver 公开事件产生原生消息 ID `135903027`、direction=inbound。T22 返回 accepted，可信 employeeId 仍为 `3585`，不受正文中的 `9999` 影响。
+- 使用真实 Driver 定向历史查询读回同一消息，通过另一数据库连接交给 T22，返回 duplicate；首次记录不被重复处理。这里验证事件接收与历史查询双来源，不把测试程序自行复制对象当作真实双来源证据。
+- T21 发送明确标注“仅为验收、不是 Agent 回答”的固定测试提示，operationId 为 `5e0c5019-3703-4b84-b674-00ba5ce73f58`，正式消息 ID `135903033`，状态 delivered，Driver 确认耗时 583ms。同一请求重放仍为同 operationId/messageId，sendCalls=1；真实 `getSendStatus()` 返回 delivered。
+- Driver 公开事件观察到 `135903033` 的 outbound 回显；T22 返回 outbound，该回显未写入原始入站账本。context、batch、task、Memory commit、知识查询表均无记录。
+- 关闭真实 Driver 和全部业务连接后，通过新数据库连接读回员工关联与 accepted 结果，原始消息重复插入仍返回 inserted=false。这证明数据库持久性，不声称执行了操作系统强杀、重新登录 KK9 或恢复调度。
+- 自建库 `kairo_t22_real_6c1fbcb4b891422fa1501ece88dd6863`，两个 backend PID 为 28127/28128，迁移前核对实际库名及不同 PID。finally 已删除此库；独立只读复查确认登录 UID 不变，Hook/binding 均不存在。仅保留本次提示 `135903033` 供员工核对收件，未撤回或修改员工原始消息，没有重启 KK9、停止其他进程或清理其他数据库。
+
+RAGFlow 公开版本接口实际返回 HTTP 200、code 0、`v0.27.1`。随后向 `http://rag.union.com/api/v1/retrieval` 发起真实认证 POST，请求只包含固定问题“如何查询采购订单？”和正式 YAML 的唯一 ERP Dataset `b55a0fc8a69211f1bad90f767650f6fc`：HTTP 200、code 0，返回 30 条正文非空的片段、涉及 7 份文档，total=64，耗时 1568ms。独立无效 key 请求实际返回 HTTP 401。没有输出凭证或知识正文，也未上传资料或改变 Dataset。这是直接真实 HTTP 检索和认证验证，不是 T27 Skill/Tool/Python 链路或基于资料的完整 IM 回答。
+
+首轮真机程序等待标记 `T22-ffd251f0` 五分钟未观察到匹配员工消息，明确以退出码 1 结束，尚未进入门禁或发送提示；其自建库 `kairo_t22_real_ab950551a81d4fa4a1ba2b9bb46c0e9f`（PID 28037/28038）与 Hook 已正常回收。初次缺少 RAGFlow key 时只验证公开版本，不计认证检索通过。用户补齐配置并实际发送消息后，上述最终两个验收程序均退出码 0。
+
+本轮新增的真实证据仅覆盖一个员工与一个 Bot 的授权入站、身份伪造、防重、提示 delivered/outbound，以及独立 RAGFlow 检索。第二员工、真实名单外提示、真实身份失败限频、真实 failed/unknown 故障和客户端重启稳定性未执行；这些不能由本轮结果冒充 T35 完整放行。临时程序与本地结果文件在证据保存后删除，不新增正式启动方式；产品代码未变，不重复运行无变化的离线质量套件。
+
 
 ### PR #263 合并前组合验证（2026-09-09）
 
