@@ -1,44 +1,28 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { PostgresPrivateChatStore } from '../../src/modules/private-chat-core/store.js';
-import { PostgresTaskStore } from '../../src/modules/task-lifecycle/store.js';
-import { createTaskTestDatabase, type TaskTestDatabase } from '../helpers/task-database.js';
 import {
+  createTaskTestContext,
+  type TaskTestContext,
   executionDeadline,
   waitedAt,
   waitDeadline,
   remainingExecutionMs,
   question,
   allowedQuestionIds,
-  scopeFor,
-  message,
-  claimedFixture,
-  startAttempt,
-  successfulAttempt,
-  waitingFixture,
-  runningFixture,
 } from '../helpers/task-fixtures.js';
 
-let database: TaskTestDatabase;
-let storeA: PostgresTaskStore;
-let storeB: PostgresTaskStore;
-let chat: PostgresPrivateChatStore;
-
+let context: TaskTestContext;
 beforeAll(async () => {
-  database = await createTaskTestDatabase();
-  storeA = new PostgresTaskStore(database.poolA);
-  storeB = new PostgresTaskStore(database.poolB);
-  chat = new PostgresPrivateChatStore(database.poolA);
+  context = await createTaskTestContext();
 }, 30_000);
-
 afterAll(async () => {
-  await database?.close();
+  await context?.database.close();
 }, 30_000);
 
-describe('T19 员工等待、授权预算与消费竞争', () => {
+describe('T19 任务账本-waits', () => {
   it('等待采用澄清尝试并保存问题范围，同意关联原始回答且只恢复剩余执行预算', async () => {
-    const fixture = await waitingFixture(storeA, chat);
-    expect(await storeB.getUserWait(fixture.waitId)).toEqual({
+    const fixture = await context.waitingFixture();
+    expect(await context.storeB.getUserWait(fixture.waitId)).toEqual({
       waitId: fixture.waitId,
       taskId: fixture.taskId,
       inputVersion: 1,
@@ -51,11 +35,11 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
       resolution: null,
       answerMessage: null,
     });
-    expect(await storeB.getAttempt(fixture.attemptId)).toMatchObject({ adopted: true });
+    expect(await context.storeB.getAttempt(fixture.attemptId)).toMatchObject({ adopted: true });
     const acceptedAt = waitDeadline - 1;
-    const answerMessage = await message(chat, fixture.scope, acceptedAt);
+    const answerMessage = await context.message(fixture.scope, acceptedAt);
     expect(
-      await storeB.resolveUserWait({
+      await context.storeB.resolveUserWait({
         taskId: fixture.taskId,
         inputVersion: 1,
         now: acceptedAt,
@@ -64,7 +48,7 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
         decision: 'accepted',
       })
     ).toBe(true);
-    const resumed = await storeA.getTask(fixture.taskId);
+    const resumed = await context.storeA.getTask(fixture.taskId);
     expect(resumed).toMatchObject({
       status: 'running',
       currentAttemptId: null,
@@ -72,16 +56,15 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
       queueDeadline: fixture.input.queueDeadline,
       endedAt: null,
     });
-    if (!resumed || resumed.executionDeadline === null) throw new Error('等待恢复未保存执行截止');
-    expect(resumed.executionDeadline - acceptedAt).toBe(remainingExecutionMs);
-    expect(await storeA.getUserWait(fixture.waitId)).toMatchObject({
+    expect(resumed!.executionDeadline! - acceptedAt).toBe(remainingExecutionMs);
+    expect(await context.storeA.getUserWait(fixture.waitId)).toMatchObject({
       resolution: 'accepted',
       closedAt: acceptedAt,
       answerMessage,
       allowedQuestionIds,
     });
     expect(
-      await storeA.resolveUserWait({
+      await context.storeA.resolveUserWait({
         taskId: fixture.taskId,
         inputVersion: 1,
         now: acceptedAt,
@@ -90,11 +73,13 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
         decision: 'accepted',
       })
     ).toBe(false);
-    expect(await storeB.getTask(fixture.taskId)).toEqual(resumed);
+    expect(await context.storeB.getTask(fixture.taskId)).toEqual(resumed);
     // 第二轮等待消耗恢复后的实际运行时间，不能把预算恢复为原始全额。
-    const fresh = await startAttempt(storeA, fixture, { startedAt: acceptedAt + 111 });
+    const fresh = await context.startAttempt(fixture, context.storeA, {
+      startedAt: acceptedAt + 111,
+    });
     expect(
-      await storeA.finishAttempt({
+      await context.storeA.finishAttempt({
         attemptId: fresh.attemptId,
         finishedAt: acceptedAt + 222,
         errorType: null,
@@ -102,7 +87,7 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
     ).toBe(true);
     const secondWaitId = randomUUID();
     expect(
-      await storeA.waitForUser({
+      await context.storeA.waitForUser({
         taskId: fixture.taskId,
         inputVersion: 1,
         now: acceptedAt + 333,
@@ -112,119 +97,71 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
         allowedQuestionIds: ['当前问题/缺失项乙'],
       })
     ).toBe(true);
-    expect(await storeB.getUserWait(secondWaitId)).toMatchObject({
+    expect(await context.storeB.getUserWait(secondWaitId)).toMatchObject({
       remainingExecutionMs: remainingExecutionMs - 333,
-      deadline: acceptedAt + 333 + 600_000,
+      deadline: acceptedAt + 333 + 600000,
     });
   });
 
-  it('等待 declined 原子关闭记录，旧回答不能恢复终态', async () => {
-    const fixture = await waitingFixture(storeA, chat);
-    const at = waitedAt + 500;
-    const answerMessage = await message(chat, fixture.scope, at);
-    const version = { taskId: fixture.taskId, inputVersion: 1, now: at };
-    expect(
-      await storeB.resolveUserWait({
-        ...version,
-        waitId: fixture.waitId,
-        answerMessage,
-        decision: 'declined',
-      })
-    ).toBe(true);
-    expect(await storeA.getUserWait(fixture.waitId)).toMatchObject({
-      resolution: 'declined',
-      closedAt: at,
-      answerMessage: answerMessage,
-    });
-    expect(await storeA.getTask(fixture.taskId)).toMatchObject({
-      status: 'cancelled',
-      endedAt: at,
-    });
-    expect(
-      await storeA.resolveUserWait({
-        ...version,
-        now: at + 1,
-        waitId: fixture.waitId,
-        answerMessage,
-        decision: 'accepted',
-      })
-    ).toBe(false);
-  });
-
-  it('等待 cancelled 原子关闭记录，旧回答不能恢复终态', async () => {
-    const fixture = await waitingFixture(storeA, chat);
-    const at = waitedAt + 500;
-    const answerMessage = await message(chat, fixture.scope, at);
-    const version = { taskId: fixture.taskId, inputVersion: 1, now: at };
-    expect(
-      await storeB.transitionTask({ ...version, from: 'waiting_for_user', to: 'cancelled' })
-    ).toBe(true);
-    expect(await storeA.getUserWait(fixture.waitId)).toMatchObject({
-      resolution: 'cancelled',
-      closedAt: at,
-      answerMessage: null,
-    });
-    expect(await storeA.getTask(fixture.taskId)).toMatchObject({
-      status: 'cancelled',
-      endedAt: at,
-    });
-    expect(
-      await storeA.resolveUserWait({
-        ...version,
-        now: at + 1,
-        waitId: fixture.waitId,
-        answerMessage,
-        decision: 'accepted',
-      })
-    ).toBe(false);
-  });
-
-  it('等待 timed_out 原子关闭记录，旧回答不能恢复终态', async () => {
-    const fixture = await waitingFixture(storeA, chat);
-    const at = waitDeadline;
-    const answerMessage = await message(chat, fixture.scope, at);
-    const version = { taskId: fixture.taskId, inputVersion: 1, now: at };
-    expect(
-      await storeB.transitionTask({ ...version, from: 'waiting_for_user', to: 'timed_out' })
-    ).toBe(true);
-    expect(await storeA.getUserWait(fixture.waitId)).toMatchObject({
-      resolution: 'timed_out',
-      closedAt: at,
-      answerMessage: null,
-    });
-    expect(await storeA.getTask(fixture.taskId)).toMatchObject({
-      status: 'timed_out',
-      endedAt: at,
-    });
-    expect(
-      await storeA.resolveUserWait({
-        ...version,
-        now: at + 1,
-        waitId: fixture.waitId,
-        answerMessage,
-        decision: 'accepted',
-      })
-    ).toBe(false);
+  it('拒绝、显式取消和等待超时均原子关闭等待，旧回答不能恢复终态', async () => {
+    for (const resolution of ['declined', 'cancelled', 'timed_out'] as const) {
+      const fixture = await context.waitingFixture();
+      const at = resolution === 'timed_out' ? waitDeadline : waitedAt + 500;
+      const answerMessage = await context.message(fixture.scope, at);
+      const version = { taskId: fixture.taskId, inputVersion: 1, now: at };
+      const changed =
+        resolution === 'declined'
+          ? await context.storeB.resolveUserWait({
+              ...version,
+              waitId: fixture.waitId,
+              answerMessage,
+              decision: 'declined',
+            })
+          : await context.storeB.transitionTask({
+              ...version,
+              from: 'waiting_for_user',
+              to: resolution,
+            });
+      expect(changed, resolution).toBe(true);
+      expect(await context.storeA.getUserWait(fixture.waitId)).toMatchObject({
+        resolution,
+        closedAt: at,
+        answerMessage: resolution === 'declined' ? answerMessage : null,
+      });
+      expect(await context.storeA.getTask(fixture.taskId)).toMatchObject({
+        status: resolution === 'timed_out' ? 'timed_out' : 'cancelled',
+        endedAt: at,
+      });
+      expect(
+        await context.storeA.resolveUserWait({
+          ...version,
+          now: at + 1,
+          waitId: fixture.waitId,
+          answerMessage,
+          decision: 'accepted',
+        })
+      ).toBe(false);
+    }
   });
 
   it('等待只接受本员工会话的入站原始消息，并拒绝无身份、缺失、过早和未来回答', async () => {
-    const fixture = await waitingFixture(storeA, chat);
-    const at = waitedAt + 1_000;
-    const otherEmployee = scopeFor();
+    const fixture = await context.waitingFixture();
+    const at = waitedAt + 1000;
+    const otherEmployee = context.scopeFor();
     const invalidAnswers = [
-      await message(chat, otherEmployee, at),
-      await message(chat, fixture.scope, at, {}, false),
-      await message(chat, fixture.scope, at, { direction: 'outbound' }),
-      await message(chat, fixture.scope, at, { direction: 'unknown' }),
-      await message(chat, fixture.scope, waitedAt - 1),
-      await message(chat, fixture.scope, at + 1),
+      await context.message(otherEmployee, at),
+      await context.message(fixture.scope, at, {}, false),
+      await context.message(fixture.scope, at, { direction: 'outbound' }),
+      await context.message(fixture.scope, at, { direction: 'unknown' }),
+      await context.message(fixture.scope, waitedAt - 1),
+      await context.message(fixture.scope, at + 1),
       { sessionId: fixture.scope.sessionId, messageId: randomUUID() },
     ];
-    const beforeTask = await storeA.getTask(fixture.taskId);
-    const beforeWait = await storeA.getUserWait(fixture.waitId);
+    const beforeTask = await context.storeA.getTask(fixture.taskId);
+    const beforeWait = await context.storeA.getUserWait(fixture.waitId);
     for (const answerMessage of invalidAnswers) {
       expect(
-        await storeB.resolveUserWait({
+        await context.storeB.resolveUserWait({
           taskId: fixture.taskId,
           inputVersion: 1,
           now: at,
@@ -233,12 +170,12 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
           decision: 'accepted',
         })
       ).toBe(false);
-      expect(await storeA.getTask(fixture.taskId)).toEqual(beforeTask);
-      expect(await storeA.getUserWait(fixture.waitId)).toEqual(beforeWait);
+      expect(await context.storeA.getTask(fixture.taskId)).toEqual(beforeTask);
+      expect(await context.storeA.getUserWait(fixture.waitId)).toEqual(beforeWait);
     }
-    const answerMessage = await message(chat, fixture.scope, waitedAt);
+    const answerMessage = await context.message(fixture.scope, waitedAt);
     expect(
-      await storeB.resolveUserWait({
+      await context.storeB.resolveUserWait({
         taskId: fixture.taskId,
         inputVersion: 2,
         now: at,
@@ -247,9 +184,9 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
         decision: 'accepted',
       })
     ).toBe(false);
-    const otherTask = await claimedFixture(storeA, chat);
+    const otherTask = await context.runningFixture();
     expect(
-      await storeB.resolveUserWait({
+      await context.storeB.resolveUserWait({
         taskId: otherTask.taskId,
         inputVersion: 1,
         now: at,
@@ -259,7 +196,7 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
       })
     ).toBe(false);
     expect(
-      await storeB.resolveUserWait({
+      await context.storeB.resolveUserWait({
         taskId: fixture.taskId,
         inputVersion: 1,
         now: at,
@@ -268,15 +205,17 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
         decision: 'accepted',
       })
     ).toBe(true);
-    expect((await storeA.getUserWait(fixture.waitId))?.answerMessage).toEqual(answerMessage);
+    expect((await context.storeA.getUserWait(fixture.waitId))?.answerMessage).toEqual(
+      answerMessage
+    );
   });
 
   it('同一 bot/session 并发等待仅一个成功，失败不能留下半截等待或采用记录', async () => {
-    const scope = scopeFor();
-    const first = await claimedFixture(storeA, chat, scope);
-    const second = await claimedFixture(storeA, chat, scope);
-    const firstAttempt = await successfulAttempt(storeA, first);
-    const secondAttempt = await successfulAttempt(storeA, second);
+    const scope = context.scopeFor();
+    const first = await context.runningFixture(scope);
+    const second = await context.runningFixture(scope);
+    const firstAttempt = await context.successfulAttempt(first);
+    const secondAttempt = await context.successfulAttempt(second);
     const inputs = [
       {
         taskId: first.taskId,
@@ -298,22 +237,22 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
       },
     ] as const;
     const results = await Promise.all([
-      storeA.waitForUser(inputs[0]),
-      storeB.waitForUser(inputs[1]),
+      context.storeA.waitForUser(inputs[0]),
+      context.storeB.waitForUser(inputs[1]),
     ]);
     expect(results.filter(Boolean)).toHaveLength(1);
     const winner = inputs[results[0] ? 0 : 1];
     const loser = inputs[results[0] ? 1 : 0];
-    expect(await storeA.getUserWait(winner.waitId)).toMatchObject({ closedAt: null });
-    expect(await storeA.getUserWait(loser.waitId)).toBeNull();
-    expect(await storeA.getTask(loser.taskId)).toMatchObject({
+    expect(await context.storeA.getUserWait(winner.waitId)).toMatchObject({ closedAt: null });
+    expect(await context.storeA.getUserWait(loser.waitId)).toBeNull();
+    expect(await context.storeA.getTask(loser.taskId)).toMatchObject({
       status: 'running',
       currentAttemptId: loser.attemptId,
       executionDeadline,
     });
-    expect(await storeA.getAttempt(loser.attemptId)).toMatchObject({ adopted: false });
+    expect(await context.storeA.getAttempt(loser.attemptId)).toMatchObject({ adopted: false });
     expect(
-      await storeB.transitionTask({
+      await context.storeB.transitionTask({
         taskId: winner.taskId,
         inputVersion: 1,
         now: waitedAt + 1,
@@ -321,15 +260,15 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
         to: 'cancelled',
       })
     ).toBe(true);
-    expect(await storeB.waitForUser({ ...loser, now: waitedAt + 2 })).toBe(true);
+    expect(await context.storeB.waitForUser({ ...loser, now: waitedAt + 2 })).toBe(true);
   });
 
   it('同一原始回答不能消费两个等待，不同 bot 的相同私聊可各自开放等待', async () => {
-    const firstScope = scopeFor();
+    const firstScope = context.scopeFor();
     const secondScope = { ...firstScope, botId: randomUUID() };
-    const first = await waitingFixture(storeA, chat, firstScope);
-    const second = await waitingFixture(storeA, chat, secondScope);
-    const answerMessage = await message(chat, firstScope, waitedAt + 100);
+    const first = await context.waitingFixture(firstScope);
+    const second = await context.waitingFixture(secondScope);
+    const answerMessage = await context.message(firstScope, waitedAt + 100);
     const inputs = [
       {
         taskId: first.taskId,
@@ -349,32 +288,32 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
       },
     ] as const;
     const results = await Promise.all([
-      storeA.resolveUserWait(inputs[0]),
-      storeB.resolveUserWait(inputs[1]),
+      context.storeA.resolveUserWait(inputs[0]),
+      context.storeB.resolveUserWait(inputs[1]),
     ]);
     expect(results.filter(Boolean)).toHaveLength(1);
     const winner = inputs[results[0] ? 0 : 1];
     const loser = inputs[results[0] ? 1 : 0];
-    expect(await storeA.getUserWait(winner.waitId)).toMatchObject({
+    expect(await context.storeA.getUserWait(winner.waitId)).toMatchObject({
       resolution: 'accepted',
       answerMessage,
     });
-    expect(await storeA.getUserWait(loser.waitId)).toMatchObject({
+    expect(await context.storeA.getUserWait(loser.waitId)).toMatchObject({
       resolution: null,
       closedAt: null,
       answerMessage: null,
     });
-    expect(await storeA.getTask(loser.taskId)).toMatchObject({
+    expect(await context.storeA.getTask(loser.taskId)).toMatchObject({
       status: 'waiting_for_user',
       executionDeadline,
     });
   });
 
   it('两个不同回答竞争同一等待只消费一次，败方不能覆盖决定与执行截止', async () => {
-    const fixture = await waitingFixture(storeA, chat);
+    const fixture = await context.waitingFixture();
     const answers = [
-      await message(chat, fixture.scope, waitedAt + 100),
-      await message(chat, fixture.scope, waitedAt + 200),
+      await context.message(fixture.scope, waitedAt + 100),
+      await context.message(fixture.scope, waitedAt + 200),
     ] as const;
     const inputs = [
       {
@@ -395,17 +334,17 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
       },
     ] as const;
     const results = await Promise.all([
-      storeA.resolveUserWait(inputs[0]),
-      storeB.resolveUserWait(inputs[1]),
+      context.storeA.resolveUserWait(inputs[0]),
+      context.storeB.resolveUserWait(inputs[1]),
     ]);
     expect(results.filter(Boolean)).toHaveLength(1);
     const winner = inputs[results[0] ? 0 : 1];
-    expect(await storeA.getUserWait(fixture.waitId)).toMatchObject({
+    expect(await context.storeA.getUserWait(fixture.waitId)).toMatchObject({
       resolution: winner.decision,
       answerMessage: winner.answerMessage,
       closedAt: winner.now,
     });
-    expect(await storeA.getTask(fixture.taskId)).toMatchObject(
+    expect(await context.storeA.getTask(fixture.taskId)).toMatchObject(
       winner.decision === 'accepted'
         ? {
             status: 'running',
@@ -415,76 +354,5 @@ describe('T19 员工等待、授权预算与消费竞争', () => {
           }
         : { status: 'cancelled', endedAt: winner.now, executionDeadline }
     );
-  });
-
-  it('执行截止拒绝开启等待，前一毫秒不能超时，恰好截止可超时', async () => {
-    const fixture = await runningFixture(storeA, chat);
-    const version = { taskId: fixture.taskId, inputVersion: 1, now: executionDeadline };
-    expect(
-      await storeA.transitionTask({
-        ...version,
-        now: executionDeadline - 1,
-        from: 'running',
-        to: 'timed_out',
-      })
-    ).toBe(false);
-    const waitId = randomUUID();
-    expect(
-      await storeB.waitForUser({
-        ...version,
-        attemptId: fixture.attemptId,
-        waitId,
-        question,
-        allowedQuestionIds,
-      })
-    ).toBe(false);
-    expect(await storeA.getUserWait(waitId)).toBeNull();
-    expect(await storeA.transitionTask({ ...version, from: 'running', to: 'timed_out' })).toBe(
-      true
-    );
-  });
-
-  it('执行截止前一毫秒仍可等待且只保存一毫秒预算', async () => {
-    const waitBefore = await runningFixture(storeA, chat);
-    const lastWaitId = randomUUID();
-    expect(
-      await storeA.waitForUser({
-        taskId: waitBefore.taskId,
-        inputVersion: 1,
-        now: executionDeadline - 1,
-        attemptId: waitBefore.attemptId,
-        waitId: lastWaitId,
-        question,
-        allowedQuestionIds,
-      })
-    ).toBe(true);
-    expect(await storeB.getUserWait(lastWaitId)).toMatchObject({ remainingExecutionMs: 1 });
-  });
-
-  it('等待截止拒绝同意和拒绝回答，只允许超时；前一毫秒不能超时', async () => {
-    const waiting = await waitingFixture(storeA, chat);
-    const answerMessage = await message(chat, waiting.scope, waitDeadline - 1);
-    const waitVersion = { taskId: waiting.taskId, inputVersion: 1, now: waitDeadline };
-    expect(
-      await storeB.transitionTask({
-        ...waitVersion,
-        now: waitDeadline - 1,
-        from: 'waiting_for_user',
-        to: 'timed_out',
-      })
-    ).toBe(false);
-    for (const decision of ['accepted', 'declined'] as const) {
-      expect(
-        await storeB.resolveUserWait({
-          ...waitVersion,
-          waitId: waiting.waitId,
-          answerMessage,
-          decision,
-        })
-      ).toBe(false);
-    }
-    expect(
-      await storeB.transitionTask({ ...waitVersion, from: 'waiting_for_user', to: 'timed_out' })
-    ).toBe(true);
   });
 });

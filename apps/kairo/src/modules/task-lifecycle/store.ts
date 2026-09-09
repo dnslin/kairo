@@ -224,7 +224,7 @@ export class PostgresTaskStore implements TaskStore {
       if (
         input.from === 'running' &&
         input.to === 'failed' &&
-        (task.currentAttemptId === null || task.currentAttemptId !== input.expectedAttemptId)
+        (!input.expectedAttemptId || task.currentAttemptId !== input.expectedAttemptId)
       )
         return false;
       let wait: UserWait | null = null;
