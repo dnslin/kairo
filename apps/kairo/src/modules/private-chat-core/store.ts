@@ -74,6 +74,19 @@ function mapMessage(row: RawMessageRow): RawMessage {
   };
 }
 
+async function readBatchMessages(
+  connection: Pool | PoolClient,
+  batchId: string
+): Promise<RawMessage[]> {
+  const result = await connection.query<RawMessageRow>(
+    `SELECT r.* FROM kairo.batch_messages bm
+     JOIN kairo.raw_messages r USING (session_id, message_id)
+     WHERE bm.batch_id = $1 ORDER BY bm.position`,
+    [batchId]
+  );
+  return result.rows.map(mapMessage);
+}
+
 function mapContext(row: ContextRow): ChatContext {
   return {
     threadId: row.thread_id,
@@ -207,13 +220,8 @@ export class PostgresPrivateChatStore implements PrivateChatStore, CollectorStor
          FROM kairo.batch_messages WHERE batch_id = $1`,
         [row.batch_id, message.sessionId, message.messageId]
       );
-      const messages = await client.query<RawMessageRow>(
-        `SELECT r.* FROM kairo.batch_messages bm
-         JOIN kairo.raw_messages r USING (session_id, message_id)
-         WHERE bm.batch_id = $1 ORDER BY bm.position`,
-        [row.batch_id]
-      );
-      const rejection = evaluateInput(messages.rows.map(mapMessage), settings);
+      const messages = await readBatchMessages(client, row.batch_id);
+      const rejection = evaluateInput(messages, settings);
       const processedAt = clock();
       const deadline = Math.min(row.quiet_deadline.getTime(), row.max_deadline.getTime());
       if (rejection !== null || processedAt >= deadline) {
@@ -559,14 +567,8 @@ export class PostgresPrivateChatStore implements PrivateChatStore, CollectorStor
     return result.rows[0] ? mapBatch(result.rows[0]) : null;
   }
 
-  public async getBatchMessages(batchId: string): Promise<RawMessage[]> {
-    const result = await this.pool.query<RawMessageRow>(
-      `SELECT r.* FROM kairo.batch_messages bm
-       JOIN kairo.raw_messages r USING (session_id, message_id)
-       WHERE bm.batch_id = $1 ORDER BY bm.position`,
-      [batchId]
-    );
-    return result.rows.map(mapMessage);
+  public getBatchMessages(batchId: string): Promise<RawMessage[]> {
+    return readBatchMessages(this.pool, batchId);
   }
 
   public async appendBatchMessage(

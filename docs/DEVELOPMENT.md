@@ -1203,7 +1203,7 @@ pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests
 
 ## T23 消息聚合与阶段一输入拒绝（2026-09-09）
 
-T23 实现、真实 PostgreSQL 集成及独立原生计时运行验收已完成，T35 真机放行仍保留原边界。用户批准的空白、码点计数、立即拒绝和截止边界见 `SPEC-stage-1.md`；完整计划见 `tasks/plan.md` 第20节。T22、T27、T24 的完成状态沿用用户确认，不重复验收前置任务。
+T23 初次实现、真实 PostgreSQL 集成及独立原生计时运行结果记录如下。PR267 后续双审查发现一项 Required，用户要求先取得真实 KK9 定向证据再修复；当前该真机门禁尚未通过，不把历史通过结果当作修复或合并放行。用户批准的输入规则见 `SPEC-stage-1.md`，完整计划见 `tasks/plan.md` 第20节；T22、T27、T24 的完成状态沿用用户确认。
 
 ### 接入与恢复合同
 
@@ -1279,3 +1279,32 @@ node --env-file=.env apps/kairo/tmp/t23-check-databases.mjs
 未执行T35真实IM或操作系统强杀故障矩阵，未调用真实Agent/模型/ERP；运行任务不变由真实PostgreSQL账本、attempt和实际AbortController证明，出站使用FakeKK9Driver。未合并分支、未关闭issue。
 
 交付前把既有隔离场景补为三组消息交错各两条，并把运行中补充改为在原task/attempt登记后才新建下一批；不只验证已存在批次的追加。原样重跑collector-recovery两文件仍23/23，App typecheck及该测试ESLint/Prettier通过；生产代码未改，没有重复运行无变化的原生60秒烟测。新独立库为 `kairo_t19_22016a9c35494bb4a1931dadb686c866`（PID31527/31528）及 `kairo_t19_76163fb443a245129cfd64dfbea4802b`（PID31529/31530）；普通Node进程对累计15个有记录的精确自建库名只读查询，残留0、stderr为空、退出0。
+
+### PR267 双审查后的真机前置与 Optional 处理
+
+Required 为同批 `finishing` 的前驱异常会跳过已排队的后继收尾。此前真实PostgreSQL加受控收尾异常、FakeDriver的最小探针已复现，但用户明确要求先验证真实KK9链路，因此未凭该模拟出站证据修改collector失败链。
+
+修复前真机运行使用本worktree显式授权：Bot5761、员工3585、私聊0-3585/int2024。真实CDP端点可达，独立只读探针核对登录UID与无其他Hook/binding；真实KK9Driver随后通过会话及员工档案门禁并开始监听。五分钟内未观察到所需 `T23-267-A` 标记及五秒内附件，进程退出1，原因仅为未完成真实入站；没有触发收尾故障注入、没有发送Bot测试回复，也不能据此判断问题不存在。Driver退出后UID仍5761、Hook generation为null、binding不存在，自建库 `kairo_t19_8611712f363548a08154576106878cba`（PID31771/31772）已删除并按精确库名确认无残留。
+
+历史实际命令：
+
+```powershell
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/apps/kairo/tmp/t23-real-preflight.ts
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/apps/kairo/tmp/t23-real-concurrency.ts before T23-267-A
+```
+
+Optional 已单独实施：在store.ts增加私有 `readBatchMessages(connection, batchId)`，让collect事务和公开getBatchMessages共用一份SQL、顺序及映射。事务内仍使用原PoolClient，公开读取仍使用原Pool，不另开事务或借连接；收益是消除两处维护，不宣称减少SQL次数或性能提速。公开接口及查询结果不变，没有更改collector.ts、Driver或配置。
+
+实际验证：
+
+```powershell
+pnpm --filter @kairo/app test:integration -- tests/integration/collector-recovery tests/integration/private-chat-store.test.ts tests/integration/new-context tests/integration/knowledge-record-store.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app build
+pnpm exec eslint apps/kairo/src/modules/private-chat-core/store.ts
+pnpm exec prettier --check apps/kairo/src/modules/private-chat-core/store.ts
+```
+
+真实PostgreSQL回归6文件70/70通过，包含批次排序/原文、事务内输入策略、拒绝、防重、恢复以及旧context历史可读；类型/构建、ESLint/Prettier通过。只读调用方核对时LSP服务退出，使用定向源码搜索完成定位，未修改语言服务配置。五个有输出记录的回归库加上真机等待库，共六个精确库名只读核验残留0，T18库由既有afterAll清理。不变的Collector单元和原生60秒烟测未重跑，不将本轮70项称为Required修复证明。
+
+Required 和修复后真机仍等待用户准备好真实发送后继续。Optional 可独立评审；PR不合并，issue不关闭。
