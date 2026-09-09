@@ -1182,3 +1182,21 @@ pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests
 Tool29/29，拆分发送61/61（25+14+22）；最终根四命令全部通过，Driver330、App303（18文件）。真实 PostgreSQL 组合4文件51/51，含上下文27、发送19、知识Tool5；知识路径使用真实Python与受控HTTP，不是ERP真机。中间一次清理导入误删START，typecheck明确失败；恢复导入后重新执行上述完整质量链通过，没有放宽检查。AST比对尝试因Eval运行时无法解析typescript包失败，改用六个完整测试分组逐字对照成功，不声称AST核验已通过。
 
 本轮真机监听最终等待十分钟仍未收到指定员工消息，明确以退出码1结束（`未在十分钟内收到指定员工真实消息`），不是性能实验失败，也不是通过。已断开本脚本 Driver 并删除自建库 `kairo_t19_51e9ccd146db47dca1bfaa86ed3800ff`（PID30302/30303）；未运行十万历史填充、临时索引或发送回复。Optional优化已由4dcc2b7推送，正式索引方案仍等待真实入站证据，不用此前合成SQL对照越过用户前提。
+
+### 真实入站确认后的批次索引修复
+
+用户要求重启监听后，真实KK9收到员工3585的消息135942879（sessionId=0-3585，direction=inbound），经过原T22身份、allowlist及去重得到accepted。生产控制处理器在隔离空库五次耗时2.73–4.29ms；加入十万条其他thread的合成discarded历史后为125.58–222.96ms；仅增加thread_id索引后为2.74–6.79ms。每组是同一可信结果的五次定向重放，不是十五条新入站；该结果确认真实消息触发的生产路径存在容量问题，不代表当前业务库规模或完整消息往返延迟。烟测退出0，自建库kairo_t19_ba14e7b1747e4f56ad08caa40571d5ed（PID30485/30486）及本次Driver连接已清理，无Bot回复。
+
+证据成立后采用最小修复：新增 `000010-message-batch-thread-index.sql`，仅创建 `kairo.message_batches(thread_id)` 索引，Down仅删除该索引。复用既有启动前、单事务迁移方式，不改查询、锁序、任务状态、T22入口或Driver，不引入缓存/计数/兼容路径。正常CREATE INDEX会在迁移期间限制该表写入，沿用现有停机迁移边界，不擅自改成事务外并发建索引，也未对配置所指业务库执行迁移。
+
+正式迁移独立验证采用 `createTaskTestDatabase` 创建并核对自有库：up后生产prepareContext五次2.86–4.22ms；通过node-pg-migrate回滚000010后126.76–216.62ms；重新up后2.73–3.70ms。每一步旧thread不变、十万历史均保留；最后重复迁移返回0项。该up/down/up对照排除了仅由首次缓存变化造成的假改善。自建库kairo_t19_64b3093249824254b61e1275814ee136已清理，两个一次性烟测脚本验收后删除。
+
+实际执行：
+
+```powershell
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-real-index-smoke.ts
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-index-migration-smoke.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests/integration/send-service.test.ts tests/integration/private-chat-store.test.ts tests/integration/task-store
+```
+
+两个烟测退出0；最终真实PostgreSQL集成9文件111/111通过，全部应用正式000010迁移。本次只有SQL迁移与文档变化，TypeScript代码沿用此前Optional精简后根build/typecheck/test/lint的Driver330/App303通过结果，没有声称重新运行根四命令。现有行为回归保持不变，不增加绑定具体执行计划或易波动耗时阈值的永久单测。T35各任务状态/new真机放行仍未执行，PR仍草稿，不合并或关闭issue。
