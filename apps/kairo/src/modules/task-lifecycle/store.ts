@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
+import { withTransaction } from '../../db/transaction.js';
 import { TASK_TRANSITIONS } from './types.js';
 import type {
   AdoptAttemptInput,
@@ -124,27 +125,6 @@ function mapWait(row: WaitRow): UserWait {
 export class PostgresTaskStore implements TaskStore {
   public constructor(private readonly pool: Pool) {}
 
-  private async transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      try {
-        const result = await operation(client);
-        await client.query('COMMIT');
-        return result;
-      } catch (error) {
-        try {
-          await client.query('ROLLBACK');
-        } catch (rollbackError) {
-          throw new AggregateError([error, rollbackError], '任务账本操作及回滚均失败');
-        }
-        throw error;
-      }
-    } finally {
-      client.release();
-    }
-  }
-
   /** 所有跨表变更先锁同一任务行；等待者读取提交后的状态与版本。 */
   private async lockTask(
     client: PoolClient,
@@ -237,7 +217,7 @@ export class PostgresTaskStore implements TaskStore {
       )
     )
       return false;
-    return this.transaction(async client => {
+    return withTransaction(this.pool, async client => {
       const task = await this.lockTask(client, input, [input.from]);
       if (!task) return false;
       // 执行失败只结束发出失败的当前尝试；整任务取消与发送结果不绑定此指针。
@@ -300,7 +280,7 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   public async startAttempt(input: StartAttemptInput): Promise<TaskAttempt | null> {
-    return this.transaction(async client => {
+    return withTransaction(this.pool, async client => {
       const task = await this.lockTask(client, input, ['running']);
       if (
         !task ||
@@ -350,7 +330,7 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   public async adoptAttempt(input: AdoptAttemptInput): Promise<boolean> {
-    return this.transaction(async client => {
+    return withTransaction(this.pool, async client => {
       if (!(await this.lockAdoptableTask(client, input))) return false;
       await client.query('UPDATE kairo.task_attempts SET adopted = true WHERE attempt_id = $1', [
         input.attemptId,
@@ -364,7 +344,7 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   public async waitForUser(input: WaitForUserInput): Promise<boolean> {
-    return this.transaction(async client => {
+    return withTransaction(this.pool, async client => {
       const task = await this.lockAdoptableTask(client, input);
       if (!task || task.executionDeadline === null) return false;
       const inserted = await client.query(
@@ -408,7 +388,7 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   public async resolveUserWait(input: ResolveUserWaitInput): Promise<boolean> {
-    return this.transaction(async client => {
+    return withTransaction(this.pool, async client => {
       const task = await this.lockTask(client, input, ['waiting_for_user']);
       if (!task) return false;
       // 不同 Bot 的任务行不同；先锁回答，再以新语句快照检查它是否已被消费。

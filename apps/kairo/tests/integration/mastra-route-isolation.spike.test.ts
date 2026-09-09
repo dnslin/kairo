@@ -1,13 +1,14 @@
 import { createServer } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { PostgresStore } from '@mastra/pg';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
 import { createStudioMastra } from '../../src/mastra/dev-server.js';
 import { createPostgresPool } from '../../src/db/pool.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
+import { createTaskTestDatabase, type TaskTestDatabase } from '../helpers/task-database.js';
 
 const databaseUrl = process.env.KAIRO_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error('缺少 KAIRO_TEST_DATABASE_URL，不能执行 T13 集成测试');
@@ -23,12 +24,19 @@ afterEach(async () => {
 });
 
 describe('T13 生产路由隔离', () => {
+  let runtimeDatabase: TaskTestDatabase;
+  beforeAll(async () => {
+    runtimeDatabase = await createTaskTestDatabase();
+  });
+  afterAll(async () => {
+    await runtimeDatabase?.close();
+  });
   it('生产环境即使带 Studio 变量也只开放本机只读健康接口', async () => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('MASTRA_STUDIO', 'true');
-    vi.stubEnv('KAIRO_STUDIO_DATABASE_URL', databaseUrl);
+    vi.stubEnv('KAIRO_STUDIO_DATABASE_URL', runtimeDatabase.databaseUrl);
     const application = await startKairo({
-      databaseUrl,
+      databaseUrl: runtimeDatabase.databaseUrl,
       port: 0,
       driverFactory: () => new ApplicationTestDriver(),
     });
@@ -67,12 +75,12 @@ describe('T13 生产路由隔离', () => {
     }
     expect((await fetch(`${application.url}/health/live`, { method: 'POST' })).status).toBe(404);
     const result = await application.storage.db.query('SELECT current_database() AS name');
-    expect(result.rows[0].name).toBe(decodeURIComponent(new URL(databaseUrl).pathname.slice(1)));
+    expect(result.rows[0].name).toBe(runtimeDatabase.databaseName);
   });
 
   it('关闭释放实际端口和数据库连接，重复关闭不会重新执行', async () => {
     const application = await startKairo({
-      databaseUrl,
+      databaseUrl: runtimeDatabase.databaseUrl,
       port: 0,
       driverFactory: () => new ApplicationTestDriver(),
     });

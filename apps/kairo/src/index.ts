@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { Client } from 'pg';
+import { Client, Pool } from 'pg';
 import { KK9Driver, setDriverLogSink } from '@kairo/driver';
 import type { CdpConfig, DriverConfig, IKK9Driver } from '@kairo/driver';
 import { loadBotConfig } from './config/load.js';
@@ -24,6 +25,7 @@ import { loadBotCustomization } from './modules/bot-customization/instructions.j
 import type { BotCustomization } from './modules/bot-customization/instructions.js';
 import { startDependencyChecks } from './modules/operability/dependency-checks.js';
 import type { DependencyChecks } from './modules/operability/dependency-checks.js';
+import { PostgresRuntimeBootStore } from './modules/operability/runtime-boot-store.js';
 
 const logger = createLogger();
 const execFileAsync = promisify(execFile);
@@ -32,6 +34,9 @@ const repositoryDirectory = fileURLToPath(new URL('../../../', import.meta.url))
 export interface KairoApplication extends MastraRuntime, LoadedBotConfig {
   url: string;
   gitCommit: string;
+  bootId: string;
+  /** 启动账本失败时保留诊断接口；本代次不能 ready，原始原因仅供程序内诊断。 */
+  bootError: AppError | null;
   customization: BotCustomization;
   driver: IKK9Driver;
 }
@@ -54,6 +59,19 @@ export async function startKairo(
   let external: DependencyChecks | undefined;
   let closing: Promise<void> | undefined;
   let driverInvalidated = false;
+  const bootId = randomUUID();
+  const bootStartedAt = Date.now();
+  let bootPool: Pool | undefined;
+  let bootStore: PostgresRuntimeBootStore | undefined;
+  let bootRecorded = false;
+  let bootReady = false;
+  let bootError: AppError | null = null;
+  let startupFailed = false;
+  const failBoot = (error: unknown): void => {
+    bootReady = false;
+    bootError = new AppError('storage', { cause: error });
+    logger.error({ event: '运行失败', runId: bootId, errorType: 'storage', status: 'not_ready' });
+  };
   const close = (): Promise<void> => {
     closing ??= (async (): Promise<void> => {
       driverInvalidated = true;
@@ -64,6 +82,18 @@ export async function startKairo(
         [health?.close.bind(health), 'configuration'],
         [driver?.disconnect.bind(driver), 'driver'],
         [runtime?.close.bind(runtime), 'storage'],
+        [
+          async (): Promise<void> => {
+            if (!bootRecorded || !bootStore) return;
+            const closed = await bootStore.closeBoot(bootId, {
+              status: startupFailed || bootError || failures.length > 0 ? 'failed' : 'closed',
+              closedAt: Date.now(),
+            });
+            if (!closed) throw new AppError('storage');
+          },
+          'storage',
+        ],
+        [bootPool?.end.bind(bootPool), 'storage'],
       ] as const) {
         if (!resource) continue;
         try {
@@ -103,6 +133,28 @@ export async function startKairo(
     const initialized = createMastraRuntime(options.databaseUrl);
     runtime = initialized;
     initialized.mastra.setLogger({ logger: new MastraOperabilityLogger(logger) });
+    // 启动账本必须有界失败；独立小池同时允许在 Mastra 关闭后保存最终关闭结果。
+    bootPool = new Pool({
+      ...initialized.storage.pool.options,
+      password: initialized.storage.pool.options.password,
+      max: 1,
+      connectionTimeoutMillis: 2000,
+      query_timeout: 2000,
+      statement_timeout: 2000,
+    });
+    bootPool.on('error', failBoot);
+    bootStore = new PostgresRuntimeBootStore(bootPool);
+    try {
+      await bootStore.startBoot({
+        bootId,
+        gitCommit,
+        configDigest: configuration.configDigest,
+        startedAt: bootStartedAt,
+      });
+      bootRecorded = true;
+    } catch (error) {
+      failBoot(error);
+    }
     stage = 'driver';
     const activeDriver = options.driverFactory
       ? options.driverFactory({ cdp })
@@ -163,7 +215,7 @@ export async function startKairo(
           driver: readDriverStatus(),
           ...(external?.read() ?? { model: 'unknown', ragflow: 'unknown' }),
         };
-        if (closing || pool.ending || pool.ended) {
+        if (closing || pool.ending || pool.ended || !bootReady || bootError) {
           dependencies.postgres = 'down';
           return dependencies;
         }
@@ -192,6 +244,7 @@ export async function startKairo(
         } finally {
           await client.end();
         }
+        if (bootError) dependencies.postgres = 'down';
         return dependencies;
       },
     });
@@ -205,17 +258,30 @@ export async function startKairo(
     } finally {
       driverConnecting = false;
     }
+    if (bootRecorded && !bootError) {
+      try {
+        bootReady = await bootStore.markRunning(bootId);
+        if (!bootReady) throw new AppError('storage');
+      } catch (error) {
+        failBoot(error);
+      }
+    }
     logger.info({ event: '应用已启动', status: 'started' });
     return {
       ...initialized,
       ...configuration,
       gitCommit,
+      bootId,
+      get bootError(): AppError | null {
+        return bootError;
+      },
       customization,
       driver: activeDriver,
       url: health.url,
       close,
     };
   } catch (error) {
+    startupFailed = true;
     try {
       if (health || driver || runtime) await close();
     } catch (closeError) {

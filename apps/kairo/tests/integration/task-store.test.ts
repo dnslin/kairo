@@ -171,69 +171,194 @@ describe('T19 任务账本', () => {
     expect(await context.storeB.getTask(fixture.taskId)).toEqual(saved);
   });
 
-  it('全部合法状态边通过各自专用或通用接口完成，等待退出同时闭合记录', async () => {
-    for (const from of statuses) {
-      for (const to of legalEdges[from]) {
-        const fixture = await matrixFactories[from]();
-        const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
-        const label = `${from} -> ${to}`;
-        let changed: boolean;
-        if (to === 'running') {
-          if (from === 'queued') {
-            changed = await context.storeB.claimTask({ ...version, executionMs });
-          } else {
-            const answerMessage = await context.message(fixture.scope, version.now);
-            changed = await context.storeB.resolveUserWait({
-              ...version,
-              waitId: fixture.waitId!,
-              answerMessage,
-              decision: 'accepted',
-            });
-          }
-        } else if (to === 'ready_to_send') {
-          changed = await context.storeB.adoptAttempt({
-            ...version,
-            attemptId: fixture.attemptId!,
-          });
-        } else if (to === 'waiting_for_user') {
-          changed = await context.storeB.waitForUser({
-            ...version,
-            attemptId: fixture.attemptId!,
-            waitId: randomUUID(),
-            question,
-            allowedQuestionIds,
-          });
-        } else if (to === 'failed') {
-          if (from === 'running') {
-            changed = await context.storeB.transitionTask({
-              ...version,
-              from,
-              to,
-              expectedAttemptId: fixture.attemptId!,
-            });
-          } else {
-            changed = await context.storeB.transitionTask({ ...version, from, to });
-          }
-        } else {
-          let at = version.now;
-          if (to === 'timed_out') {
-            if (from === 'queued') at = fixture.input.queueDeadline;
-            else if (from === 'waiting_for_user') at = waitDeadline;
-            else at = executionDeadline;
-          }
-          changed = await context.storeB.transitionTask({ ...version, now: at, from, to });
-        }
-        expect(changed, label).toBe(true);
-        expect((await context.storeA.getTask(fixture.taskId))?.status, label).toBe(to);
-        if (from === 'waiting_for_user') {
-          expect(await context.storeA.getUserWait(fixture.waitId!)).toMatchObject({
-            closedAt: to === 'timed_out' ? waitDeadline : version.now,
-            resolution: to === 'running' ? 'accepted' : to,
-          });
-        }
-      }
-    }
-  }, 30000);
+  it('合法状态边 queued → running', async () => {
+    const fixture = await context.queuedFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(await context.storeB.claimTask({ ...version, executionMs })).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('running');
+  });
+
+  it('合法状态边 queued → cancelled', async () => {
+    const fixture = await context.queuedFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'queued', to: 'cancelled' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('cancelled');
+  });
+
+  it('合法状态边 queued → timed_out', async () => {
+    const fixture = await context.queuedFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: fixture.input.queueDeadline };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'queued', to: 'timed_out' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('timed_out');
+  });
+
+  it('合法状态边 running → waiting_for_user', async () => {
+    const fixture = await context.runningWithSuccessfulAttempt();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.waitForUser({
+        ...version,
+        attemptId: fixture.attemptId,
+        waitId: randomUUID(),
+        question,
+        allowedQuestionIds,
+      })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('waiting_for_user');
+  });
+
+  it('合法状态边 running → ready_to_send', async () => {
+    const fixture = await context.runningWithSuccessfulAttempt();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(await context.storeB.adoptAttempt({ ...version, attemptId: fixture.attemptId })).toBe(
+      true
+    );
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('ready_to_send');
+  });
+
+  it('合法状态边 running → failed', async () => {
+    const fixture = await context.runningWithSuccessfulAttempt();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({
+        ...version,
+        from: 'running',
+        to: 'failed',
+        expectedAttemptId: fixture.attemptId,
+      })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('failed');
+  });
+
+  it('合法状态边 running → cancelled', async () => {
+    const fixture = await context.runningWithSuccessfulAttempt();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'running', to: 'cancelled' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('cancelled');
+  });
+
+  it('合法状态边 running → timed_out', async () => {
+    const fixture = await context.runningWithSuccessfulAttempt();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: executionDeadline };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'running', to: 'timed_out' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('timed_out');
+  });
+
+  it('合法状态边 waiting_for_user → running', async () => {
+    const fixture = await context.waitingFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    const answerMessage = await context.message(fixture.scope, version.now);
+    expect(
+      await context.storeB.resolveUserWait({
+        ...version,
+        waitId: fixture.waitId,
+        answerMessage,
+        decision: 'accepted',
+      })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('running');
+    expect(await context.storeA.getUserWait(fixture.waitId)).toMatchObject({
+      closedAt: version.now,
+      resolution: 'accepted',
+    });
+  });
+
+  it('合法状态边 waiting_for_user → cancelled', async () => {
+    const fixture = await context.waitingFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'waiting_for_user', to: 'cancelled' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('cancelled');
+    expect(await context.storeA.getUserWait(fixture.waitId)).toMatchObject({
+      closedAt: version.now,
+      resolution: 'cancelled',
+    });
+  });
+
+  it('合法状态边 waiting_for_user → timed_out', async () => {
+    const fixture = await context.waitingFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: waitDeadline };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'waiting_for_user', to: 'timed_out' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('timed_out');
+    expect(await context.storeA.getUserWait(fixture.waitId)).toMatchObject({
+      closedAt: version.now,
+      resolution: 'timed_out',
+    });
+  });
+
+  it('合法状态边 ready_to_send → sending', async () => {
+    const fixture = await context.readyToSendFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'ready_to_send', to: 'sending' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('sending');
+  });
+
+  it('合法状态边 ready_to_send → cancelled', async () => {
+    const fixture = await context.readyToSendFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'ready_to_send', to: 'cancelled' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('cancelled');
+  });
+
+  it('合法状态边 ready_to_send → timed_out', async () => {
+    const fixture = await context.readyToSendFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: executionDeadline };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'ready_to_send', to: 'timed_out' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('timed_out');
+  });
+
+  it('合法状态边 sending → completed', async () => {
+    const fixture = await context.sendingFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'sending', to: 'completed' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('completed');
+  });
+
+  it('合法状态边 sending → failed', async () => {
+    const fixture = await context.sendingFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(await context.storeB.transitionTask({ ...version, from: 'sending', to: 'failed' })).toBe(
+      true
+    );
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('failed');
+  });
+
+  it('合法状态边 sending → cancelled', async () => {
+    const fixture = await context.sendingFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'sending', to: 'cancelled' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('cancelled');
+  });
+
+  it('合法状态边 sending → send_unconfirmed', async () => {
+    const fixture = await context.sendingFixture();
+    const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
+    expect(
+      await context.storeB.transitionTask({ ...version, from: 'sending', to: 'send_unconfirmed' })
+    ).toBe(true);
+    expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('send_unconfirmed');
+  });
 
   it('十状态全矩阵拒绝非法跨状态、同态和普通接口绕过专用边，失败不修改任务', async () => {
     for (const from of statuses) {

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { Pool, PoolClient } from 'pg';
+import type { Pool } from 'pg';
+import { withTransaction } from '../../db/transaction.js';
 import type {
   ChatContext,
   ContextScope,
@@ -92,23 +93,6 @@ function mapBatch(row: BatchRow): MessageBatch {
 export class PostgresPrivateChatStore implements PrivateChatStore {
   public constructor(private readonly pool: Pool) {}
 
-  private async transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      try {
-        const result = await operation(client);
-        await client.query('COMMIT');
-        return result;
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      }
-    } finally {
-      client.release();
-    }
-  }
-
   public async insertRawMessage(
     input: RawMessageInput
   ): Promise<{ inserted: boolean; message: RawMessage }> {
@@ -183,7 +167,7 @@ export class PostgresPrivateChatStore implements PrivateChatStore {
   }
 
   public async createContext(scope: ContextScope, createdAt: number): Promise<ChatContext> {
-    return this.transaction(async client => {
+    return withTransaction(this.pool, async client => {
       // 同一范围首次创建时没有可锁行；事务级锁将版本分配与有效 thread 创建串行化。
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
         JSON.stringify(['private-chat-context', scope.employeeId, scope.botId, scope.sessionId]),
@@ -245,7 +229,7 @@ export class PostgresPrivateChatStore implements PrivateChatStore {
   }
 
   public async createBatch(input: CreateBatchInput): Promise<MessageBatch> {
-    return this.transaction(async client => {
+    return withTransaction(this.pool, async client => {
       const result = await client.query<BatchRow>(
         `INSERT INTO kairo.message_batches
            (batch_id, thread_id, employee_id, bot_id, session_id,
@@ -300,7 +284,7 @@ export class PostgresPrivateChatStore implements PrivateChatStore {
     key: MessageKey,
     quietDeadline: number
   ): Promise<boolean> {
-    return this.transaction(async client => {
+    return withTransaction(this.pool, async client => {
       const batch = await client.query<BatchRow>(
         `SELECT * FROM kairo.message_batches
          WHERE batch_id = $1 AND status = 'collecting' FOR UPDATE`,
