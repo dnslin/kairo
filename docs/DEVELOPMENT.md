@@ -673,6 +673,23 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 
 烟测结束后按精确库名及临时角色名只读核对，残留均为 0。临时脚本、SQL、业务核对输出和日志已移出仓库，保留在本次会话证据中；便携 psql 和下载包已删除，未安装数据库服务、未接管现有 DataGrip 窗口。长期复现使用上述已保留的集成测试；本节临时烟测命令是执行历史，不是新增生产命令。
 
+#### 当前 PR 接入审查修正后的回归（2026-09-09）
+
+按用户要求将两项修正应用到当前 `dnslin/issue-225-t20-knowledge-memory-store` 分支，随 PR #263 交付。代码提交为 `899e7be` 和 `b7cb1e8`，保留全部 T20 实现；迁移专题入口同时包含拆分后的任务持久化测试与知识记录测试。未合并其他分支、未新增迁移或改变业务状态合同。
+
+在当前工作区实际执行：
+
+```bash
+pnpm --filter @kairo/app db:migrate:test
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+pnpm --filter @kairo/app test:integration -- tests/integration/bot-customization.test.ts
+pnpm --filter @kairo/app test:integration -- task-store tests/integration/private-chat-store.test.ts tests/integration/transaction.test.ts tests/integration/knowledge-record-store.test.ts tests/integration/memory-commit-store.test.ts tests/integration/runtime-boot-store.test.ts tests/integration/runtime-boot-startup.test.ts tests/integration/mastra-route-isolation.spike.test.ts tests/integration/bot-customization.test.ts
+```
+
+迁移专题2项通过、6项按名称筛选未执行；完整四项质量命令通过，Driver330/330、App95/95；最后完整集成12个文件118/118。真实数据库测试仍通过既有夹具创建并核对各自随机库，不操作其他工作区数据库或真实KK9。
+
+首次把完整集成与根构建并行执行时，Skill启动日志测试的临时TypeScript编译子进程失败，结果为116项通过、2项未执行；Vitest输出未提供编译诊断，不能认定根因已确认或问题已修复。根构建完成后，单独Skill测试12/12、原样完整集成118/118，均未修改代码、跳过失败项或降低断言。这里保留首次失败记录，不将其计为通过。
+
 ## 代码入口
 
 | 任务                                                                                | 位置                                                            |
