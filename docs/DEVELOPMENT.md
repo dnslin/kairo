@@ -794,7 +794,7 @@ node --env-file=.env apps/kairo/tmp/t21-smoke.mjs
 
 #### 实际验证
 
-本工作树没有 `.env`，以下命令只向测试进程加载主仓库已有环境，不复制凭证；集成测试只使用其中的 `KAIRO_TEST_DATABASE_URL` 创建随机临时库，不迁移或清理配置原库：
+初次离线验证时本工作树尚无 `.env`，以下命令只向测试进程加载主仓库已有环境，不复制凭证；集成测试只使用其中的 `KAIRO_TEST_DATABASE_URL` 创建随机临时库，不迁移或清理配置原库：
 
 ```powershell
 pnpm --filter @kairo/app exec vitest run tests/unit/ingress.test.ts
@@ -815,7 +815,34 @@ node --env-file=D:/Person/kairo/.env apps/kairo/tmp/t22-smoke.mjs
 - 首轮单元 29/30：失败测试误将窗口从入口时间起算，查询耗时会缩短提示间隔；按批准的发送前占用语义修正测试，保留占用完成前不发送的断言。issue 原单元命令在当前 pnpm 下实际运行整个 App 单元目录，因此上方使用 exec 精确筛选；早期测试文件尚未存在时得到空测试，不计为通过。
 - 组合回归首次被 Tinypool 的 `ERR_IPC_CHANNEL_CLOSED` 中断，原样重跑 34/34；没有修改并发配置或跳过测试，未确认该进程错误的根因。只读检查确认上述 T22/T21 和烟测库无残留；另发现 `kairo_t18_2211dbcc3d6a4ee884db8da4d26c095b`，因首次中断前未记录其库名，无法确认归属，未按前缀删除或终止任何连接。
 
-这些证据不代表 T35 的双员工与 Bot 真机放行，也不代表操作系统强杀恢复或完整 IM 回答链。未连接真实 KK9、未调用模型/RAGFlow，未修改 Driver 行为，所以没有执行 Driver 真机脚本；T24/T27 及正式启动装配均未提前实现。未合并分支或关闭 issue。
+上述初次离线证据不代表 T35 的双员工与 Bot 真机放行，也不代表操作系统强杀恢复或完整 IM 回答链。当时未连接真实 KK9、未调用模型/RAGFlow，未修改 Driver 行为，所以没有执行 Driver 真机脚本；T24/T27 及正式启动装配均未提前实现。未合并分支或关闭 issue。后续获批的真实验证见下节。
+
+#### 追加真实 KK9 与 RAGFlow 验收（2026-09-09）
+
+用户要求真实验证，并在当前工作树 `.env` 配置真机授权、测试数据库连接和 RAGFlow key。使用已提交的构建产物与临时 Node 验收程序，不修改产品源码、正式 YAML、T27 模块或 `index.ts`，不创建正式 Agent；本轮没有调用主模型。
+
+实际执行：
+
+```powershell
+node --env-file=.env apps/kairo/tmp/t22-real-preflight.mjs
+node --env-file=.env apps/kairo/tmp/t22-real-ingress.mjs
+node --env-file=.env apps/kairo/tmp/t22-real-ragflow.mjs
+```
+
+真机程序受监督运行，先读取真实登录 UID 与现存 Hook/binding，确认 Bot 为 `5761` 且没有其他 Hook 后才连接真实 `KK9Driver`。通过 Driver 唯一匹配 `0-3585 / int2024` 私聊，`getEmployeeBySession('0-3585')` 实际返回 UID `3585`，loginName/name 均为 `int2024`。发送和记录复用真实 T21 协调器及 PostgreSQL Store，没有 FakeDriver、伪造员工档案或替换发送结果。
+
+- 员工实际发送带标记 `T22-bdbff093` 和伪造身份正文的消息；Driver 公开事件产生原生消息 ID `135903027`、direction=inbound。T22 返回 accepted，可信 employeeId 仍为 `3585`，不受正文中的 `9999` 影响。
+- 使用真实 Driver 定向历史查询读回同一消息，通过另一数据库连接交给 T22，返回 duplicate；首次记录不被重复处理。这里验证事件接收与历史查询双来源，不把测试程序自行复制对象当作真实双来源证据。
+- T21 发送明确标注“仅为验收、不是 Agent 回答”的固定测试提示，operationId 为 `5e0c5019-3703-4b84-b674-00ba5ce73f58`，正式消息 ID `135903033`，状态 delivered，Driver 确认耗时 583ms。同一请求重放仍为同 operationId/messageId，sendCalls=1；真实 `getSendStatus()` 返回 delivered。
+- Driver 公开事件观察到 `135903033` 的 outbound 回显；T22 返回 outbound，该回显未写入原始入站账本。context、batch、task、Memory commit、知识查询表均无记录。
+- 关闭真实 Driver 和全部业务连接后，通过新数据库连接读回员工关联与 accepted 结果，原始消息重复插入仍返回 inserted=false。这证明数据库持久性，不声称执行了操作系统强杀、重新登录 KK9 或恢复调度。
+- 自建库 `kairo_t22_real_6c1fbcb4b891422fa1501ece88dd6863`，两个 backend PID 为 28127/28128，迁移前核对实际库名及不同 PID。finally 已删除此库；独立只读复查确认登录 UID 不变，Hook/binding 均不存在。仅保留本次提示 `135903033` 供员工核对收件，未撤回或修改员工原始消息，没有重启 KK9、停止其他进程或清理其他数据库。
+
+RAGFlow 公开版本接口实际返回 HTTP 200、code 0、`v0.27.1`。随后向 `http://rag.union.com/api/v1/retrieval` 发起真实认证 POST，请求只包含固定问题“如何查询采购订单？”和正式 YAML 的唯一 ERP Dataset `b55a0fc8a69211f1bad90f767650f6fc`：HTTP 200、code 0，返回 30 条正文非空的片段、涉及 7 份文档，total=64，耗时 1568ms。独立无效 key 请求实际返回 HTTP 401。没有输出凭证或知识正文，也未上传资料或改变 Dataset。这是直接真实 HTTP 检索和认证验证，不是 T27 Skill/Tool/Python 链路或基于资料的完整 IM 回答。
+
+首轮真机程序等待标记 `T22-ffd251f0` 五分钟未观察到匹配员工消息，明确以退出码 1 结束，尚未进入门禁或发送提示；其自建库 `kairo_t22_real_ab950551a81d4fa4a1ba2b9bb46c0e9f`（PID 28037/28038）与 Hook 已正常回收。初次缺少 RAGFlow key 时只验证公开版本，不计认证检索通过。用户补齐配置并实际发送消息后，上述最终两个验收程序均退出码 0。
+
+本轮新增的真实证据仅覆盖一个员工与一个 Bot 的授权入站、身份伪造、防重、提示 delivered/outbound，以及独立 RAGFlow 检索。第二员工、真实名单外提示、真实身份失败限频、真实 failed/unknown 故障和客户端重启稳定性未执行；这些不能由本轮结果冒充 T35 完整放行。临时程序与本地结果文件在证据保存后删除，不新增正式启动方式；产品代码未变，不重复运行无变化的离线质量套件。
 
 
 ### PR #263 合并前组合验证（2026-09-09）
