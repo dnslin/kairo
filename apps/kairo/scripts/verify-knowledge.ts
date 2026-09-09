@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { loadBotConfig } from '../src/config/load.js';
+import { knowledgeTools } from '../src/modules/tool-integration/knowledge-tool.js';
 import { loadRetrievalSettings } from '../src/modules/tool-integration/python-retrieval.js';
 import { createTaskTestDatabase } from '../tests/helpers/task-database.js';
 import {
@@ -17,7 +18,7 @@ import type {
 // 显式本地矩阵与真实 ERP 矩阵分开运行；默认缺凭证失败，绝不自动切换。
 const local = process.argv[2] === '--local';
 assert.ok(process.argv.length === (local ? 3 : 2), '只支持无参数真实验收或 --local 本地故障验收');
-const { config } = await loadBotConfig();
+const { config } = await loadBotConfig(undefined, Object.keys(knowledgeTools));
 const settings: RetrievalSettings = local
   ? { apiUrl: 'http://127.0.0.1', apiKey: 'kairo-local-verification', datasetId: config.datasetId }
   : loadRetrievalSettings(config.datasetId);

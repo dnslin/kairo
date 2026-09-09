@@ -11,6 +11,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+MAX_SAFE_INTEGER = 2**53 - 1
+
 
 class DataError(Exception):
     pass
@@ -22,14 +24,13 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def failure(kind, reason, message, *, http_status=None, api_code=None, raw=None, retryable=False):
+def failure(kind, reason, message, *, http_status=None, api_code=None, raw=None):
     return {
         "kind": kind,
         "httpStatus": http_status,
         "apiCode": api_code,
         "raw": raw,
         "error": {"reason": reason, "message": message},
-        "retryable": retryable,
     }
 
 
@@ -141,7 +142,7 @@ def normalize_chunk(chunk, index):
 
 def classify_response(status, raw, valid_json, dataset_id, read_error=False):
     code = raw.get("code") if isinstance(raw, dict) else None
-    api_code = code if type(code) is int else None
+    api_code = code if type(code) is int and -MAX_SAFE_INTEGER <= code <= MAX_SAFE_INTEGER else None
     message = raw.get("message") if isinstance(raw, dict) else None
     message = message if isinstance(message, str) and message else f"检索接口返回 HTTP {status}"
     details = {"http_status": status, "api_code": api_code, "raw": raw}
@@ -151,15 +152,15 @@ def classify_response(status, raw, valid_json, dataset_id, read_error=False):
     if status in (400, 422):
         return failure("parameter_error", "http", message, **details)
     if status == 429 or 500 <= status <= 599:
-        return failure("service_error", "http", message, retryable=True, **details)
+        return failure("service_error", "http", message, **details)
     if not 200 <= status <= 299:
         return failure("service_error", "http", message, **details)
     if read_error:
-        return failure("service_error", "network", "检索响应体读取失败", retryable=True, **details)
+        return failure("service_error", "network", "检索响应体读取失败", **details)
     if not valid_json or not isinstance(raw, dict):
         return failure("format_error", "response_format", "检索响应必须是有效 JSON 对象", **details)
     if api_code is None:
-        return failure("format_error", "response_format", "检索响应 code 必须是整数", **details)
+        return failure("format_error", "response_format", "检索响应 code 必须是安全范围内的整数", **details)
     if code != 0:
         # T14/T27 真实样本确认两种 102 消息；不以错误码单独推断类别。
         kind = "service_error"
@@ -225,7 +226,7 @@ def search():
         status, raw, valid_json, read_error = request_json(f"{base_url.rstrip('/')}/api/v1/retrieval", api_key, body)
     except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
         # 保留安全的异常类型和系统错误码，不输出可能携带凭证的异常全文。
-        return failure("service_error", "network", "检索服务网络请求失败", raw=network_diagnostic(error), retryable=True)
+        return failure("service_error", "network", "检索服务网络请求失败", raw=network_diagnostic(error))
     return classify_response(status, raw, valid_json, dataset_id, read_error)
 
 
@@ -241,9 +242,14 @@ def redact(value, api_key):
 
 def main():
     result = search()
+    raw = result["raw"]
+    code = raw.get("code") if isinstance(raw, dict) else None
     api_key = os.environ.get("RAGFLOW_API_KEY", "")
     if api_key:
         result = redact(result, api_key)
+    if type(code) is int and not -MAX_SAFE_INTEGER <= code <= MAX_SAFE_INTEGER:
+        # 先脱敏再保存 JSON 文本，避免 Node 解析超范围业务码时舍入或溢出。
+        result["raw"] = json.dumps(result["raw"], ensure_ascii=False, allow_nan=False)
     # 固定 UTF-8 管道输出，独立于 Windows 控制台及被 -I 忽略的 PYTHON* 环境。
     output = json.dumps(result, ensure_ascii=True, allow_nan=False)
     sys.stdout.buffer.write((output + "\n").encode("utf-8"))

@@ -228,7 +228,6 @@ export async function retrieveKnowledge(
       const result = attempt.result;
       const canRetry =
         result.kind === 'service_error' &&
-        result.retryable &&
         (result.error.reason === 'network' ||
           result.httpStatus === 429 ||
           (result.httpStatus !== null && result.httpStatus >= 500));

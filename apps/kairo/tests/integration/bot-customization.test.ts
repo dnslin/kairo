@@ -12,6 +12,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { defaultBotDirectory, loadBotConfig } from '../../src/config/load.js';
 import { loadBotCustomization } from '../../src/modules/bot-customization/instructions.js';
 import { startKairo } from '../../src/index.js';
+import { knowledgeTools } from '../../src/modules/tool-integration/knowledge-tool.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
 async function fixture(run: (directory: string) => Promise<void>) {
@@ -25,7 +26,7 @@ async function fixture(run: (directory: string) => Promise<void>) {
 }
 
 async function agentFor(directory = defaultBotDirectory) {
-  const { config } = await loadBotConfig(directory);
+  const { config } = await loadBotConfig(directory, Object.keys(knowledgeTools));
   return new Agent({
     id: 't16-contract',
     name: 'T16 合同',
@@ -147,7 +148,7 @@ describe('T16 原生 filesystem Skill 合同', () => {
   });
 
   it('禁用全部 Skill 后不向 Agent 提供技能或资源工具', async () => {
-    const { config } = await loadBotConfig();
+    const { config } = await loadBotConfig(undefined, Object.keys(knowledgeTools));
     config.skills = [];
     const agent = new Agent({
       id: 't16-no-skills',
@@ -183,7 +184,7 @@ describe('T16 原生 filesystem Skill 合同', () => {
 
   it('缺少人格或规则文件时明确失败，不静默使用默认文本', async () => {
     await fixture(async directory => {
-      const { config } = await loadBotConfig(directory);
+      const { config } = await loadBotConfig(directory, Object.keys(knowledgeTools));
       await rm(join(directory, 'SOUL.md'));
       await expect(loadBotCustomization(config, directory)).rejects.toThrow(/SOUL\.md/);
       await writeFile(join(directory, 'SOUL.md'), '测试人格');

@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 import { LineCounter, parseDocument } from 'yaml';
 import { botConfigSchema } from './schema.js';
 import type { BotConfig } from './schema.js';
-import { knowledgeTools } from '../modules/tool-integration/knowledge-tool.js';
 
 export const defaultBotDirectory = fileURLToPath(
   new URL('../../../../config/bots/default/', import.meta.url)
@@ -19,7 +18,7 @@ export interface LoadedBotConfig {
 // 正式入口固定使用默认目录；目录参数只供程序内调用和隔离测试，不提供 CLI 或环境覆盖。
 export async function loadBotConfig(
   directory = defaultBotDirectory,
-  availableTools: readonly string[] = Object.keys(knowledgeTools)
+  availableTools: readonly string[] = []
 ): Promise<LoadedBotConfig> {
   const source = await readFile(join(directory, 'bot.yaml'));
   const lineCounter = new LineCounter();

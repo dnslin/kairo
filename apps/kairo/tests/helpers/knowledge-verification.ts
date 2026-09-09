@@ -14,7 +14,10 @@ import {
   type KnowledgeEvidence,
 } from '../../src/modules/knowledge-qa/knowledge-record-store.js';
 import { createLogger, MastraOperabilityLogger } from '../../src/modules/operability/logger.js';
-import { createKnowledgeTool } from '../../src/modules/tool-integration/knowledge-tool.js';
+import {
+  createKnowledgeTool,
+  knowledgeTools,
+} from '../../src/modules/tool-integration/knowledge-tool.js';
 import type { RetrievalSettings } from '../../src/modules/tool-integration/knowledge-contract.js';
 import type { TaskTestDatabase } from './task-database.js';
 
@@ -39,7 +42,7 @@ export async function runKnowledgeProbe(
     realModel?: boolean;
   } = {}
 ): Promise<KnowledgeProbeResult> {
-  const { config, configDigest } = await loadBotConfig();
+  const { config, configDigest } = await loadBotConfig(undefined, Object.keys(knowledgeTools));
   const customization = await loadBotCustomization(config);
   const now = Date.now();
   const chat = new PostgresPrivateChatStore(database.poolA);

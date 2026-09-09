@@ -20,7 +20,7 @@ export type KnowledgeChunk = z.infer<typeof knowledgeChunkSchema>;
 
 const metadata = {
   httpStatus: z.number().int().min(100).max(599).nullable(),
-  apiCode: z.number().int().nullable(),
+  apiCode: z.number().int().min(Number.MIN_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER).nullable(),
   raw: z.json(),
 };
 export const retrievalResultSchema = z.discriminatedUnion('kind', [
@@ -52,7 +52,6 @@ export const retrievalResultSchema = z.discriminatedUnion('kind', [
         'timeout',
       ]),
       error: z.object({ reason: z.string().min(1), message: z.string().min(1) }).strict(),
-      retryable: z.boolean(),
     })
     .strict(),
 ]);
@@ -96,6 +95,5 @@ export function retrievalFailure(
     apiCode: null,
     raw,
     error: { reason, message },
-    retryable: false,
   };
 }

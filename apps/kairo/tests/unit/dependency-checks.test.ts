@@ -5,6 +5,7 @@ import { startDependencyChecks } from '../../src/modules/operability/dependency-
 import type { DependencyChecks } from '../../src/modules/operability/dependency-checks.js';
 import type { AppLogger } from '../../src/modules/operability/logger.js';
 import type { RetrievalRun } from '../../src/modules/tool-integration/knowledge-contract.js';
+import { knowledgeTools } from '../../src/modules/tool-integration/knowledge-tool.js';
 import { retrieveKnowledge } from '../../src/modules/tool-integration/python-retrieval.js';
 
 vi.mock('../../src/modules/tool-integration/python-retrieval.js', () => ({
@@ -12,7 +13,7 @@ vi.mock('../../src/modules/tool-integration/python-retrieval.js', () => ({
 }));
 
 type RetrievalFailureKind = Exclude<RetrievalRun['result']['kind'], 'found' | 'empty'>;
-const { config } = await loadBotConfig();
+const { config } = await loadBotConfig(undefined, Object.keys(knowledgeTools));
 const running: DependencyChecks[] = [];
 const logger: AppLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 function modelResult() {
@@ -53,7 +54,6 @@ function retrievalFailure(kind: RetrievalFailureKind): RetrievalRun {
       apiCode: null,
       raw: { message: '不应进入日志的上游正文' },
       error: { reason: kind === 'service_error' ? 'network' : kind, message: '不应进入日志的错误' },
-      retryable: kind === 'service_error',
     },
     attempts: [],
   };

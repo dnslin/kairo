@@ -110,6 +110,7 @@ describe('Mastra Skill → 专用 Tool → 真实 Python → 受控 HTTP → 真
         { apiKey: '伪造' },
         { script: 'other.py' },
         { command: 'whoami' },
+        { datasetId: null, command: null },
       ];
       const result = await runKnowledgeProbe(
         database,

@@ -117,26 +117,43 @@ export function createKnowledgeTool(
     } catch (cause) {
       throw new AppError('storage', { cause });
     }
+    // 落账保留实际检索事实；等待存储期间任务失效后，资料不再交付给模型。
+    const stopped = signal?.aborted
+      ? signal.reason instanceof Error && signal.reason.name === 'TimeoutError'
+        ? 'timeout'
+        : 'cancelled'
+      : Date.now() >= executionDeadline
+        ? 'timeout'
+        : undefined;
+    const kind = stopped ?? result.kind;
     logger.info({
       event: '运行状态',
       taskId,
       toolId: 'knowledge-search',
       durationMs,
-      status: result.kind === 'found' || result.kind === 'empty' ? 'received' : 'failed',
-      ...(result.kind === 'timeout' || result.kind === 'cancelled'
-        ? { errorType: result.kind }
-        : result.kind === 'found' || result.kind === 'empty'
+      status: kind === 'found' || kind === 'empty' ? 'received' : 'failed',
+      ...(kind === 'timeout' || kind === 'cancelled'
+        ? { errorType: kind }
+        : kind === 'found' || kind === 'empty'
           ? {}
           : { errorType: 'knowledge' as const }),
     });
     return {
-      kind: result.kind,
+      kind,
       queryId,
-      message: messages[result.kind],
+      message: messages[kind],
       httpStatus: result.httpStatus,
       apiCode: result.apiCode,
-      reason: 'error' in result ? result.error.reason : null,
-      materials: evidence.map(({ evidenceId, content }) => ({ evidenceId, content })),
+      reason: stopped
+        ? stopped === 'timeout'
+          ? 'deadline'
+          : 'abort'
+        : 'error' in result
+          ? result.error.reason
+          : null,
+      materials: stopped
+        ? []
+        : evidence.map(({ evidenceId, content }) => ({ evidenceId, content })),
     };
   }
   const tool = createTool({

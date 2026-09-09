@@ -19,7 +19,6 @@ interface Result {
   chunks?: unknown[];
   total?: number;
   error?: { reason: string; message: string };
-  retryable?: boolean;
 }
 
 afterEach(async () => {
@@ -190,7 +189,6 @@ describe('Python 检索真实 HTTP 边界', () => {
     expect(rejected.result).toMatchObject({
       kind: 'parameter_error',
       httpStatus: null,
-      retryable: false,
     });
     expect(requests).toBe(1);
   });
@@ -232,7 +230,6 @@ describe('Python 检索真实 HTTP 边界', () => {
       httpStatus: 200,
       apiCode: 0,
       raw: payload,
-      retryable: false,
     });
   });
 
@@ -250,19 +247,18 @@ describe('Python 检索真实 HTTP 边界', () => {
       httpStatus: 200,
       apiCode: code,
       raw: payload,
-      retryable: false,
       error: { message },
     });
   });
 
   it.each([
-    [401, 'auth_error', false],
-    [403, 'auth_error', false],
-    [400, 'parameter_error', false],
-    [422, 'parameter_error', false],
-    [429, 'service_error', true],
-    [503, 'service_error', true],
-  ] as const)('HTTP %i 保留状态与业务诊断', async (status, kind, retryable) => {
+    [401, 'auth_error'],
+    [403, 'auth_error'],
+    [400, 'parameter_error'],
+    [422, 'parameter_error'],
+    [429, 'service_error'],
+    [503, 'service_error'],
+  ] as const)('HTTP %i 保留状态与业务诊断', async (status, kind) => {
     const payload = { code: 102, message: '接口诊断', detail: { trace: 'trace-1' } };
     const output = await run(await reply(payload, status));
     expect(output.result).toMatchObject({
@@ -270,7 +266,6 @@ describe('Python 检索真实 HTTP 边界', () => {
       httpStatus: status,
       apiCode: 102,
       raw: payload,
-      retryable,
     });
     expect(output.exitCode).toBe(1);
   });
@@ -281,7 +276,7 @@ describe('Python 检索真实 HTTP 边界', () => {
         response.end(body);
       });
       const output = await run(apiUrl);
-      expect(output.result).toMatchObject({ kind: 'format_error', raw: body, retryable: false });
+      expect(output.result).toMatchObject({ kind: 'format_error', raw: body });
     }
   });
 
@@ -296,7 +291,6 @@ describe('Python 检索真实 HTTP 边界', () => {
       kind: 'service_error',
       httpStatus: null,
       apiCode: null,
-      retryable: true,
       error: { reason: 'network' },
     });
     expect(output.exitCode).toBe(1);
@@ -310,7 +304,7 @@ describe('Python 检索真实 HTTP 边界', () => {
       response.end('short');
     });
     const output = await run(apiUrl);
-    expect(output.result).toMatchObject({ kind: 'auth_error', httpStatus: 401, retryable: false });
+    expect(output.result).toMatchObject({ kind: 'auth_error', httpStatus: 401 });
   });
 
   it('非法业务码不覆盖已经收到的临时 HTTP 状态', async () => {
@@ -319,10 +313,74 @@ describe('Python 检索真实 HTTP 边界', () => {
       kind: 'service_error',
       httpStatus: 503,
       apiCode: null,
-      retryable: true,
       raw: { code: 1.5 },
     });
   });
+
+  it.each([Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER])(
+    '业务码在安全整数边界 %i 仍保留数值与原始诊断',
+    async code => {
+      const payload = { code, message: '业务诊断' };
+      const output = await run(await reply(payload));
+      expect(output.result).toMatchObject({
+        kind: 'service_error',
+        httpStatus: 200,
+        apiCode: code,
+        raw: payload,
+        error: { reason: 'api' },
+      });
+      expect(output.exitCode).toBe(1);
+    }
+  );
+
+  it.each([
+    [200, '9007199254740992', 'format_error'],
+    [200, '-9007199254740992', 'format_error'],
+    [200, '9007199254740993', 'format_error'],
+    [401, '9007199254740993', 'auth_error'],
+    [403, '-9007199254740993', 'auth_error'],
+    [400, '9007199254740993', 'parameter_error'],
+    [422, '-9007199254740993', 'parameter_error'],
+    [429, '9007199254740993', 'service_error'],
+    [503, '-9007199254740993', 'service_error'],
+  ] as const)('HTTP %i 超范围业务码 %s 不覆盖状态且诊断不被舍入', async (status, code, kind) => {
+    const output = await run(
+      await service((_request, response) => {
+        response.writeHead(status, { 'content-type': 'application/json' });
+        response.end(`{"code":${code},"message":"接口诊断 ${apiKey}"}`);
+      })
+    );
+    expect(output.result).toMatchObject({
+      kind,
+      httpStatus: status,
+      apiCode: null,
+      error: { reason: status === 200 ? 'response_format' : 'http' },
+    });
+    expect(output.result.raw).toEqual(
+      expect.stringMatching(new RegExp(`"code"\\s*:\\s*${code}(?=\\s*[,}])`))
+    );
+    expect(output.result.raw).toEqual(expect.stringContaining('接口诊断 [REDACTED]'));
+    expect(output.stdout).not.toContain(apiKey);
+    expect(output.exitCode).toBe(1);
+  });
+
+  it.each(['false', 'true', '0.0', '"0"', 'null'])(
+    '业务码 %s 必须是 Python 整数而不是布尔、浮点或其他类型',
+    async code => {
+      const output = await run(
+        await service((_request, response) => {
+          response.end(`{"code":${code},"data":{"chunks":[],"total":0}}`);
+        })
+      );
+      expect(output.result).toMatchObject({
+        kind: 'format_error',
+        httpStatus: 200,
+        apiCode: null,
+        error: { reason: 'response_format' },
+      });
+      expect(output.exitCode).toBe(1);
+    }
+  );
 
   it('网络故障保留安全异常类型而不是丢掉所有内部诊断', async () => {
     const output = await run(
@@ -347,7 +405,6 @@ describe('Python 检索真实 HTTP 边界', () => {
     expect(output.result).toMatchObject({
       kind: 'service_error',
       httpStatus: 302,
-      retryable: false,
     });
     expect(leakedRequests).toBe(0);
   });
