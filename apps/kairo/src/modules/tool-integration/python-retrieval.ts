@@ -213,9 +213,16 @@ export async function retrieveKnowledge(
   const signal = options.signal
     ? AbortSignal.any([options.signal, deadline.signal])
     : deadline.signal;
+  const isInterrupted = (): boolean => {
+    // 同步校验和 Promise 续体可能先于定时器执行，绝对时间仍是截止依据。
+    if (!signal.aborted && Date.now() >= options.deadline) {
+      deadline.abort(new DOMException('任务执行截止', 'TimeoutError'));
+    }
+    return signal.aborted;
+  };
   try {
     for (;;) {
-      if (signal.aborted) return { result: cancelled(signal), attempts };
+      if (isInterrupted()) return { result: cancelled(signal), attempts };
       const attempt = await invokePython(query, settings, signal, attempts.length + 1);
       attempts.push(attempt);
       const result = attempt.result;
@@ -225,7 +232,8 @@ export async function retrieveKnowledge(
         (result.error.reason === 'network' ||
           result.httpStatus === 429 ||
           (result.httpStatus !== null && result.httpStatus >= 500));
-      if (!canRetry || options.retry === false || attempts.length === 2 || signal.aborted)
+      if (isInterrupted()) return { result: cancelled(signal), attempts };
+      if (!canRetry || options.retry === false || attempts.length === 2)
         return { result, attempts };
     }
   } finally {

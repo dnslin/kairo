@@ -1,10 +1,13 @@
 import * as childProcess from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { retrieveKnowledge } from '../../src/modules/tool-integration/python-retrieval.js';
+import { retrievalResultSchema } from '../../src/modules/tool-integration/knowledge-contract.js';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof childProcess>();
@@ -19,6 +22,7 @@ const settings = { apiUrl: 'http://127.0.0.1:1', apiKey: 'kairo-process-secret',
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  vi.useRealTimers();
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })));
 });
 async function script(source: string): Promise<string> {
@@ -105,5 +109,67 @@ describe('Python 启动和输出错误不可降级', () => {
     });
     expect(options.env).not.toHaveProperty('DATABASE_URL');
     expect(options.env).not.toHaveProperty('KAIRO_T12_MODEL_API_KEY');
+  });
+
+  it.each([200, 503])('同步校验 HTTP %s 输出跨过截止时，不接受迟到结果或启动重试', async status => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let now = Date.now();
+    const deadline = now + 10000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const safeParse = retrievalResultSchema.safeParse.bind(retrievalResultSchema);
+    vi.spyOn(retrievalResultSchema, 'safeParse').mockImplementation(input => {
+      const parsed = safeParse(input);
+      // 模拟同步校验消耗完预算；截止定时器尚未获得事件循环执行机会。
+      now = deadline;
+      return parsed;
+    });
+    let requests = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      request.on('end', () => {
+        requests++;
+        response.statusCode = status;
+        response.end(
+          JSON.stringify(
+            status === 200
+              ? { code: 0, data: { chunks: [], total: 0 } }
+              : { code: 500, message: '受控临时故障' }
+          )
+        );
+      });
+    });
+    await new Promise<void>(resolve => {
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+      const run = await retrieveKnowledge(
+        '采购',
+        { ...settings, apiUrl: `http://127.0.0.1:${(server.address() as AddressInfo).port}` },
+        { deadline }
+      );
+      expect(run.result.kind).toBe('timeout');
+      expect(run.attempts).toHaveLength(1);
+      expect(requests).toBe(1);
+      expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+      expect(() => process.kill(run.attempts[0]!.pid!, 0)).toThrow();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => {
+        server.close(error => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  it('入口检查之后已到绝对截止，不启动第一个 Python 进程', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const now = Date.now();
+    vi.spyOn(Date, 'now')
+      .mockReturnValueOnce(now)
+      .mockReturnValue(now + 10000);
+    const run = await retrieveKnowledge('采购', settings, { deadline: now + 10000 });
+    expect(run.result.kind).toBe('timeout');
+    expect(run.attempts).toEqual([]);
+    expect(childProcess.spawn).not.toHaveBeenCalled();
   });
 });
