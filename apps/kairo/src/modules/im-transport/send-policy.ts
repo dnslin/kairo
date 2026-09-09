@@ -43,13 +43,15 @@ export interface SendDispatch extends SendIntent {
   sendCalls: number;
   queryUsed: boolean;
   queryDueAt: number | null;
+  /** 首次最终判定时刻；未知且尚未最终判定时保持空值。 */
+  resultAt: number | null;
   messageId: string | null;
   revision: number;
 }
 
 export type DispatchUpdate = Pick<
   SendDispatch,
-  'status' | 'sendCalls' | 'queryUsed' | 'queryDueAt' | 'messageId'
+  'status' | 'sendCalls' | 'queryUsed' | 'queryDueAt' | 'resultAt' | 'messageId'
 >;
 
 export interface SendDispatchStore {

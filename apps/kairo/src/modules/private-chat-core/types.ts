@@ -61,6 +61,12 @@ export interface NoticeKey {
   noticeType: string;
 }
 
+export interface PreparedContext {
+  context: ChatContext;
+  invalidatedThreadId: string | null;
+  hadUnfinishedWork: boolean;
+}
+
 export interface PrivateChatStore {
   insertRawMessage(input: RawMessageInput): Promise<{ inserted: boolean; message: RawMessage }>;
   getRawMessage(key: MessageKey): Promise<RawMessage | null>;
@@ -77,6 +83,17 @@ export interface PrivateChatStore {
     version: number,
     idleSince: number | null
   ): Promise<boolean>;
+  /** 原子选择或切换；clock 在取得 context 锁后采样，idleMs 为 null 时不判定空闲。 */
+  prepareContext(
+    scope: ContextScope,
+    clock: () => number,
+    options: { reset: boolean; idleMs: number | null }
+  ): Promise<PreparedContext>;
+  /** 在有效 context 行锁内同步交付；回调不得等待外部执行。 */
+  withContextOutput<T>(
+    threadId: string,
+    output: (context: ChatContext) => T
+  ): Promise<{ value: T } | null>;
   createBatch(input: CreateBatchInput): Promise<MessageBatch>;
   getBatch(batchId: string): Promise<MessageBatch | null>;
   getBatchMessages(batchId: string): Promise<RawMessage[]>;

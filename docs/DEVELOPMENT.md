@@ -522,7 +522,7 @@ node --env-file=../../.env ../../node_modules/vitest/vitest.mjs run --config vit
 
 task 保存员工、Bot、会话、batch、thread、输入版本、创建配置摘要及队列/执行绝对截止；attempt 保存独立 attemptId、runId、实际配置摘要、输入版本、开始/结束、AppErrorType 和采用标记。task 的配置摘要表示创建时配置，attempt 的摘要表示该次实际配置，不建设配置兼容层。所有时间接口为 Unix 毫秒，数据库为 timestamptz；queued 的执行截止为空，只有领取成功才建立。
 
-`claimTask()` 用单条条件 UPDATE 领取。跨 task/attempt/wait 的操作在同一事务内先锁 task，比较状态与输入版本；采用结果还比较当前 attempt 指针、成功结束记录和未到执行期限。`updateInputVersion()` 仅对 queued/running 生效，并清除当前 attempt 指针，不重置期限或自动重跑；正常新消息仍应进入下一批。终态没有出边，迟到 attempt 只可补记审计。数据库异常原样传播，不包装成 false。
+`claimTask()` 在 context 与 task 行锁内执行条件 UPDATE 领取。T24 接入后，任务状态变更固定先锁 context、再锁 task，比较上下文有效性、状态与输入版本；采用结果还比较当前 attempt 指针、成功结束记录和未到执行期限。`updateInputVersion()` 仅对 queued/running 生效，并清除当前 attempt 指针，不重置期限或自动重跑；正常新消息仍应进入下一批。终态没有出边，迟到 attempt 只可补记审计。数据库异常原样传播，不包装成 false。
 
 等待记录保存问题正文、授权适用的问题/缺失子问题 ID、inputVersion、十分钟绝对截止、剩余执行预算及原始回答消息关联。用户于本任务终端批准：等待不消耗执行预算；同意后用剩余毫秒恢复同一 running task，拒绝或新问题替换时 cancelled，到期 timed_out。重启不延长任何期限。同一 Bot/私聊只能有一个开放等待；同一原始回答只消费一次。回答须为匹配员工/会话、在等待开始后观察到且非未来的入站消息。语义同意判断、问题 ID 分配、提示实际发送和定时触发由后续调用方负责，T19 不实现这些编排。
 
@@ -978,7 +978,7 @@ pnpm --filter @kairo/driver e2e:media
 
 ### 程序合同与证据
 
-`createKnowledgeTool(settings, scope, store, logger)` 返回 `{ tool, settled }`。服务端将已加载配置转换为 `RetrievalSettings`，通过闭包绑定 taskId、attemptId、bootId、原任务 executionDeadline 和 `nextCallIndex()`；模型唯一输入是严格的 `{ query }`。后续装配方须按同 task 维护调用次序，不能在新 attempt 或恢复时从 1 重置；本任务不自建调度或恢复器。
+`createKnowledgeTool(settings, scope, store, logger, tasks)` 返回 `{ tool, settled }`。服务端将已加载配置转换为 `RetrievalSettings`，通过闭包绑定 taskId、attemptId、inputVersion、contextVersion、bootId、原任务 executionDeadline 和 `nextCallIndex()`；模型唯一输入仍是严格的 `{ query }`。T24 增加的第五参数是提供 `withTaskOutput()` 的任务账本，版本来自实际 task/context，不能写固定占位值。后续装配方须按同 task 维护调用次序，不能在新 attempt 或恢复时从 1 重置；不自建调度或恢复器。
 
 `retrieveKnowledge(query, settings, { deadline, signal })` 是业务 Tool 与健康检查共用的固定脚本入口。Node 是唯一重试层：仅网络、429、5xx 最多再试一次；首次、重试和后续查询都使用同一 task 绝对截止。重试资格由结果类别、错误原因和 HTTP 状态推导，Python 输出不再携带重复的 `retryable` 字段。Python 无独立重试或短网络超时。健康调用显式 `retry:false`，保留原合同。
 
@@ -988,7 +988,7 @@ AbortSignal 终止实际 Python，等待 `close` 与管道回收后返回；无�
 
 每次 Tool 调用通过 T20 `recordQuery()` 原子保存 query、开始顺序、耗时、结果类别及证据；原始响应和各次 Python 尝试（含 PID/退出码/耗时/结果）放入既有 rawResult。正文仅进入业务表及作为参考资料的 Tool 返回，不进入普通日志、正式 Memory 或系统指令。模型收到资料正文和本地证据关联号，不收到原始响应、文档/Dataset 标识或诊断正文。证据保留文档名称、ID、片段 ID、原始 positions 和相似度；未知物理页码为 null，DOCX positions 不推断页码。
 
-落账等待期间若任务取消或截止，账本仍保留实际取得的检索结果和证据；Tool 交付前再次检查任务状态，返回 cancelled/timeout 与空 materials，不向模型交付迟到资料。该门禁不新增定时器或第二笔审计写入。
+落账等待期间若任务取消、上下文或 attempt 失效、执行截止，账本仍保留实际取得的检索结果和证据；Tool 通过 T19 `withTaskOutput()` 在 context/task 行锁内检查并完成消费者可见的 Promise 交付，失效时只交付 cancelled/timeout 与空 materials。不能仅在锁内构造结果、等 COMMIT 返回后才交付，否则切换仍可插入间隙。事务完成及错误由 `settled()` 跟踪，调用方必须等待并处理错误；不新增计时器或第二笔审计。
 
 锁定 Mastra `1.63.2` 的既有 pnpm 补丁同时修正输入清洗：只删除校验明确指出的错误空值字段，不再因根级校验错误而递归删除所有空值。严格 schema 因此不会把未知的 `datasetId:null` 等输入变成合法查询。ESM/CommonJS 两种产物同步修复，已声明 optional/nullable 字段仍保持原有行为；不增加工具包装器或放宽 query-only schema。
 
@@ -1058,3 +1058,145 @@ pnpm --filter @kairo/app build
 - 两份独立只读复审分别检查取消/验收生命周期与输入/数值/配置合同，均未发现 Required 问题；审查员未运行测试，运行证据以上述实际命令为准。
 - 本轮完整真实 ERP 入口 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-232-t27-knowledge-tool/.env ../../apps/kairo/scripts/verify-knowledge.ts`：254.76 秒全部通过。直连有资料 30 条、空结果、错误 key、错误 Dataset 和真实参数错误均符合合同；本地 429/503/断线后第二次取得真实 ERP，连续 503 仅两次。代理扣留真实响应后的主动取消与四分钟截止均回收 Python；截止记录 239982.8595ms，随后新请求直连 ERP 再次 found。隔离库为 `kairo_t19_e8925bcc7f484a558665f863b2fc0d86`，连接 PID 28580/28581。
 - 本轮按输出记录的 9 个精确自建库名执行独立只读查询，残留 0；不扫描或删除其他同前缀库。临时输入烟测、异常/清理探针及 pnpm 补丁编辑目录已删除。锁文件内容比对确认仅 Mastra 补丁哈希及其引用改变，没有升级依赖版本。
+
+## T24 `/new` 与近期上下文边界（2026-09-09）
+
+> 当前 PR 保持草稿待审。追加发现的再次恢复缺陷已按用户要求修复，并通过永久回归、真实 PostgreSQL 和独立烟测验证；历史失败与修复证据见本节末尾。T35 真机放行仍未执行，不合并、不关闭 issue。
+
+### 入口与正式装配边界
+
+`createControlMessageHandler({ contexts, sender })` 只接收 T22 `IngressResult`。非 accepted 结果直接返回；通过方向、原始消息防重、可信员工与 allowlist 后，才判断整条 `messageType: 'text'` 正文 trim 是否等于 `/new`，且 fileInfo 不存在、images 无元素。普通句子、参数、其他命令、非纯文本和附件不会触发。本模块不实施 T23 的附件拒绝、聚合或输入限制。
+
+普通消息返回 `status: 'message'`、可信消息和当前 context；命令返回 `status: 'new_context'`，不向下一阶段返回待聚合正文。无旧工作回复 `已开始新对话。`，有 collecting/孤立 ready batch 或未完成任务回复 `已开始新对话，之前未完成的任务已取消。`，均走 T21 的 `notice:new_context` 和新 thread，有效性检查与发送预算不另建一套。
+
+当前仍不在 `index.ts` 新增 Driver 订阅，也不创建 T28 的正式业务 Agent。后续装配方须消费原 T22 返回值，将本处理器返回的普通消息交给后续阶段，而不是重新订阅或再次去重；同一应用的控制消息与执行登记使用同一个 context-service 实例。多数据库连接的版本门禁已验证，不提供跨进程取消广播或调度。
+
+### 原子切换、停止与迟到结果
+
+`createContextService({ store, tasks, idleMs })` 的 idleMs 来自已加载配置 `timeouts.contextIdleMs`。`resolve(scope, reset)` 调用 T18 `prepareContext(scope, clock, options)`；沿用范围事务锁分配版本，锁当前 context 后才调用 clock 采样切换时刻，避免等锁期间新建的员工等待被过早时间关闭。
+
+同一事务废弃 collecting 与尚未建任务的 ready batch，取消 queued/running/waiting_for_user/ready_to_send/sending，关闭开放 user_wait，失效旧 context 并创建全局唯一 UUID thread。已有任务的批次、原始消息、attempt、证据与旧 context 历史保留。建批、追加、建任务、领取、采用及恢复等待也先锁 context，等待者不能在切换后继续推进旧版本。
+
+执行方在启动 Agent 前调用 `registerExecution({ taskId, inputVersion, attemptId, contextVersion }, controller)`，传入实际用于 Agent 的控制器；新 thread 事务提交后调用旧 thread 登记项的真实 `abort()`，不等待旧执行退出。执行方在 `binding.settled()` 后释放登记。过期登记被拒绝并 abort；登记提交失败会移除未交给调用方的登记，错误原样传播。Python 终止与管道回收继续完全属于 T27，不声称本地停止取消了远端计算。
+
+T19 `withTaskOutput()` 和 T18 `withContextOutput()` 只在有效行锁内执行同步交付回调。T21 在该回调内实际调用 Driver，包装回执 Promise 后释放锁，不等待网络回执；已经交给 Driver 的旧消息不能保证撤回，但迟到回执不能复活 cancelled 任务。Tool 在同一边界完成模型可见 Promise 的交付，事务结束单独由 settled 等待；未及时 Abort 的旧资料和旧 attempt 仍因版本门禁被丢弃。
+
+### 空闲时间与迁移
+
+用户确认 `elapsed > 7200000` 才切换；恰好两小时继续原 thread。仍有 collecting/孤立 ready batch 或未完成任务时不做空闲切换，不因期限已过擅自执行 T25 超时调度。收到消息、排队/进度提示和 `/new` 固定反馈均不刷新最终任务的空闲起点。
+
+| 最终结果 | 空闲起点 |
+| --- | --- |
+| delivered | 首次成功回执时刻；回执早于交付事务返回也不推迟 |
+| send_unconfirmed | 首次确定未确认的时刻，不使用首次 unknown 或发送调用时刻 |
+| failed/cancelled/timed_out 且无最终回复 | task 的结束时刻；拒绝员工等待同样处理 |
+
+任务终态与当前 context.idle_since 在同一事务保存，重复推进及旧版本更新不刷新起点。`000009-send-result-time.sql` 仅给现有 `send_dispatches` 增加 `result_at`；不回填猜测的历史时间。协调终态已保存而 task 收尾中断时，恢复沿用该时刻；Driver 已持久化 delivered、协调终态尚未保存就中断时，恢复查询沿用 `send_operations.updatedAt` 的先前送达证据，而非重查时间。无真实时刻的旧成功/未确认协调终态明确报错，不构造兼容回退。运行时仍不执行迁移。
+
+### 本次证据与边界
+
+三条审查反例均先实际失败再修复：等锁期间进入员工等待导致取消时间 CHECK 失败；Tool 等 COMMIT 后才交付；原生送达后三小时恢复误刷新空闲。分别保留在 new-context-concurrency、knowledge-tool 和 send-service 回归中。
+
+独立烟测使用真实 PostgreSQL、Mastra、Skill、T27 Tool 和 Python，本地 HTTP 挂起检索，T22 → 控制处理器接收 `/new`：约 48.6ms 创建新 thread，实际 Python PID 128424 随后已不存在，旧 attempt 不能采用、旧最终发送为 cancelled，新请求进入新 thread 并通过 T21 得到 delivered。Driver 是明确的 FakeKK9Driver，最后一条新答案是合成烟测文本，不是模型回答。烟测库为 `kairo_t19_afe383b6497645e48e7407477349cc76`，两个连接 PID 为 29677/29678；只迁移、写入及删除自身随机库，不修改配置所指原库 `kairo`。
+
+首轮组合集成 122/123，唯一失败来自本地 HTTP 夹具把中文字符串用作 Authorization 凭证，T27 按既有 latin-1 规则在发请求前返回 parameter_error。改成合规的合成 ASCII 凭证后，实际取消定向通过，独立烟测通过；没有放宽 Python 配置校验。首轮完整质量命令的构建、类型、Driver330/App297 测试通过，lint 指出一处测试对象直接转字符串，已改为明确字符串判断。首次烟测相对 `.env` 路径未找到，改为本工作区绝对路径后执行，不借用其他工作区凭证。
+
+本次未连接真实 KK9、未调用真实主模型或 ERP，不重复验收 T22/T27 的既有真实环境结果。T35 仍需在无任务、排队、执行和等待员工回答等真实状态发送 `/new` 放行；上述数据库、受控 HTTP 和 FakeDriver 证据不能替代。未修改 Driver 或 Python 管理实现，未合并分支、未关闭 issue。
+
+### 最终验证命令与结果
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm --filter @kairo/app exec vitest run tests/unit/context-service.test.ts tests/unit/send-service.test.ts tests/unit/knowledge-tool.test.ts tests/unit/ingress.test.ts
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests/integration/private-chat-store.test.ts tests/integration/task-store tests/integration/send-service.test.ts tests/integration/ingress-dedup.test.ts tests/integration/ragflow-connector.test.ts tests/integration/transaction.test.ts
+pnpm --filter @kairo/app db:migrate:test
+```
+
+- 锁定安装通过。早期四文件定向单元 126/126；追加 Tool 交付反例后，最终完整质量四命令全部通过，Driver 330/330、App 298/298；根测试不含数据库集成或真实 KK9。
+- 此轮真实 PostgreSQL 组合 12 文件、123/123，覆盖当时已编写的 T24 状态/时间/竞争和受影响 T18/T19/T21/T22/T27 回归；new-context 两文件为 17+10 项。追加发现的再次恢复缺陷不在此轮覆盖内，不能据此宣称完整恢复合同通过。迁移专题 2 项通过、6 项按名称筛选未执行，不计作全量知识账本验收。
+- 三个失败基线分别以 `--testNamePattern=等锁`、`--testNamePattern=消费者`、`--testNamePattern=首次证据` 定向运行，修复后各 1/1；完整组合也包含这三项。
+- 实际独立烟测命令为 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-smoke.ts`，退出码 0；证据如上。临时脚本验收后删除，长期复现使用保留的集成测试，不新增正式启动方式。
+- `node --env-file=.env apps/kairo/tmp/t24-check-databases.mjs` 只读核对本轮输出记录的 32 个精确随机库名，残留 0；未扫描或删除其他前缀库。该核验脚本随后删除，用户提供的本工作区 `.env` 保留且不提交。
+- 两份独立只读审查的三项 Required 均已通过失败/修复回归处理；没有把审查意见当作执行证据。未授权或调用跨模型外部 CLI。复杂度审查保留真实需要的事务锁、版本门禁和实例登记，不新增总线、调度器、脚本管理、依赖包或兼容回退。
+
+### 追加核实：再次恢复阻塞（修复前记录）
+
+Advisor 指出 `send-service.ts` 的 queryUsed=true 分支会在读取原生送达证据之前直接保存 send_unconfirmed。已用生产发送协调器、真实 PostgreSQL、FakeDriver，以及只作用于自建随机库的 CHECK 约束实际复现：
+
+1. 初次 sendText 已持久化 delivered，协调 delivered CAS 被 CHECK 拒绝，协调记录停在 sending/queryUsed=false/resultAt=null。
+2. 关闭旧协调器，新实例 recover 占用唯一查询机会；查询返回 delivered，但同一 CHECK 再次拒绝协调写入，留下 querying/queryUsed=true/resultAt=null。
+3. 移除测试约束、关闭第二个协调器，再创建实例恢复；结果错误变为 send_unconfirmed，任务同样结束为 send_unconfirmed，resultAt 与 idleSince 均使用这次恢复时刻。
+
+实测原生送达证据为 delivered、updatedAt=1788934336677；再次恢复后 resultAt/idleSince=1788945136677，错误后移 10800000ms（三小时）。整个过程 Driver 发送一次、查询一次。正常的预算上限没有突破，但已有送达事实被忽略，不能把未知查询预算合同用于覆盖已经保存的送达事实。
+
+执行命令为 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-recovery-interruption-probe.ts`。这是受控 SQL 故障与应用时钟推进，不是操作系统强杀、真实 KK9 或实等三小时。随机库 `kairo_t19_aae1a27117cd4db4910cfb26f2a1647e`、连接 PID 29854/29855，已删除并以精确库名只读确认残留 0；临时复现脚本已删除。
+
+上述为提交 aa0af5e 时的核实结果：当时未修复生产代码、未补永久回归，因此以草稿 PR #266 交付。用户随后要求执行修复，实际变更和验证见下节；保留这段记录，不把历史通过计数当作当时已经覆盖缺陷的证明。
+
+### 再次恢复修复与验证
+
+`query()` 现在首先读取现有 Driver Store：有持久 delivered 时，直接把原消息 ID 与 updatedAt 交给既有 observe/finishTask 流程，然后才考虑查询预算或查询截止。读取已知事实不是再次调用 Driver；即使 queryUsed=true 或恢复再次中断，也不降为未确认、不刷新原送达时刻。observe 仍校验 task/context；取消或失效时协调结果为 cancelled，原生送达证据不变。证据读取失败原样传播，不伪造 send_unconfirmed。没有新迁移、兼容层、重试或 Driver 行为修改。
+
+新增四条单元回归修复前全部失败，修复后完整发送单元 60/60：查询预算已用且已有证据时的正常恢复、任务取消、context 失效，以及证据读取异常。真实 PostgreSQL 通过 CHECK 使初次 send 与首次 recover 的协调 delivered 写入连续失败，移除约束后再次恢复仍 completed、原 idleSince 不变，实际发送一次、Driver 查询零次；另覆盖 querying/queryUsed=true 的持久快照及 `/new` 取消后的恢复。
+
+补查等待路径时还发现：只把证据读取提前会漏掉等待三十秒期间才落账的回执，使第五秒的送达时间被记为第三十秒。新增“等待查询期间”回归先失败，再让等待结束后复用同一 adoptStoredDelivery 重新读取和采用，最终不调用 Driver 查询、空闲起点仍为第五秒。不增加轮询、计时器或重试。
+
+既有“恢复前未知、查询得到 delivered”集成夹具原先在查询前就把 delivered 写入原生表；本轮改为实际查询时才保存观测，保留一次查询及同 ID 重试断言，而非把旧断言改成零次来掩盖缺陷。初次组合为 45/46，唯一失败由这个不再符合未知前提的夹具引起；修正后完整发送集成 19/19，同轮上下文两文件 27/27。
+
+实际执行：
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service.test.ts --testNamePattern=查询预算已用
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service.test.ts --testNamePattern=等待查询期间
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/send-service.test.ts tests/integration/new-context
+pnpm --filter @kairo/app test:integration -- tests/integration/send-service.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+补充等待期间回归后，最终再次执行完整质量四命令全部通过：Driver 330/330、App 303/303（含发送单元 61 项）。随后原样重跑发送与上下文数据库组合，3 文件、46/46；其中发送19项、上下文27项。初次45/46及中间App302项保留为执行历史，不当作最终结果；没有重跑不受此次修复影响的完整知识/任务账本集成。
+
+独立命令 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-recovery-fixed-smoke.ts` 实际通过：两次真实协调写入 CHECK 失败后，新实例恢复为 delivered、task=completed；原证据时间与恢复 resultAt 均为 1788935606889，空闲偏移 0ms，发送一次、查询零次，三小时后的新请求正确切换 thread。使用真实 PostgreSQL、生产协调器、FakeDriver 和受控时钟，不是 KK9 或操作系统强杀。烟测库 `kairo_t19_05de3d2af1dc497daface77c2745695f`、连接 PID 29997/29998，已删除并按精确库名核对残留 0。临时烟测脚本在验收后删除；本轮仍不合并 PR、不关闭 issue，也不代替 T35 放行。
+
+### PR #266 双审查后的 Optional 精简与真机前提
+
+用户要求先以真机证据确认索引问题，再决定正式修复。审查中的十万历史 SQL 对照不能替代 KK9 入站证据；当前未新增索引迁移，也未修改业务库。已通过 `127.0.0.1:9222/json` 发现真实 KK9，并由独立烟测 Driver 核对 Bot5761、员工3585、私聊0-3585/int2024 与本工作区授权配置。临时监听等待员工发送 `T24-索引真机核验`；仅收到该真实 inbound 并通过 T22 后，才在自建隔离库比较空库、十万合成历史及临时索引，不能把可信结果的重复计时称作多条新入站，不能把合成历史称作当前业务库数据。此阶段尚未取得指定员工消息，不宣称真机复现成功或 T35 放行。Windows 首次直接启动 pnpm 的 PTY 返回193，改用 cmd.exe 后真实连接及监听就绪。
+
+Optional 逐项处理：
+
+- 取消事务保留原状：复用任务 ID 数组没有减少 SQL 往返，却增加 JS 数据复制和单调用方事务接口；现有同事务锁序及生命周期 SQL 保持不变，不为迁移代码位置新增抽象。
+- 发送单测由1151行拆成基础286行、竞争156行、恢复423行；共用328行的 `tests/helpers/send-service-fixture.ts`。六个原 describe 分组已逐字比较，测试正文与断言全部保留；假时钟、Node promises 定时器替身、service关闭及mock清理由同一 setup 管理，每个测试文件显式注册。后续完整发送单测使用 `tests/unit/send-service` 前缀，不再只运行基础文件。
+- Tool 交付回调删除重复的 inputVersion/currentAttemptId 比较；输入版本、attempt 和 context 仍由生产 `withTaskOutput` 在锁内检查，Tool仍检查running、截止时间和AbortSignal。未增加或削弱测试，原失效资料不交付回归继续通过。
+
+实际验证：
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/knowledge-tool.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/send-service
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests/integration/send-service.test.ts tests/integration/ragflow-connector.test.ts
+```
+
+Tool29/29，拆分发送61/61（25+14+22）；最终根四命令全部通过，Driver330、App303（18文件）。真实 PostgreSQL 组合4文件51/51，含上下文27、发送19、知识Tool5；知识路径使用真实Python与受控HTTP，不是ERP真机。中间一次清理导入误删START，typecheck明确失败；恢复导入后重新执行上述完整质量链通过，没有放宽检查。AST比对尝试因Eval运行时无法解析typescript包失败，改用六个完整测试分组逐字对照成功，不声称AST核验已通过。
+
+本轮真机监听最终等待十分钟仍未收到指定员工消息，明确以退出码1结束（`未在十分钟内收到指定员工真实消息`），不是性能实验失败，也不是通过。已断开本脚本 Driver 并删除自建库 `kairo_t19_51e9ccd146db47dca1bfaa86ed3800ff`（PID30302/30303）；未运行十万历史填充、临时索引或发送回复。Optional优化已由4dcc2b7推送，正式索引方案仍等待真实入站证据，不用此前合成SQL对照越过用户前提。
+
+### 真实入站确认后的批次索引修复
+
+用户要求重启监听后，真实KK9收到员工3585的消息135942879（sessionId=0-3585，direction=inbound），经过原T22身份、allowlist及去重得到accepted。生产控制处理器在隔离空库五次耗时2.73–4.29ms；加入十万条其他thread的合成discarded历史后为125.58–222.96ms；仅增加thread_id索引后为2.74–6.79ms。每组是同一可信结果的五次定向重放，不是十五条新入站；该结果确认真实消息触发的生产路径存在容量问题，不代表当前业务库规模或完整消息往返延迟。烟测退出0，自建库kairo_t19_ba14e7b1747e4f56ad08caa40571d5ed（PID30485/30486）及本次Driver连接已清理，无Bot回复。
+
+证据成立后采用最小修复：新增 `000010-message-batch-thread-index.sql`，仅创建 `kairo.message_batches(thread_id)` 索引，Down仅删除该索引。复用既有启动前、单事务迁移方式，不改查询、锁序、任务状态、T22入口或Driver，不引入缓存/计数/兼容路径。正常CREATE INDEX会在迁移期间限制该表写入，沿用现有停机迁移边界，不擅自改成事务外并发建索引，也未对配置所指业务库执行迁移。
+
+正式迁移独立验证采用 `createTaskTestDatabase` 创建并核对自有库：up后生产prepareContext五次2.86–4.22ms；通过node-pg-migrate回滚000010后126.76–216.62ms；重新up后2.73–3.70ms。每一步旧thread不变、十万历史均保留；最后重复迁移返回0项。该up/down/up对照排除了仅由首次缓存变化造成的假改善。自建库kairo_t19_64b3093249824254b61e1275814ee136已清理，两个一次性烟测脚本验收后删除。
+
+实际执行：
+
+```powershell
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-real-index-smoke.ts
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-229-t24-context/apps/kairo/tmp/t24-index-migration-smoke.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests/integration/send-service.test.ts tests/integration/private-chat-store.test.ts tests/integration/task-store
+```
+
+两个烟测退出0；最终真实PostgreSQL集成9文件111/111通过，全部应用正式000010迁移。本次只有SQL迁移与文档变化，TypeScript代码沿用此前Optional精简后根build/typecheck/test/lint的Driver330/App303通过结果，没有声称重新运行根四命令。现有行为回归保持不变，不增加绑定具体执行计划或易波动耗时阈值的永久单测。T35各任务状态/new真机放行仍未执行，PR仍草稿，不合并或关闭issue。

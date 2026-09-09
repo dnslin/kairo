@@ -22,13 +22,16 @@ import {
 } from './send-policy.js';
 
 type OutboundDriver = Pick<IKK9Driver, 'sendText' | 'getSendStatus'>;
+type SendHandoff = {
+  result: Promise<{ result: SendResult; observedAt: number } | { error: AppError }>;
+};
 
 export interface SendServiceOptions {
   createDriver(store: SendOperationStore): OutboundDriver;
   driverStore: SendOperationStore;
   dispatches: SendDispatchStore;
-  tasks: Pick<TaskStore, 'getTask' | 'transitionTask'>;
-  contexts: Pick<PrivateChatStore, 'getContext' | 'getRawMessage'>;
+  tasks: Pick<TaskStore, 'getTask' | 'transitionTask' | 'withTaskOutput'>;
+  contexts: Pick<PrivateChatStore, 'getContext' | 'getRawMessage' | 'withContextOutput'>;
   logger: AppLogger;
 }
 
@@ -89,7 +92,29 @@ export function createSendService(options: SendServiceOptions): SendService {
     return dispatches.compareAndSet(dispatch.operationId, dispatch.revision, {
       ...dispatch,
       ...update,
+      resultAt: isDispatchTerminal(update.status ?? dispatch.status)
+        ? (dispatch.resultAt ?? update.resultAt ?? Date.now())
+        : null,
     });
+  }
+
+  function validTask(request: SendRequest, task: Task, afterTrigger = false): boolean {
+    if (request.purpose === 'final') {
+      if (task.status !== 'ready_to_send' && task.status !== 'sending') return false;
+      return (
+        (afterTrigger && task.status === 'sending') ||
+        (task.executionDeadline !== null && Date.now() < task.executionDeadline)
+      );
+    }
+    if (request.purpose === 'queued')
+      return task.status === 'queued' && Date.now() < task.queueDeadline;
+    if (request.purpose === 'progress')
+      return (
+        task.status === 'running' &&
+        task.executionDeadline !== null &&
+        Date.now() < task.executionDeadline
+      );
+    return task.status !== 'cancelled';
   }
 
   async function valid(request: SendRequest, afterTrigger = false): Promise<boolean> {
@@ -117,22 +142,7 @@ export function createSendService(options: SendServiceOptions): SendService {
       context.employeeId !== task.employeeId
     )
       return false;
-    if (request.purpose === 'final') {
-      if (task.status !== 'ready_to_send' && task.status !== 'sending') return false;
-      return (
-        (afterTrigger && task.status === 'sending') ||
-        (task.executionDeadline !== null && Date.now() < task.executionDeadline)
-      );
-    }
-    if (request.purpose === 'queued')
-      return task.status === 'queued' && Date.now() < task.queueDeadline;
-    if (request.purpose === 'progress')
-      return (
-        task.status === 'running' &&
-        task.executionDeadline !== null &&
-        Date.now() < task.executionDeadline
-      );
-    return task.status !== 'cancelled';
+    return validTask(request, task, afterTrigger);
   }
 
   async function enterSending(request: SendRequest): Promise<void> {
@@ -152,6 +162,11 @@ export function createSendService(options: SendServiceOptions): SendService {
   async function finishTask(request: SendRequest, dispatch: SendDispatch): Promise<SendDispatch> {
     if (!isDispatchTerminal(dispatch.status)) return dispatch;
     if (request.purpose === 'final' && request.subject.kind === 'task') {
+      if (
+        (dispatch.status === 'delivered' || dispatch.status === 'send_unconfirmed') &&
+        dispatch.resultAt === null
+      )
+        throw new Error('最终发送结果缺少真实判定时刻，不能恢复上下文空闲起点');
       const task = await tasks.getTask(request.subject.taskId);
       if (
         task &&
@@ -180,6 +195,9 @@ export function createSendService(options: SendServiceOptions): SendService {
           taskId: task.taskId,
           inputVersion: request.subject.inputVersion,
           now: Date.now(),
+          ...(to === 'completed' || to === 'send_unconfirmed'
+            ? { idleSince: dispatch.resultAt! }
+            : {}),
           from: task.status,
           to,
         });
@@ -191,7 +209,8 @@ export function createSendService(options: SendServiceOptions): SendService {
   async function observe(
     request: SendRequest,
     dispatch: SendDispatch,
-    result: SendResult
+    result: SendResult,
+    observedAt = Date.now()
   ): Promise<SendDispatch> {
     checkOpen();
     if (!result.status || (result.status === 'delivered' && !result.messageId)) {
@@ -203,7 +222,11 @@ export function createSendService(options: SendServiceOptions): SendService {
     const status = (await valid(request, true))
       ? statusAfterObservation(result.status, dispatch)
       : 'cancelled';
-    const saved = await change(dispatch, { status, messageId: result.messageId ?? null });
+    const saved = await change(dispatch, {
+      status,
+      messageId: result.messageId ?? null,
+      resultAt: isDispatchTerminal(status) ? observedAt : null,
+    });
     if (!saved) return current(dispatch);
     logger[status === 'send_unconfirmed' ? 'warn' : 'info']({
       event: '运行状态',
@@ -215,7 +238,31 @@ export function createSendService(options: SendServiceOptions): SendService {
     return saved;
   }
 
+  async function adoptStoredDelivery(
+    request: SendRequest,
+    dispatch: SendDispatch
+  ): Promise<SendDispatch | null> {
+    // 读取既有送达事实不消耗 Driver 查询机会，也不能因恢复中断而刷新原时间。
+    const priorEvidence = await options.driverStore.get(dispatch.operationId);
+    if (priorEvidence?.status === 'delivered') {
+      return observe(
+        request,
+        dispatch,
+        {
+          success: true,
+          status: 'delivered',
+          operationId: priorEvidence.operationId,
+          messageId: priorEvidence.messageId,
+        },
+        priorEvidence.updatedAt
+      );
+    }
+    return null;
+  }
+
   async function query(request: SendRequest, dispatch: SendDispatch): Promise<SendDispatch> {
+    const delivered = await adoptStoredDelivery(request, dispatch);
+    if (delivered) return delivered;
     if (dispatch.queryUsed) {
       const saved = await change(dispatch, { status: 'send_unconfirmed' });
       if (saved)
@@ -230,7 +277,12 @@ export function createSendService(options: SendServiceOptions): SendService {
     }
     if (dispatch.queryDueAt === null) throw new Error('已触发发送缺少查询截止时间');
     const remaining = dispatch.queryDueAt - Date.now();
-    if (remaining > 0) await delay(remaining, undefined, { signal: shutdown.signal });
+    if (remaining > 0) {
+      await delay(remaining, undefined, { signal: shutdown.signal });
+      // 等待期间旧调用仍可能保存回执；查询前不能继续使用等待前的未知快照。
+      const deliveredWhileWaiting = await adoptStoredDelivery(request, dispatch);
+      if (deliveredWhileWaiting) return deliveredWhileWaiting;
+    }
     checkOpen();
     if (!(await valid(request, true))) {
       const saved = await change(dispatch, { status: 'cancelled' });
@@ -269,23 +321,48 @@ export function createSendService(options: SendServiceOptions): SendService {
     });
     if (!claimed) return current(dispatch);
     await enterSending(request);
-    // /new 可在前次检查与 ready_to_send→sending 之间作废上下文，必须再次检查。
-    if (!(await valid(request, dispatch.sendCalls > 0))) {
+    // 只在锁内同步交付 Driver；回执和数据库提交分别等待，不让旧调用阻塞 /new。
+    const output = (): SendHandoff => {
+      checkOpen();
+      try {
+        return {
+          result: driver
+            .sendText(request.text, {
+              operationId: claimed.operationId,
+              targetSessionId: claimed.sessionId,
+            })
+            .then(
+              result => ({ result, observedAt: Date.now() }),
+              cause => ({ error: new AppError('driver', { cause }) })
+            ),
+        };
+      } catch (cause) {
+        throw new AppError('driver', { cause });
+      }
+    };
+    const subject = request.subject;
+    let triggered: SendHandoff | null | undefined;
+    if (subject.kind === 'task') {
+      const gated = await tasks.withTaskOutput(subject, task =>
+        validTask(request, task, dispatch.sendCalls > 0) ? output() : null
+      );
+      triggered = gated?.value;
+    } else if (subject.threadId) {
+      const gated = await contexts.withContextOutput(subject.threadId, context =>
+        context.botId === subject.botId && context.sessionId === subject.sessionId ? output() : null
+      );
+      triggered = gated?.value;
+    } else {
+      triggered = output();
+    }
+    if (!triggered) {
       const saved = await change(claimed, { status: 'cancelled' });
       return saved ?? current(claimed);
     }
-    checkOpen();
-    let result: SendResult;
-    try {
-      result = await driver.sendText(request.text, {
-        operationId: claimed.operationId,
-        targetSessionId: claimed.sessionId,
-      });
-    } catch (cause) {
-      // 异常不证明发送未发生；保留 sending 与已占用预算，显式恢复时只查不盲发。
-      throw new AppError('driver', { cause });
-    }
-    return observe(request, claimed, result);
+    const observed = await triggered.result;
+    // 异常不证明发送未发生；保留 sending 与已占用预算，显式恢复时只查不盲发。
+    if ('error' in observed) throw observed.error;
+    return observe(request, claimed, observed.result, observed.observedAt);
   }
 
   async function drive(

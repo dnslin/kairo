@@ -22,6 +22,7 @@ type SendDispatchRow = Record<string, unknown> & {
   send_calls: number;
   query_used: boolean;
   query_due_at: DatabaseTimestamp | null;
+  result_at: DatabaseTimestamp | null;
   message_id: string | null;
   revision: number;
 };
@@ -56,6 +57,7 @@ const compareAndSetQuery = `
     query_used = $5,
     query_due_at = $6,
     message_id = $7,
+    result_at = $8,
     revision = revision + 1
   WHERE operation_id = $1
     AND revision = $2
@@ -66,7 +68,7 @@ const compareAndSetQuery = `
 function normalizeTimestamp(value: DatabaseTimestamp): number {
   const timestamp = value instanceof Date ? value.getTime() : new Date(value).getTime();
   if (!Number.isFinite(timestamp)) {
-    throw new Error('数据库字段 query_due_at 不是有效时间');
+    throw new Error('数据库发送时间字段不是有效时间');
   }
   return timestamp;
 }
@@ -83,6 +85,7 @@ function mapRow(row: SendDispatchRow): SendDispatch {
     sendCalls: row.send_calls,
     queryUsed: row.query_used,
     queryDueAt: row.query_due_at === null ? null : normalizeTimestamp(row.query_due_at),
+    resultAt: row.result_at === null ? null : normalizeTimestamp(row.result_at),
     messageId: row.message_id,
     revision: row.revision,
   };
@@ -136,6 +139,7 @@ export class PostgresSendDispatchStore implements SendDispatchStore {
       update.queryUsed,
       update.queryDueAt === null ? null : new Date(update.queryDueAt),
       update.messageId,
+      update.resultAt === null ? null : new Date(update.resultAt),
     ]);
     const row = result.rows[0];
     return row ? mapRow(row) : null;

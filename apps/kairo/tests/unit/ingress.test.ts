@@ -60,6 +60,7 @@ function fixture(employeeAllowlist: readonly string[] = ['1001']) {
       queryDueAt: null,
       messageId: '通知消息',
       revision: 1,
+      resultAt: NOW,
     }),
   };
   const logger = {

@@ -58,8 +58,7 @@ export interface ClaimTaskInput extends TaskVersion {
 }
 
 /** 领取、采用结果和员工等待必须走专用接口，不能用普通状态更新绕过。 */
-export type TransitionTaskInput = TaskVersion &
-  (
+export type TransitionTaskInput = TaskVersion & { idleSince?: number } & (
     | { from: 'running'; to: 'failed'; expectedAttemptId: string }
     | { from: TaskStatus; to: 'sending' | Exclude<TaskTerminalStatus, 'failed'> }
     | { from: Exclude<TaskStatus, 'running'>; to: 'failed' }
@@ -93,6 +92,13 @@ export interface FinishAttemptInput {
 
 export interface AdoptAttemptInput extends TaskVersion {
   attemptId: string;
+}
+
+export interface TaskOutputScope {
+  taskId: string;
+  inputVersion: number;
+  contextVersion?: number;
+  attemptId?: string;
 }
 
 export type UserWaitResolution = 'accepted' | 'declined' | 'cancelled' | 'timed_out';
@@ -142,4 +148,9 @@ export interface TaskStore {
   getUserWait(waitId: string): Promise<UserWait | null>;
   /** 同意恢复剩余执行预算；拒绝取消任务，不进行自然语言同意判断。 */
   resolveUserWait(input: ResolveUserWaitInput): Promise<boolean>;
+  /** 先锁有效 context 再锁 task；用途状态与截止由同步交付回调检查。 */
+  withTaskOutput<T>(
+    input: TaskOutputScope,
+    output: (task: Task) => T
+  ): Promise<{ value: T } | null>;
 }
