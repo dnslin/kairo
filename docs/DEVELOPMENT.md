@@ -1200,3 +1200,82 @@ pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests
 ```
 
 两个烟测退出0；最终真实PostgreSQL集成9文件111/111通过，全部应用正式000010迁移。本次只有SQL迁移与文档变化，TypeScript代码沿用此前Optional精简后根build/typecheck/test/lint的Driver330/App303通过结果，没有声称重新运行根四命令。现有行为回归保持不变，不增加绑定具体执行计划或易波动耗时阈值的永久单测。T35各任务状态/new真机放行仍未执行，PR仍草稿，不合并或关闭issue。
+
+## T23 消息聚合与阶段一输入拒绝（2026-09-09）
+
+T23 实现、真实 PostgreSQL 集成及独立原生计时运行验收已完成，T35 真机放行仍保留原边界。用户批准的空白、码点计数、立即拒绝和截止边界见 `SPEC-stage-1.md`；完整计划见 `tasks/plan.md` 第20节。T22、T27、T24 的完成状态沿用用户确认，不重复验收前置任务。
+
+### 接入与恢复合同
+
+`createCollector({ botId, store, contexts, sender, tasks, batching, configDigest, queueMs, logger })` 返回 `accept/recover/settled/close`。`accept` 只接收 T22 的返回值，内部复用 T24 控制处理器；未放行结果和 `/new` 直接返回，仅普通消息入批。与执行方共用同一个 context-service，不重复订阅 Driver，不创建 T28 Agent。`batching`、`queueMs` 取现有启动配置；未新增配置开关。
+
+`PostgresPrivateChatStore` 额外实现聚合专用 `CollectorStore`，复用原始消息、批次表和 context 行锁。在同一事务先结束已到期旧批、再追加新消息并校验整批；静默更新不改变最长截止。首条及最后消息的时间来自 T22 持久观察时间；等锁后重新采样当前时间，截止等号属于下一批。不同员工/Bot/会话不共用批次，`/new` 切换后旧追加、计时和恢复均不能推进。
+
+`000011-collector-settlement.sql` 只补 `finished_at`、`rejection_reason`、`settled_at` 及待恢复索引。三项分别保留原结束时间、首次拒绝原因、任务/提示收尾是否完成；用于恢复结束与副作用之间的中断，不是空 task 或通用事件账本。运行时不执行迁移，迁移不猜造历史时刻。旧手工 ready/rejected 缺少结束信息时明确报错，不提供兼容回退。
+
+collecting 不建任务。合法到期批次通过 T19 `createTask` 建立唯一 queued 账本，创建时刻为原批次最早截止，排队截止为该时刻加现有 queueMs；重启不推迟。已有运行 task/attempt/AbortController 不修改。T25 仍负责正式领取、队列容量和并发调度，本模块不执行 Agent。`accept` 的批次返回值是该次存储快照，不是绕过任务/context 门禁的执行授权。
+
+拒绝固定提示使用首条原始消息、thread 与 `notice:input_attachment` / `notice:input_too_long`，经过 T21 的 send/recover。恢复只在旧实例及其发送协调器停止后调用，同实例并发 recover 共用一次工作；任务唯一键和原发送意图保证重复收尾不新增任务或提示。最终完成后标记 settled，恢复不重复扫描已收尾历史；失效 context 的旧拒绝也不补发。
+
+`settled()` 等待已开始的工作并报告定时回调错误，不等待尚未到期的批次。直接 accept/recover 的异常仍由其 Promise 交给调用方；定时器没有直接调用方，因此同时记录关联日志并保存错误供 settled/close 观察。`close()` 清理本实例计时器并等待在途调用，不关闭调用方的 sender、Driver 或数据库池。调用方须处理这些 Promise，不得忽略失败。
+
+### 初次离线执行与配置阻塞记录
+
+- 输入策略首次因模块不存在而失败，实现后11项通过。聚合生命周期首次因模块不存在而失败；实现后发现故障注入放在accept前，改为在实际定时阶段注入，组合22项通过。
+- 新增并发反例：上一条收尾还在返回collecting快照，下一条已使批次rejected；原共用Promise漏掉立即提示。回归修复前失败（提示0次），改为同批收尾串行后复读数据库，组合23项通过，不增加总线或任务调度。
+- App typecheck首次指出单测无参数mock推导为空元组，改为真实TaskStore方法类型；App typecheck/build随后通过。相关ESLint首次指出两条多余非空断言，去除后通过，未放宽规则。
+- `pnpm --filter @kairo/app test -- tests/unit/collector.test.ts` 实际运行全部App默认测试，20文件326/326通过；不是只运行collector。包含聚合12项和输入策略11项，计时使用受控时钟，不是实等60秒。
+- `pnpm --filter @kairo/app test:integration -- tests/integration/collector-recovery` 实际退出1：本worktree没有 `.env`，进程缺少 `KAIRO_TEST_DATABASE_URL`。两个文件的23项在初始化前未执行，没有创建或迁移任何数据库，不能计为通过。
+
+### 复现命令与环境边界
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/collector.test.ts tests/unit/input-policy.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/collector-recovery
+pnpm --filter @kairo/app test:integration -- tests/integration/private-chat-store.test.ts tests/integration/new-context tests/integration/task-store tests/integration/send-service.test.ts
+pnpm --filter @kairo/app db:migrate:test
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app build
+```
+
+用户随后在本worktree提供测试配置，现有 `createTaskTestDatabase()` 使用该连接创建随机独立库；迁移前核对实际库名与两连接PID，只清理自己创建的库。配置所指原库不迁移、不写业务表；此前缺配置失败保留为历史记录，最终真实结果见下节。
+
+默认5秒静默和10条上限下，连续消息会在达到60秒前先静默结束或超条数拒绝。最长截止定向单元和原生烟测均使用现有quietMs=10000、7条每9秒消息，保持maxWaitMs=60000与maxMessages=10；正式YAML不变。恢复集成使用quietMs=5000/maxWaitMs=8000构造两条合法消息的最长剩余，不伪造默认配置下超过10条的可接受历史。
+
+本次不修改Driver、不连接真实KK9、不调用模型或ERP。T35真实IM三段发送、持续发送、附件拒绝和运行中补充放行仍由T35承担；本分支不合并、不关闭issue。
+
+### 追加审查修正与离线验证
+
+只读审查发现批量收尾使用Promise.all时，一批先失败会使外层调用提前退出，close漏等另一批在途操作。新增“两批分别失败、第二批挂起”的回归先实际失败，再将两处批量收尾改为专用processBatches：等待全部结果后，单个错误原样抛出，多个错误使用AggregateError保留；close仍等待完整在途调用。修复后定向聚合/策略24项通过。
+
+原有集成用例还补充：运行中补充的下一批实际建账后，原task/attempt/AbortSignal仍不变；/new竞争结束后新thread可以继续收集；同一条消息既超长又带附件只产生附件提示。删除聚合器并不调用的必需getCollectedBatch接口要求，具体存储类的只读查询仍保留。未增加测试框架、配置或兼容路径。
+
+最终实际执行App typecheck/build、相关九个TypeScript文件ESLint和Prettier检查通过。执行 `pnpm --filter @kairo/app exec vitest run --config vitest.config.ts --exclude "tests/integration/**"`：20文件327/327通过，含聚合13项和策略11项。两份审查均未执行测试；上述结果来自Main实际命令，不把审查意见当运行证据。
+
+本轮审查结束时真实PostgreSQL尚因配置缺失未执行；用户补齐后的结果如下。一次性探针在实际运行和自建库核验后删除，不增加正式启动入口。
+
+### 配置就绪后的真实数据库与原生计时验收
+
+实际执行：
+
+```powershell
+pnpm --filter @kairo/app test:integration -- tests/integration/collector-recovery
+pnpm --filter @kairo/app test:integration -- tests/integration/private-chat-store.test.ts tests/integration/new-context tests/integration/task-store tests/integration/send-service.test.ts
+pnpm --filter @kairo/app db:migrate:test
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/apps/kairo/tmp/t23-smoke.ts
+node --env-file=.env apps/kairo/tmp/t23-check-databases.mjs
+```
+
+- collector-recovery 两文件23/23通过；独立库为 `kairo_t19_022f8b9f771d4c0a9456d510df0f5fe7`（PID31362/31363）和 `kairo_t19_475e62ba31bc4cd8928557f276552e40`（PID31364/31365）。覆盖上下文切换、真实并发、原始正文、批次及任务唯一、重复提示防重和关闭连接后新实例恢复。时间边界使用明确的受控时钟。
+- 受影响私聊、上下文、任务及发送回归9文件111/111通过；不是重复放行T22/T27的真机前置任务。首次及重复迁移专题2项通过、6项按名称排除；各独立库均实际应用000011。未改Driver，沿用之前源码未变的App327项、类型/构建及静态检查结果，不声称本轮重新执行它们。
+- 普通tsx进程不使用假时钟，实际三段消息于首条后7175ms确认合并，最后一条后的静默为原5000ms；静默剩余恢复于首条后5108ms确认，重启没有获得新的5秒。
+- 七条每9秒持续消息使用quietMs=10000，旧实例在最长截止还剩5975ms时关闭并重建；总耗时60103ms时任务已经形成，原maxDeadline不变。这是实际等待60秒，不是默认5秒/10条能够一直持续60秒的声明。
+- 两个期限全部过期后，recover调用22ms完成，任务创建及排队截止仍来自原始最早截止。附件整批拒绝只产生一次提示，新批收到/new后保持discarded；迟到timer及再次recover均没有创建旧任务。
+- 烟测库 `kairo_t19_cf70846c65e24ab99648f9ca30e8fa34`（PID31479/31480）正常回收；普通Node只读查询本轮13个有输出记录的精确自建库名，残留为0，不按前缀扫描或删除其他库。T18自建库另由其现有afterAll完成清理。仅回收本任务资源，不接管其他进程或KK9。
+- 首次tsx命令使用相对 `../../.env` 时在加载配置前退出9，未访问数据库；改用当前worktree的绝对配置及脚本路径后退出0。没有更换凭证来源或静默回退。
+
+最终复杂度复核保留已有context锁、批次状态和T19/T21防重合同；移除无消费方的必需接口、冗余计时清理分支及多余断言，没有通用总线、额外配置、兼容层或完整调度器。两个一次性探针已删除，以上命令为运行历史；长期复现使用保留的单元/集成测试。
+
+未执行T35真实IM或操作系统强杀故障矩阵，未调用真实Agent/模型/ERP；运行任务不变由真实PostgreSQL账本、attempt和实际AbortController证明，出站使用FakeKK9Driver。未合并分支、未关闭issue。
+
+交付前把既有隔离场景补为三组消息交错各两条，并把运行中补充改为在原task/attempt登记后才新建下一批；不只验证已存在批次的追加。原样重跑collector-recovery两文件仍23/23，App typecheck及该测试ESLint/Prettier通过；生产代码未改，没有重复运行无变化的原生60秒烟测。新独立库为 `kairo_t19_22016a9c35494bb4a1931dadb686c866`（PID31527/31528）及 `kairo_t19_76163fb443a245129cfd64dfbea4802b`（PID31529/31530）；普通Node进程对累计15个有记录的精确自建库名只读查询，残留0、stderr为空、退出0。

@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { withTransaction } from '../../db/transaction.js';
 import { lockCurrentContext } from './context-lock.js';
+import type {
+  BatchingSettings,
+  CollectibleMessage,
+  CollectedBatch,
+  CollectorStore,
+} from './collector-types.js';
+import { evaluateInput, isEmptyInput } from './input-policy.js';
 import type {
   ChatContext,
   ContextScope,
@@ -48,6 +55,9 @@ type BatchRow = {
   quiet_deadline: Date;
   max_deadline: Date;
   status: MessageBatch['status'];
+  finished_at: Date | null;
+  rejection_reason: CollectedBatch['rejection'];
+  settled_at: Date | null;
 };
 
 function mapMessage(row: RawMessageRow): RawMessage {
@@ -91,9 +101,207 @@ function mapBatch(row: BatchRow): MessageBatch {
   };
 }
 
+function mapCollectedBatch(row: BatchRow): CollectedBatch {
+  return {
+    ...mapBatch(row),
+    finishedAt: row.finished_at?.getTime() ?? null,
+    rejection: row.rejection_reason,
+    settledAt: row.settled_at?.getTime() ?? null,
+  };
+}
+
 /** 连接池由调用方持有和关闭；运行时不迁移、不记录正文、不清理历史。 */
-export class PostgresPrivateChatStore implements PrivateChatStore {
+export class PostgresPrivateChatStore implements PrivateChatStore, CollectorStore {
   public constructor(private readonly pool: Pool) {}
+
+  public async collectMessage(
+    input: CollectibleMessage,
+    settings: BatchingSettings,
+    clock: () => number
+  ): Promise<CollectedBatch[]> {
+    return withTransaction(this.pool, async client => {
+      const { context } = input;
+      if ((await lockCurrentContext(client, context.threadId)) !== context.version) return [];
+      // 原消息锁保护跨 Bot 的唯一归批；正文和观察时刻只认持久化原件。
+      const raw = await client.query<RawMessageRow>(
+        `SELECT r.* FROM kairo.raw_messages r
+         JOIN kairo.contexts c
+           ON c.session_id = r.session_id AND c.employee_id = r.employee_id
+         WHERE c.thread_id = $1 AND c.bot_id = $2
+           AND r.session_id = $3 AND r.message_id = $4
+           AND r.employee_id = $5 AND r.direction = 'inbound'
+         FOR UPDATE OF r`,
+        [
+          context.threadId,
+          input.botId,
+          input.message.sessionId,
+          input.message.messageId,
+          input.message.employeeId,
+        ]
+      );
+      const rawRow = raw.rows[0];
+      if (!rawRow) throw new Error('聚合需要身份匹配的员工入站原始消息');
+      const message = mapMessage(rawRow);
+      if (isEmptyInput(message)) return [];
+      const previous = await client.query<BatchRow>(
+        `SELECT b.* FROM kairo.batch_messages bm
+         JOIN kairo.message_batches b USING (batch_id)
+         WHERE bm.session_id = $1 AND bm.message_id = $2`,
+        [message.sessionId, message.messageId]
+      );
+      const assigned = previous.rows[0];
+      if (assigned) {
+        return assigned.thread_id === context.threadId && assigned.status !== 'discarded'
+          ? [mapCollectedBatch(assigned)]
+          : [];
+      }
+
+      const now = clock();
+      // 等锁和迟到 timer 都不能将已到期消息回填到旧批次。
+      const expired = await client.query<BatchRow>(
+        `UPDATE kairo.message_batches
+         SET status = 'ready', finished_at = LEAST(quiet_deadline, max_deadline)
+         WHERE thread_id = $1 AND status = 'collecting'
+           AND LEAST(quiet_deadline, max_deadline) <= $2
+         RETURNING *`,
+        [context.threadId, new Date(now)]
+      );
+      const current = await client.query<BatchRow>(
+        `SELECT * FROM kairo.message_batches
+         WHERE thread_id = $1 AND status = 'collecting' FOR UPDATE`,
+        [context.threadId]
+      );
+      if (current.rows.length > 1) throw new Error('同一上下文存在多个正在聚合的批次');
+      let row = current.rows[0];
+      if (!row) {
+        const created = await client.query<BatchRow>(
+          `INSERT INTO kairo.message_batches
+             (batch_id, thread_id, employee_id, bot_id, session_id,
+              first_observed_at, quiet_deadline, max_deadline, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'collecting') RETURNING *`,
+          [
+            randomUUID(),
+            context.threadId,
+            message.employeeId,
+            input.botId,
+            message.sessionId,
+            new Date(message.observedAt),
+            new Date(message.observedAt + settings.quietMs),
+            new Date(message.observedAt + settings.maxWaitMs),
+          ]
+        );
+        row = created.rows[0];
+        if (!row) throw new Error('数据库未返回新建聚合批次');
+      } else {
+        const updated = await client.query<BatchRow>(
+          `UPDATE kairo.message_batches SET quiet_deadline = GREATEST(quiet_deadline, $2)
+           WHERE batch_id = $1 RETURNING *`,
+          [row.batch_id, new Date(message.observedAt + settings.quietMs)]
+        );
+        row = updated.rows[0];
+        if (!row) throw new Error('数据库未返回追加消息的聚合批次');
+      }
+      await client.query(
+        `INSERT INTO kairo.batch_messages (batch_id, session_id, message_id, position)
+         SELECT $1, $2, $3, COALESCE(MAX(position), 0) + 1
+         FROM kairo.batch_messages WHERE batch_id = $1`,
+        [row.batch_id, message.sessionId, message.messageId]
+      );
+      const messages = await client.query<RawMessageRow>(
+        `SELECT r.* FROM kairo.batch_messages bm
+         JOIN kairo.raw_messages r USING (session_id, message_id)
+         WHERE bm.batch_id = $1 ORDER BY bm.position`,
+        [row.batch_id]
+      );
+      const rejection = evaluateInput(messages.rows.map(mapMessage), settings);
+      const processedAt = clock();
+      const deadline = Math.min(row.quiet_deadline.getTime(), row.max_deadline.getTime());
+      if (rejection !== null || processedAt >= deadline) {
+        const finished = await client.query<BatchRow>(
+          `UPDATE kairo.message_batches
+           SET status = $2, rejection_reason = $3, finished_at = $4
+           WHERE batch_id = $1 AND status = 'collecting' RETURNING *`,
+          [
+            row.batch_id,
+            rejection === null ? 'ready' : 'rejected',
+            rejection,
+            new Date(rejection === null ? deadline : processedAt),
+          ]
+        );
+        row = finished.rows[0];
+        if (!row) throw new Error('数据库未返回结束的聚合批次');
+      }
+      return [...expired.rows.map(mapCollectedBatch), mapCollectedBatch(row)];
+    });
+  }
+
+  public async finishBatch(batchId: string, clock: () => number): Promise<CollectedBatch | null> {
+    return withTransaction(this.pool, async client => {
+      const row = await this.lockCollectedBatch(client, batchId);
+      if (!row) return null;
+      const deadline = Math.min(row.quiet_deadline.getTime(), row.max_deadline.getTime());
+      if (row.status !== 'collecting' || clock() < deadline) return mapCollectedBatch(row);
+      const result = await client.query<BatchRow>(
+        `UPDATE kairo.message_batches SET status = 'ready', finished_at = $2
+         WHERE batch_id = $1 AND status = 'collecting' RETURNING *`,
+        [batchId, new Date(deadline)]
+      );
+      const finished = result.rows[0];
+      if (!finished) throw new Error('数据库未返回结束的聚合批次');
+      return mapCollectedBatch(finished);
+    });
+  }
+
+  public async getCollectedBatch(batchId: string): Promise<CollectedBatch | null> {
+    const result = await this.pool.query<BatchRow>(
+      `SELECT b.* FROM kairo.message_batches b
+       JOIN kairo.contexts c USING (thread_id)
+       WHERE b.batch_id = $1 AND c.invalidated_at IS NULL AND b.status <> 'discarded'`,
+      [batchId]
+    );
+    return result.rows[0] ? mapCollectedBatch(result.rows[0]) : null;
+  }
+
+  public async listPendingBatches(botId: string): Promise<CollectedBatch[]> {
+    const result = await this.pool.query<BatchRow>(
+      `SELECT b.* FROM kairo.message_batches b
+       JOIN kairo.contexts c USING (thread_id)
+       WHERE b.bot_id = $1 AND c.invalidated_at IS NULL
+         AND (b.status = 'collecting'
+           OR (b.status IN ('ready', 'rejected') AND b.settled_at IS NULL))
+       ORDER BY b.first_observed_at, b.batch_id`,
+      [botId]
+    );
+    return result.rows.map(mapCollectedBatch);
+  }
+
+  public async settleBatch(batchId: string, settledAt: number): Promise<void> {
+    await withTransaction(this.pool, async client => {
+      const row = await this.lockCollectedBatch(client, batchId);
+      if (!row || row.settled_at !== null || (row.status !== 'ready' && row.status !== 'rejected'))
+        return;
+      await client.query(
+        `UPDATE kairo.message_batches SET settled_at = $2
+         WHERE batch_id = $1 AND settled_at IS NULL AND status IN ('ready', 'rejected')`,
+        [batchId, new Date(settledAt)]
+      );
+    });
+  }
+
+  private async lockCollectedBatch(client: PoolClient, batchId: string): Promise<BatchRow | null> {
+    const owner = await client.query<{ thread_id: string }>(
+      'SELECT thread_id FROM kairo.message_batches WHERE batch_id = $1',
+      [batchId]
+    );
+    if (!owner.rows[0] || (await lockCurrentContext(client, owner.rows[0].thread_id)) === null)
+      return null;
+    const result = await client.query<BatchRow>(
+      `SELECT * FROM kairo.message_batches
+       WHERE batch_id = $1 AND status <> 'discarded' FOR UPDATE`,
+      [batchId]
+    );
+    return result.rows[0] ?? null;
+  }
 
   public async insertRawMessage(
     input: RawMessageInput
