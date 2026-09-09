@@ -1180,3 +1180,5 @@ pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests
 ```
 
 Tool29/29，拆分发送61/61（25+14+22）；最终根四命令全部通过，Driver330、App303（18文件）。真实 PostgreSQL 组合4文件51/51，含上下文27、发送19、知识Tool5；知识路径使用真实Python与受控HTTP，不是ERP真机。中间一次清理导入误删START，typecheck明确失败；恢复导入后重新执行上述完整质量链通过，没有放宽检查。AST比对尝试因Eval运行时无法解析typescript包失败，改用六个完整测试分组逐字对照成功，不声称AST核验已通过。
+
+本轮真机监听最终等待十分钟仍未收到指定员工消息，明确以退出码1结束（`未在十分钟内收到指定员工真实消息`），不是性能实验失败，也不是通过。已断开本脚本 Driver 并删除自建库 `kairo_t19_51e9ccd146db47dca1bfaa86ed3800ff`（PID30302/30303）；未运行十万历史填充、临时索引或发送回复。Optional优化已由4dcc2b7推送，正式索引方案仍等待真实入站证据，不用此前合成SQL对照越过用户前提。
