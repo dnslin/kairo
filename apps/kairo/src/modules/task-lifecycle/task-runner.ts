@@ -261,6 +261,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         return;
       }
       const context = await options.chat.getContext(task.threadId);
+      controller.signal.throwIfAborted();
       if (
         !context ||
         context.invalidatedAt !== null ||
@@ -278,6 +279,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         configDigest: options.configDigest,
         expectedAttemptId: task.currentAttemptId,
       });
+      controller.signal.throwIfAborted();
       if (!attempt) {
         if (overdue()) expire();
         else await endFailed(new AppError('cancelled'));

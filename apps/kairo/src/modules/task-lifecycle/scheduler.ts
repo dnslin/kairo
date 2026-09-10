@@ -89,8 +89,8 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   }
 
   function launch(task: Task): void {
-    // 先登记占用，再进入执行器；终态或 abort 事件不能删除尚未退出的执行。
-    const work = Promise.resolve().then(() => runner.run(task));
+    // 同步登记 runner 的取消控制器和实际名额，不留 close 可越过的微任务窗口。
+    const work = runner.run(task);
     executions.set(task.taskId, { session: sessionKey(task), work });
     const release = (): void => {
       executions.delete(task.taskId);

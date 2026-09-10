@@ -415,6 +415,36 @@ describe('执行名额与生命周期', () => {
     expect(f.sent).toEqual([]);
   });
 
+  it('尝试已提交但回执未返回时关闭，等待收尾且不进入执行器', async () => {
+    const f = fixture();
+    const committed = deferred<TaskAttempt | null>();
+    const response = deferred<TaskAttempt | null>();
+    const start = f.store.startAttempt.getMockImplementation()!;
+    f.store.startAttempt.mockImplementation(input => {
+      void start(input).then(committed.resolve);
+      return response.promise;
+    });
+    const run = f.runner.run({ ...f.task });
+    const attempt = await committed.promise;
+    expect(attempt).not.toBeNull();
+    let closed = false;
+    const closing = f.runner.close().then(() => {
+      closed = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(closed).toBe(false);
+    response.resolve(attempt);
+    await Promise.all([run, closing]);
+    expect(f.task.status).toBe('cancelled');
+    expect(f.execute).not.toHaveBeenCalled();
+    expect(f.sent).toEqual([]);
+    expect(f.attempts.get(attempt!.attemptId)).toMatchObject({
+      finishedAt: 0,
+      errorType: 'cancelled',
+      adopted: false,
+    });
+  });
+
   it('完成 Agent 后的必要账本收尾仍计入进度和执行截止', async () => {
     const f = fixture();
     const save = deferred<boolean>();

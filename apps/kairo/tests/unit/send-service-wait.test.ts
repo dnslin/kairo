@@ -221,4 +221,50 @@ describe('T25 进度发送的等待暂停门禁', () => {
     expect(await service.send(f.request)).toEqual(result);
     expect(f.sends[0]).not.toHaveBeenCalled();
   });
+  it.each([true, false])(
+    '恢复请求加入旧暂停调用，回退胜出=%s时才续发原意图',
+    async rollbackWins => {
+      const f = fixture();
+      f.request.purpose = 'progress';
+      f.state.task.status = 'running';
+      const paused = deferred<void>();
+      const release = deferred<void>();
+      const compare = f.dispatches.compareAndSet.bind(f.dispatches);
+      vi.spyOn(f.dispatches, 'compareAndSet').mockImplementation(async (id, revision, update) => {
+        if (update.status === 'prepared') {
+          paused.resolve();
+          await release.promise;
+          if (!rollbackWins) {
+            const current = (await f.dispatches.get(id))!;
+            await compare(id, revision, { ...current, status: 'retryable', queryUsed: true });
+            return null;
+          }
+        }
+        return compare(id, revision, update);
+      });
+      f.state.taskOutputHook = () => {
+        f.state.task.status = 'waiting_for_user';
+        f.state.task.currentWaitId = '等待一';
+      };
+      const { service } = f.open();
+      const old = service.send(f.request);
+      await paused.promise;
+      f.state.taskOutputHook = undefined;
+      f.state.task.status = 'running';
+      const resumed = service.send(f.request);
+      const duplicate = service.send(f.request);
+      await vi.advanceTimersByTimeAsync(0);
+      release.resolve();
+      const [previous, result, repeated] = await Promise.all([old, resumed, duplicate]);
+      expect(result.operationId).toBe(previous.operationId);
+      expect(repeated).toEqual(result);
+      expect(result.status).toBe(rollbackWins ? 'delivered' : 'retryable');
+      expect(f.sends[0]).toHaveBeenCalledTimes(rollbackWins ? 1 : 0);
+      expect(f.queries[0]).not.toHaveBeenCalled();
+      if (rollbackWins) {
+        expect(await service.send(f.request)).toEqual(result);
+        expect(f.sends[0]).toHaveBeenCalledTimes(1);
+      }
+    }
+  );
 });

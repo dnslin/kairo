@@ -26,7 +26,8 @@ type SendHandoff = {
   result: Promise<{ result: SendResult; observedAt: number } | { error: AppError }>;
 };
 type OutputValidity = boolean | 'paused';
-type SendStep = { dispatch: SendDispatch; stopped: boolean };
+type SendOutcome = { dispatch: SendDispatch; paused?: boolean };
+type SendStep = SendOutcome & { stopped: boolean };
 
 function waitNoticeId(purpose: SendRequest['purpose']): string | undefined {
   return purpose.startsWith('notice:user_wait:')
@@ -65,7 +66,7 @@ export interface SendService {
 export function createSendService(options: SendServiceOptions): SendService {
   const { dispatches, tasks, contexts, logger } = options;
   const shutdown = new AbortController();
-  const active = new Map<string, Promise<SendDispatch>>();
+  const active = new Map<string, Promise<SendOutcome>>();
   const emergencyIds = new Set<string>();
   const emergencyStore = new InMemorySendOperationStore();
   // 这不是普通发送的存储回退：只有下方固定故障提示入口可登记例外 ID。
@@ -332,7 +333,7 @@ export function createSendService(options: SendServiceOptions): SendService {
 
   async function sendOnce(request: SendRequest, dispatch: SendDispatch): Promise<SendStep> {
     const effective = await valid(request, dispatch.sendCalls > 0);
-    if (effective === 'paused') return { dispatch, stopped: true };
+    if (effective === 'paused') return { dispatch, stopped: true, paused: true };
     if (!effective) {
       const saved = await change(dispatch, { status: 'cancelled' });
       return { dispatch: saved ?? (await current(dispatch)), stopped: true };
@@ -397,7 +398,11 @@ export function createSendService(options: SendServiceOptions): SendService {
             }
           : { status: 'cancelled' }
       );
-      return { dispatch: saved ?? (await current(claimed)), stopped: true };
+      return {
+        dispatch: saved ?? (await current(claimed)),
+        stopped: true,
+        paused: paused && saved !== null,
+      };
     }
     const observed = await triggered.result;
     // 异常不证明发送未发生；保留 sending 与已占用预算，显式恢复时只查不盲发。
@@ -412,8 +417,9 @@ export function createSendService(options: SendServiceOptions): SendService {
     request: SendRequest,
     dispatch: SendDispatch,
     recovering: boolean
-  ): Promise<SendDispatch> {
-    if (isDispatchTerminal(dispatch.status)) return finishTask(request, dispatch);
+  ): Promise<SendOutcome> {
+    if (isDispatchTerminal(dispatch.status))
+      return { dispatch: await finishTask(request, dispatch) };
     if (
       recovering &&
       (dispatch.status === 'sending' ||
@@ -422,7 +428,7 @@ export function createSendService(options: SendServiceOptions): SendService {
     ) {
       dispatch = await query(request, dispatch);
     } else if (dispatch.status === 'sending' || dispatch.status === 'querying') {
-      return dispatch;
+      return { dispatch };
     }
     while (!isDispatchTerminal(dispatch.status)) {
       checkOpen();
@@ -430,11 +436,12 @@ export function createSendService(options: SendServiceOptions): SendService {
       if (dispatch.status === 'prepared' || dispatch.status === 'retryable') {
         const step = await sendOnce(request, dispatch);
         dispatch = step.dispatch;
-        if (step.stopped) return finishTask(request, dispatch);
+        if (step.stopped)
+          return { dispatch: await finishTask(request, dispatch), paused: step.paused };
       } else if (dispatch.status === 'unknown') {
         dispatch = await query(request, dispatch);
       } else {
-        return dispatch;
+        return { dispatch };
       }
       // CAS 败方不接管胜方的进行中调用，普通重复事件不是进程恢复。
       if (
@@ -442,9 +449,9 @@ export function createSendService(options: SendServiceOptions): SendService {
         dispatch.status === 'sending' ||
         dispatch.status === 'querying'
       )
-        return dispatch;
+        return { dispatch };
     }
-    return finishTask(request, dispatch);
+    return { dispatch: await finishTask(request, dispatch) };
   }
 
   async function submit(input: SendRequest, recovering: boolean): Promise<SendDispatch> {
@@ -462,11 +469,17 @@ export function createSendService(options: SendServiceOptions): SendService {
     const dispatch = await dispatches.ensure(createSendIntent(request, sessionId));
     checkOpen();
     const existing = active.get(dispatch.operationId);
-    if (existing) return existing;
+    if (existing) {
+      const result = await existing;
+      // 恢复请求不能只消费旧暂停结果；旧活调用退出后才重检并推进同一意图。
+      // 只有确证暂停才续发，CAS 败方、已触发或未知结果仍由原流程处理。
+      if (result.paused && (await valid(request)) === true) return submit(request, recovering);
+      return result.dispatch;
+    }
     const work = drive(request, dispatch, recovering);
     active.set(dispatch.operationId, work);
     try {
-      return await work;
+      return (await work).dispatch;
     } catch (error) {
       logger.error({
         event: '运行失败',

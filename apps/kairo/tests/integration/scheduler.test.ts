@@ -282,6 +282,31 @@ describe('T25 真实 PostgreSQL 与受控执行器', () => {
     expect(runs).toHaveLength(1);
   });
 
+  it('领取完成后立即关闭，不启动执行且不遗留 running 或未结束尝试', async () => {
+    let closing: Promise<void> | undefined;
+    const claim = runtime.tasks.claimTask.bind(runtime.tasks);
+    vi.spyOn(runtime.tasks, 'claimTask').mockImplementation(input => {
+      const claimed = claim(input);
+      // 领取续体先执行；关闭随后发生在旧版延迟的 runner.run 之前。
+      void claimed.then(() => {
+        globalThis.queueMicrotask(() => {
+          closing = scheduler.close();
+        });
+      });
+      return claimed;
+    });
+    const { taskId } = await enqueue();
+    await vi.waitFor(() => expect(closing).toBeDefined());
+    await closing;
+    expect(runs).toEqual([]);
+    expect((await runtime.tasks.getTask(taskId!))?.status).toBe('cancelled');
+    const unfinished = await database.poolB.query(
+      'SELECT attempt_id FROM kairo.task_attempts WHERE task_id=$1 AND finished_at IS NULL',
+      [taskId]
+    );
+    expect(unfinished.rows).toEqual([]);
+  });
+
   it('真实入站到Collector的原生静默结束只交付一个任务，重复入站不再建账', async () => {
     collector = createCollector({
       botId: owner.botId,

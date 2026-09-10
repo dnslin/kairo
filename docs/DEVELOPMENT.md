@@ -1388,3 +1388,52 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 最终清理将执行/通知错误统一归 runner、调度自身错误归 scheduler；关闭分别等待两方一次，避免把同一个错误重复聚合。随后重新执行完整 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 全部通过：Driver330项、App368项；追加 scheduler 真实集成8项再次通过。该轮自建库 `kairo_t19_6bd940d701ed4999baf94c83cdbb0eb2`（PID36644/36645）正常回收。
 
 `node --env-file=.env apps/kairo/tmp/t25-check-databases.mjs` 对本轮输出记录的38个精确自建库名只读查询，残留0；不按前缀扫描或删除其他库。T18自建库由其既有afterAll完成清理。上述烟测与核验脚本随后删除，`.env`保留且不提交。类型服务初始化退出已报告工具问题；符号定位使用限定范围检索，未修改LSP配置。独立审查没有执行验证，所有命令结果均来自Main实际运行；外部跨模型CLI未获授权、未调用。
+
+### PR268：关闭竞态真实复现与进度真机验证等待（2026-09-10）
+
+用户要求先用真实环境确认，再修复，不将受控替身探针当作真机结果。本轮分别运行真实 PostgreSQL 关闭交错，以及真实 KK9/T22/T21/调度装配的进度监听；二者的证据边界不同。
+
+- 关闭基线使用合成入站、真实 context/batch/入队/领取 SQL，不连接 Driver。`pr268-close-real.ts --expect-bug` 在自建库 `kairo_t19_0f28174a43d4497a999c12264326cb10`（PID37013/37014）复现：正常 close 成功，任务仍 running、current_attempt_id=null、attempt=0、execute=0、取消调用=0。交错仅安排领取 Promise 续体与关闭微任务的顺序，不伪造持久状态。
+- 先新增真实数据库回归，定向测试失败于预期 cancelled、实际 running。最小修改为 scheduler 同步调用 runner.run，不再延迟交接；真实复验进一步暴露已取消任务仍继续创建 attempt/登记的问题，因此在读取 context 和创建 attempt 的异步返回后检查原 AbortSignal，已取消工作不再进入下一准备阶段，已保存 attempt 仍按原收尾流程结束。没有将数据库错误改写或吞掉。
+- 最终 `pr268-close-real.ts --expect-fixed` 使用同一交错，在自建库 `kairo_t19_0c6dfd55574f4e17a29b83a7370aebd1`（PID37049/37050）观察到真实取消 SQL 被另一连接的任务行锁阻塞，close 同时保持等待。释放本探针的锁后，取消提交先于 close 成功；最终 cancelled、attempt=0、execute=0、发送=0、错误日志=0。不能把这项证据称为员工入站或 IM 验收。
+- 进度真机入口实际核对 Bot5761、员工3585、私聊0-3585/int2024，通过真实 Driver 开始监听；120秒内未收到 `PR268-核验`，因此退出1。taskId=null、没有创建发送意图、没有发送Bot消息；未触发进度竞态，不能判断问题不存在。进度生产代码保持不变，待员工准备好后重启监听，再依次接收 `PR268-核验` 和收到验收问题后的 `PR268-继续`。
+- Optional 全面合并 scheduler.executions 与 runner.active 本轮不实施：前者负责会话占槽，后者支撑独立 runner 的取消及收尾接口。统一集合虽可删除部分代码，但需新增状态查询接口、迁移唤醒及等待合作，风险大于本轮收益。同步交接已经删除实际致错的中间微任务，不增加管理框架或公开接口。
+
+实际命令：
+
+```powershell
+node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/pr268-close-real.ts --expect-bug
+node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/pr268-close-real.ts --expect-fixed
+pnpm --filter @kairo/app test:integration -- tests/integration/scheduler.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/scheduler.test.ts tests/unit/task-runner.test.ts
+pnpm --filter @kairo/app build
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app test
+```
+
+最终真实调度集成9/9、定向单元33/33、App默认单元369/369；App构建、类型检查、四个修改源/测试文件的ESLint和Prettier检查通过。默认单元命令注入 `NODE_OPTIONS=--trace-uncaught --trace-warnings`；没有改测试范围或worker配置。首次静态检查发现测试的裸 queueMicrotask 未列入ESLint宿主全局，改为 globalThis.queueMicrotask，未压制规则；随后类型和静态检查通过。原有同会话、实际名额、等待及迟到结果回归均保留。
+
+本轮七个精确自建库名只读查询残留0；真机退出后再只读确认UID5761、Hook generation=null、binding不存在。关闭临时入口完成验证后删除；尚待员工参与的进度临时入口保留，不作为正式启动方式。没有修改Driver/T24实现、数据库迁移或正式Agent装配，没有提交推送、合并或关闭issue。
+
+### PR268：进度丢失真机确认与最小修复（2026-09-10）
+
+员工准备好后重启真实监听，Bot5761/员工3585/0-3585/int2024 的入站 `135999497`（PR268-核验）与 `135999563`（PR268-继续）均通过T22，真实原始消息重放返回duplicate。原生实等超过10秒后进入真实waiting，员工回答通过原等待账本恢复同一task；仅在真实发送reservation提交后及暂停回退CAS前人为延迟，不修改任务状态、员工答案、时钟或Driver回执。
+
+修复前在随机库 `kairo_t19_8fd478a4527f44229fb1d42a6772a5ff` 观察恢复执行12114ms：两次progress请求，Driver自动调用0次，唯一operation `7a6fde00-2617-4a29-86dc-7d8b5ab10e69` 停在prepared/sendCalls=0，task仍running。随后手动推进原意图才真正送达 `135999583`，这只是发送正对照，不计作自动进度。问题提示 `135999527` 和正对照均已撤回，进程退出0，无清理错误。这证实实际组件在受控交错下丢进度，不声称故障在无延迟注入时自然出现，也不是正式Agent/T35验收。
+
+新增重叠回归先失败于prepared而非delivered。修复仅改变发送服务内部结果：明确标记实际暂停；锁内暂停回退必须CAS成功才保留该标记，败方不得接管胜方。加入旧活调用的恢复请求等待其退出，再检查当前任务有效性并重新推进原operation/purpose；公开SendService接口、持久化格式、Driver及既有实际发送/查询预算不变。两个同时到达的恢复请求也只能形成一次交付，不加入轮询或通用重试。
+
+修复后发送/调度定向单元104项通过，包含暂停续发与CAS败方不续发；真实PostgreSQL发送/调度5文件50项通过；App默认23文件371项通过，App构建、类型及相关ESLint/Prettier通过。命令为 `pnpm --filter @kairo/app exec vitest run tests/unit/send-service tests/unit/task-runner.test.ts tests/unit/scheduler.test.ts`、`pnpm --filter @kairo/app test:integration -- tests/integration/send-service tests/integration/scheduler` 及原App质量命令。
+
+修复后的两轮真机监听分别等待首条员工消息120秒、300秒，均未收到新 `PR268-核验`，以超时退出1；两轮均taskId=null、无发送意图、无Bot消息、无清理错误。第二轮只延长临时入口等待，未改正式业务期限。尚不能宣称修复后真机通过；保留临时入口，待员工可再次连续完成两条消息时复验，不自动反复重启。最终对本阶段15个精确自建库名只读查询残留0；KK9再次只读确认UID5761、Hook generation=null、binding不存在。代码已修复并完成上述回归，但尚未提交推送或合并。
+
+### PR268：最终真机复验通过（2026-09-10）
+
+用户再次准备好后，以受监督进程运行 `node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/pr268-progress-real.ts --expect-fixed`，最终退出0。此次延用同一受控交错与真实组件，不修改生产代码或放宽断言；此前两次修复后监听超时仅为中间历史结果，本轮完成了实际复验。
+
+- 真实员工消息 `136001699`（PR268-核验）、`136001789`（PR268-继续）经T22接受并验证持久去重。自建库为 `kairo_t19_9bb605cab63d48939ba002d8965b11be`，连接PID37268/37269；同一task `b11dc332-0dc7-4068-ab12-fd81b56db6b9` 在原等待记录上accepted并恢复执行。
+- 原暂停回退完成后，恢复请求重新检查并推进唯一progress意图。三次ensure均指向同一个operation `a0d7ce28-35fd-407c-b4c0-5e0255fbacd2`，实际Driver调用1次、sendCalls=1、queryUsed=false；协调与Driver账本均为delivered，原生消息ID均为 `136001797`，Driver报告确认耗时475ms。没有手动正对照；自动观察3051ms期间任务仍为running。
+- 验收问题 `136001727` 和自动进度 `136001797` 均已撤回，未撤回员工消息；清理错误及未撤回Bot消息均为空。关闭自有调度/发送/Driver/连接池后，对本阶段累计16个精确自建库名只读查询残留0；再次确认UID5761、Hook generation=null、binding不存在。
+- 验证完成后删除临时真机入口，保留正式竞争回归。生产代码自上一轮App371项、真实数据库50项、构建/类型及定向静态检查通过后未再修改，因此本轮不重复运行不变的质量命令。公开接口、数据库迁移、Driver实现与正式Agent装配均未改变。
+
+至此，关闭竞争与进度竞争均已有修复前真实环境证据、最小修复和对应修复后复验。进度证据包含真实员工入站、PostgreSQL及KK9实际发送，但执行内容和竞态延迟仍受控，不替代正式Agent或完整T35双员工慢查询验收。未提交推送、合并分支或关闭issue。
