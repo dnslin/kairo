@@ -413,7 +413,7 @@ describe('T24 切换与 T19 运行中补充', () => {
         now: clock,
         executionMs: 240000,
       })
-    ).toBe(true);
+    ).not.toBeNull();
     const attempt = await current.tasks.startAttempt({
       taskId: task!.taskId,
       inputVersion: 1,

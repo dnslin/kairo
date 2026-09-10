@@ -40,9 +40,12 @@ function taskFixture(executionDeadline = Date.now() + 10000) {
     createdAt: now,
     updatedAt: now,
     queueDeadline: executionDeadline,
+    executionBudgetMs: 10_000,
+    queueNoticeRequired: false,
     executionStartedAt: now,
     executionDeadline,
     currentAttemptId: attemptId,
+    currentWaitId: null,
     endedAt: null,
   };
   const tasks: Pick<TaskStore, 'withTaskOutput'> = {

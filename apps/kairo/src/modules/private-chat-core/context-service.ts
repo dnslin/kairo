@@ -13,7 +13,9 @@ export interface ContextService {
   resolve(scope: ContextScope, reset: boolean): Promise<PreparedContext>;
   /** 登记实际传给 Agent 的控制器；执行方在 settled 后释放，不在这里启动执行。 */
   registerExecution(
-    scope: Required<TaskOutputScope>,
+    scope: Required<
+      Pick<TaskOutputScope, 'taskId' | 'inputVersion' | 'attemptId' | 'contextVersion'>
+    >,
     controller: AbortController
   ): Promise<() => void>;
 }

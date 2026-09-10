@@ -6,8 +6,11 @@ import type {
   AdoptAttemptInput,
   ClaimTaskInput,
   CreateTaskInput,
+  EnqueueTaskInput,
+  EnqueueTaskResult,
   FinishAttemptInput,
   ResolveUserWaitInput,
+  ResumeTaskInput,
   StartAttemptInput,
   Task,
   TaskAttempt,
@@ -33,9 +36,12 @@ type TaskRow = {
   created_at: Date;
   updated_at: Date;
   queue_deadline: Date;
+  execution_budget_ms: string | null;
+  queue_notice_required: boolean;
   execution_started_at: Date | null;
   execution_deadline: Date | null;
   current_attempt_id: string | null;
+  current_wait_id: string | null;
   ended_at: Date | null;
 };
 
@@ -80,9 +86,12 @@ function mapTask(row: TaskRow): Task {
     createdAt: row.created_at.getTime(),
     updatedAt: row.updated_at.getTime(),
     queueDeadline: row.queue_deadline.getTime(),
+    executionBudgetMs: row.execution_budget_ms === null ? null : Number(row.execution_budget_ms),
+    queueNoticeRequired: row.queue_notice_required,
     executionStartedAt: row.execution_started_at?.getTime() ?? null,
     executionDeadline: row.execution_deadline?.getTime() ?? null,
     currentAttemptId: row.current_attempt_id,
+    currentWaitId: row.current_wait_id,
     endedAt: row.ended_at?.getTime() ?? null,
   };
 }
@@ -157,9 +166,10 @@ export class PostgresTaskStore implements TaskStore {
 
   private async lockAdoptableTask(
     client: PoolClient,
-    input: AdoptAttemptInput
+    input: AdoptAttemptInput,
+    lockedTask?: Task
   ): Promise<Task | null> {
-    const task = await this.lockTask(client, input, ['running']);
+    const task = lockedTask ?? (await this.lockTask(client, input, ['running']));
     if (
       !task ||
       task.currentAttemptId !== input.attemptId ||
@@ -207,6 +217,81 @@ export class PostgresTaskStore implements TaskStore {
     });
   }
 
+  public async enqueueTask(input: EnqueueTaskInput): Promise<EnqueueTaskResult> {
+    return withTransaction(this.pool, async client => {
+      const owner = await client.query<{ thread_id: string }>(
+        'SELECT thread_id FROM kairo.message_batches WHERE batch_id = $1',
+        [input.batchId]
+      );
+      if (!owner.rows[0] || (await lockCurrentContext(client, owner.rows[0].thread_id)) === null)
+        return { status: 'stale' };
+      const batch = await client.query<{
+        status: string;
+        rejection_reason: string | null;
+        bot_id: string;
+        session_id: string;
+        nonempty: boolean;
+      }>(
+        `SELECT b.status, b.rejection_reason, b.bot_id, b.session_id,
+           EXISTS (SELECT 1 FROM kairo.batch_messages m WHERE m.batch_id = b.batch_id) AS nonempty
+         FROM kairo.message_batches b WHERE b.batch_id = $1 FOR UPDATE`,
+        [input.batchId]
+      );
+      const row = batch.rows[0];
+      if (!row || row.status === 'discarded') return { status: 'stale' };
+      const existing = await client.query<TaskRow>(
+        'SELECT * FROM kairo.tasks WHERE batch_id = $1',
+        [input.batchId]
+      );
+      if (existing.rows[0]) return { status: 'accepted', task: mapTask(existing.rows[0]) };
+      if (row.status === 'rejected' && row.rejection_reason === 'queue_full')
+        return { status: 'full' };
+      if (row.status !== 'ready' || !row.nonempty) return { status: 'stale' };
+      const counts = await client.query<{ queued: string; busy: boolean }>(
+        `SELECT count(*) FILTER (WHERE status = 'queued') AS queued, count(*) > 0 AS busy
+         FROM kairo.tasks WHERE bot_id = $1 AND session_id = $2
+           AND status IN ('queued', 'running', 'waiting_for_user', 'ready_to_send', 'sending')`,
+        [row.bot_id, row.session_id]
+      );
+      const count = counts.rows[0]!;
+      if (Number(count.queued) >= input.queueLimit) {
+        await client.query(
+          `UPDATE kairo.message_batches SET status = 'rejected', rejection_reason = 'queue_full'
+           WHERE batch_id = $1`,
+          [input.batchId]
+        );
+        return { status: 'full' };
+      }
+      const inserted = await client.query<TaskRow>(
+        `INSERT INTO kairo.tasks
+           (task_id, batch_id, thread_id, employee_id, bot_id, session_id, input_version,
+            config_digest, status, created_at, updated_at, queue_deadline, queue_notice_required)
+         SELECT $1, batch_id, thread_id, employee_id, bot_id, session_id, 1,
+           $3, 'queued', $4, $4, $5, $6 FROM kairo.message_batches WHERE batch_id = $2
+         RETURNING *`,
+        [
+          input.taskId,
+          input.batchId,
+          input.configDigest,
+          new Date(input.now),
+          new Date(input.queueDeadline),
+          count.busy,
+        ]
+      );
+      return { status: 'accepted', task: mapTask(inserted.rows[0]!) };
+    });
+  }
+
+  public async listActiveTasks(): Promise<Task[]> {
+    const result = await this.pool.query<TaskRow>(
+      `SELECT t.* FROM kairo.tasks t JOIN kairo.contexts c USING (thread_id)
+       WHERE c.invalidated_at IS NULL
+         AND t.status IN ('queued', 'running', 'waiting_for_user', 'ready_to_send', 'sending')
+       ORDER BY t.created_at, t.task_id`
+    );
+    return result.rows.map(mapTask);
+  }
+
   public async getTask(taskId: string): Promise<Task | null> {
     const result = await this.pool.query<TaskRow>('SELECT * FROM kairo.tasks WHERE task_id = $1', [
       taskId,
@@ -214,23 +299,56 @@ export class PostgresTaskStore implements TaskStore {
     return result.rows[0] ? mapTask(result.rows[0]) : null;
   }
 
-  public async claimTask(input: ClaimTaskInput): Promise<boolean> {
+  public async claimTask(input: ClaimTaskInput): Promise<Task | null> {
     if (input.executionMs <= 0) throw new Error('执行预算必须大于零');
     return withTransaction(this.pool, async client => {
-      if (!(await this.lockTask(client, input, ['queued']))) return false;
-      const result = await client.query(
+      const task = await this.lockTask(client, input, ['queued']);
+      if (!task) return null;
+      const blocked = await client.query(
+        `SELECT task_id FROM kairo.tasks WHERE bot_id = $1 AND session_id = $2
+         AND task_id <> $3
+         AND status IN ('queued', 'running', 'waiting_for_user', 'ready_to_send', 'sending')
+         AND (status <> 'queued' OR (created_at, task_id) < ($4, $3)) LIMIT 1`,
+        [task.botId, task.sessionId, task.taskId, new Date(task.createdAt)]
+      );
+      if (blocked.rowCount !== 0) return null;
+      const now = typeof input.now === 'function' ? input.now() : input.now;
+      const result = await client.query<TaskRow>(
         `UPDATE kairo.tasks SET status = 'running', updated_at = $3,
-         execution_started_at = $3, execution_deadline = $4
+         execution_started_at = $3, execution_deadline = $4, execution_budget_ms = $5
        WHERE task_id = $1 AND input_version = $2 AND status = 'queued'
-         AND queue_deadline > $3`,
+         AND queue_deadline > $3 RETURNING *`,
         [
           input.taskId,
           input.inputVersion,
-          new Date(input.now),
-          new Date(input.now + input.executionMs),
+          new Date(now),
+          new Date(now + input.executionMs),
+          input.executionMs,
         ]
       );
-      return result.rowCount === 1;
+      return result.rows[0] ? mapTask(result.rows[0]) : null;
+    });
+  }
+
+  public async resumeTask(input: ResumeTaskInput): Promise<Task | null> {
+    return withTransaction(this.pool, async client => {
+      const task = await this.lockTask(client, input, ['waiting_for_user']);
+      if (!task) return null;
+      const wait = await client.query<WaitRow>(
+        `SELECT * FROM kairo.user_waits
+         WHERE wait_id = $1 AND task_id = $2 AND input_version = $3 FOR UPDATE`,
+        [task.currentWaitId, input.taskId, input.inputVersion]
+      );
+      const row = wait.rows[0];
+      if (!row || row.resolution !== 'accepted' || row.input_version !== input.inputVersion)
+        return null;
+      const now = typeof input.now === 'function' ? input.now() : input.now;
+      const result = await client.query<TaskRow>(
+        `UPDATE kairo.tasks SET status = 'running', updated_at = $2,
+           execution_deadline = $3, current_attempt_id = NULL WHERE task_id = $1 RETURNING *`,
+        [input.taskId, new Date(now), new Date(now + Number(row.remaining_execution_ms))]
+      );
+      return result.rows[0] ? mapTask(result.rows[0]) : null;
     });
   }
 
@@ -261,11 +379,17 @@ export class PostgresTaskStore implements TaskStore {
       let wait: UserWait | null = null;
       if (task.status === 'waiting_for_user') {
         const result = await client.query<WaitRow>(
-          'SELECT * FROM kairo.user_waits WHERE task_id = $1 AND closed_at IS NULL FOR UPDATE',
-          [input.taskId]
+          `SELECT * FROM kairo.user_waits
+           WHERE wait_id = $1 AND task_id = $2 AND input_version = $3 FOR UPDATE`,
+          [task.currentWaitId, input.taskId, input.inputVersion]
         );
-        if (!result.rows[0]) throw new Error('等待中的任务缺少未关闭的员工等待记录');
+        if (!result.rows[0]) throw new Error('等待中的任务缺少员工等待记录');
         wait = mapWait(result.rows[0]);
+        if (
+          wait.resolution !== null &&
+          (wait.resolution !== 'accepted' || input.to !== 'cancelled')
+        )
+          return false;
       }
       const deadline =
         task.status === 'queued'
@@ -306,7 +430,7 @@ export class PostgresTaskStore implements TaskStore {
       if (!(await this.lockTask(client, input, ['queued', 'running']))) return false;
       const result = await client.query(
         `UPDATE kairo.tasks SET input_version = input_version + 1,
-         current_attempt_id = NULL, updated_at = $3
+         current_attempt_id = NULL, current_wait_id = NULL, updated_at = $3
        WHERE task_id = $1 AND input_version = $2
          AND ((status = 'queued' AND queue_deadline > $3)
            OR (status = 'running' AND execution_deadline > $3))`,
@@ -382,7 +506,10 @@ export class PostgresTaskStore implements TaskStore {
 
   public async waitForUser(input: WaitForUserInput): Promise<boolean> {
     return withTransaction(this.pool, async client => {
-      const task = await this.lockAdoptableTask(client, input);
+      const locked = await this.lockTask(client, input, ['running']);
+      if (!locked) return false;
+      const now = typeof input.now === 'function' ? input.now() : input.now;
+      const task = await this.lockAdoptableTask(client, { ...input, now }, locked);
       if (!task || task.executionDeadline === null) return false;
       const inserted = await client.query(
         `INSERT INTO kairo.user_waits
@@ -398,9 +525,9 @@ export class PostgresTaskStore implements TaskStore {
           input.inputVersion,
           input.question,
           input.allowedQuestionIds,
-          new Date(input.now),
-          new Date(input.now + 600_000),
-          task.executionDeadline - input.now,
+          new Date(now),
+          new Date(now + 600_000),
+          task.executionDeadline - now,
         ]
       );
       if (inserted.rowCount !== 1) return false;
@@ -409,8 +536,8 @@ export class PostgresTaskStore implements TaskStore {
       ]);
       await client.query(
         `UPDATE kairo.tasks SET status = 'waiting_for_user', current_attempt_id = NULL,
-           updated_at = $2 WHERE task_id = $1`,
-        [input.taskId, new Date(input.now)]
+           current_wait_id = $3, updated_at = $2 WHERE task_id = $1`,
+        [input.taskId, new Date(now), input.waitId]
       );
       return true;
     });
@@ -424,10 +551,21 @@ export class PostgresTaskStore implements TaskStore {
     return result.rows[0] ? mapWait(result.rows[0]) : null;
   }
 
+  public async getTaskWait(taskId: string): Promise<UserWait | null> {
+    const result = await this.pool.query<WaitRow>(
+      `SELECT w.* FROM kairo.tasks t JOIN kairo.user_waits w
+         ON w.wait_id = t.current_wait_id AND w.task_id = t.task_id
+           AND w.input_version = t.input_version
+       WHERE t.task_id = $1`,
+      [taskId]
+    );
+    return result.rows[0] ? mapWait(result.rows[0]) : null;
+  }
+
   public async resolveUserWait(input: ResolveUserWaitInput): Promise<boolean> {
     return withTransaction(this.pool, async client => {
       const task = await this.lockTask(client, input, ['waiting_for_user']);
-      if (!task) return false;
+      if (!task || task.currentWaitId !== input.waitId) return false;
       // 不同 Bot 的任务行不同；先锁回答，再以新语句快照检查它是否已被消费。
       const answer = await client.query(
         `SELECT message_id FROM kairo.raw_messages
@@ -457,7 +595,6 @@ export class PostgresTaskStore implements TaskStore {
       );
       const row = result.rows[0];
       if (!row) return false;
-      const wait = mapWait(row);
       await client.query(
         `UPDATE kairo.user_waits SET closed_at = $2, resolution = $3, answer_message_id = $4
          WHERE wait_id = $1 AND closed_at IS NULL`,
@@ -466,14 +603,12 @@ export class PostgresTaskStore implements TaskStore {
       const accepted = input.decision === 'accepted';
       await client.query(
         `UPDATE kairo.tasks SET status = $2, updated_at = $3, ended_at = $4,
-           execution_deadline = CASE WHEN $2 = 'running' THEN $5 ELSE execution_deadline END,
            current_attempt_id = NULL WHERE task_id = $1`,
         [
           input.taskId,
-          accepted ? 'running' : 'cancelled',
+          accepted ? 'waiting_for_user' : 'cancelled',
           new Date(input.now),
           accepted ? null : new Date(input.now),
-          new Date(input.now + wait.remainingExecutionMs),
         ]
       );
       if (!accepted) await this.recordIdleSince(client, task.threadId, input.now);
@@ -501,6 +636,18 @@ export class PostgresTaskStore implements TaskStore {
       );
       if (!task || (input.attemptId !== undefined && input.attemptId !== task.currentAttemptId))
         return null;
+      if (input.userWaitId !== undefined) {
+        if (task.status !== 'waiting_for_user' || task.currentWaitId !== input.userWaitId)
+          return null;
+        const wait = await client.query<Pick<WaitRow, 'deadline'>>(
+          `SELECT deadline FROM kairo.user_waits
+           WHERE wait_id = $1 AND task_id = $2 AND input_version = $3
+             AND closed_at IS NULL FOR UPDATE`,
+          [input.userWaitId, input.taskId, input.inputVersion]
+        );
+        // 在全部锁和数据库读取完成后采样，检查到同步交付之间不再 await。
+        if (!wait.rows[0] || wait.rows[0].deadline.getTime() <= Date.now()) return null;
+      }
       return { value: output(task) };
     });
   }

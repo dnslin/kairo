@@ -54,10 +54,19 @@ export function createCollectorTestRuntime(
     store: base.chat,
     contexts: base.contexts,
     sender: base.sender,
-    tasks: base.tasks,
+    // T23 专题仅验证批次交付；完整调度接入由 scheduler 集成覆盖。
+    deliverReady: async batch => {
+      if (batch.finishedAt === null) throw new Error('测试批次缺少结束时刻');
+      await base.tasks.createTask({
+        taskId: randomUUID(),
+        batchId: batch.batchId,
+        configDigest: collectorDigest,
+        now: batch.finishedAt,
+        queueDeadline: batch.finishedAt + collectorQueueMs,
+      });
+      return true;
+    },
     batching: options.batching ?? collectorBatching,
-    configDigest: collectorDigest,
-    queueMs: collectorQueueMs,
     logger: createLogger({ write(): void {} }),
   });
   let closing: Promise<void> | undefined;

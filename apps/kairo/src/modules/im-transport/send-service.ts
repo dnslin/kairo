@@ -25,6 +25,14 @@ type OutboundDriver = Pick<IKK9Driver, 'sendText' | 'getSendStatus'>;
 type SendHandoff = {
   result: Promise<{ result: SendResult; observedAt: number } | { error: AppError }>;
 };
+type OutputValidity = boolean | 'paused';
+type SendStep = { dispatch: SendDispatch; stopped: boolean };
+
+function waitNoticeId(purpose: SendRequest['purpose']): string | undefined {
+  return purpose.startsWith('notice:user_wait:')
+    ? purpose.slice('notice:user_wait:'.length)
+    : undefined;
+}
 
 export interface SendServiceOptions {
   createDriver(store: SendOperationStore): OutboundDriver;
@@ -98,7 +106,7 @@ export function createSendService(options: SendServiceOptions): SendService {
     });
   }
 
-  function validTask(request: SendRequest, task: Task, afterTrigger = false): boolean {
+  function validTask(request: SendRequest, task: Task, afterTrigger = false): OutputValidity {
     if (request.purpose === 'final') {
       if (task.status !== 'ready_to_send' && task.status !== 'sending') return false;
       return (
@@ -108,16 +116,21 @@ export function createSendService(options: SendServiceOptions): SendService {
     }
     if (request.purpose === 'queued')
       return task.status === 'queued' && Date.now() < task.queueDeadline;
-    if (request.purpose === 'progress')
+    if (request.purpose === 'progress') {
+      if (task.status === 'waiting_for_user' && task.currentWaitId !== null) return 'paused';
       return (
         task.status === 'running' &&
         task.executionDeadline !== null &&
         Date.now() < task.executionDeadline
       );
+    }
+    const userWaitId = waitNoticeId(request.purpose);
+    if (userWaitId !== undefined)
+      return task.status === 'waiting_for_user' && task.currentWaitId === userWaitId;
     return task.status !== 'cancelled';
   }
 
-  async function valid(request: SendRequest, afterTrigger = false): Promise<boolean> {
+  async function valid(request: SendRequest, afterTrigger = false): Promise<OutputValidity> {
     const subject = request.subject;
     if (subject.kind === 'event') {
       const message = await contexts.getRawMessage(subject);
@@ -130,6 +143,13 @@ export function createSendService(options: SendServiceOptions): SendService {
         context.botId === subject.botId &&
         context.sessionId === subject.sessionId
       );
+    }
+    const userWaitId = waitNoticeId(request.purpose);
+    if (userWaitId !== undefined) {
+      const gated = await tasks.withTaskOutput({ ...subject, userWaitId }, task =>
+        validTask(request, task, afterTrigger)
+      );
+      return gated?.value ?? false;
     }
     const task = await tasks.getTask(subject.taskId);
     if (!task || task.inputVersion !== subject.inputVersion) return false;
@@ -175,7 +195,7 @@ export function createSendService(options: SendServiceOptions): SendService {
       ) {
         const effective = await valid(request, true);
         let to: 'completed' | 'failed' | 'send_unconfirmed' | 'cancelled' | 'timed_out';
-        if (!effective || dispatch.status === 'cancelled') {
+        if (effective !== true || dispatch.status === 'cancelled') {
           to =
             task.status === 'ready_to_send' &&
             task.executionDeadline !== null &&
@@ -219,9 +239,10 @@ export function createSendService(options: SendServiceOptions): SendService {
       });
     }
     // 原生送达证据仍由 Driver 保存；失效任务的协调结果不能成为可采用的 delivered。
-    const status = (await valid(request, true))
-      ? statusAfterObservation(result.status, dispatch)
-      : 'cancelled';
+    const status =
+      (await valid(request, true)) === true
+        ? statusAfterObservation(result.status, dispatch)
+        : 'cancelled';
     const saved = await change(dispatch, {
       status,
       messageId: result.messageId ?? null,
@@ -284,7 +305,7 @@ export function createSendService(options: SendServiceOptions): SendService {
       if (deliveredWhileWaiting) return deliveredWhileWaiting;
     }
     checkOpen();
-    if (!(await valid(request, true))) {
+    if ((await valid(request, true)) !== true) {
       const saved = await change(dispatch, { status: 'cancelled' });
       return saved ?? current(dispatch);
     }
@@ -309,17 +330,19 @@ export function createSendService(options: SendServiceOptions): SendService {
     return observe(request, claimed, result);
   }
 
-  async function sendOnce(request: SendRequest, dispatch: SendDispatch): Promise<SendDispatch> {
-    if (!(await valid(request, dispatch.sendCalls > 0))) {
+  async function sendOnce(request: SendRequest, dispatch: SendDispatch): Promise<SendStep> {
+    const effective = await valid(request, dispatch.sendCalls > 0);
+    if (effective === 'paused') return { dispatch, stopped: true };
+    if (!effective) {
       const saved = await change(dispatch, { status: 'cancelled' });
-      return saved ?? current(dispatch);
+      return { dispatch: saved ?? (await current(dispatch)), stopped: true };
     }
     const claimed = await change(dispatch, {
       status: 'sending',
       sendCalls: dispatch.sendCalls + 1,
       queryDueAt: dispatch.queryDueAt ?? Date.now() + SEND_QUERY_WAIT_MS,
     });
-    if (!claimed) return current(dispatch);
+    if (!claimed) return { dispatch: await current(dispatch), stopped: true };
     await enterSending(request);
     // 只在锁内同步交付 Driver；回执和数据库提交分别等待，不让旧调用阻塞 /new。
     const output = (): SendHandoff => {
@@ -342,9 +365,15 @@ export function createSendService(options: SendServiceOptions): SendService {
     };
     const subject = request.subject;
     let triggered: SendHandoff | null | undefined;
+    let paused = false;
     if (subject.kind === 'task') {
-      const gated = await tasks.withTaskOutput(subject, task =>
-        validTask(request, task, dispatch.sendCalls > 0) ? output() : null
+      const gated = await tasks.withTaskOutput(
+        { ...subject, userWaitId: waitNoticeId(request.purpose) },
+        task => {
+          const effective = validTask(request, task, dispatch.sendCalls > 0);
+          paused = effective === 'paused';
+          return effective === true ? output() : null;
+        }
       );
       triggered = gated?.value;
     } else if (subject.threadId) {
@@ -356,13 +385,27 @@ export function createSendService(options: SendServiceOptions): SendService {
       triggered = output();
     }
     if (!triggered) {
-      const saved = await change(claimed, { status: 'cancelled' });
-      return saved ?? current(claimed);
+      // 仅本活调用在有效交付锁内确认暂停且未调用 Driver，才退还本次占用。
+      // 不推测 sending/unknown 崩溃快照，也不退还此前实际调用或查询的预算。
+      const saved = await change(
+        claimed,
+        paused
+          ? {
+              status: dispatch.status,
+              sendCalls: dispatch.sendCalls,
+              queryDueAt: dispatch.queryDueAt,
+            }
+          : { status: 'cancelled' }
+      );
+      return { dispatch: saved ?? (await current(claimed)), stopped: true };
     }
     const observed = await triggered.result;
     // 异常不证明发送未发生；保留 sending 与已占用预算，显式恢复时只查不盲发。
     if ('error' in observed) throw observed.error;
-    return observe(request, claimed, observed.result, observed.observedAt);
+    return {
+      dispatch: await observe(request, claimed, observed.result, observed.observedAt),
+      stopped: false,
+    };
   }
 
   async function drive(
@@ -385,7 +428,9 @@ export function createSendService(options: SendServiceOptions): SendService {
       checkOpen();
       const before = dispatch;
       if (dispatch.status === 'prepared' || dispatch.status === 'retryable') {
-        dispatch = await sendOnce(request, dispatch);
+        const step = await sendOnce(request, dispatch);
+        dispatch = step.dispatch;
+        if (step.stopped) return finishTask(request, dispatch);
       } else if (dispatch.status === 'unknown') {
         dispatch = await query(request, dispatch);
       } else {

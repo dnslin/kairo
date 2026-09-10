@@ -142,7 +142,7 @@ describe('/new 终止旧工作而保留审计', () => {
         now: now + 600,
         executionMs: 1000,
       })
-    ).toBe(false);
+    ).toBeNull();
   });
   it('running 的实际控制器被 abort，迟到成功仅能留审计不能采用或再次登记', async () => {
     const owner = scope();

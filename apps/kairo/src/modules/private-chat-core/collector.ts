@@ -1,9 +1,7 @@
-import { randomUUID } from 'node:crypto';
 import { isDispatchTerminal } from '../im-transport/send-policy.js';
 import type { SendService } from '../im-transport/send-service.js';
 import { AppError, getErrorType } from '../operability/errors.js';
 import type { AppLogger } from '../operability/logger.js';
-import type { TaskStore } from '../task-lifecycle/types.js';
 import { createControlMessageHandler, type ContextMessageResult } from './control-message.js';
 import type { ContextService } from './context-service.js';
 import type { BatchingSettings, CollectedBatch, CollectorStore } from './collector-types.js';
@@ -15,10 +13,9 @@ export interface CollectorOptions {
   store: CollectorStore;
   contexts: ContextService;
   sender: Pick<SendService, 'send' | 'recover'>;
-  tasks: Pick<TaskStore, 'createTask'>;
+  /** 返回 true 才标记收尾；发送被其他在途调用占用时留给显式恢复。 */
+  deliverReady(batch: CollectedBatch, recovery: boolean): Promise<boolean>;
   batching: BatchingSettings;
-  configDigest: string;
-  queueMs: number;
   logger: AppLogger;
 }
 
@@ -29,7 +26,7 @@ export type CollectorResult =
 
 export interface Collector {
   accept(input: IngressResult): Promise<CollectorResult>;
-  /** 旧实例及其发送协调器停止后恢复；不领取任务或启动 Agent。 */
+  /** 旧实例及其发送协调器停止后恢复；合法 ready 仍交给唯一调度入口。 */
   recover(): Promise<void>;
   /** 等待已开始的工作并报告定时器错误，不等待尚未到期的批次。 */
   settled(): Promise<void>;
@@ -38,7 +35,7 @@ export interface Collector {
 }
 
 export function createCollector(options: CollectorOptions): Collector {
-  const { store, sender, tasks } = options;
+  const { store, sender } = options;
   const control = createControlMessageHandler(options);
   const timers = new Map<string, NodeJS.Timeout>();
   const finishing = new Map<string, Promise<void>>();
@@ -103,15 +100,9 @@ export function createCollector(options: CollectorOptions): Collector {
     timers.delete(batchId);
     if (batch.status === 'discarded') return;
     if (batch.finishedAt === null) throw new Error(`已结束批次缺少结束时刻 [${batchId}]`);
-    if (batch.status === 'ready') {
-      // collecting 不建任务。批次唯一键和 T24 context 锁保证重放不新增或复活任务。
-      await tasks.createTask({
-        taskId: randomUUID(),
-        batchId,
-        configDigest: options.configDigest,
-        now: batch.finishedAt,
-        queueDeadline: batch.finishedAt + options.queueMs,
-      });
+    if (batch.status === 'ready' || batch.rejection === 'queue_full') {
+      // 入队与满队列拒绝由同一个持久裁决处理；重放不能重新接纳已拒绝批次。
+      if (!(await options.deliverReady(batch, recovery))) return;
     } else {
       if (batch.rejection === null) throw new Error(`拒绝批次缺少原因 [${batchId}]`);
       const first = (await store.getBatchMessages(batchId))[0];

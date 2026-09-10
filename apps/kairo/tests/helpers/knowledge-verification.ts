@@ -83,14 +83,13 @@ export async function runKnowledgeProbe(
     queueDeadline: now + 600000,
   });
   assert.ok(createdTask);
-  assert.equal(
+  assert.ok(
     await tasks.claimTask({
       taskId,
       inputVersion: createdTask.inputVersion,
       now,
       executionMs: options.executionMs ?? config.timeouts.executionMs,
-    }),
-    true
+    })
   );
   const attemptId = randomUUID();
   await tasks.startAttempt({

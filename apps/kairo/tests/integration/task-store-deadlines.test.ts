@@ -30,7 +30,7 @@ describe('T19 任务账本截止边界', () => {
         to: 'timed_out',
       })
     ).toBe(false);
-    expect(await context.storeA.claimTask({ ...version, executionMs })).toBe(false);
+    expect(await context.storeA.claimTask({ ...version, executionMs })).toBeNull();
     expect(
       await context.storeA.transitionTask({ ...version, from: 'queued', to: 'timed_out' })
     ).toBe(true);
@@ -43,7 +43,7 @@ describe('T19 任务账本截止边界', () => {
         now: before.input.queueDeadline - 1,
         executionMs,
       })
-    ).toBe(true);
+    ).not.toBeNull();
   });
 
   it('updateInputVersion 在队列截止前一毫秒可更新且保留截止，恰好截止被拒绝', async () => {
