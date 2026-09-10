@@ -1045,12 +1045,18 @@ pnpm --filter @kairo/app test:integration -- tests/integration/ingress-dedup.tes
 
 **前置依赖：**T18、T22。
 
-**修改文件（4）：**
+**实际实现与测试文件（10）：**
 
 - `apps/kairo/src/modules/private-chat-core/collector.ts`
 - `apps/kairo/src/modules/private-chat-core/input-policy.ts`
 - `apps/kairo/tests/unit/collector.test.ts`
 - `apps/kairo/tests/integration/collector-recovery.test.ts`
+- `apps/kairo/src/modules/private-chat-core/collector-types.ts`
+- `apps/kairo/src/modules/private-chat-core/store.ts`
+- `apps/kairo/migrations/000011-collector-settlement.sql`
+- `apps/kairo/tests/unit/input-policy.test.ts`
+- `apps/kairo/tests/helpers/collector-runtime.ts`
+- `apps/kairo/tests/integration/collector-recovery-concurrency.test.ts`
 
 **用户可见结果：**
 
@@ -1060,33 +1066,37 @@ pnpm --filter @kairo/app test:integration -- tests/integration/ingress-dedup.tes
 
 **验收条件：**
 
-- [ ] 短静默默认 5 秒，每条普通消息到达后重置。
-- [ ] 最长聚合默认 60 秒，从第一条开始且不重置。
-- [ ] 任一计时先到即提交当前批次。
-- [ ] 同一批次最多 10 条、合计最多 30000 字；边界值允许，超过即整批拒绝。
-- [ ] 不截断、不调用 Agent；原始消息仍保留。
-- [ ] 任意文件、图片或附件导致整批拒绝，不读取、不下载、不检索。
-- [ ] 不同员工或不同会话永不合并。
-- [ ] Agent 已开始后到达的消息进入下一批，不取消或重跑当前任务。
-- [ ] 重启恢复两个计时器的剩余时间；期限已过时立即结束批次。
+- [x] 短静默默认 5 秒，每条普通消息到达后重置。
+- [x] 最长聚合默认 60 秒，从第一条开始且不重置。
+- [x] 任一计时先到即提交当前批次。
+- [x] 同一批次最多 10 条、合计最多 30000 字；边界值允许，超过即整批拒绝。
+- [x] 不截断、不调用 Agent；原始消息仍保留。
+- [x] 任意文件、图片或附件导致整批拒绝，不读取、不下载、不检索。
+- [x] 不同员工或不同会话永不合并。
+- [x] Agent 已开始后到达的消息进入下一批，不取消或重跑当前任务。
+- [x] 重启恢复两个计时器的剩余时间；期限已过时立即结束批次。
 
 **测试场景：**
 
-- [ ] 5 秒静默、持续发送触发 60 秒。
-- [ ] 第 10 条/第 11 条，30000/30001 字。
-- [ ] 空文本、纯空白、多字节中文计数。
-- [ ] 先文字后附件、先附件后文字。
-- [ ] 两员工交错消息。
-- [ ] 重启时静默剩余、最长剩余和均已到期。
+- [x] 5 秒静默、持续发送触发 60 秒。
+- [x] 第 10 条/第 11 条，30000/30001 字。
+- [x] 空文本、纯空白、多字节中文计数。
+- [x] 先文字后附件、先附件后文字。
+- [x] 两员工交错消息。
+- [x] 重启时静默剩余、最长剩余和均已到期。
 
 **执行命令：**
 
 ```bash
 pnpm --filter @kairo/app test -- tests/unit/collector.test.ts
-pnpm --filter @kairo/app test:integration -- tests/integration/collector-recovery.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/collector-recovery
 ```
 
 **真实环境验证：**T35 验证三段发送、持续发送、附件拒绝和 Agent 运行中补充消息。
+
+**本次实现验收（2026-09-09）：**定向单元24项、App默认327项、真实PostgreSQL恢复23项、受影响账本回归111项通过；迁移专题2项通过、6项按名称排除。原生计时烟测实际60.103秒结束最长批次，覆盖静默/最长剩余、全过期和/new旧批不复活。最长场景使用现有quietMs=10000及7条每9秒消息，避免默认5秒/10条先拒绝，正式YAML不变。运行中补充通过真实任务账本、attempt及AbortController验证，不冒充真实Agent运行；FakeDriver出站不替代上述T35真机。精确命令和历史失败见docs/DEVELOPMENT.md的T23节，不合并、不关闭issue。
+
+**后续PR267审查验收（2026-09-10）：**Required已用真实KK9文字+附件及一次受控收尾异常复现，再最小修复并真机复验。B轮修复前提示0次、recover才送达；C轮消息不同批不计通过；D轮同批消息135974677/135974679在recover前已发出135974683，重复恢复仍只发送1次，真实历史及撤回通过。定向单元25、App默认328、真实PostgreSQL恢复24项及类型/构建/静态检查通过，六个自建库无残留。Optional SQL复用此前已独立通过真实PostgreSQL70项。不声称完整T35或真实Agent已验收，不合并或关闭issue。
 
 ---
 
