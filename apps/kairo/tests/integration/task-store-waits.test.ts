@@ -4,6 +4,7 @@ import {
   createTaskTestContext,
   type TaskTestContext,
   executionDeadline,
+  executionMs,
   waitedAt,
   waitDeadline,
   remainingExecutionMs,
@@ -48,6 +49,13 @@ describe('T19 任务账本-waits', () => {
         decision: 'accepted',
       })
     ).toBe(true);
+    expect(
+      await context.storeA.resumeTask({
+        taskId: fixture.taskId,
+        inputVersion: 1,
+        now: acceptedAt,
+      })
+    ).not.toBeNull();
     const resumed = await context.storeA.getTask(fixture.taskId);
     expect(resumed).toMatchObject({
       status: 'running',
@@ -210,57 +218,39 @@ describe('T19 任务账本-waits', () => {
     );
   });
 
-  it('同一 bot/session 并发等待仅一个成功，失败不能留下半截等待或采用记录', async () => {
+  it('同一 bot/session 的开放等待及同意待槽均阻塞后续领取，取消后才能继续', async () => {
     const scope = context.scopeFor();
-    const first = await context.runningFixture(scope);
-    const second = await context.runningFixture(scope);
-    const firstAttempt = await context.successfulAttempt(first);
-    const secondAttempt = await context.successfulAttempt(second);
-    const inputs = [
-      {
+    const first = await context.waitingFixture(scope);
+    const second = await context.queuedFixture(scope);
+    const claim = { taskId: second.taskId, inputVersion: 1, now: waitedAt + 200, executionMs };
+    expect(await context.storeB.claimTask(claim)).toBeNull();
+    const answerMessage = await context.message(scope, waitedAt + 100);
+    expect(
+      await context.storeA.resolveUserWait({
         taskId: first.taskId,
         inputVersion: 1,
-        now: waitedAt,
-        attemptId: firstAttempt.attemptId,
-        waitId: randomUUID(),
-        question,
-        allowedQuestionIds,
-      },
-      {
-        taskId: second.taskId,
-        inputVersion: 1,
-        now: waitedAt,
-        attemptId: secondAttempt.attemptId,
-        waitId: randomUUID(),
-        question,
-        allowedQuestionIds,
-      },
-    ] as const;
-    const results = await Promise.all([
-      context.storeA.waitForUser(inputs[0]),
-      context.storeB.waitForUser(inputs[1]),
-    ]);
-    expect(results.filter(Boolean)).toHaveLength(1);
-    const winner = inputs[results[0] ? 0 : 1];
-    const loser = inputs[results[0] ? 1 : 0];
-    expect(await context.storeA.getUserWait(winner.waitId)).toMatchObject({ closedAt: null });
-    expect(await context.storeA.getUserWait(loser.waitId)).toBeNull();
-    expect(await context.storeA.getTask(loser.taskId)).toMatchObject({
-      status: 'running',
-      currentAttemptId: loser.attemptId,
-      executionDeadline,
-    });
-    expect(await context.storeA.getAttempt(loser.attemptId)).toMatchObject({ adopted: false });
+        now: waitedAt + 100,
+        waitId: first.waitId,
+        answerMessage,
+        decision: 'accepted',
+      })
+    ).toBe(true);
+    expect(await context.storeB.claimTask(claim)).toBeNull();
     expect(
-      await context.storeB.transitionTask({
-        taskId: winner.taskId,
+      await context.storeA.transitionTask({
+        taskId: first.taskId,
         inputVersion: 1,
-        now: waitedAt + 1,
+        now: waitedAt + 150,
         from: 'waiting_for_user',
         to: 'cancelled',
       })
     ).toBe(true);
-    expect(await context.storeB.waitForUser({ ...loser, now: waitedAt + 2 })).toBe(true);
+    expect(await context.storeB.claimTask(claim)).not.toBeNull();
+    expect(await context.storeA.getTask(first.taskId)).toMatchObject({ status: 'cancelled' });
+    expect(await context.storeA.getUserWait(first.waitId)).toMatchObject({
+      resolution: 'accepted',
+      answerMessage,
+    });
   });
 
   it('同一原始回答不能消费两个等待，不同 bot 的相同私聊可各自开放等待', async () => {
@@ -347,10 +337,10 @@ describe('T19 任务账本-waits', () => {
     expect(await context.storeA.getTask(fixture.taskId)).toMatchObject(
       winner.decision === 'accepted'
         ? {
-            status: 'running',
+            status: 'waiting_for_user',
             endedAt: null,
             currentAttemptId: null,
-            executionDeadline: winner.now + remainingExecutionMs,
+            executionDeadline,
           }
         : { status: 'cancelled', endedAt: winner.now, executionDeadline }
     );

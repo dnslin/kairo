@@ -1337,3 +1337,103 @@ pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspa
 前两条是修复前红灯基线，各有1项目标失败；首次并行启动pnpm时出现bin生成警告，测试仍实际执行。修复后串行运行：定向单元25/25、真实PostgreSQL恢复24/24、App默认单元328/328，类型、构建、相关ESLint及Prettier均通过，无修改工具配置。各轮真机退出后UID仍5761，Hook generation为null且binding不存在；本轮六个精确自建库（B轮、红灯基线、两个绿灯集成、C轮、D轮）只读查询残留0，stderr为空，退出0。临时探针已移除。
 
 本次自审未引入通用框架、兼容分支或自动重试；只修复前驱错误短路后继这一条路径。此证据不替代完整T35三段发送、持续发送和真实Agent运行中补充消息验收；本轮也未重跑不变的原生60秒烟测或全部111项账本回归。
+
+## T25 同会话队列、全局并发与时间通知（2026-09-10）
+
+### 可调用入口与装配边界
+
+`task-lifecycle/scheduler.ts::createScheduler()` 接收现有 tasks/contexts/chat/sender、已加载配置参数和必需 `execute`，提供 `enqueue/tick/resolveUserWait/settled/close`。一个应用进程只装配一个实例，所有 Bot/session 共用实际执行集合。`tick()` 只等待本轮持久状态裁决，不等待 Agent；入队、回答、执行结束及发送结束会自动唤醒，排队和未回答等待由最近绝对截止定时唤醒。
+
+`createCollector()` 改为必需 `deliverReady: scheduler.enqueue`，不再接收 tasks/configDigest/queueMs 直接建任务。ready 和 queue_full 重放交给同一调度裁决，只有交付返回 true 才标记批次 settled。生产没有可选兼容入口；T23 专题测试显式注入底层账本交付以隔离聚合合同，完整 Collector→调度接入由 scheduler 集成覆盖。
+
+`task-runner.ts::TaskExecutor` 输入真实 task、attempt、context 和实际 AbortSignal；输出已通过上层检查的 answer 正文，或 waiting_for_user 的问题及授权问题范围。此 Promise 只能在 Agent 不再启动新 Tool、全部 Tool 的 settled 与本地执行回收后结束。实现必需注入，没有默认空实现或 Mock；T25 不装配 T28 Agent、不实现 T29 答案检查或 T30 自然语言判断。`index.ts` 未新增订阅，因此正式启动仍不声称已具备完整员工问答闭环。
+
+TaskRunner 建立 attempt/runId、复用 T24 控制器登记并设置原执行截止；run 等待真实执行与必要账本，不等待 T21 最终发送回执才释放全局名额。`settled/close` 等待自己开始的工作并保留错误，不关闭调用方的 sender/Pool。业务超时或 /new 立即失效旧结果，但底层未退出仍占实际名额；永不退出时必须人工处置，close 也不假装成功。
+
+### 持久化及时间合同
+
+- `000012-task-scheduling.sql` 增加原始 execution_budget_ms、queue_notice_required 与 current_wait_id，扩展批次 queue_full 原因及实际查询索引；没有新任务状态、任务队列表、租约或分布式框架。既有唯一开放等待可以回填实际指针；不猜历史执行预算。迁移仍在启动前执行，运行时不做 DDL。
+- `enqueueTask()` 在有效 context 锁内原子计数/入队/满队列拒绝，默认最多3个 queued；拒绝保留原始消息及 batch，不建 task。重放返回原任务或原拒绝，容量释放也不会重新接纳已拒批次。原始 queueDeadline 为批次结束时刻加600000，不按回调或重放刷新。
+- `claimTask/resumeTask` 现在直接返回同事务 Task 或 null，删除领取成功后额外读取失败留下无人执行 running 的窗口。领取、恢复和进入等待可传锁后采样时钟；同会话 queued 严格排序，running/waiting/ready/sending 均阻塞后续。
+- accepted 只保存原始回答，仍 waiting_for_user；真正取得名额后 resume 才恢复剩余预算。新一轮等待同事务保存明确 currentWaitId，同毫秒也不能错用上一轮同意。已回答待槽任务不能按旧十分钟等待期限超时。
+- 进度到期为 `executionDeadline - executionBudgetMs + progressMs + 1`，毫秒精度下严格超过10秒。员工等待和等槽暂停累计，必要执行收尾计时；采用前再检查实际时间，不能依赖 timer 已运行。执行到期先调用实际 AbortController，再落 timed_out，旧结果只能留审计。
+- queued/progress 使用 T21 唯一 purpose，队列超时与执行超时分别使用 notice:queue_timeout / notice:execution_timeout。等待问题在实际交付锁内核对当前开放 wait。因员工等待暂停且确证未调用 Driver 的进度只退本次 reservation；已触发或崩溃窗口仍遵守 T21 原预算，不能借暂停重发。
+- Down 保留旧约束；已有 queue_full 审计会明确阻止直接降级。降级前必须先处理这些新数据及待执行工作，不自动删除原始消息、不静默改写拒绝或添加兼容回退。
+
+### 实际回归与原生执行证据
+
+精确定向命令：
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/scheduler.test.ts tests/unit/task-runner.test.ts tests/unit/send-service
+pnpm --filter @kairo/app test:integration -- tests/integration/scheduler tests/integration/send-service tests/integration/task-store tests/integration/new-context tests/integration/collector-recovery tests/integration/private-chat-store.test.ts tests/integration/memory-commit-store.test.ts tests/integration/knowledge-record-store.test.ts tests/integration/ragflow-connector.test.ts
+pnpm --filter @kairo/app db:migrate:test
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+定向单元101项通过；受影响数据库组合18文件185项通过；迁移专题2项通过、6项按测试名排除，不计作全量验收。覆盖2/4/5任务、3+1会话、9.999/10/10.001秒执行及完成边界、满队列竞争、ready/sending/send_unconfirmed、等待暂停恢复、/new、迟到结果及收尾错误。数据库全部沿用本工作区配置创建随机库，核对实际库名和双连接PID后迁移，不修改配置指向的原库。
+
+两个关闭反例先失败后修复：回答事务未纳入 pending；发送结束唤醒新 pump 后 settled 提前完成。四个真实SQL等待反例也先失败后修复：同毫秒错用上一轮 accepted、取消未关闭当前轮次、旧等待交付、锁后恰好截止交付。进度暂停单元先有3项目标失败，发送集成取得恰好截止和暂停意图的目标红灯；其余初始失败来自夹具漏 finishAttempt、拿原问题当回答或未到等待截止，修正夹具后完整10项通过，没有放宽生产合同。
+
+独立命令 `pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-230-t25-scheduler/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-230-t25-scheduler/apps/kairo/tmp/t25-smoke.ts` 使用普通 Node/tsx 与原生时间，不使用 fake timers。最终退出0：实际执行峰值3；前三会话分别于107/196/240ms开始，第四会话于12146ms开始，晚于首项12119ms退出；同会话第二任务于12223ms开始。三项约12秒执行各有一次progress，两项约1.2秒执行没有progress。
+
+同一烟测随后实际运行四分钟：真实 T27 Tool→Python 首次收到本地503，第二次HTTP持续等待，两个尝试共享原任务绝对截止；记录耗时240005.7112ms。任务最终timed_out，检索账本类别timeout，Tool因任务先终态而返回cancelled/stale_task且materials为空；进度及执行超时各一次，无final，后续同会话任务completed。两个Python PID均已退出。总业务耗时254808ms、命令耗时257.25秒。自建库为 `kairo_t19_aa2293201c71417d866f69d81227601f`，PID36417/36418，finally正常回收。
+
+第一轮同样实等四分钟，但临时断言误要求Tool对已终态任务也返回timeout，得到cancelled/stale_task而退出1；它不算完整通过。核对T27既有门禁后，烟测改为分别验证任务超时、底层检索timeout、迟到资料为空、进程退出及后续恢复，没有修改T27生产逻辑。其自建库 `kairo_t19_b1d7306fe218466080771b24ef680c17` 已正常回收。
+
+构建与类型检查通过。首次根质量链Driver330项通过，App遭Tinypool `ERR_IPC_CHANNEL_CLOSED`中断，因此该链未执行lint；设置当前命令 `NODE_OPTIONS=--trace-uncaught --trace-warnings` 原样重跑 `pnpm --filter @kairo/app test` 后23文件368项通过，未改worker数量或测试范围。单独lint随后通过；该IPC中断根因未确认，不宣称已修复测试框架。早期一次lint的冗余unknown联合与不必要断言已正常修正，未压制诊断。
+
+本次证据为真实PostgreSQL、实际Tool/Python和原生时间；执行器及HTTP故障受控，出站为明确FakeDriver。未调用真实主模型或ERP、未连接真实KK9，不替代T35双员工慢查询验收；未实现T26启动恢复/重连或T28正式装配，未合并分支、未关闭issue。一次性脚本在记录证据后删除，不新增正式启动方式。
+
+最终清理将执行/通知错误统一归 runner、调度自身错误归 scheduler；关闭分别等待两方一次，避免把同一个错误重复聚合。随后重新执行完整 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 全部通过：Driver330项、App368项；追加 scheduler 真实集成8项再次通过。该轮自建库 `kairo_t19_6bd940d701ed4999baf94c83cdbb0eb2`（PID36644/36645）正常回收。
+
+`node --env-file=.env apps/kairo/tmp/t25-check-databases.mjs` 对本轮输出记录的38个精确自建库名只读查询，残留0；不按前缀扫描或删除其他库。T18自建库由其既有afterAll完成清理。上述烟测与核验脚本随后删除，`.env`保留且不提交。类型服务初始化退出已报告工具问题；符号定位使用限定范围检索，未修改LSP配置。独立审查没有执行验证，所有命令结果均来自Main实际运行；外部跨模型CLI未获授权、未调用。
+
+### PR268：关闭竞态真实复现与进度真机验证等待（2026-09-10）
+
+用户要求先用真实环境确认，再修复，不将受控替身探针当作真机结果。本轮分别运行真实 PostgreSQL 关闭交错，以及真实 KK9/T22/T21/调度装配的进度监听；二者的证据边界不同。
+
+- 关闭基线使用合成入站、真实 context/batch/入队/领取 SQL，不连接 Driver。`pr268-close-real.ts --expect-bug` 在自建库 `kairo_t19_0f28174a43d4497a999c12264326cb10`（PID37013/37014）复现：正常 close 成功，任务仍 running、current_attempt_id=null、attempt=0、execute=0、取消调用=0。交错仅安排领取 Promise 续体与关闭微任务的顺序，不伪造持久状态。
+- 先新增真实数据库回归，定向测试失败于预期 cancelled、实际 running。最小修改为 scheduler 同步调用 runner.run，不再延迟交接；真实复验进一步暴露已取消任务仍继续创建 attempt/登记的问题，因此在读取 context 和创建 attempt 的异步返回后检查原 AbortSignal，已取消工作不再进入下一准备阶段，已保存 attempt 仍按原收尾流程结束。没有将数据库错误改写或吞掉。
+- 最终 `pr268-close-real.ts --expect-fixed` 使用同一交错，在自建库 `kairo_t19_0c6dfd55574f4e17a29b83a7370aebd1`（PID37049/37050）观察到真实取消 SQL 被另一连接的任务行锁阻塞，close 同时保持等待。释放本探针的锁后，取消提交先于 close 成功；最终 cancelled、attempt=0、execute=0、发送=0、错误日志=0。不能把这项证据称为员工入站或 IM 验收。
+- 进度真机入口实际核对 Bot5761、员工3585、私聊0-3585/int2024，通过真实 Driver 开始监听；120秒内未收到 `PR268-核验`，因此退出1。taskId=null、没有创建发送意图、没有发送Bot消息；未触发进度竞态，不能判断问题不存在。进度生产代码保持不变，待员工准备好后重启监听，再依次接收 `PR268-核验` 和收到验收问题后的 `PR268-继续`。
+- Optional 全面合并 scheduler.executions 与 runner.active 本轮不实施：前者负责会话占槽，后者支撑独立 runner 的取消及收尾接口。统一集合虽可删除部分代码，但需新增状态查询接口、迁移唤醒及等待合作，风险大于本轮收益。同步交接已经删除实际致错的中间微任务，不增加管理框架或公开接口。
+
+实际命令：
+
+```powershell
+node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/pr268-close-real.ts --expect-bug
+node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/pr268-close-real.ts --expect-fixed
+pnpm --filter @kairo/app test:integration -- tests/integration/scheduler.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/scheduler.test.ts tests/unit/task-runner.test.ts
+pnpm --filter @kairo/app build
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app test
+```
+
+最终真实调度集成9/9、定向单元33/33、App默认单元369/369；App构建、类型检查、四个修改源/测试文件的ESLint和Prettier检查通过。默认单元命令注入 `NODE_OPTIONS=--trace-uncaught --trace-warnings`；没有改测试范围或worker配置。首次静态检查发现测试的裸 queueMicrotask 未列入ESLint宿主全局，改为 globalThis.queueMicrotask，未压制规则；随后类型和静态检查通过。原有同会话、实际名额、等待及迟到结果回归均保留。
+
+本轮七个精确自建库名只读查询残留0；真机退出后再只读确认UID5761、Hook generation=null、binding不存在。关闭临时入口完成验证后删除；尚待员工参与的进度临时入口保留，不作为正式启动方式。没有修改Driver/T24实现、数据库迁移或正式Agent装配，没有提交推送、合并或关闭issue。
+
+### PR268：进度丢失真机确认与最小修复（2026-09-10）
+
+员工准备好后重启真实监听，Bot5761/员工3585/0-3585/int2024 的入站 `135999497`（PR268-核验）与 `135999563`（PR268-继续）均通过T22，真实原始消息重放返回duplicate。原生实等超过10秒后进入真实waiting，员工回答通过原等待账本恢复同一task；仅在真实发送reservation提交后及暂停回退CAS前人为延迟，不修改任务状态、员工答案、时钟或Driver回执。
+
+修复前在随机库 `kairo_t19_8fd478a4527f44229fb1d42a6772a5ff` 观察恢复执行12114ms：两次progress请求，Driver自动调用0次，唯一operation `7a6fde00-2617-4a29-86dc-7d8b5ab10e69` 停在prepared/sendCalls=0，task仍running。随后手动推进原意图才真正送达 `135999583`，这只是发送正对照，不计作自动进度。问题提示 `135999527` 和正对照均已撤回，进程退出0，无清理错误。这证实实际组件在受控交错下丢进度，不声称故障在无延迟注入时自然出现，也不是正式Agent/T35验收。
+
+新增重叠回归先失败于prepared而非delivered。修复仅改变发送服务内部结果：明确标记实际暂停；锁内暂停回退必须CAS成功才保留该标记，败方不得接管胜方。加入旧活调用的恢复请求等待其退出，再检查当前任务有效性并重新推进原operation/purpose；公开SendService接口、持久化格式、Driver及既有实际发送/查询预算不变。两个同时到达的恢复请求也只能形成一次交付，不加入轮询或通用重试。
+
+修复后发送/调度定向单元104项通过，包含暂停续发与CAS败方不续发；真实PostgreSQL发送/调度5文件50项通过；App默认23文件371项通过，App构建、类型及相关ESLint/Prettier通过。命令为 `pnpm --filter @kairo/app exec vitest run tests/unit/send-service tests/unit/task-runner.test.ts tests/unit/scheduler.test.ts`、`pnpm --filter @kairo/app test:integration -- tests/integration/send-service tests/integration/scheduler` 及原App质量命令。
+
+修复后的两轮真机监听分别等待首条员工消息120秒、300秒，均未收到新 `PR268-核验`，以超时退出1；两轮均taskId=null、无发送意图、无Bot消息、无清理错误。第二轮只延长临时入口等待，未改正式业务期限。尚不能宣称修复后真机通过；保留临时入口，待员工可再次连续完成两条消息时复验，不自动反复重启。最终对本阶段15个精确自建库名只读查询残留0；KK9再次只读确认UID5761、Hook generation=null、binding不存在。代码已修复并完成上述回归，但尚未提交推送或合并。
+
+### PR268：最终真机复验通过（2026-09-10）
+
+用户再次准备好后，以受监督进程运行 `node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/pr268-progress-real.ts --expect-fixed`，最终退出0。此次延用同一受控交错与真实组件，不修改生产代码或放宽断言；此前两次修复后监听超时仅为中间历史结果，本轮完成了实际复验。
+
+- 真实员工消息 `136001699`（PR268-核验）、`136001789`（PR268-继续）经T22接受并验证持久去重。自建库为 `kairo_t19_9bb605cab63d48939ba002d8965b11be`，连接PID37268/37269；同一task `b11dc332-0dc7-4068-ab12-fd81b56db6b9` 在原等待记录上accepted并恢复执行。
+- 原暂停回退完成后，恢复请求重新检查并推进唯一progress意图。三次ensure均指向同一个operation `a0d7ce28-35fd-407c-b4c0-5e0255fbacd2`，实际Driver调用1次、sendCalls=1、queryUsed=false；协调与Driver账本均为delivered，原生消息ID均为 `136001797`，Driver报告确认耗时475ms。没有手动正对照；自动观察3051ms期间任务仍为running。
+- 验收问题 `136001727` 和自动进度 `136001797` 均已撤回，未撤回员工消息；清理错误及未撤回Bot消息均为空。关闭自有调度/发送/Driver/连接池后，对本阶段累计16个精确自建库名只读查询残留0；再次确认UID5761、Hook generation=null、binding不存在。
+- 验证完成后删除临时真机入口，保留正式竞争回归。生产代码自上一轮App371项、真实数据库50项、构建/类型及定向静态检查通过后未再修改，因此本轮不重复运行不变的质量命令。公开接口、数据库迁移、Driver实现与正式Agent装配均未改变。
+
+至此，关闭竞争与进度竞争均已有修复前真实环境证据、最小修复和对应修复后复验。进度证据包含真实员工入站、PostgreSQL及KK9实际发送，但执行内容和竞态延迟仍受控，不替代正式Agent或完整T35双员工慢查询验收。未提交推送、合并分支或关闭issue。

@@ -76,7 +76,7 @@ async function deliveredFixture(taskId: string = randomUUID()): Promise<Delivere
   const fixture = await taskFixture(taskId);
   expect(
     await tasks.claimTask({ taskId, inputVersion: 1, now: now + 100, executionMs: 60_000 })
-  ).toBe(true);
+  ).not.toBeNull();
   const attemptId = randomUUID();
   expect(
     await tasks.startAttempt({

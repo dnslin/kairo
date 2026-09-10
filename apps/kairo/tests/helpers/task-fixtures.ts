@@ -104,7 +104,7 @@ export async function createTaskTestContext() {
         now: claimedAt,
         executionMs,
       })
-    ).toBe(true);
+    ).not.toBeNull();
     return fixture;
   }
 

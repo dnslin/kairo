@@ -36,7 +36,7 @@ describe('T19 任务账本-attempts', () => {
         executionDeadline: before!.executionDeadline,
       });
       expect(await context.storeA.updateInputVersion(version)).toBe(false);
-      expect(await context.storeA.claimTask({ ...version, executionMs })).toBe(false);
+      expect(await context.storeA.claimTask({ ...version, executionMs })).toBeNull();
       expect(
         await context.storeA.transitionTask({ ...version, from: state, to: 'cancelled' })
       ).toBe(false);
@@ -98,9 +98,9 @@ describe('T19 任务账本-attempts', () => {
           adopted: false,
         });
       } else {
-        expect(await context.storeA.claimTask({ ...version, inputVersion: 2, executionMs })).toBe(
-          true
-        );
+        expect(
+          await context.storeA.claimTask({ ...version, inputVersion: 2, executionMs })
+        ).not.toBeNull();
       }
     }
     for (const createFixture of [

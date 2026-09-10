@@ -86,9 +86,12 @@ describe('T19 任务账本', () => {
       createdAt: now,
       updatedAt: now,
       queueDeadline: fixture.input.queueDeadline,
+      executionBudgetMs: null,
+      queueNoticeRequired: false,
       executionStartedAt: null,
       executionDeadline: null,
       currentAttemptId: null,
+      currentWaitId: null,
       endedAt: null,
     };
     expect(await context.storeB.getTask(fixture.taskId)).toEqual(expected);
@@ -167,14 +170,14 @@ describe('T19 任务账本', () => {
     });
     expect(
       await context.storeA.claimTask({ ...claims[0], now: now + 333, executionMs: 999999 })
-    ).toBe(false);
+    ).toBeNull();
     expect(await context.storeB.getTask(fixture.taskId)).toEqual(saved);
   });
 
   it('合法状态边 queued → running', async () => {
     const fixture = await context.queuedFixture();
     const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
-    expect(await context.storeB.claimTask({ ...version, executionMs })).toBe(true);
+    expect(await context.storeB.claimTask({ ...version, executionMs })).not.toBeNull();
     expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('running');
   });
 
@@ -264,6 +267,7 @@ describe('T19 任务账本', () => {
         decision: 'accepted',
       })
     ).toBe(true);
+    expect(await context.storeA.resumeTask(version)).not.toBeNull();
     expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('running');
     expect(await context.storeA.getUserWait(fixture.waitId)).toMatchObject({
       closedAt: version.now,
@@ -403,7 +407,7 @@ describe('T19 任务账本', () => {
       const attemptId = randomUUID();
       const waitId = randomUUID();
       const answerMessage = await context.message(fixture.scope, version.now);
-      expect(await context.storeB.claimTask({ ...version, executionMs }), status).toBe(false);
+      expect(await context.storeB.claimTask({ ...version, executionMs }), status).toBeNull();
       expect(await context.storeB.updateInputVersion(version), status).toBe(false);
       expect(
         await context.storeB.startAttempt({
@@ -499,7 +503,7 @@ describe('T19 任务账本', () => {
       ).toBe(false);
       expect(await context.storeB.getUserWait(waitId), status).toBeNull();
       if (status !== 'queued')
-        expect(await context.storeB.claimTask({ ...version, executionMs }), status).toBe(false);
+        expect(await context.storeB.claimTask({ ...version, executionMs }), status).toBeNull();
       expect(await context.storeA.getTask(fixture.taskId), status).toEqual(before);
     }
     const owner = await context.runningWithSuccessfulAttempt();

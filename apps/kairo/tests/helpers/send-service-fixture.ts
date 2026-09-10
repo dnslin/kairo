@@ -154,9 +154,12 @@ export function fixture(
       createdAt: START - 100,
       updatedAt: START - 10,
       queueDeadline: START + 10_000,
+      executionBudgetMs: 60_050,
+      queueNoticeRequired: false,
       executionStartedAt: START - 50,
       executionDeadline: START + 60_000,
       currentAttemptId: '执行一',
+      currentWaitId: null,
       endedAt: null,
     },
     context: {

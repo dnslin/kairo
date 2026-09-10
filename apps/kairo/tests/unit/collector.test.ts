@@ -8,7 +8,6 @@ import type { ContextService } from '../../src/modules/private-chat-core/context
 import type { RawMessage } from '../../src/modules/private-chat-core/types.js';
 import type { SendService } from '../../src/modules/im-transport/send-service.js';
 import type { SendDispatch } from '../../src/modules/im-transport/send-policy.js';
-import type { TaskStore } from '../../src/modules/task-lifecycle/types.js';
 
 const START = 1800000000000;
 const batching = { quietMs: 5000, maxWaitMs: 60000, maxMessages: 10, maxChars: 30000 };
@@ -101,7 +100,9 @@ function fixture(overrides: Partial<CollectedBatch> = {}, settings = batching) {
     }),
     registerExecution: vi.fn(),
   };
-  const tasks = { createTask: vi.fn<TaskStore['createTask']>().mockResolvedValue(null) };
+  const deliverReady = vi
+    .fn<(batch: CollectedBatch, recovery: boolean) => Promise<boolean>>()
+    .mockResolvedValue(true);
   const sender = {
     send: vi.fn(() => Promise.resolve(delivered)),
     recover: vi.fn(() => Promise.resolve(delivered)),
@@ -111,15 +112,13 @@ function fixture(overrides: Partial<CollectedBatch> = {}, settings = batching) {
     botId: 'bot',
     store,
     contexts,
-    tasks,
+    deliverReady,
     sender,
     batching: settings,
-    configDigest: '摘要',
-    queueMs: 600000,
     logger,
   });
   collectors.push(collector);
-  return { collector, batch, store, tasks, sender, contexts, logger };
+  return { collector, batch, store, deliverReady, sender, contexts, logger };
 }
 
 beforeEach(() => {
@@ -146,14 +145,13 @@ describe('聚合器定时与交付', () => {
       message: { ...raw, messageId: '第二条', observedAt: Date.now() },
     });
     await vi.advanceTimersByTimeAsync(4999);
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await f.collector.settled();
-    expect(f.tasks.createTask).toHaveBeenCalledOnce();
-    expect(f.tasks.createTask.mock.calls[0]?.[0]).toMatchObject({
+    expect(f.deliverReady).toHaveBeenCalledOnce();
+    expect(f.deliverReady.mock.calls[0]?.[0]).toMatchObject({
       batchId: 'batch',
-      now: START + 9000,
-      queueDeadline: START + 609000,
+      finishedAt: START + 9000,
     });
   });
   it('已有静默参数设为十秒时，七条连续消息在第六十秒由最长截止提交', async () => {
@@ -168,10 +166,10 @@ describe('聚合器定时与交付', () => {
       });
     }
     await vi.advanceTimersByTimeAsync(5999);
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await f.collector.settled();
-    expect(f.tasks.createTask).toHaveBeenCalledOnce();
+    expect(f.deliverReady).toHaveBeenCalledOnce();
     expect(f.batch.finishedAt).toBe(START + 60000);
   });
   it('纯空白和非accepted结果既不接入也不刷新原计时', async () => {
@@ -193,7 +191,7 @@ describe('聚合器定时与交付', () => {
     }
     expect(f.store.collectMessage).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(f.tasks.createTask).toHaveBeenCalledOnce();
+    expect(f.deliverReady).toHaveBeenCalledOnce();
   });
   it('/new被现有控制流程消费，迟到计时器不复活旧批', async () => {
     const f = fixture();
@@ -205,14 +203,14 @@ describe('聚合器定时与交付', () => {
     expect(result.status).toBe('new_context');
     await vi.advanceTimersByTimeAsync(60000);
     await f.collector.recover();
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
     expect(f.store.collectMessage).toHaveBeenCalledOnce();
     expect(f.sender.send).toHaveBeenCalledOnce();
   });
   it('拒绝批次只通过T21提示，不创建任务', async () => {
     const f = fixture({ status: 'rejected', rejection: 'attachment', finishedAt: START });
     await f.collector.accept(input);
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
     expect(f.sender.send).toHaveBeenCalledWith({
       subject: {
         kind: 'event',
@@ -234,20 +232,19 @@ describe('聚合器定时与交付', () => {
     const f = fixture({ quietDeadline: START + quiet, maxDeadline: START + max });
     await Promise.all([f.collector.recover(), f.collector.recover()]);
     await vi.advanceTimersByTimeAsync(wait - 1);
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(f.tasks.createTask).toHaveBeenCalledOnce();
+    expect(f.deliverReady).toHaveBeenCalledOnce();
     await f.collector.recover();
-    expect(f.tasks.createTask).toHaveBeenCalledOnce();
+    expect(f.deliverReady).toHaveBeenCalledOnce();
   });
   it('全部到期恢复立即结束，任务期限仍来自原截止', async () => {
     vi.setSystemTime(START + 90000);
     const f = fixture();
     await f.collector.recover();
-    expect(f.tasks.createTask).toHaveBeenCalledOnce();
-    expect(f.tasks.createTask.mock.calls[0]?.[0]).toMatchObject({
-      now: START + 5000,
-      queueDeadline: START + 605000,
+    expect(f.deliverReady).toHaveBeenCalledOnce();
+    expect(f.deliverReady.mock.calls[0]?.[0]).toMatchObject({
+      finishedAt: START + 5000,
     });
   });
   it('拒绝收尾未完成时恢复原提示，完成后重复恢复不补发', async () => {
@@ -256,7 +253,7 @@ describe('聚合器定时与交付', () => {
     await f.collector.recover();
     expect(f.sender.recover).toHaveBeenCalledOnce();
     expect(f.sender.send).not.toHaveBeenCalled();
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
   });
   it.each(['成功', '失败'] as const)('前序收尾%s后，同批附件拒绝仍独立完成', async outcome => {
     const f = fixture();
@@ -297,7 +294,7 @@ describe('聚合器定时与交付', () => {
     if (outcome === '失败') expect(firstResult).toBe(predecessorError);
     else expect(firstResult).toMatchObject({ status: 'collected' });
     expect(f.sender.send).toHaveBeenCalledOnce();
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
   });
   it('计时器数据库错误可由settled观察，不静默丢失', async () => {
     const f = fixture();
@@ -307,7 +304,7 @@ describe('聚合器定时与交付', () => {
     await vi.advanceTimersByTimeAsync(5000);
     await expect(f.collector.settled()).rejects.toThrow('数据库不可用');
     expect(f.logger.error).toHaveBeenCalled();
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
   });
   it('批量恢复一批先失败，close仍等待另一批在途工作并保留全部错误', async () => {
     const f = fixture({ status: 'ready', finishedAt: START });
@@ -326,7 +323,7 @@ describe('聚合器定时与交付', () => {
     });
     const firstError = new Error('第一批错误');
     const secondError = new Error('第二批错误');
-    f.tasks.createTask.mockImplementation(async input => {
+    f.deliverReady.mockImplementation(async input => {
       if (input.batchId === f.batch.batchId) throw firstError;
       entered();
       await held;
@@ -355,7 +352,7 @@ describe('聚合器定时与交付', () => {
     await f.collector.accept(input);
     await f.collector.close();
     await vi.advanceTimersByTimeAsync(60000);
-    expect(f.tasks.createTask).not.toHaveBeenCalled();
+    expect(f.deliverReady).not.toHaveBeenCalled();
     expect(f.batch.status).toBe('collecting');
     await expect(f.collector.accept(input)).rejects.toThrow();
     await expect(f.collector.recover()).rejects.toThrow();

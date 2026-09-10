@@ -8,7 +8,7 @@ export type CollectibleMessage = Extract<ContextMessageResult, { status: 'messag
 
 export interface CollectedBatch extends MessageBatch {
   finishedAt: number | null;
-  rejection: InputRejection | null;
+  rejection: InputRejection | 'queue_full' | null;
   settledAt: number | null;
 }
 

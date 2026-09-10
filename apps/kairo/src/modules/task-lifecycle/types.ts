@@ -33,9 +33,12 @@ export interface Task extends ContextScope {
   createdAt: number;
   updatedAt: number;
   queueDeadline: number;
+  executionBudgetMs: number | null;
+  queueNoticeRequired: boolean;
   executionStartedAt: number | null;
   executionDeadline: number | null;
   currentAttemptId: string | null;
+  currentWaitId: string | null;
   endedAt: number | null;
 }
 
@@ -47,14 +50,28 @@ export interface CreateTaskInput {
   queueDeadline: number;
 }
 
+export interface EnqueueTaskInput extends CreateTaskInput {
+  queueLimit: number;
+}
+
+export type EnqueueTaskResult =
+  | { status: 'accepted'; task: Task }
+  | { status: 'full' }
+  | { status: 'stale' };
+
 export interface TaskVersion {
   taskId: string;
   inputVersion: number;
   now: number;
 }
 
-export interface ClaimTaskInput extends TaskVersion {
+export interface ClaimTaskInput extends Omit<TaskVersion, 'now'> {
+  now: number | (() => number);
   executionMs: number;
+}
+
+export interface ResumeTaskInput extends Omit<TaskVersion, 'now'> {
+  now: number | (() => number);
 }
 
 /** 领取、采用结果和员工等待必须走专用接口，不能用普通状态更新绕过。 */
@@ -99,6 +116,7 @@ export interface TaskOutputScope {
   inputVersion: number;
   contextVersion?: number;
   attemptId?: string;
+  userWaitId?: string;
 }
 
 export type UserWaitResolution = 'accepted' | 'declined' | 'cancelled' | 'timed_out';
@@ -118,7 +136,8 @@ export interface UserWait {
   answerMessage: MessageKey | null;
 }
 
-export interface WaitForUserInput extends AdoptAttemptInput {
+export interface WaitForUserInput extends Omit<AdoptAttemptInput, 'now'> {
+  now: number | (() => number);
   waitId: string;
   question: string;
   allowedQuestionIds: string[];
@@ -134,8 +153,13 @@ export interface ResolveUserWaitInput extends TaskVersion {
 export interface TaskStore {
   /** 只从有效上下文内的非空 ready batch 创建；同一 batch 只能形成一个任务。 */
   createTask(input: CreateTaskInput): Promise<Task | null>;
+  /** context 锁内裁决队列容量；重复批次返回首次任务或持久拒绝。 */
+  enqueueTask(input: EnqueueTaskInput): Promise<EnqueueTaskResult>;
+  listActiveTasks(): Promise<Task[]>;
   getTask(taskId: string): Promise<Task | null>;
-  claimTask(input: ClaimTaskInput): Promise<boolean>;
+  claimTask(input: ClaimTaskInput): Promise<Task | null>;
+  /** 已同意的等待只有实际取得执行名额后才恢复预算。 */
+  resumeTask(input: ResumeTaskInput): Promise<Task | null>;
   transitionTask(input: TransitionTaskInput): Promise<boolean>;
   /** 仅 queued/running 可改版本；不改变截止时间，不自动重跑任务。 */
   updateInputVersion(input: TaskVersion): Promise<boolean>;
@@ -146,9 +170,10 @@ export interface TaskStore {
   adoptAttempt(input: AdoptAttemptInput): Promise<boolean>;
   waitForUser(input: WaitForUserInput): Promise<boolean>;
   getUserWait(waitId: string): Promise<UserWait | null>;
-  /** 同意恢复剩余执行预算；拒绝取消任务，不进行自然语言同意判断。 */
+  getTaskWait(taskId: string): Promise<UserWait | null>;
+  /** 同意只保存回答并关闭等待；拒绝取消任务，不进行自然语言同意判断。 */
   resolveUserWait(input: ResolveUserWaitInput): Promise<boolean>;
-  /** 先锁有效 context 再锁 task；用途状态与截止由同步交付回调检查。 */
+  /** 先锁有效 context 再锁 task；指定 userWaitId 时只交付当前未关闭且未到期的等待。 */
   withTaskOutput<T>(
     input: TaskOutputScope,
     output: (task: Task) => T

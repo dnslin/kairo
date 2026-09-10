@@ -192,6 +192,13 @@ describe('T19 迁移、连接恢复与事务回滚', () => {
           decision: 'accepted',
         })
       ).toBe(true);
+      expect(
+        await recovered.resumeTask({
+          taskId: waiting.taskId,
+          inputVersion: 1,
+          now: answeredAt,
+        })
+      ).not.toBeNull();
       expect(await recovered.getTask(waiting.taskId)).toMatchObject({
         executionDeadline: answeredAt + remainingExecutionMs,
         queueDeadline: waiting.task!.queueDeadline,
