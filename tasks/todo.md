@@ -1096,7 +1096,7 @@ pnpm --filter @kairo/app test:integration -- tests/integration/collector-recover
 
 **本次实现验收（2026-09-09）：**定向单元24项、App默认327项、真实PostgreSQL恢复23项、受影响账本回归111项通过；迁移专题2项通过、6项按名称排除。原生计时烟测实际60.103秒结束最长批次，覆盖静默/最长剩余、全过期和/new旧批不复活。最长场景使用现有quietMs=10000及7条每9秒消息，避免默认5秒/10条先拒绝，正式YAML不变。运行中补充通过真实任务账本、attempt及AbortController验证，不冒充真实Agent运行；FakeDriver出站不替代上述T35真机。精确命令和历史失败见docs/DEVELOPMENT.md的T23节，不合并、不关闭issue。
 
-**后续PR267审查门禁：**一项同批收尾失败传播问题等待用户要求的真实KK9定向证据；首次已连接并通过身份/会话门禁，但五分钟未观察到目标标记及附件，未复现也未修复该项。Optional SQL复用已单独实施，真实PostgreSQL70项及类型/构建/静态检查通过。历史验收勾选不等于当前Required已解决，不合并或关闭issue。
+**后续PR267审查验收（2026-09-10）：**Required已用真实KK9文字+附件及一次受控收尾异常复现，再最小修复并真机复验。B轮修复前提示0次、recover才送达；C轮消息不同批不计通过；D轮同批消息135974677/135974679在recover前已发出135974683，重复恢复仍只发送1次，真实历史及撤回通过。定向单元25、App默认328、真实PostgreSQL恢复24项及类型/构建/静态检查通过，六个自建库无残留。Optional SQL复用此前已独立通过真实PostgreSQL70项。不声称完整T35或真实Agent已验收，不合并或关闭issue。
 
 ---
 

@@ -258,20 +258,21 @@ describe('聚合器定时与交付', () => {
     expect(f.sender.send).not.toHaveBeenCalled();
     expect(f.tasks.createTask).not.toHaveBeenCalled();
   });
-  it('旧收尾仍在返回快照时到达附件，也必须立即处理新拒绝状态', async () => {
+  it.each(['成功', '失败'] as const)('前序收尾%s后，同批附件拒绝仍独立完成', async outcome => {
     const f = fixture();
     let release!: (value: CollectedBatch) => void;
     let entered!: () => void;
+    const predecessorError = new Error('前序收尾失败');
     const started = new Promise<void>(resolve => {
       entered = resolve;
     });
     f.store.finishBatch.mockImplementationOnce(() => {
       entered();
-      return new Promise<CollectedBatch>(resolve => {
-        release = resolve;
+      return new Promise<CollectedBatch>((resolve, reject) => {
+        release = value => (outcome === '失败' ? reject(predecessorError) : resolve(value));
       });
     });
-    const first = f.collector.accept(input);
+    const first = f.collector.accept(input).catch((error: unknown) => error);
     await started;
     const snapshot = { ...f.batch };
     f.batch.status = 'rejected';
@@ -292,7 +293,9 @@ describe('聚合器定时与交付', () => {
     await appendedSignal;
     await Promise.resolve();
     release(snapshot);
-    await Promise.all([first, second]);
+    const [firstResult] = await Promise.all([first, second]);
+    if (outcome === '失败') expect(firstResult).toBe(predecessorError);
+    else expect(firstResult).toMatchObject({ status: 'collected' });
     expect(f.sender.send).toHaveBeenCalledOnce();
     expect(f.tasks.createTask).not.toHaveBeenCalled();
   });

@@ -1203,7 +1203,7 @@ pnpm --filter @kairo/app test:integration -- tests/integration/new-context tests
 
 ## T23 消息聚合与阶段一输入拒绝（2026-09-09）
 
-T23 初次实现、真实 PostgreSQL 集成及独立原生计时运行结果记录如下。PR267 后续双审查发现一项 Required，用户要求先取得真实 KK9 定向证据再修复；当前该真机门禁尚未通过，不把历史通过结果当作修复或合并放行。用户批准的输入规则见 `SPEC-stage-1.md`，完整计划见 `tasks/plan.md` 第20节；T22、T27、T24 的完成状态沿用用户确认。
+T23 初次实现、真实 PostgreSQL 集成及独立原生计时运行结果记录如下。PR267 后续双审查发现的同批收尾失败传播问题，已在用户要求的真实KK9链路复现后最小修复，并通过修复后真机复验；证据见本节末尾，不等于完整T35或合并放行。用户批准的输入规则见 `SPEC-stage-1.md`，完整计划见 `tasks/plan.md` 第20节；T22、T27、T24 的完成状态沿用用户确认。
 
 ### 接入与恢复合同
 
@@ -1307,4 +1307,33 @@ pnpm exec prettier --check apps/kairo/src/modules/private-chat-core/store.ts
 
 真实PostgreSQL回归6文件70/70通过，包含批次排序/原文、事务内输入策略、拒绝、防重、恢复以及旧context历史可读；类型/构建、ESLint/Prettier通过。只读调用方核对时LSP服务退出，使用定向源码搜索完成定位，未修改语言服务配置。五个有输出记录的回归库加上真机等待库，共六个精确库名只读核验残留0，T18库由既有afterAll清理。不变的Collector单元和原生60秒烟测未重跑，不将本轮70项称为Required修复证明。
 
-Required 和修复后真机仍等待用户准备好真实发送后继续。Optional 可独立评审；PR不合并，issue不关闭。
+当时Required和修复后真机仍等待用户准备好真实发送。后续结果如下；PR不合并，issue不关闭。
+
+### PR267 Required 真机复现、最小修复与复验（2026-09-10）
+
+修复前 `T23-267-B` 收到真实文字135973557及文件135973565，同批97256698-712c-4499-9a0c-e439c3814803。受控注入一次首次收尾异常后，两次accept均收到同一错误且拒绝提示0次；显式recover后提示135973573才真实送达，sendCalls=1，原生历史存在并成功撤回。进程退出0。这是实际KK9收发加受控异常，不声称发生了自然数据库故障。
+
+生产代码只修改collector.ts的processBatch：`existing.then(proceed, proceed)`让前驱成功或失败后都执行已排队的后继收尾。前驱错误仍返回原调用，后继重新读取自己已提交的批次；不增加重试、配置或新并发层，不修改T21、T24、Driver、接口或数据库合同。同批串行及close/allSettled仍保留。单元回归覆盖前驱成功/失败，新增真实PostgreSQL回归断言前驱原异常、后继成功、原文完整、无任务、一次送达及重复恢复不增发送。两项失败分支在修复前实际失败，修复后通过。
+
+修复后首轮 `T23-267-C` 的文字135974359和文件135974383落入不同批次，进程退出1，未形成目标交错，不计作通过。下一轮 `T23-267-D` 的文字135974677与文件135974679的observedAt相差431毫秒，同批0daaf2b0-2b83-44fe-8266-e823a8032c31；首次异常仍返回原调用方，附件提示135974683在显式recover前已delivered。随后连续recover两次，sendCalls仍为1、任务为0；原生历史核对通过，提示成功撤回，进程退出0。
+
+本轮实际命令（真机使用一次性探针，验收后删除）：
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/collector.test.ts --testNamePattern=前序收尾
+pnpm --filter @kairo/app test:integration -- tests/integration/collector-recovery-concurrency.test.ts --testNamePattern=前序收尾
+pnpm --filter @kairo/app exec vitest run tests/unit/collector.test.ts tests/unit/input-policy.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/collector-recovery
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app test
+pnpm --filter @kairo/app build
+pnpm exec eslint apps/kairo/src/modules/private-chat-core/collector.ts apps/kairo/tests/unit/collector.test.ts apps/kairo/tests/integration/collector-recovery-concurrency.test.ts
+pnpm exec prettier --check apps/kairo/src/modules/private-chat-core/collector.ts apps/kairo/tests/unit/collector.test.ts apps/kairo/tests/integration/collector-recovery-concurrency.test.ts
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/apps/kairo/tmp/t23-real-concurrency.ts before T23-267-B
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/apps/kairo/tmp/t23-real-concurrency.ts after T23-267-C
+pnpm --filter @kairo/driver exec tsx --env-file=C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/.env C:/Users/dongshilin/orca/workspaces/kairo/issue-228-t23-collector/apps/kairo/tmp/t23-real-concurrency.ts after T23-267-D
+```
+
+前两条是修复前红灯基线，各有1项目标失败；首次并行启动pnpm时出现bin生成警告，测试仍实际执行。修复后串行运行：定向单元25/25、真实PostgreSQL恢复24/24、App默认单元328/328，类型、构建、相关ESLint及Prettier均通过，无修改工具配置。各轮真机退出后UID仍5761，Hook generation为null且binding不存在；本轮六个精确自建库（B轮、红灯基线、两个绿灯集成、C轮、D轮）只读查询残留0，stderr为空，退出0。临时探针已移除。
+
+本次自审未引入通用框架、兼容分支或自动重试；只修复前驱错误短路后继这一条路径。此证据不替代完整T35三段发送、持续发送和真实Agent运行中补充消息验收；本轮也未重跑不变的原生60秒烟测或全部111项账本回归。

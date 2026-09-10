@@ -136,10 +136,9 @@ export function createCollector(options: CollectorOptions): Collector {
 
   function processBatch(batchId: string, recovery: boolean): Promise<void> {
     const existing = finishing.get(batchId);
-    // 新消息可能已拒绝前一次读取中的 collecting，不能只复用旧快照的收尾。
-    const work = existing
-      ? existing.then(() => finish(batchId, recovery))
-      : finish(batchId, recovery);
+    // 后继处理自己的已提交状态；前驱异常仍由前驱调用方接收，不能短路后继。
+    const proceed = (): Promise<void> => finish(batchId, recovery);
+    const work = existing ? existing.then(proceed, proceed) : proceed();
     finishing.set(batchId, work);
     const release = (): void => {
       if (finishing.get(batchId) === work) finishing.delete(batchId);

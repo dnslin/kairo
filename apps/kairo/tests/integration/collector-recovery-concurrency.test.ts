@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   collectorBatches,
@@ -219,6 +220,55 @@ describe('双业务连接聚合与绝对截止竞争', () => {
     expect(
       (await second.chat.getBatchMessages(pending[0]!.batchId)).map(message => message.text).sort()
     ).toEqual(['新乙', '新甲']);
+  });
+
+  it('前序收尾失败不跳过已落盘附件的独立提示，原异常仍交给原调用', async () => {
+    const current = runtime();
+    const entered = deferredSignal();
+    const release = deferredSignal();
+    const appended = deferredSignal();
+    const predecessorError = new Error('前序收尾受控异常');
+    vi.spyOn(current.chat, 'finishBatch').mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      throw predecessorError;
+    });
+    const collect = current.chat.collectMessage.bind(current.chat);
+    vi.spyOn(current.chat, 'collectMessage').mockImplementation(async (...args) => {
+      const batches = await collect(...args);
+      if (batches.some(batch => batch.status === 'rejected')) appended.resolve();
+      return batches;
+    });
+    const first = current.receive({ content: '原始文字' }).catch((error: unknown) => error);
+    await entered.promise;
+    const second = current.receive({ content: '', messageType: 'file' });
+    try {
+      await appended.promise;
+      await nextTurn();
+    } finally {
+      release.resolve();
+    }
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult).toBe(predecessorError);
+    expect(secondResult.status).toBe('collected');
+    const [batch] = await collectorBatches(current);
+    expect(batch).toMatchObject({ status: 'rejected', rejection: 'attachment', settledAt: clock });
+    expect(
+      (await current.chat.getBatchMessages(batch!.batchId)).map(message => message.text)
+    ).toEqual(['原始文字', '']);
+    expect(await collectorTasks(current)).toEqual([]);
+    const notices = await collectorNotices(current);
+    expect(notices).toEqual([
+      {
+        operation_id: expect.any(String),
+        purpose: 'notice:input_attachment',
+        status: 'delivered',
+        send_calls: 1,
+      },
+    ]);
+    await current.collector.recover();
+    expect(await collectorNotices(current)).toEqual(notices);
+    expect(current.driver.recordedCalls).toHaveLength(1);
   });
 
   it('新消息先提交后迟到 timer 再读旧批，不能吞掉新批或建立重复任务', async () => {
