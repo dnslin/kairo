@@ -11,7 +11,7 @@ import type {
 
 class MockCdpClient extends EventEmitter {
   private status: ConnectionStatus = 'disconnected';
-  public evaluateResult: unknown = { ok: true, busFound: true };
+  public evaluateResult: unknown = { ok: true, busFound: true, nativeAttached: true };
   public sendCommandMock = vi.fn().mockImplementation((method: string) => {
     if (method === 'Runtime.enable') return Promise.resolve({});
     if (method === 'Runtime.addBinding') return Promise.resolve({});
@@ -175,7 +175,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     const receivedMessages: KK9Message[] = [];
     bridge.on('message', msg => receivedMessages.push(msg));
 
-    // 模拟来自渲染进程 $bus 的 receive-message 事件
+    // 模拟原生IPC消息通过渲染 binding 的标准化载荷。
     mockCdp.triggerBinding('__kairo_native_bridge', {
       type: 'receive-message',
       data: {
@@ -206,7 +206,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     expect(msg.isMe).toBe(false);
   });
 
-  it('session-msg 批量增量消息：展开派发多条消息', async () => {
+  it('原生批量消息：展开派发多条消息', async () => {
     const mockCdp = new MockCdpClient();
     const bridge = new KK9EventBridge(defaultConfig, mockCdp as unknown as CdpClient);
     await bridge.connect();
@@ -215,7 +215,7 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     bridge.on('message', msg => receivedMessages.push(msg));
 
     mockCdp.triggerBinding('__kairo_native_bridge', {
-      type: 'session-msg',
+      type: 'receive-message',
       data: {
         sesUUID: 'ses-uuid-999',
         messages: [

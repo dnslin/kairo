@@ -16,6 +16,8 @@ function createPage() {
     sessions: [{ id: '会话', sesUUID: '会话' }],
   });
   const windowObject = runtime.context['window'] as Record<string, unknown>;
+  const ipc = new EventEmitter();
+  windowObject['ipcRenderer'] = ipc;
   const originalRevoke = vi.fn();
   const chat: {
     addRevokeMsg: (data: unknown) => void;
@@ -39,7 +41,7 @@ function createPage() {
     querySelectorAll: () => [{ __vue__: chat }],
   });
 
-  function createBridge(generationId: string, connectionId: string) {
+  function createBridge(generationId: string, connectionId: string, currentUserId?: string) {
     const cdp = new CdpClient(cdpConfig, { startupGenerationId: generationId });
     let status: ConnectionStatus = 'disconnected';
     const identity: CdpConnectionIdentity = {
@@ -74,10 +76,23 @@ function createPage() {
     vi.spyOn(cdp, 'evaluate').mockImplementation(script =>
       runRendererScript(script, runtime.context)
     );
-    const bridge = new KK9EventBridge({ cdp: cdpConfig, startupGenerationId: generationId }, cdp);
+    const bridge = new KK9EventBridge(
+      { cdp: cdpConfig, startupGenerationId: generationId, currentUserId },
+      cdp
+    );
     return { cdp, bridge };
   }
-  return { bus, rendererBus, runtime, windowObject, originalRevoke, chat, observers, createBridge };
+  return {
+    bus,
+    ipc,
+    rendererBus,
+    runtime,
+    windowObject,
+    originalRevoke,
+    chat,
+    observers,
+    createBridge,
+  };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -124,12 +139,18 @@ describe('EventBridge 渲染资源所有权关闭', () => {
     expect(page.windowObject['__kairo_bridge_cleanup']).toBe(newCleanup);
     expect(page.observers.size).toBe(1);
     expect(page.bus.listenerCount('receive-message')).toBe(1);
-    page.bus.emit('receive-message', {
-      id: '消息',
-      sessionID: '会话',
-      sender: '员工',
-      content: '接管后消息',
-    });
+    page.ipc.emit(
+      'message',
+      {},
+      {
+        args: {
+          id: '消息',
+          sessionID: '会话',
+          sender: '员工',
+          content: '接管后消息',
+        },
+      }
+    );
     expect(received.map(message => message.id)).toEqual(['消息']);
     await newer.bridge.disconnect();
     expect(page.chat.addRevokeMsg).toBe(page.originalRevoke);
@@ -202,5 +223,80 @@ describe('EventBridge 渲染资源所有权关闭', () => {
     expect(page.windowObject[bindingName]).toBeUndefined();
     expect(page.windowObject['__kairo_bridge_cleanup']).toBeUndefined();
     await bridge.disconnect();
+  });
+
+  it.each([0, 1])('原生IPC会话类型%d使用typeID而非数据库行ID，保留正文与入站身份', async type => {
+    const page = createPage();
+    const { bridge } = page.createBridge('原生载荷', '连接', '5761');
+    const received: KK9Message[] = [];
+    bridge.on('message', message => received.push(message));
+    await bridge.connect();
+    page.ipc.emit(
+      'message',
+      {},
+      {
+        args: {
+          sessionID: 716791,
+          session: { id: 716791, type, typeID: 3585, typeName: '测试员工' },
+          message: [
+            {
+              id: 136018959,
+              sessionID: 716791,
+              sessionType: type,
+              sender: 3585,
+              senderName: '测试员工',
+              contentType: 4,
+              content: { content: [{ type: 0, text: 'T26-开始' }] },
+            },
+          ],
+        },
+      }
+    );
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      id: '136018959',
+      sessionId: `${type}-3585`,
+      sessionType: type === 0 ? 'private' : 'group',
+      content: 'T26-开始',
+      senderId: '3585',
+      direction: 'inbound',
+    });
+    await bridge.disconnect();
+  });
+
+  it('新代只接收原生IPC新事件，断线旧消息的迟到总线转发不补做', async () => {
+    const page = createPage();
+    const older = page.createBridge('旧代', '旧连接');
+    await older.bridge.connect();
+    await older.cdp.disconnect();
+    // KK9断线期间已收到该消息；随后UI异步工作完成才转发到总线。
+    page.ipc.emit(
+      'message',
+      {},
+      { args: { id: '断线旧消息', sessionID: '会话', sender: '员工', content: '旧问题' } }
+    );
+    const newer = page.createBridge('新代', '新连接');
+    await newer.bridge.connect();
+    const received: string[] = [];
+    newer.bridge.on('message', message => received.push(message.id));
+    page.bus.emit('receive-message', {
+      id: '断线旧消息',
+      sessionID: '会话',
+      sender: '员工',
+      content: '旧问题',
+    });
+    page.bus.emit('会话-msg', [
+      { id: '历史消息', sessionID: '会话', sender: '员工', content: '历史' },
+    ]);
+    expect(received).toEqual([]);
+    page.ipc.emit(
+      'message',
+      {},
+      { args: { id: '新收到消息', sessionID: '会话', sender: '员工', content: '新问题' } }
+    );
+    expect(received).toEqual(['新收到消息']);
+    await older.bridge.disconnect();
+    await newer.bridge.disconnect();
+    expect(page.ipc.listenerCount('message')).toBe(0);
   });
 });

@@ -21,7 +21,6 @@ import {
   extractRecalledEventsFromPayload,
   normalizeNativeMessage,
   normalizeRecalledEvent,
-  toSafeString,
 } from './converter.js';
 
 const log = createChildLogger('event-bridge');
@@ -268,12 +267,17 @@ export class KK9EventBridge extends EventEmitter {
       const injectionResult = await this.cdp.evaluate<{
         ok?: boolean;
         busFound?: boolean;
+        nativeAttached?: boolean;
         sessionsHooked?: number;
       }>(hookScript);
       if (this.disconnectPromise) throw new Error('EventBridge 注入期间已关闭');
-      if (!injectionResult?.ok || injectionResult.busFound !== true) {
+      if (
+        !injectionResult?.ok ||
+        injectionResult.busFound !== true ||
+        injectionResult.nativeAttached !== true
+      ) {
         throw new Error(
-          `EventBridge 注入返回无效: ok=${String(injectionResult?.ok)}, busFound=${String(injectionResult?.busFound)}, sessionsHooked=${String(injectionResult?.sessionsHooked)}`
+          `EventBridge 注入返回无效: ok=${String(injectionResult?.ok)}, busFound=${String(injectionResult?.busFound)}, nativeAttached=${String(injectionResult?.nativeAttached)}`
         );
       }
       this.injectionIdentity = connectionIdentity;
@@ -441,60 +445,14 @@ export class KK9EventBridge extends EventEmitter {
         this.handleIncomingMessages(data);
         break;
       }
-      case 'session-msg': {
-        const rawData = data as {
-          sesUUID?: string;
-          sessionId?: string;
-          sessionID?: string;
-          messages?: unknown[];
-          session?: Record<string, unknown>;
-          type?: unknown;
-          sessionType?: unknown;
-        };
-        const sessionObj = rawData?.session || (rawData as Record<string, unknown>);
-        const isGroup =
-          rawData?.sessionType === 'group' ||
-          rawData?.type === 1 ||
-          rawData?.type === 'group' ||
-          sessionObj?.type === 1 ||
-          sessionObj?.type === 'group' ||
-          sessionObj?.sessionType === 1 ||
-          sessionObj?.sessionType === 'group';
-        const sessionType = isGroup ? 'group' : 'private';
-        const sesId =
-          rawData?.sesUUID ||
-          rawData?.sessionId ||
-          rawData?.sessionID ||
-          sessionObj?.id ||
-          sessionObj?.sesUUID;
-        const sessionContext: Partial<KK9Session> | undefined = sesId
-          ? {
-              id: toSafeString(sesId),
-              name: toSafeString(sessionObj?.name ?? sesId),
-              type: sessionType,
-            }
-          : undefined;
-        this.handleIncomingMessages(data, sessionContext);
-        break;
-      }
       case 'recalled':
       case 'CancelMessage':
       case 'revokeMsg': {
         this.handleRecalledPayload(data);
         break;
       }
-      default: {
-        // 未知或通用事件，尝试兼容推断
-        if (data && typeof data === 'object') {
-          const obj = data as Record<string, unknown>;
-          if (obj['msgID'] || obj['messageId'] || obj['event'] === 'CancelMessage') {
-            this.handleRecalledPayload(obj);
-          } else {
-            this.handleIncomingMessages(data);
-          }
-        }
+      default:
         break;
-      }
     }
   }
 
@@ -642,7 +600,9 @@ export class KK9EventBridge extends EventEmitter {
           }
         }
 
+        let active = true;
         function postEvent(type, data) {
+          if (!active) return;
           if (typeof window[${JSON.stringify(binding)}] === 'function') {
             try {
               window[${JSON.stringify(binding)}](JSON.stringify({ generationId: ${generationId}, connectionId: ${connectionId}, type, data, timestamp: Date.now() }));
@@ -673,10 +633,15 @@ export class KK9EventBridge extends EventEmitter {
         };
 
         const bus = getBus();
+        const electron = window.require ? window.require('electron') : null;
+        const ipc = window.ipcRenderer || electron?.ipcRenderer;
+        const nativeAttached = Boolean(ipc && typeof ipc.on === 'function' && typeof ipc.removeListener === 'function');
+        if (!nativeAttached) throw new Error('原生消息接收通道不可用');
         const unbindFns = [];
         const hookedSessions = new Set();
         let observer = null;
         const cleanup = () => {
+          active = false;
           const errors = [];
           for (const unbind of unbindFns.splice(0)) {
             try { unbind(); } catch (error) { errors.push(error); }
@@ -801,7 +766,6 @@ export class KK9EventBridge extends EventEmitter {
                 postEvent('recalled', recallEvt);
               }
             }
-            postEvent('session-msg', { sesUUID, messages: msgs });
           });
 
           // 监听会话专用撤回事件
@@ -818,6 +782,12 @@ export class KK9EventBridge extends EventEmitter {
             });
           });
         }
+        // 原生接收事件先于 KK9 异步 UI 转发；历史查询回复不使用此通道。
+        const onNativeMessage = (_event, payload) => {
+          if (payload && payload.args) postEvent('receive-message', payload.args);
+        };
+        ipc.on('message', onNativeMessage);
+        unbindFns.push(() => ipc.removeListener('message', onNativeMessage));
 
         if (bus && typeof bus.$on === 'function') {
           // 1. 监听全局 receive-message
@@ -834,7 +804,6 @@ export class KK9EventBridge extends EventEmitter {
               }
             }
 
-            postEvent('receive-message', payload);
           });
 
           // 2. 监听全局 CancelMessage
@@ -938,7 +907,7 @@ export class KK9EventBridge extends EventEmitter {
         } catch {}
 
 
-        return { ok: true, busFound: !!bus, sessionsHooked: hookedSessions.size };
+        return { ok: true, busFound: !!bus, nativeAttached, sessionsHooked: hookedSessions.size };
       })()
     `;
   }

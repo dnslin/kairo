@@ -29,7 +29,7 @@ type CapturedLog = (typeof capturedLogs)[number];
 
 class MockCdpClient extends EventEmitter {
   private status: ConnectionStatus = 'connected';
-  public evaluateResult: unknown = { ok: true, busFound: true };
+  public evaluateResult: unknown = { ok: true, busFound: true, nativeAttached: true };
 
   public getStatus(): ConnectionStatus {
     return this.status;

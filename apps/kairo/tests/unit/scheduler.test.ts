@@ -30,6 +30,8 @@ vi.mock('../../src/modules/task-lifecycle/task-runner.js', () => ({
       }
       return Promise.resolve();
     },
+    // 受控执行不响应取消；用于证明业务取消不能假释放实际名额。
+    cancel: () => undefined,
     close: () => {
       for (const release of execution.releases.values()) release();
       return Promise.resolve();
@@ -59,6 +61,8 @@ function task(id: string, sessionId = id, status: Task['status'] = 'queued'): Ta
     currentWaitId: null,
     queueNoticeRequired: false,
     currentAttemptId: null,
+    answerText: null,
+    recoveryUsed: false,
     endedAt: null,
   };
 }
@@ -242,5 +246,47 @@ describe('进程内调度的顺序与实际名额', () => {
     expect(premature).toBe(false);
     expect(result).toBe(true);
     expect(execution.starts).toEqual([]);
+  });
+
+  it('原 running 恢复占用同一组三个名额，原会话后项不能越过', async () => {
+    const old = ['a', 'b', 'c'].map(id => ({
+      ...task(id, id, 'running'),
+      executionDeadline: START + 1000,
+    }));
+    const rows = [...old, task('后项', 'a'), task('第四会话')];
+    const { scheduler, store } = fixture(rows);
+    await scheduler.recover(old, new AbortController().signal);
+    expect(execution.starts).toEqual(['a', 'b', 'c']);
+    expect(store.claimTask).not.toHaveBeenCalled();
+    rows[0]!.status = 'completed';
+    execution.releases.get('a')!();
+    await scheduler.tick();
+    await Promise.resolve();
+    await scheduler.tick();
+    expect(execution.starts).toEqual(['a', 'b', 'c', '后项']);
+  });
+
+  it('原 running 恢复恰好到期，不再执行且后项继续', async () => {
+    const old = { ...task('a', '甲', 'running'), executionDeadline: START };
+    const { scheduler } = fixture([old, task('后项', '甲')]);
+    await scheduler.recover([old], new AbortController().signal);
+    expect(old.status).toBe('timed_out');
+    expect(execution.starts).toEqual(['后项']);
+  });
+
+  it('换代不清空旧实际执行槽，取消未退出时新任务继续等待', async () => {
+    const rows = ['a', 'b', 'c', 'd'].map(id => task(id));
+    const { scheduler } = fixture(rows);
+    await scheduler.resume(new AbortController().signal);
+    await scheduler.pause();
+    rows.slice(0, 3).forEach(row => {
+      row.status = 'cancelled';
+    });
+    await scheduler.resume(new AbortController().signal);
+    expect(execution.starts).toEqual(['a', 'b', 'c']);
+    execution.releases.get('a')!();
+    await Promise.resolve();
+    await scheduler.tick();
+    expect(execution.starts).toEqual(['a', 'b', 'c', 'd']);
   });
 });

@@ -50,6 +50,8 @@ function fixture(overrides: Partial<Task> = {}) {
     queueNoticeRequired: false,
     currentWaitId: null,
     currentAttemptId: null,
+    answerText: null,
+    recoveryUsed: false,
     endedAt: null,
     ...overrides,
   };
@@ -58,22 +60,25 @@ function fixture(overrides: Partial<Task> = {}) {
   const store = {
     getTask: vi.fn(() => Promise.resolve({ ...task })),
     startAttempt: vi.fn<TaskStore['startAttempt']>(input => {
+      const now = typeof input.now === 'function' ? input.now() : input.now;
       if (
         task.status !== 'running' ||
         input.expectedAttemptId !== task.currentAttemptId ||
+        (input.recovery === true && task.recoveryUsed) ||
         context.invalidatedAt !== null ||
-        input.now >= task.executionDeadline!
+        now >= task.executionDeadline!
       )
         return Promise.resolve(null);
       const attempt: TaskAttempt = {
         ...input,
-        startedAt: input.now,
+        startedAt: now,
         finishedAt: null,
         errorType: null,
         adopted: false,
       };
       attempts.set(attempt.attemptId, attempt);
       task.currentAttemptId = attempt.attemptId;
+      if (input.recovery === true) task.recoveryUsed = true;
       return Promise.resolve({ ...attempt });
     }),
     finishAttempt: vi.fn<TaskStore['finishAttempt']>(input => {
@@ -111,6 +116,7 @@ function fixture(overrides: Partial<Task> = {}) {
         return Promise.resolve(false);
       attempt.adopted = true;
       task.status = 'ready_to_send';
+      task.answerText = input.answerText;
       return Promise.resolve(true);
     }),
     waitForUser: vi.fn<TaskStore['waitForUser']>(input => {
@@ -679,5 +685,46 @@ describe('取消错误归属', () => {
     expect(f.task.status).toBe('cancelled');
     expect([...f.attempts.values()][0]?.errorType).toBe('storage');
     await expect(f.runner.close()).rejects.toBe(failure);
+  });
+});
+
+describe('启动恢复与连接代次', () => {
+  it('恢复使用原绝对截止并保存已检查正文，不重置任务预算', async () => {
+    const f = fixture({
+      currentAttemptId: '旧尝试',
+      executionStartedAt: -239000,
+      executionDeadline: 1000,
+    });
+    const run = f.runner.run({ ...f.task }, true);
+    await f.entered.promise;
+    expect(f.task.recoveryUsed).toBe(true);
+    expect(f.task.executionDeadline).toBe(1000);
+    expect(f.execute.mock.calls[0]?.[0].signal.aborted).toBe(false);
+    f.execution.resolve({ kind: 'answer', text: '已检查的恢复答案' });
+    await run;
+    await f.runner.settled();
+    expect(f.task.answerText).toBe('已检查的恢复答案');
+    expect(f.sent.map(request => request.text)).toEqual([
+      '正在查询企业知识，请稍候',
+      '已检查的恢复答案',
+    ]);
+    await f.runner.close();
+  });
+
+  it('连接失效立即终止真实信号，迟到答案不能采用或发送', async () => {
+    const f = fixture();
+    const connection = new AbortController();
+    const run = f.runner.run({ ...f.task }, false, connection.signal);
+    const signal = await f.entered.promise;
+    connection.abort();
+    expect(signal.aborted).toBe(true);
+    f.execution.resolve({ kind: 'answer', text: '失效代次的迟到答案' });
+    await run;
+    await f.runner.settled();
+    expect(f.task.status).toBe('cancelled');
+    expect(f.task.answerText).toBeNull();
+    expect(f.sent).toEqual([]);
+    expect([...f.attempts.values()][0]?.adopted).toBe(false);
+    await f.runner.close();
   });
 });

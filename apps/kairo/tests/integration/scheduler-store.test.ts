@@ -152,9 +152,14 @@ describe('T25 PostgreSQL 调度存储', () => {
     expect(
       await context.storeA.finishAttempt({ attemptId, finishedAt: now + 300, errorType: null })
     ).toBe(true);
-    expect(await context.storeA.adoptAttempt({ ...firstClaim, now: now + 400, attemptId })).toBe(
-      true
-    );
+    expect(
+      await context.storeA.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
+        ...firstClaim,
+        now: now + 400,
+        attemptId,
+      })
+    ).toBe(true);
     expect(await context.storeB.claimTask(secondClaim)).toBeNull();
     expect(
       await context.storeA.transitionTask({

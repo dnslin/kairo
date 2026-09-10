@@ -1437,3 +1437,107 @@ pnpm --filter @kairo/app test
 - 验证完成后删除临时真机入口，保留正式竞争回归。生产代码自上一轮App371项、真实数据库50项、构建/类型及定向静态检查通过后未再修改，因此本轮不重复运行不变的质量命令。公开接口、数据库迁移、Driver实现与正式Agent装配均未改变。
 
 至此，关闭竞争与进度竞争均已有修复前真实环境证据、最小修复和对应修复后复验。进度证据包含真实员工入站、PostgreSQL及KK9实际发送，但执行内容和竞态延迟仍受控，不替代正式Agent或完整T35双员工慢查询验收。未提交推送、合并分支或关闭issue。
+
+## T26 启动恢复与 Driver 重连监督（2026-09-10）
+
+任务：[#231](https://github.com/dnslin/kairo/issues/231)。代码、自动化回归与受控运行已验证；真实员工参与的重连验收尚未完成，不能据此关闭 issue 或宣称 T35 放行。
+
+### 实现与边界
+
+- `task-lifecycle/recovery.ts` 提供启动恢复与断线取消两个独立入口。启动恢复只用于旧进程退出后；同一实例重复调用共享原恢复 Promise，不能把本进程新任务当成崩溃任务。
+- `000013-task-recovery.sql` 保存已检查的 `answer_text` 与单次恢复额度 `recovery_used`。正文不从其他账本猜造，也不提前写正式 Memory。
+- collecting 复用 T23 原静默/最长截止和恢复计时器；过期批次立即形成输入。queued 由 T25 沿用原十分钟截止，过期 timed_out。
+- running 仅在原四分钟截止内增加一次恢复 attempt；数据库原子占用恢复额度。再次重启不能继续追加，恢复耗尽按既定要求 failed 并通知；过期仍 timed_out。
+- ready_to_send/sending 使用持久正文并复用 T21 恢复入口，不重新生成答案。发送三态、最多两次实际发送、唯一查询及原三十秒查询时点不另建策略；querying 时崩溃不补查。缺少可恢复正文的任务失败并通知，不永久阻塞会话。
+- waiting_for_user 使用原等待记录、十分钟绝对截止及会话阻塞规则；已关闭等待不会重新提问。已报告终态与 Memory pending 保留，Memory 执行恢复留给 T32。
+- `driver-supervisor.ts` 在断线当前调用栈关闭消息入口、使旧 generation 失效并触发 AbortSignal。旧聚合/领取事务收尾后取消本 Bot 未完成任务；重新创建 Driver，不复用旧连接对象。旧执行真实退出前仍占实际槽位。
+- 新连接装配完成后才接收入站；回调、连接和清理错误保留并传播。关闭会主动取消挂起 CDP 握手，重复或重入关闭共享同一 Promise。
+- Driver 从真实原生 IPC `message` 接收入站，不再把 Vue `receive-message` / `session-msg` 的历史列表展示当新入站。受控渲染页回归证明旧列表事件不补做、新原生消息能接收；旧 Hook 与迟到 CDP 回调按代次失效。真机新旧消息边界仍须员工实测。
+- `index.ts` 接入连接监督及关闭生命周期；没有派发 T28、提前装配正式 Agent、实现 T32 Memory 恢复或替代 T33 整体装配。
+
+### 本轮实际命令及结果
+
+```powershell
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+pnpm --filter @kairo/app test:integration -- tests/integration/recovery tests/integration/task-store.test.ts tests/integration/scheduler.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/recovery tests/integration/collector tests/integration/new-context tests/integration/task-store tests/integration/scheduler tests/integration/send-service tests/integration/ingress-dedup.test.ts tests/integration/private-chat-store.test.ts tests/integration/memory-commit-store.test.ts
+node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/t26-smoke.ts
+```
+
+- 最终根四项命令完整通过：Driver 29 文件331项，App 26文件405项；lint 无错误或警告。前两次中间门禁分别发现旧测试注入工装未迁移、监督器 lint 问题，已修正后重跑；未降低断言或压制规则。
+- 定向真实 PostgreSQL 4文件62项通过；Checkpoint C 相关真实 PostgreSQL 19文件211项通过，使用既有随机临时库隔离工装。两组有重叠，不能相加作为独立用例数。
+- 独立 Node 烟测使用真实时钟、真实 PostgreSQL、正式恢复/聚合/发送/调度组件，但执行器和 Driver 为替身：停机后等待4086ms，批次结束时刻等于原静默截止；发送总等待30040ms、查询1次、状态send_unconfirmed、原正文保留且不重发；连接创建2次，仅接受断线前及新代消息，拒绝旧代迟到消息。临时库为 `kairo_t19_e88d270dfdab40f59541954da541559c`，连接PID38459/38460。烟测完成后移除临时入口。
+
+### Checkpoint C 逐项证据
+
+以下“通过”限本轮自动化与上述受控证据，不等于真实双员工或正式 Agent 全链路放行。
+
+| 检查项 | 本轮证据 | 状态 |
+| --- | --- | --- |
+| outbound/unknown/非私聊不进入后续业务 | Driver入站标准化、App入站/聚合门禁与ingress-dedup | 通过 |
+| 双员工UID/context/batch/task/通知隔离 | private-chat-store、task-store、send-service与new-context集成 | 通过 |
+| EventBridge/轮询跨来源持久去重 | ingress-dedup、private-chat-store及Driver标准化 | 通过 |
+| 5秒/60秒、10条/30000字、附件拒绝 | collector、input-policy单元及collector-recovery集成 | 通过 |
+| /new、两小时context、迟到结果 | context-service、new-context及new-context-concurrency | 通过 |
+| 会话顺序、队列3/全局3、10分钟/4分钟/10秒 | scheduler、task-runner、task-store-deadlines及scheduler-store系列 | 通过 |
+| delivered/failed/unknown、30秒查询 | send-service系列、recovery集成及实际30秒烟测 | 通过 |
+| collecting/queued/running/sending及waiting恢复 | recovery单元、recovery/recovery-store集成；包含恢复额度、缺正文终态与断线竞争 | 通过 |
+| 根build/typecheck/test/lint | 上述完整串行命令 | 通过 |
+
+### 真机仍待完成
+
+已实际运行既有 `packages/driver/examples/e2e-stage1-contract.ts`，核对Bot5761、员工3585、私聊0-3585/int2024并连接真实KK9。但120秒内未收到员工新入站，结果6/7、退出1、cleanupMissing为空；不能把它记为原生接收、发送三态或重连真机通过。没有关闭KK9进程。
+
+保留临时 `apps/kairo/tmp/t26-reconnect-real.ts` 等待员工窗口；已单独使用TypeScript静态检查，但尚未实际运行。它将在业务过滤之前记录全部目标会话原生消息，以断线前历史ID集合排除旧样本；断开自有WebSocket，待新连接后释放旧执行结果，验证旧任务取消、迟到答案丢弃、断线消息不补做、新消息真实送达，并撤回本探针的Bot消息。不能用过滤掉测试消息后再检查“未接收”的方式伪造隔离证据。
+
+后续需要员工按提示完成 `T26-开始`、断线窗口中的 `T26-断线`、新连接后的 `T26-恢复`，并补完既有Driver真机合同脚本。T34完整跨进程与T35完整双员工真机验收仍明确未放行。代码复杂度审查保留必要的生命周期/原子额度门禁，没有新增兼容层、通用恢复框架、分布式租约或另一套发送/调度策略。未合并或关闭issue。
+
+### T26 真机探针清理竞争修复
+
+Advisor指出的缺陷已用真实PostgreSQL、正式调度/发送组件及Driver替身复现：历史查询异常后先释放“清理旧执行，不能交付”，执行未取消，撤回快照0条，但随后该文本发送1次并记为delivered。没有连接KK9，不能把替身回执称为真实IM送达。
+
+修复仅限临时 `t26-reconnect-real.ts`：先设置清理标志并注销入站、装配回调，在已有异步入站/装配返回后再次检查清理标志；关闭发送服务并同步发起调度取消、聚合关闭与监督器在途等待，再释放旧执行。全部在途工作退出后才查询撤回名单，Driver与数据库留到撤回结束后关闭，各步骤错误继续汇总。生产调度、发送服务和Driver源码未修改。
+
+实际运行 `node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/t26-cleanup-smoke.ts`，从探针语法树提取并执行其实际finally，不执行KK9连接入口。随机隔离库 `kairo_t19_c81b8310f11d419993a0a8ee3c7e6acb`（PID38573/38574）验证：释放时执行已取消、清理文本发送0次、此前已送达的替身消息撤回1条、未撤回名单为空、Driver在撤回之后关闭。烟测完成后移除临时复验脚本。
+
+单独执行 `pnpm --filter @kairo/app exec tsc --noEmit --target ES2022 --lib ES2024,DOM --module NodeNext --moduleResolution NodeNext --skipLibCheck --esModuleInterop --strict tmp/t26-reconnect-real.ts` 通过。未重跑不变的生产代码根门禁；未启动真机，实际员工重连验收仍等待用户协调。
+
+### T26 清理期间迟到原生回执补验
+
+第二项Advisor问题也已受控复现：Driver已进入发送，在原生账本写入及返回回执之前暂停；清理关闭sender后才放行。协调账本保持sending/message_id=null，原生账本随后成为delivered并保存message_id。旧探针只查询协调账本，漏撤回该消息，即使未撤回名单为空也不能证明清理完整。
+
+修复仅修改探针撤回候选SQL：先以本探针botId关联tasks/send_dispatches取得所属operationId，再联查send_operations；两侧消息ID用UNION去重，不扫描撤回其他操作。生产取消门禁不变，预期cancelled错误仍记录和传播。
+
+实际运行临时 `t26-late-receipt-smoke.ts --expect-bug` / `--expect-fixed`，两次都执行探针实际finally、正式调度发送组件及真实PostgreSQL，Driver和监督器为替身，未连接KK9。修复前库 `kairo_t19_5f7f33072505485281babbc47459d2b6` 只撤回清理前已送达消息；修复后库 `kairo_t19_bf1e8157e7a24c6d8d48263a67d669b8`（PID38637/38638）撤回清理前与迟到消息各1次，两账本共有ID不重复撤回，同会话但不属于本探针operationId的消息未被撤回。原生写入确实晚于sender关闭，协调账本仍未采用回执，取消错误断言保留。探针单独TypeScript检查通过；临时烟测完成后移除，未启动真机。
+
+### T26 首轮员工入站真机发现原生会话编号缺陷
+
+用户准备后实际启动重连探针。首次装配因员工档案返回数字3585、临时断言比较字符串而退出；按既有T22与Driver真机合同的String比较方式修正。第二次监听使用临时库 `kairo_t19_50489f783ae8476e9599ae35e5ad6694`（PID38684/38685），用户确认发送后仍未进入执行，120秒超时退出，未撤回名单为空；没有把用户已发送解释为未发送。
+
+通过只读CDP控制台缓存取证，KK9确已收到 `T26-开始`，原生消息ID136018959。载荷session.id=716791是内部数据库行ID，session.type=0、session.typeID=3585才构成公开会话编号0-3585。原生监听已安装，但标准化误取716791，使探针目标会话过滤不匹配。未重放这条旧消息进入业务。
+
+修复 `bridge/converter.ts`：有原生type/typeID时按现有会话编号规则生成ID；轮询/DOM传入的显式sessionId保持原优先级。`event-bridge-lifecycle.test.ts`加入原生IPC私聊/群聊回归，验证会话编号、正文、发送者与inbound方向，修复前会话编号断言失败，修复后通过。没有扩大来源origin推断规则。此为生产Driver修复，仍需随后新入站真机验证，不能把此前超时记为通过。
+
+随后完整执行 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 通过：Driver333项、App405项。最初lint指出未知字段直接String转换，已复用现有toSafeString后重新执行完整四项门禁通过。只读诊断入口已完成取证并移除；修复后真机仍需新收到的消息，不能重放先前消息充当通过证据。
+
+下一轮用户发送的新消息136020251仍未入库并超时。完整控制台载荷进一步确认：顶层sessionID以及消息内sessionID同样是数据库行ID716791；前一轮缩减样本遗漏顶层字段，导致修复不完整。已补全回归样本，先复现同样失败，再将原生type/typeID解析优先于该旧式sessionID字段。明确的sessionId/sesUUID仍保持优先，不改变T22过滤。
+
+修复后只读取得两条实际缓存载荷136018959、136020251，在本机调用标准化函数，均断言sessionId=0-3585、direction=inbound、正文为T26-开始。只解析、不派发、不入库、不补做旧消息。随后再次完整执行根build/typecheck/test/lint通过（Driver333、App405）。探针增加测试消息的会话编号、方向和入站处理状态输出，避免下一次只见超时而缺少定位证据；真机通过仍取决于后续新消息。
+
+修复后的真实消息136020995（T26-开始）与136021209（T26-恢复）均以0-3585/inbound进入T22并accepted。探针断开自有WebSocket，旧任务取消断言通过，新连接代次从 `aeb2691e-e9fd-4c62-ae74-d2559dfd5754` 变为 `026dd1f9-54cd-4832-befa-17b43310340c`；新回复136021221由真实Driver确认delivered（508ms）并撤回，清理未撤回名单为空。
+
+该轮仍退出1，不能记作重连完整通过：隔离断言发现T26-断线消息136021113被新代次观察。随后只读控制台时序证明，新连接在07:39:06.946Z连接、约07:39:07就绪，该消息实际到达KK9为07:39:51.628Z，已在重连之后约45秒。因此这是未落入断线窗口的无效验收样本，不是已证明的历史重放。临时探针的重连等待由15秒改为120秒、等待上限同步改为130秒，以适应人工终端往返；未改生产默认重连间隔、任务预算或隔离断言。入口单独类型检查通过，需重新收集窗口内的新样本。
+
+两分钟断线窗口版本随后实际启动，07:43:25监听就绪，07:45:25因等待首条T26-开始超时退出1；日志没有本轮测试消息入站记录，尚未执行断线步骤。清理未撤回名单为空，自有连接关闭。暂停自动重启，待用户重新确认可配合窗口后继续；该轮不构成重连失败或隔离通过证据。
+
+### T26 两分钟断线窗口真机复验通过
+
+用户再次确认准备好后，运行 `node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/tmp/t26-reconnect-real.ts`，最终退出0。使用真实KK9与PostgreSQL，自有WebSocket受控断开，执行器仍为受控函数，不冒充正式Agent或T34/T35整体放行。
+
+- 本轮隔离库 `kairo_t19_ebd2deae9bcd4c538cce9a4e644f19f6`，连接PID38837/38838。
+- 首条136021913以0-3585/inbound被T22 accepted；07:46:49断开自有WebSocket，KK9进程保持运行。
+- 自动创建第二个连接，代次由 `8258a283-f163-47c4-a44b-2d624fbe479d` 切换为 `3b89da6e-d36a-43a3-b273-c04d16ec7dd6`，07:48:49重新就绪。旧执行AbortSignal已取消、旧任务cancelled断言通过；新连接就绪后释放旧答案，未产生旧任务最终发送。
+- 断线消息136021997可从KK9历史读取，但不在新连接观察集合中，未补做。新消息136022191被T22 accepted；两代实际业务接收记录仅为136021913、136022191，创建连接2次、执行2次。
+- 新任务唯一最终消息136022199由真实Driver确认delivered，确认耗时520ms；该Bot消息已撤回，未撤回名单为空。探针退出0，自有业务、连接和数据库资源完成关闭；未关闭KK9、未撤回员工消息。
+
+本轮补齐T26自有连接断开、自动新代次、断线消息不补做、旧结果丢弃与新消息实际交付的真机证据。原生会话编号修复后的根四项命令已在前一轮完整通过（Driver333、App405），此后生产代码未改，不重复宣称本轮重跑。既有e2e-stage1-contract完整合同脚本仍未取得整轮通过结果，需另行协调；不能用本轮专项通过替代其全部检查。真机重连临时入口验证完成后移除，保留生产回归与本节证据。未合并、未关闭issue。

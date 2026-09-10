@@ -95,7 +95,7 @@ describe('正式应用拥有的 Driver', () => {
     expect(application.driver).toBe(driver);
     expect(driver.getStatus()).toBe('connected');
     driver.setSendBehavior({ mode: 'pre_trigger_failure', error: '测试发送被拒绝' });
-    const sent = await application.driver.sendText('仅用于测试的消息');
+    const sent = await application.driver!.sendText('仅用于测试的消息');
     expect(sent.status).toBe('failed');
     const ready = await fetch(`${application.url}/health/ready`);
     expect(ready.status).toBe(200);
@@ -110,6 +110,33 @@ describe('正式应用拥有的 Driver', () => {
         model: 'unknown',
       },
     });
+  });
+
+  it('断线后应用driver读取当前新实例，旧代次不再恢复ready', async () => {
+    const first = new ApplicationTestDriver();
+    const next = new ApplicationTestDriver();
+    let created = 0;
+    const application = await startKairo({
+      databaseUrl,
+      port: 0,
+      driverFactory: () => (created++ === 0 ? first : next),
+    });
+    applications.push(application);
+    const reconnected = new Promise<void>(resolve => {
+      application.driverSupervisor.onConnected(() => {
+        resolve();
+      });
+    });
+    const old = application.driverSupervisor.generation!;
+    first.emit('error', new Error('测试连接断开'));
+    expect(old.signal.aborted).toBe(true);
+    expect((await fetch(`${application.url}/health/live`)).status).toBe(200);
+    await reconnected;
+    await application.driverSupervisor.settled();
+    expect(application.driver).toBe(next);
+    expect(first.getStatus()).toBe('disconnected');
+    expect(old.isCurrent()).toBe(false);
+    expect((await fetch(`${application.url}/health/ready`)).status).toBe(200);
   });
 
   it.each<DriverHealthKind>([
@@ -270,8 +297,7 @@ describe('正式应用拥有的 Driver', () => {
     expect(factory.mock.calls[1]).toEqual([{ cdp }]);
   });
 
-  it('关闭逐一释放健康监听、Driver、Mastra，多个错误仍保留且并发调用共享 Promise', async () => {
-    const order: string[] = [];
+  it('关闭释放所有自有资源，多个错误仍保留且并发调用共享 Promise', async () => {
     const healthFailure = new Error('健康监听关闭错误');
     const driverFailure = new Error('Driver 关闭错误');
     const storageFailure = new Error('存储关闭错误');
@@ -280,7 +306,6 @@ describe('正式应用拥有的 Driver', () => {
       const close = health.close;
       health.close = async () => {
         await close();
-        order.push('health');
         throw healthFailure;
       };
       return health;
@@ -289,7 +314,6 @@ describe('正式应用拥有的 Driver', () => {
     const disconnect = driver.disconnect.bind(driver);
     vi.spyOn(driver, 'disconnect').mockImplementation(async () => {
       await disconnect();
-      order.push('driver');
       throw driverFailure;
     });
     const application = await startKairo({ databaseUrl, port: 0, driverFactory: () => driver });
@@ -297,7 +321,6 @@ describe('正式应用拥有的 Driver', () => {
     const shutdown = application.mastra.shutdown.bind(application.mastra);
     vi.spyOn(application.mastra, 'shutdown').mockImplementation(async () => {
       await shutdown();
-      order.push('mastra');
       throw storageFailure;
     });
     const closing = application.close();
@@ -310,9 +333,10 @@ describe('正式应用拥有的 Driver', () => {
       ],
     });
     expect(application.close()).toBe(closing);
-    expect(order).toEqual(['health', 'driver', 'mastra']);
     expect(driver.getStatus()).toBe('disconnected');
     expect(application.storage.pool.ended).toBe(true);
+    expect(application.driver).toBeNull();
+    expect(application.driverSupervisor.readStatus()).toBe('down');
     await expect(fetch(`${application.url}/health/live`)).rejects.toThrow();
   });
 
@@ -345,5 +369,21 @@ describe('正式应用拥有的 Driver', () => {
       })
     ).rejects.toMatchObject({ type: 'driver', cause: failure });
     expect(runtime.storage.pool.ended).toBe(true);
+  });
+
+  it('主动关闭触发代次abort同步重入时仍只关闭一次应用资源', async () => {
+    const driver = new ApplicationTestDriver();
+    const application = await startKairo({ databaseUrl, port: 0, driverFactory: () => driver });
+    applications.push(application);
+    let nested: Promise<void> | undefined;
+    application.driverSupervisor.generation!.signal.addEventListener('abort', () => {
+      nested = application.close();
+      void nested.catch(() => undefined);
+    });
+    const closing = application.close();
+    const results = await Promise.allSettled([closing]);
+    expect(results[0]?.status).toBe('fulfilled');
+    expect(nested).toBe(closing);
+    expect(PostgresRuntimeBootStore.prototype.closeBoot).toHaveBeenCalledTimes(1);
   });
 });

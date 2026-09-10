@@ -92,9 +92,15 @@ async function deliveredFixture(taskId: string = randomUUID()): Promise<Delivere
   expect(await tasks.finishAttempt({ attemptId, finishedAt: now + 300, errorType: null })).toBe(
     true
   );
-  expect(await tasks.adoptAttempt({ taskId, inputVersion: 1, now: now + 400, attemptId })).toBe(
-    true
-  );
+  expect(
+    await tasks.adoptAttempt({
+      taskId,
+      inputVersion: 1,
+      now: now + 400,
+      attemptId,
+      answerText: answer,
+    })
+  ).toBe(true);
   expect(
     await tasks.transitionTask({
       taskId,

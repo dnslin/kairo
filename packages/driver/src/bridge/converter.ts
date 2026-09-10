@@ -372,8 +372,11 @@ export function normalizeNativeMessage(
 
   const rawSessionId =
     rawObj['sessionId'] ??
-    rawObj['sessionID'] ??
     rawObj['sesUUID'] ??
+    (sessionObj['type'] != null && sessionObj['typeID'] != null
+      ? `${toSafeString(sessionObj['type'])}-${toSafeString(sessionObj['typeID'])}`
+      : undefined) ??
+    rawObj['sessionID'] ??
     sessionObj['id'] ??
     sessionObj['sesUUID'] ??
     context?.session?.id;

@@ -119,9 +119,13 @@ describe('T19 任务账本截止边界', () => {
         to: 'timed_out',
       })
     ).toBe(false);
-    expect(await context.storeB.adoptAttempt({ ...version, attemptId: running.attemptId })).toBe(
-      false
-    );
+    expect(
+      await context.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
+        ...version,
+        attemptId: running.attemptId,
+      })
+    ).toBe(false);
     expect(
       await context.storeA.transitionTask({ ...version, from: 'running', to: 'timed_out' })
     ).toBe(true);
@@ -129,6 +133,7 @@ describe('T19 任务账本截止边界', () => {
     const before = await context.runningWithSuccessfulAttempt();
     expect(
       await context.storeA.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
         taskId: before.taskId,
         inputVersion: 1,
         now: executionDeadline - 1,

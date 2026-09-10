@@ -169,6 +169,7 @@ describe('/new 终止旧工作而保留审计', () => {
     ).toBe(true);
     expect(
       await fixtures.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
         taskId: f.taskId,
         inputVersion: 1,
         attemptId: attempt.attemptId,
