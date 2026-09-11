@@ -76,6 +76,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
   private readonly knownMessageKeys = new Set<string>();
   private readonly knownRecalledMessageKeys = new Set<string>();
   private readonly knownBotSentMessageKeys = new Set<string>();
+  private currentUserId?: string | number;
 
   constructor(
     private readonly config: DriverConfig,
@@ -83,6 +84,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
   ) {
     super();
     this.selectors = resolveSelectors(config.selectors);
+    this.currentUserId = config.currentUserId;
     this.cdp = new CdpClient(config.cdp, {
       startupGenerationId: config.startupGenerationId,
     });
@@ -92,6 +94,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
         cdp: config.cdp,
         startupGenerationId: this.startupGenerationId,
         currentUserId: config.currentUserId,
+        rejectExistingBridge: config.rejectExistingBridge,
         knownBotSentMessageKeys: this.knownBotSentMessageKeys,
       },
       this.cdp
@@ -129,6 +132,17 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
     };
   }
 
+  public async getCurrentUserId(): Promise<string | null> {
+    const value = await this.cdp.evaluate<string>(`
+      (() => {
+        const main = document.querySelector('.main-page')?.__vue__;
+        const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
+        return String(main?.userID || editor?.userID || '');
+      })()
+    `);
+    return String(value || '').trim() || null;
+  }
+
   public async connect(): Promise<void> {
     if (this.invalidated) {
       throw new DriverError(
@@ -136,8 +150,13 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
         'DRIVER_INVALIDATED'
       );
     }
+    if (this.eventBridge.isAttached()) return;
     try {
-      await this.eventBridge.connect();
+      await this.cdp.connect();
+      // 未显式配置时，在监听开放前从当前页面取得身份；事件和历史使用同一代身份。
+      this.currentUserId =
+        this.config.currentUserId ?? (await this.getCurrentUserId()) ?? undefined;
+      await this.eventBridge.connect(this.currentUserId);
     } catch (error) {
       this.invalidated = true;
       throw error;
@@ -297,7 +316,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
       limit,
       targetSession,
       this.knownBotSentMessageKeys,
-      this.config.currentUserId
+      this.currentUserId
     );
 
     if (bridgeResult.kind === 'ok') {
@@ -323,7 +342,7 @@ export class KK9Driver extends EventEmitter implements IKK9Driver {
       limit,
       targetSession,
       this.knownBotSentMessageKeys,
-      this.config.currentUserId
+      this.currentUserId
     );
   }
 

@@ -10,6 +10,19 @@ describe('FakeKK9Driver 故障注入与契约实现测试 (IKK9Driver)', () => {
     driver = new FakeKK9Driver();
   });
 
+  it('当前身份可从未登录切换账号并再次退出登录', async () => {
+    await expect(driver.getCurrentUserId()).resolves.toBeNull();
+
+    driver.setCurrentUserId('5761');
+    await expect(driver.getCurrentUserId()).resolves.toBe('5761');
+
+    driver.setCurrentUserId('9529');
+    await expect(driver.getCurrentUserId()).resolves.toBe('9529');
+
+    driver.setCurrentUserId(null);
+    await expect(driver.getCurrentUserId()).resolves.toBeNull();
+  });
+
   it('私聊场景(int2024)与群聊场景(测试123)发送记录与返回原生消息 ID', async () => {
     const resPrivate = await driver.sendText('私聊测试', { targetSessionId: 'int2024' });
     expect(resPrivate.success).toBe(true);
@@ -196,7 +209,13 @@ describe('FakeKK9Driver 故障注入与契约实现测试 (IKK9Driver)', () => {
     expect(driver.markSessionReadCallsCount).toBe(1);
 
     const mockEmployees: KK9Employee[] = [
-      { id: 5761, name: '董仕林', loginName: '0123040139', position: 'IT开发工程师', updatedAt: Date.now() },
+      {
+        id: 5761,
+        name: '董仕林',
+        loginName: '0123040139',
+        position: 'IT开发工程师',
+        updatedAt: Date.now(),
+      },
     ];
     driver.setEmployees(mockEmployees);
 

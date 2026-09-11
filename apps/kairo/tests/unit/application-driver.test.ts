@@ -7,9 +7,13 @@ import type { KairoApplication } from '../../src/index.js';
 import * as runtimeModule from '../../src/mastra/runtime.js';
 import * as healthModule from '../../src/modules/operability/health-server.js';
 import { PostgresRuntimeBootStore } from '../../src/modules/operability/runtime-boot-store.js';
+import * as dependencyModule from '../../src/modules/operability/dependency-checks.js';
+import { PostgresTaskStore } from '../../src/modules/task-lifecycle/store.js';
+import { PostgresPrivateChatStore } from '../../src/modules/private-chat-core/store.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
+import { PostgresKnowledgeRecordStore } from '../../src/modules/knowledge-qa/knowledge-record-store.js';
 
-// 本文件隔离 PostgreSQL 健康查询和启动账本；账本真读写由 T20 集成测试覆盖。
+// 本文件隔离健康、启动账本及空业务恢复；真实账本读写由对应集成测试覆盖。
 vi.mock('pg', async importOriginal => {
   const actual = await importOriginal<typeof Pg>();
   return {
@@ -33,8 +37,18 @@ const applications: KairoApplication[] = [];
 const createRuntime = runtimeModule.createMastraRuntime;
 const startHealth = healthModule.startHealthServer;
 beforeEach(() => {
-  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '');
+  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '合成启动模型凭证');
   vi.stubEnv('RAGFLOW_API_KEY', '');
+  vi.spyOn(dependencyModule, 'startDependencyChecks').mockReturnValue({
+    read: () => ({ model: 'unknown', ragflow: 'unknown' }),
+    close: () => Promise.resolve(),
+  });
+  vi.spyOn(PostgresTaskStore.prototype, 'listActiveTasks').mockResolvedValue([]);
+  vi.spyOn(PostgresTaskStore.prototype, 'cancelUnfinished').mockResolvedValue(undefined);
+  vi.spyOn(PostgresPrivateChatStore.prototype, 'listPendingBatches').mockResolvedValue([]);
+  vi.spyOn(PostgresKnowledgeRecordStore.prototype, 'listPendingFormalAnswers').mockResolvedValue(
+    []
+  );
   vi.spyOn(PostgresRuntimeBootStore.prototype, 'startBoot').mockImplementation(input =>
     Promise.resolve({
       inserted: true,
@@ -291,10 +305,22 @@ describe('正式应用拥有的 Driver', () => {
     applications.push(await startKairo({ databaseUrl, port: 0, driverFactory: factory }));
     expect(factory.mock.calls[0]).toEqual([
       { cdp: { url: 'https://localhost:9223', pageMatch: '测试渲染页' } },
+      expect.objectContaining({
+        claim: expect.any(Function),
+        get: expect.any(Function),
+        update: expect.any(Function),
+      }),
     ]);
     const cdp = { url: 'http://[::1]:9224', pageMatch: '显式页面', timeoutMs: 20 };
     applications.push(await startKairo({ databaseUrl, port: 0, cdp, driverFactory: factory }));
-    expect(factory.mock.calls[1]).toEqual([{ cdp }]);
+    expect(factory.mock.calls[1]).toEqual([
+      { cdp },
+      expect.objectContaining({
+        claim: expect.any(Function),
+        get: expect.any(Function),
+        update: expect.any(Function),
+      }),
+    ]);
   });
 
   it('关闭释放所有自有资源，多个错误仍保留且并发调用共享 Promise', async () => {

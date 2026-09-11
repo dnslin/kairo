@@ -337,7 +337,10 @@ export interface CompensationScanOptions {
 
 export interface DriverConfig {
   cdp: CdpConfig;
+  /** 显式指定方向识别身份；省略时 KK9Driver 在连接并注入 Hook 前读取当前页面 UID。 */
   currentUserId?: string | number;
+  /** 共享客户端验收可显式拒绝接管其他代次的Hook。 */
+  rejectExistingBridge?: boolean;
   selectors?: Partial<SelectorsConfig>;
   polling?: Partial<PollingConfig>;
   /** Composition Root 分配的唯一启动代次。 */
@@ -355,6 +358,7 @@ export interface EventBridgeConfig {
   /** 当前用户 UID / 账号 (用于识别自身发出消息 isMe) */
   currentUserId?: string | number;
   enableRecallHook?: boolean;
+  rejectExistingBridge?: boolean;
   /** 共享的已发送 Bot 消息身份键集合（sessionId:nativeMessageId） */
   knownBotSentMessageKeys?: Set<string>;
 }
@@ -439,6 +443,8 @@ export interface IKK9Driver extends EventEmitter {
   getStatus(): ConnectionStatus;
   getStartupGenerationId(): string;
   getHealthSnapshot(): DriverHealthSnapshot;
+  /** 读取当前实际登录 UID；未登录返回 null，读取失败抛错，不回退配置身份。 */
+  getCurrentUserId(): Promise<string | null>;
 
   // 会话管理
   getSessions(): Promise<KK9Session[]>;

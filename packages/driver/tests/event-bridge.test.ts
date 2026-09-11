@@ -1,4 +1,5 @@
 import EventEmitter from 'node:events';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { KK9EventBridge } from '../src/bridge/event-bridge.js';
 import type { CdpClient } from '../src/cdp/client.js';
@@ -89,6 +90,29 @@ describe('KK9EventBridge 原生事件直连桥与同构事件流测试', () => {
     maxMessageIds: 100,
     currentUserId: '10086',
   };
+
+  it('明确拒绝接管时，即使预检后出现他人Hook也不清理或替换它', async () => {
+    const cleanup = Object.assign(vi.fn(), {
+      generationId: '其他服务代次',
+      connectionId: '其他连接',
+    });
+    const page = { __kairo_bridge_cleanup: cleanup };
+    const mockCdp = new MockCdpClient();
+    mockCdp.evaluateMock.mockImplementation((script: string) =>
+      Promise.resolve(runInNewContext(script, { window: page }) as unknown)
+    );
+    const bridge = new KK9EventBridge(
+      { ...defaultConfig, rejectExistingBridge: true },
+      mockCdp as unknown as CdpClient
+    );
+    await expect(bridge.connect()).rejects.toThrow();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(page.__kairo_bridge_cleanup).toBe(cleanup);
+    expect(mockCdp.sendCommandMock).not.toHaveBeenCalledWith(
+      'Runtime.removeBinding',
+      expect.anything()
+    );
+  });
 
   it('初始化与连接生命周期：正确注入 binding 与 in-browser hook', async () => {
     const mockCdp = new MockCdpClient();

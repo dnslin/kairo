@@ -2,6 +2,7 @@ import { Pool } from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startKairo, type KairoApplication } from '../../src/index.js';
 import { PostgresRuntimeBootStore } from '../../src/modules/operability/runtime-boot-store.js';
+import * as dependencyModule from '../../src/modules/operability/dependency-checks.js';
 import { createTaskTestDatabase, type TaskTestDatabase } from '../helpers/task-database.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
@@ -11,12 +12,17 @@ beforeAll(async () => {
   database = await createTaskTestDatabase();
 });
 beforeEach(() => {
-  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '');
+  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '合成启动模型凭证');
   vi.stubEnv('RAGFLOW_API_KEY', '');
+  vi.spyOn(dependencyModule, 'startDependencyChecks').mockReturnValue({
+    read: () => ({ model: 'unknown', ragflow: 'unknown' }),
+    close: () => Promise.resolve(),
+  });
 });
 afterEach(async () => {
   await application?.close();
   application = undefined;
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 afterAll(async () => {
@@ -123,7 +129,7 @@ describe('T20 正式应用启动与关闭账本', () => {
       await connecting;
       const connections = await database.poolA.query<{ pid: number; name: string }>(
         `SELECT pid,datname AS name FROM pg_stat_activity WHERE datname=$1 AND state='idle'
-         AND query LIKE 'INSERT INTO kairo.runtime_boots%'`,
+         AND query LIKE 'UPDATE kairo.runtime_boots SET status = ''running''%'`,
         [database.databaseName]
       );
       expect(connections.rows).toHaveLength(1);

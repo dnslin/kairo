@@ -40,8 +40,9 @@ export class KK9EventBridge extends EventEmitter {
   private readonly startupGenerationId: string;
   private readonly bindingName: string;
   private readonly maxMessageIds: number;
-  private readonly currentUserId?: string | number;
+  private currentUserId?: string | number;
   private readonly enableRecallHook: boolean;
+  private readonly rejectExistingBridge: boolean;
   private attached = false;
   private isConnecting = false;
   private lastAttachError: Error | null = null;
@@ -64,6 +65,7 @@ export class KK9EventBridge extends EventEmitter {
     this.maxMessageIds = bridgeConfig.maxMessageIds || DEFAULT_MAX_MESSAGE_IDS;
     this.currentUserId = bridgeConfig.currentUserId;
     this.enableRecallHook = bridgeConfig.enableRecallHook ?? true;
+    this.rejectExistingBridge = bridgeConfig.rejectExistingBridge === true;
     this.knownBotSentMessageKeys = bridgeConfig.knownBotSentMessageKeys ?? new Set<string>();
 
     this.cdp =
@@ -127,9 +129,9 @@ export class KK9EventBridge extends EventEmitter {
   }
 
   /**
-   * 连接 CDP 并完成原生事件桥注入
+   * 连接 CDP 并完成原生事件桥注入；可在注入前传入本代已读取的登录身份。
    */
-  public async connect(): Promise<void> {
+  public async connect(currentUserId?: string | number): Promise<void> {
     if (this.disconnectPromise) {
       throw new Error('EventBridge 已关闭，禁止原地重连');
     }
@@ -142,6 +144,7 @@ export class KK9EventBridge extends EventEmitter {
 
     this.isConnecting = true;
     try {
+      if (currentUserId !== undefined) this.currentUserId = currentUserId;
       if (this.getStatus() !== 'connected') {
         await this.cdp.connect();
       }
@@ -593,6 +596,9 @@ export class KK9EventBridge extends EventEmitter {
     return `
       (() => {
         if (typeof window.__kairo_bridge_cleanup === 'function') {
+          if (${this.rejectExistingBridge} && window.__kairo_bridge_cleanup.generationId !== ${generationId}) {
+            throw new Error('已有其他Driver桥接，拒绝接管');
+          }
           try {
             window.__kairo_bridge_cleanup();
           } catch {

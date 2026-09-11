@@ -12,7 +12,11 @@ export interface DependencyChecks {
   close(): Promise<void>;
 }
 
-export function startDependencyChecks(config: BotConfig, logger: AppLogger): DependencyChecks {
+export function startDependencyChecks(
+  config: BotConfig,
+  logger: AppLogger,
+  onChange?: () => void
+): DependencyChecks {
   const state: ExternalHealth = { model: 'unknown', ragflow: 'unknown' };
   const lifetime = new AbortController();
   const modelKey = process.env.KAIRO_T12_MODEL_API_KEY;
@@ -88,6 +92,7 @@ export function startDependencyChecks(config: BotConfig, logger: AppLogger): Dep
         });
       } finally {
         pending.delete(name);
+        if (!lifetime.signal.aborted) onChange?.();
       }
     })();
     pending.set(name, checking);

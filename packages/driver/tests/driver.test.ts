@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { FakeKK9Driver } from '../src/fake-driver.js';
 import { KK9Driver } from '../src/driver.js';
+import type { KK9EventBridge } from '../src/bridge/event-bridge.js';
 import type {
   IKK9Driver,
   KK9Employee,
@@ -10,6 +11,8 @@ import type {
 } from '../src/types/index.js';
 import { InMemorySendOperationStore } from '../src/send-operation.js';
 import { getDriverTestInternals } from './helpers/driver-internals.js';
+import { runRendererScript } from './helpers/renderer-runtime.js';
+import { CdpError } from '../src/utils/errors.js';
 
 describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
   it('初始化时状态应为 disconnected 且生成唯一 startupGenerationId', () => {
@@ -25,6 +28,97 @@ describe('KK9Driver 顶层契约离线测试 (IKK9Driver)', () => {
     const health = driver.getHealthSnapshot();
     expect(health.cdpStatus).toBe('disconnected');
     expect(health.eventBridgeAttached).toBe(false);
+  });
+
+  describe('getCurrentUserId 当前登录身份', () => {
+    function createIdentityDriver(
+      main: { userID?: string | number } | null,
+      editor: { userID?: string | number } | null
+    ): KK9Driver {
+      const driver = new KK9Driver({
+        cdp: { url: 'http://localhost:9222', pageMatch: 'test' },
+        currentUserId: '配置中的身份不得作为登录证据',
+      });
+      getDriverTestInternals(driver).cdp.evaluate = <T>(script: string) =>
+        runRendererScript<T>(script, {
+          document: {
+            querySelector(selector: string) {
+              if (selector === '.main-page') return main ? { __vue__: main } : null;
+              if (selector === '.chat-editor, .message-editor, .chat-sendArea') {
+                return editor ? { __vue__: editor } : null;
+              }
+              return null;
+            },
+          },
+        });
+      return driver;
+    }
+
+    it('未登录且不存在页面组件时返回 null，不回退配置 UID', async () => {
+      await expect(createIdentityDriver(null, null).getCurrentUserId()).resolves.toBeNull();
+    });
+
+    it('页面组件存在但无有效 UID 时返回 null', async () => {
+      const main: { userID?: string } = {};
+      const driver = createIdentityDriver(main, {});
+      await expect(driver.getCurrentUserId()).resolves.toBeNull();
+
+      main.userID = '   ';
+      await expect(driver.getCurrentUserId()).resolves.toBeNull();
+    });
+
+    it('主页面真实 UID 优先于编辑器，并实时转换为去除空白的字符串', async () => {
+      const main: { userID: string | number } = { userID: 5761 };
+      const driver = createIdentityDriver(main, { userID: '旧编辑器身份' });
+      await expect(driver.getCurrentUserId()).resolves.toBe('5761');
+
+      main.userID = '  9529  ';
+      await expect(driver.getCurrentUserId()).resolves.toBe('9529');
+    });
+
+    it('主页面没有 UID 时读取编辑器的真实 UID', async () => {
+      await expect(createIdentityDriver({}, { userID: 7783 }).getCurrentUserId()).resolves.toBe(
+        '7783'
+      );
+    });
+
+    it('CDP 读取失败时保留原始错误，不伪装成未登录', async () => {
+      const driver = createIdentityDriver({ userID: 5761 }, null);
+      const error = new CdpError('连接已失效');
+      getDriverTestInternals(driver).cdp.evaluate = vi.fn().mockRejectedValue(error);
+
+      await expect(driver.getCurrentUserId()).rejects.toBe(error);
+    });
+  });
+
+  it('未配置UID时连接真实身份，原生事件与历史消息均能区分员工和本人', async () => {
+    const driver = new KK9Driver({ cdp: { url: 'http://localhost:9222', pageMatch: 'test' } });
+    const { cdp, eventBridge } = getDriverTestInternals<{ eventBridge: KK9EventBridge }>(driver);
+    vi.spyOn(cdp, 'connect').mockResolvedValue();
+    vi.spyOn(cdp, 'getStatus').mockReturnValue('connected');
+    vi.spyOn(driver, 'getCurrentUserId').mockResolvedValue('5761');
+    vi.spyOn(eventBridge, 'reattach').mockResolvedValue(true);
+    const raw = [
+      { id: '员工消息', fromUID: 3585, sesUUID: '0-3585', content: '采购订单如何创建' },
+      { id: '本人消息', fromUID: 5761, sesUUID: '0-3585', content: '人工发送' },
+      { id: '未知消息', sesUUID: '0-3585', content: '没有发送人' },
+    ];
+    await driver.connect();
+    expect(
+      eventBridge
+        .parseRawMessage(raw, { id: '0-3585', name: '员工', type: 'private' })
+        .map(message => message.direction)
+    ).toEqual(['inbound', 'outbound', 'unknown']);
+    vi.spyOn(cdp, 'evaluate')
+      .mockResolvedValueOnce({ sessionID: 3585, sesUUID: '0-3585', name: '员工', type: 0 })
+      .mockResolvedValueOnce({ code: 0, data: raw });
+    const history = await driver.getRecentMessages(3, {
+      id: '0-3585',
+      name: '员工',
+      type: 'private',
+      unread: false,
+    });
+    expect(history.map(message => message.direction)).toEqual(['inbound', 'outbound', 'unknown']);
   });
 
   it('startPolling 与 stopPolling 应正确切换轮询状态', () => {

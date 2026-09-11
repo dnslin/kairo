@@ -12,6 +12,7 @@ export interface RecoveryOptions {
   sender: Pick<SendService, 'send' | 'recover'>;
   signal: AbortSignal;
   logger: AppLogger;
+  botId?: string;
 }
 
 /** 仅用于旧进程已退出后的启动；连接断线必须取消旧任务，不能调用此入口。 */
@@ -20,7 +21,9 @@ export function createRecovery(options: RecoveryOptions): { recover(): Promise<v
 
   async function restore(): Promise<void> {
     options.signal.throwIfAborted();
-    const rows = await options.tasks.listActiveTasks();
+    const rows = (await options.tasks.listActiveTasks()).filter(
+      task => options.botId === undefined || task.botId === options.botId
+    );
     options.signal.throwIfAborted();
     const running: Task[] = [];
     const sends: Array<{ request: SendRequest; recover: boolean }> = [];

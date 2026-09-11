@@ -117,6 +117,27 @@ pnpm --filter @kairo/driver e2e:stage1
 
 脚本会尽量撤回测试产生的 Bot 消息；清理失败时，`阶段一合同测试汇总` 会列出未撤回的原生消息 ID。
 
+### 企业完整回答闭环（T29）
+
+使用上节相同的 `KK9_STAGE1_BOT_UID`、`KK9_STAGE1_EMPLOYEE_UID`、`KK9_STAGE1_SESSION_ID`、`KK9_STAGE1_SESSION_NAME`、`KK9_STAGE1_CONFIRM`。环境文件还需提供 `KAIRO_TEST_DATABASE_URL`、既有批准模型凭证 `KAIRO_T12_MODEL_API_KEY` 和 `RAGFLOW_API_KEY`；模型、Dataset、员工 allowlist 仍只来自正式 YAML，不为验收临时改名单或换模型。
+
+从仓库根目录执行，环境文件路径替换为实际本地路径：
+
+```powershell
+node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=<本地环境文件> apps/kairo/scripts/verify-enterprise-answer.ts --preflight
+node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=<本地环境文件> apps/kairo/scripts/verify-enterprise-answer.ts
+```
+
+第一条只读实际登录 UID 和已有桥接占用；第二条启动同一 `startKairo()` 业务入口及本次随机 PostgreSQL 库。只有看见“等待员工真实IM提问”后，才让授权员工从真实客户端提问。脚本不会直接通过 HTTP 伪造员工输入，也不会代替员工发送问题。
+
+验收过程中会真实发送答案和必要固定提示，只允许指定私聊；不会自动撤回。Driver 在安装 Hook 时拒绝接管其他代次，实际连接及每次发送前还核对批准 Bot 身份。发现已有连接、账号不符或未授权目标必须停止，不重启他人服务或修改用户会话。
+
+脚本在 PostgreSQL 核对成功检索、当前采用证据与正式回答，并从真实会话历史核对原生消息 ID、正文一致及 outbound 方向。终端只打印关联 ID 和检查结果，不打印答案或知识片段。员工还需确认答案内容正确且没有来源/内部 ID；输入“完成”才结束人工验收，输入“失败”或未确认即关闭终端不能算通过。完成后关闭自有应用与连接，并只删除本次创建的隔离库。
+
+需要逐题探索而不是单题验收时，在同一脚本命令后加 `--continuous`。看到“持续测试已就绪”后即可继续提问，输入“停止”结束；此模式不自动确认内容正确，也不执行单题模式的全局 Tool 调用断言。每道企业答案仍经过正式入口的证据检查和发送状态管理。脚本会打印健康地址；检查 `/health/dependencies` 的 driver/model/ragflow 状态，而不是仅凭进程还活着判断正在监听。
+
+两种模式均通过 `enterprise-answer-driver.ts` 将入站消息、@事件和撤回限制为授权会话，发送前的 Bot/收件人检查仍保留。正式 YAML 与员工 allowlist 不变，其他会话不进入此验收进程，避免为其他员工发送准入提示；真正的连接异常仍传播，不被范围限制吞掉。
+
 ## 6. 故障排查
 
 | 现象                         | 检查                                        | 处理                                                |

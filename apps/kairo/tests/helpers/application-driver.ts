@@ -1,12 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { FakeKK9Driver } from '@kairo/driver';
-import type { ConnectionStatus, DriverHealthSnapshot } from '@kairo/driver';
+import type { ConnectionStatus, DriverHealthSnapshot, SendOperationStore } from '@kairo/driver';
 
 // 应用装配测试需要真实的生命周期和一致身份，不改变 SDK Fake 的默认发送合同。
 export class ApplicationTestDriver extends FakeKK9Driver {
   private readonly generationId = randomUUID();
   private connected = false;
   private connectionId = '';
+
+  constructor(store?: SendOperationStore) {
+    super(store);
+    this.setCurrentUserId('99000001');
+  }
 
   override connect(): Promise<void> {
     this.connectionId = randomUUID();

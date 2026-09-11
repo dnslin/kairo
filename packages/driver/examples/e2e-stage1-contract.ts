@@ -466,19 +466,8 @@ async function waitForEventMessage(
   throw new Error('未观察到预期的实时消息回显');
 }
 
-async function readLoggedInUid(cdp: CdpClient): Promise<string> {
-  const value = await cdp.evaluate<string>(`
-    (() => {
-      const main = document.querySelector('.main-page')?.__vue__;
-      const editor = document.querySelector('.chat-editor, .message-editor, .chat-sendArea')?.__vue__;
-      return String(main?.userID || editor?.userID || '');
-    })()
-  `);
-  return String(value || '').trim();
-}
-
 async function assertExactTarget(managed: ManagedDriver, config: TestConfig): Promise<KK9Session> {
-  const actualUserId = await readLoggedInUid(getCdp(managed.driver));
+  const actualUserId = await managed.driver.getCurrentUserId();
   ensure(
     actualUserId === config.botUid,
     `登录 Bot UID 不匹配: expected=${config.botUid}, actual=${actualUserId}`
@@ -800,9 +789,11 @@ async function main(): Promise<void> {
     const interruptConnection = (): void => {
       if (interruption) return;
       // 截断本测试连接的在途响应；Driver优雅关闭会先清理页面，可能让发送确认先返回。
-      interruption = getCdp(unknown.driver).disconnect().catch(error => {
-        interruptionError = error instanceof Error ? error : new Error(String(error));
-      });
+      interruption = getCdp(unknown.driver)
+        .disconnect()
+        .catch(error => {
+          interruptionError = error instanceof Error ? error : new Error(String(error));
+        });
     };
     getEventBridge(unknown.driver).on('message', message => {
       if (

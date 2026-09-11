@@ -86,7 +86,7 @@ pnpm --filter @kairo/app start
 
 `start` 使用 Node 直接执行 `dist/index.js`，读取根目录 `.env` 中的 `DATABASE_URL`；系统环境变量优先。`dev` 先构建再启动同一个入口，不启动 Studio。生产构建仅运行 TypeScript 编译，不执行 `mastra build --studio`，也不打包 Studio UI。
 
-`startKairo()` 先加载并校验受控 Bot 配置、读取 Git commit，再创建进程内 Mastra、PostgreSQL storage 和应用拥有的真实 `KK9Driver`。默认先监听 `127.0.0.1:4110`，再连接 Driver。T17 提供 `GET /health/live`、`GET /health/ready`、`GET /health/dependencies` 三个只读接口，其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。存活不等于业务就绪，状态来源和判定见下文 T17；当前不装配 T28 的业务 Agent。
+`startKairo()` 先加载并校验受控 Bot 配置、读取 Git commit，再创建进程内 Mastra、PostgreSQL storage 和应用拥有的真实 `KK9Driver`。默认先监听 `127.0.0.1:4110`，再连接 Driver。T17 提供 `GET /health/live`、`GET /health/ready`、`GET /health/dependencies` 三个只读接口，其他路径和方法均返回 404，包括 Mastra Agent、Tool、Workflow 执行接口。T29 已将唯一 T28 Agent、私聊聚合、任务调度与企业答案检查接入该入口；正式 Memory 仍只读，不提前实施 T30～T32。存活不等于业务就绪，状态来源见下文 T17，当前接入与验证边界见文末 T29。
 
 收到 Ctrl+C 或 SIGTERM 后先取消外部依赖检查并清理定时器，再依次关闭健康端口、应用自己的 Driver、Mastra；某个资源关闭失败不阻止其余资源回收，错误仍向调用者传播。锁定的 `@mastra/core@1.63.2` 会在 shutdown 内关闭注册的 storage，不再重复调用 `storage.close()`。程序内调用方使用返回的 `close()`，重复或并发关闭共用同一个 Promise。
 
@@ -1773,3 +1773,94 @@ pnpm --filter @kairo/app test:integration -- tests/integration/knowledge-record-
 将已有通用知识集成用例扩为启用/禁用两种配置，禁用用例通过 `vi.stubEnv` 移除测试进程凭证，结束后恢复。修复前以 `pnpm --filter @kairo/app test:integration -- tests/integration/agent-runtime.test.ts --testNamePattern=显式通用知识回答` 得到启用通过、禁用因缺少凭证失败；修复后运行完整同文件集成 **16/16 通过**，均检查完整答案、零 HTTP/检索账本及模型可见工具与配置一致。
 
 本次 `pnpm --filter @kairo/app typecheck`、`pnpm --filter @kairo/app build`、对修改的 run-agent.ts 与 agent-runtime.test.ts 执行 ESLint 均通过；`pnpm test` 为 Driver **347/347**、App **409/409**。独立 Node 构建产物探针在无检索凭证且查询账本读取会抛错的条件下成功返回通用答案，模型边界为确定性替身。未修改 `.env`、正式 YAML 或 Driver，未重跑真实模型、ERP 或 KK9；探针通过内联脚本执行，没有新增临时文件。
+
+## T29 企业答案检查与真实入口接入（2026-09-11）
+
+### 当前实现与原有合同
+
+依据已确认的 SPEC §9、§10.3、§10.4、§10.8、§11 和 issue #234，真实 IM 闭环与执行结果持久关联属于原需求，不是新增产品行为。早期章节中的未装配描述保留为对应任务的历史背景；当前 `startKairo()` 已接入唯一企业回答路径，不存在第二个生产启动入口。
+
+- `validate-answer.ts` 复用 T28 `answerSchema`，仅放行完整 enterprise。总答案与各企业子问题均须有明确证据，总级集合须覆盖子问题；允许当前 attempt 的多次成功查询，不要求资料来自最后一次查询。逐项核对 task、attempt、固定 Dataset、`knowledge-search`、found、非空片段与既有 conflict 标记。
+- 正文出现本次已知内部编号、明确来源清单/链接或结构化内部资料字段时，拒绝整段原文；不删除泄漏内容后继续发送。普通业务 URL 不一概禁止。正文与 subQuestions/diagnostics/资料元数据不拼接。
+- 对资料中明确的忽略规则、调用其他工具等指令保存固定疑似注入诊断，不回显原片段，不自动否定其中不受影响的正常依据。实际工具集合、Dataset 和 Python 边界仍由 T27 控制；这些匹配不能穷尽注入，也不证明自然语言事实正确。
+- `knowledge-service.ts` 在真实数据库中核对当前 task/attempt/inputVersion/context/员工，复用 `withTaskOutput`、原绝对截止及取消信号。检查通过后只向 T25 返回 `{ kind: 'answer', text: answer }`；发送前重新核对已采用尝试、精确正文及证据，普通发送和恢复均走 T21。
+- 迁移 `000014-answer-check.sql` 只向现有 `task_attempts` 添加 `answer_result` 和 `answer_diagnostics`，不新建检查记录表。成功结构化结果属于原尝试，拒绝时只保存固定诊断而不保存可发送的模型原文。原始 Tool 结果仍在 T20 知识账本。
+- 采用仍由 T25 `finishAttempt → adoptAttempt` 原子进入 ready_to_send，T21 负责 sending 及 delivered/failed/send_unconfirmed。确认送达后才按本次准确 evidenceIds 保存正式回答；失败和未知不写正式答案，不提交 Memory。
+- 启动只对已 completed、已 adopted、真实 dispatch delivered 但缺 formal_answers 的记录补业务账本，不调用模型或重新发送。之后 `/new` 不删除已经完成的历史；此补账不是向旧 thread 提交 Memory。取消后迟到的发送事实仍不会复活任务。
+
+### 最小正式装配与边界
+
+`enterprise-runtime.ts` 将现有 ingress、collector、context、scheduler、T28、T29 与 T21 连接起来。每代真实 Driver 与 T21 所给 SendOperationStore 配对，只有一个 Scheduler，断代后立即关闭旧 sender/collector 并取消任务，真实执行未退出前仍占原名额。启动恢复和调度限定当前 Bot；移出当前 allowlist 的旧活动任务被取消，任务发送再次检查 Bot/员工，不借当前 Driver 处理其他 Bot 的历史。
+
+依赖 unknown/down 时不领取旧 queued/running，不消耗新 attempt 或恢复机会；原排队/执行截止照常推进。现有依赖检查结果改变时唤醒同一调度器。新普通消息收到明确依赖错误提示，`/new` 继续走控制路径；未实现 T30 的通用知识询问流程。原始写入失败的应急提示也必须满足真实私聊、allowlist 和 Driver 员工身份，不能借数据库故障回复群聊或未知员工。
+
+Driver 新增只读 `getCurrentUserId(): Promise<string | null>`，复用真机脚本已有的页面 UID 读取，不将配置 UID 当作实际登录身份。共享客户端验收显式设置 `rejectExistingBridge: true`，在安装 Hook 的同一页面执行中拒绝接管其他代次；普通 Driver 原有重连合同不改变。`e2e-stage1-contract.ts` 的身份核对改为使用公共方法。
+
+首次真实监听暴露正式入口未配置 `currentUserId` 时的方向缺口：原生消息没有本人标记会保持 `unknown`。`KK9Driver.connect()` 现在先连接 CDP，未显式配置 UID 时读取当前页面，再在 Hook 注入前传给 EventBridge；历史读取使用同一本代身份。未识别发送人的消息仍为 `unknown`，不放宽准入规则。新增 Driver 回归先复现员工与本人均被判为 unknown，再确认事件和真实历史读取路径分别得到 inbound/outbound/unknown；定向 Driver/桥接/生命周期 **66/66** 通过。
+
+### 已执行的自动验证
+
+当前工作区未复制主仓库 `.env`，PostgreSQL 命令仅向进程加载已有环境文件。全部数据库验收使用 `createTaskTestDatabase()` 创建的随机隔离库，不迁移配置原库、不按前缀清理其他库。
+
+```powershell
+pnpm --filter @kairo/app exec vitest run tests/unit/answer-validation.test.ts
+node --env-file=D:/Person/kairo/.env apps/kairo/scripts/test-integration.mjs tests/integration/enterprise-answer-flow.test.ts
+pnpm --filter @kairo/app build
+pnpm --filter @kairo/app typecheck
+pnpm test
+pnpm lint
+```
+
+最终企业集成 **25/25** 通过，含真实 PostgreSQL、T25/T21 三态与实际约 30 秒未知等待；其中完整入口用例运行真实 Mastra/Skill/Tool/Python 和回环检索服务，模型网络及 Driver 明确为替身，不能算真实 IM 验收。模型从实际 Tool 的 found/materials 取得 evidenceId，不从数据库替模型读取资料。另覆盖旧 generation 迟到、启动补账、unknown 不消耗恢复机会、恢复准入以及存储故障提示。
+
+最新默认测试为 Driver **355/355**、App **471/471**（含答案单元 62 项）；身份修复后 App build/typecheck、Driver build/typecheck 与根 lint 通过。直接相关的知识存储、启动、路由隔离、scheduler、recovery 五份集成共 **35 项** 在组合执行中通过。
+
+失败记录保留：初次与集成并行执行根门禁时，App Vitest 工作进程在开始阶段报 `ERR_IPC_CHANNEL_CLOSED`，当次 lint 未执行；单独重跑默认测试通过，没有修改 worker 配置或跳过用例。初轮来源泄漏用例错误地期望 knowledge 类别，已按模型输出错误合同改为 model。完整工具夹具的中文测试凭证导致检索 parameter_error，改用 HTTP 可用的 ASCII 合成凭证后通过；批次前置未标记收尾导致启动恢复错误，补齐既有 settleBatch 调用后通过。失败清理现在逐项回收全部自有资源并保留错误，曾遗留的一份本次随机库已按精确名称核对无活动连接后删除。
+
+### 真实 IM 验收入口
+
+保留 `scripts/verify-enterprise-answer.ts`，调用同一个 `startKairo()`，不替换模型或发送结果。先检查已有授权目标及桥接占用，再启动独立随机库；每代连接开放前和实际发送前核对批准 Bot，发送只允许批准私聊。员工必须真实发送问题，脚本核对真实会话历史正文、正式回答与当前采用证据，人工确认后才算通过。输出不包含答案、知识片段或凭证；不撤回真实消息。
+
+首次只读预检确认 Bot `5761`、员工 `3585`、私聊 `0-3585`，真实模型/RAGFlow/Driver 就绪。监听期间隔离库中任务数为零；发现方向缺口后主动中止本次自有进程，脚本以 AbortError 明确记录验收未完成并关闭自有连接。修复后的真实 Driver 只读历史探针确认员工消息 `136054373` 为 inbound、Bot 消息 `136054375` 为 outbound；未发送、切换会话或撤回消息。这只是历史方向验证，不是本次完整回答验收。**截至本节记录时，尚未取得真实员工提问、实收答案与人工确认，不能据此宣布 T29 完成。**
+
+身份修复后的首次重启因真实 RAGFlow 检查 down 而退出，未开放验收。健康检查仅保留 knowledge 类别，无法从该轮日志追溯更细的服务错误；随后使用同一个 `retrieveKnowledge()`、固定 Python 与现有配置诊断，单次返回 found、HTTP 200、apiCode 0，耗时约 1.72 秒。没有增加自动重试、替换服务或绕过检查；再次启动已达到“等待员工真实IM提问”。此诊断查询不写任务证据，也不算真实 IM 验收。
+
+### 真实员工提问后的闭环证据（等待人工确认）
+
+用户确认已用员工账号发送问题后，本轮真实验收脚本报告“真实闭环证据核对通过，等待员工人工确认”。使用批准模型 `openai/gemini-3.7-flash-high`、真实 ERP Skill、knowledge-search、固定 Python 与 RAGFlow，检索 1 次，答案采用 3 条证据；实际观察到 skill/knowledge-search 调用且 Skill 已加载。真实会话历史正文与正式答案完全一致，内部来源检查通过；终端未输出答案正文、知识片段或凭证。
+
+- 隔离库：`kairo_t19_dedfe1c2ecfb4bf2b8cb1699eacf26b9`。
+- task：`b476e90c-7021-4d85-b97c-2c45885aeb3a`，员工 `3585`，状态 completed。
+- attempt：`ce58fdae-5249-4d84-adb6-41cd45609346`，inputVersion 1，adopted=true，error_type=null。
+- 最终发送：operation `f72d8c99-37f1-4119-aab2-bd2697536068`，nativeMessageId `136097445`，delivered_at `2026-09-11T06:45:35.135Z`。
+- 另一次送达 `136097439` 的用途为 progress，最终消息用途为 final；两项 send_calls 均为 1，不是两次最终回答。
+
+上述状态与关联 ID 已直接查询 PostgreSQL 核对。脚本目前保留隔离库、等待人工确认；尚未输入“完成”。自然语言内容是否正确、是否解决采购订单创建问题，仍须员工判断，不能用程序检查代替。未合并分支或关闭 issue。
+
+### 持续测试期间的非目标会话干扰修复
+
+用户继续测试后，第二个任务 `6a3fd9bc-f0a9-4339-bf14-a17d3a13c485` 已 completed，最终消息 `136097723` 已 delivered。随后非目标私聊触发 `notice:not_allowed`，验收发送约束在调用原生发送前拒绝该收件人，异常使当前 Driver 代次断开。进程仍在等待首题人工确认，不等于消息监听仍健康；此前“必须先结束上一轮才能继续测试”的说明不准确。
+
+将原有 Bot/发送目标约束提取到 `scripts/enterprise-answer-driver.ts`，同时将消息、@事件和撤回的接收范围限定为授权会话。正式入口、YAML、allowlist、模型与业务规则不变；其他员工不再进入此验收进程，也不会触发向其发送准入提示。真正的连接错误仍传播。新增三项回归覆盖非目标事件、目标消息及撤回、连接错误传播和发送前拒绝；修复前非目标事件用例失败，修复后 3/3 通过。
+
+同一脚本增加 `--continuous`，持续接收授权会话直到停止，不要求每题人工确认，也不自动宣告验收通过。默认单题模式保留原有证据核对。启动输出健康地址，需实际检查 `/health/dependencies`，不能仅看进程状态。原隔离库继续保留；新持续测试库为 `kairo_t19_13bca24aa5f2483aaf50b24d585f8dc5`，健康地址 `http://127.0.0.1:10385`，启动后已实查 driver/model/ragflow/postgres 等均为 up。断线期间消息未自动补处理，已请用户重发最后一道未回复的问题。
+
+App typecheck 与额外包含主脚本的 TypeScript 检查通过。默认 ESLint 不匹配 scripts；通过 ESLint API 使用既有规则检查新增工厂，零错误、零警告。临时扩大检查到主脚本时，其既有模型观察器仍报告方法捕获及返回类型诊断；未修改该观察器、关闭规则或将它声称为已通过的脚本 lint。
+
+### 持续测试：身份问题触发检索与模型不可用误报
+
+用户报告“你是谁”也查询企业知识并收到模型服务不可用提示。已在原始批次中匹配该问题（未打印问题或答案全文）：task `6398bcb7-7843-4bb3-ab64-b53a20c10c76`，实际发生两次 knowledge-search，结果均 empty。任务失败诊断为“本次仅接受正文非空的完整企业答案。”，error_type=model；不是该任务已证实的模型服务连接故障。
+
+原因是当前 `mastra/agent.ts` 要求除员工明确指定通用知识外所有问题先检索；`validate-answer.ts` 又只允许完整企业答案，将不满足该条件的结果归为 model，最终映射到统一“模型服务暂时不可用”提示。此外 task-runner 的进度提示固定为“正在查询企业知识”，不用于证明真实 Tool 调用。此处已核对实际查询账本，而非仅根据提示推断。
+
+本次只完成原因调查，未改变 T28 的检索约束、放开非企业回答或提前实施 T30。用户随后要求回到 T29 原范围，因此身份/能力介绍与相关回答边界扩展不实施。新增验收范围修复后的 App 默认测试为 **474/474**。
+
+### 最终人工反馈与资源收尾
+
+用户明确反馈：“现在BOT的回答没问题，我测试了几个问题，都答的不错。”本轮企业问答人工验收据此通过，不重复要求用户验证。首轮已确认的真实检索、3 条采用证据、最终消息 `136097445`、正文一致与内部来源检查记录见上文；后续企业问题也有已送达记录。此确认不代表身份介绍等非企业问题已经支持，也不宣称程序能证明任意自然语言答案正确。
+
+收到人工反馈后向首轮验收进程输入“完成”。两个自有验收进程均已退出，未重启 KK9、撤回消息或关闭 issue。需保留退出事实：首轮关闭阶段报告 driver 错误，持续轮关闭阶段报告 internal 错误，二者退出码均为 1，不能把整条验收命令记为零错误通过。既有 settled/close 会保留并报告运行期错误；持续轮日志未包含完整 cause 链，不进一步断言其全部来源。真实企业回答与人工验收通过，与进程退出错误分开记录。
+
+关闭逻辑在资源错误后继续执行隔离库回收。只读查询确认本次两个库 `kairo_t19_dedfe1c2ecfb4bf2b8cb1699eacf26b9`、`kairo_t19_13bca24aa5f2483aaf50b24d585f8dc5` 均已不存在，真实页面不存在残留 Kairo 桥接 Hook。未按前缀清理其他库，未更改其他服务。
+
+交付范围保留 T29 企业证据检查与必要真实入口接入；身份介绍免检索、新的非企业答案类型、错误类型扩展和对应数据库迁移均未实施。已知非企业问题提示不准确的现象保留为后续问题，不借此扩大本 issue。

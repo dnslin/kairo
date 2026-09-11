@@ -6,11 +6,15 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Client, Pool } from 'pg';
 import { KK9Driver, setDriverLogSink } from '@kairo/driver';
-import type { CdpConfig, DriverConfig, IKK9Driver } from '@kairo/driver';
+import type { CdpConfig, DriverConfig, IKK9Driver, SendOperationStore } from '@kairo/driver';
+import type { Memory } from '@mastra/memory';
 import { loadBotConfig } from './config/load.js';
 import type { LoadedBotConfig } from './config/load.js';
 import { createMastraRuntime } from './mastra/runtime.js';
 import type { MastraRuntime } from './mastra/runtime.js';
+import { createKairoAgent } from './mastra/agent.js';
+import { createEnterpriseRuntime } from './modules/knowledge-qa/enterprise-runtime.js';
+import type { EnterpriseRuntime } from './modules/knowledge-qa/enterprise-runtime.js';
 import { startHealthServer } from './modules/operability/health-server.js';
 import type { HealthServer } from './modules/operability/health-server.js';
 import type { HealthDependencies } from './modules/operability/health.js';
@@ -51,7 +55,7 @@ export async function startKairo(
     port?: number;
     configDirectory?: string;
     cdp?: CdpConfig;
-    driverFactory?: (config: DriverConfig) => IKK9Driver;
+    driverFactory?: (config: DriverConfig, store: SendOperationStore) => IKK9Driver;
   } = {}
 ): Promise<KairoApplication> {
   // 底层日志也经过应用现有白名单，不输出连接地址或原始异常。
@@ -59,6 +63,8 @@ export async function startKairo(
   let stage: AppErrorType = 'configuration';
   let runtime: MastraRuntime | undefined;
   let driverSupervisor: DriverSupervisor | undefined;
+  let enterprise: EnterpriseRuntime | undefined;
+  let memory: Memory | undefined;
   let health: HealthServer | undefined;
   let external: DependencyChecks | undefined;
   let closing: Promise<void> | undefined;
@@ -85,6 +91,8 @@ export async function startKairo(
         [external?.close.bind(external), 'internal'],
         [health?.close.bind(health), 'configuration'],
         [driverClosing ? (): Promise<void> | undefined => driverClosing : undefined, 'driver'],
+        [enterprise?.close.bind(enterprise), 'internal'],
+        [memory?.settled.bind(memory), 'storage'],
         [runtime?.close.bind(runtime), 'storage'],
         [
           async (): Promise<void> => {
@@ -140,6 +148,11 @@ export async function startKairo(
     const initialized = createMastraRuntime(options.databaseUrl);
     runtime = initialized;
     initialized.mastra.setLogger({ logger: new MastraOperabilityLogger(logger) });
+    stage = 'configuration';
+    const assembly = createKairoAgent(configuration.config, customization, initialized.storage);
+    memory = assembly.memory;
+    initialized.mastra.addAgent(assembly.agent);
+    stage = 'storage';
     // 启动账本必须有界失败；独立小池同时允许在 Mastra 关闭后保存最终关闭结果。
     bootPool = new Pool({
       ...initialized.storage.pool.options,
@@ -163,12 +176,47 @@ export async function startKairo(
       failBoot(error);
     }
     stage = 'driver';
+    const business = createEnterpriseRuntime({
+      pool: initialized.storage.pool,
+      agent: assembly.agent,
+      config: configuration.config,
+      configDigest: configuration.configDigest,
+      bootId,
+      logger,
+      dependencyError(): AppErrorType | null {
+        if (
+          closing ||
+          !bootReady ||
+          bootError ||
+          initialized.storage.pool.ending ||
+          initialized.storage.pool.ended
+        )
+          return 'storage';
+        const dependencies = external?.read();
+        if (dependencies?.model !== 'up') return 'model';
+        if (dependencies.ragflow !== 'up') return 'knowledge';
+        return null;
+      },
+      createDriver: (config, store) =>
+        options.driverFactory ? options.driverFactory(config, store) : new KK9Driver(config, store),
+    });
+    enterprise = business;
     const supervisor = createDriverSupervisor({
-      createDriver: () =>
-        options.driverFactory ? options.driverFactory({ cdp }) : new KK9Driver({ cdp }),
+      createDriver: () => business.createDriver({ cdp }),
       logger,
     });
     driverSupervisor = supervisor;
+    supervisor.onConnected(async (driver, generation) => {
+      // 启动存储失败只保留诊断入口，不能让业务恢复访问不可用的应用池。
+      if (!bootReady || bootError) return;
+      const botId = await driver.getCurrentUserId();
+      generation.signal.throwIfAborted();
+      if (!generation.isCurrent()) throw new AppError('cancelled');
+      if (!botId) throw new AppError('identity');
+      await business.onConnected(driver, generation, botId);
+    });
+    supervisor.onMessage((message, generation) => business.onMessage(message, generation));
+    supervisor.onInvalidate(generation => business.onInvalidate(generation));
     stage = 'configuration';
     health = await startHealthServer({
       port: options.port,
@@ -217,13 +265,9 @@ export async function startKairo(
         return dependencies;
       },
     });
-    external = startDependencyChecks(configuration.config, logger);
-    stage = 'driver';
-    try {
-      await supervisor.connect();
-    } catch {
-      // 首次连接失败仍提供 live 与诊断；监督器保存原因，并仅用新实例重试。
-    }
+    external = startDependencyChecks(configuration.config, logger, () =>
+      business.dependenciesChanged()
+    );
     if (bootRecorded && !bootError) {
       try {
         bootReady = await bootStore.markRunning(bootId);
@@ -231,6 +275,12 @@ export async function startKairo(
       } catch (error) {
         failBoot(error);
       }
+    }
+    stage = 'driver';
+    try {
+      await supervisor.connect();
+    } catch {
+      // 首次连接失败仍提供 live 与诊断；监督器保存原因，并仅用新实例重试。
     }
     logger.info({ event: '应用已启动', status: 'started' });
     return {

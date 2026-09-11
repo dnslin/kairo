@@ -79,6 +79,7 @@ export declare interface FakeKK9Driver {
 
 // eslint-disable-next-line @typescript-eslint/no-unsafe-declaration-merging, no-redeclare
 export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
+  private currentUserId: string | null = null;
   private currentSession: KK9Session | null = {
     id: 'session_init',
     name: '初始化会话',
@@ -130,6 +131,14 @@ export class FakeKK9Driver extends EventEmitter implements IKK9Driver {
       eventBridgeAttached: true,
       eventBridgeConnectionIdentity: null,
     };
+  }
+
+  public setCurrentUserId(userId: string | null): void {
+    this.currentUserId = userId;
+  }
+
+  public getCurrentUserId(): Promise<string | null> {
+    return Promise.resolve(this.currentUserId);
   }
 
   public setSessions(sessions: KK9Session[]): void {
