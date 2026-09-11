@@ -1703,3 +1703,65 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 监督进程pr269-real-cancel最终exit=0。真实首条处理取消后没有继续执行业务，原任务没有复活；新代收到的是用户随后发送的新消息，不是历史补偿。本轮没有额外发送断线期间消息，因此不把它计作新的“断线历史不补做”专项；也不证明正式Agent、实际出站、T34跨进程或T35完整链路。
 
 真机期间只改临时故障注入与清理，生产修复和永久回归未改；最近一次根四项门禁仍为前述实际通过的Driver347/App409，不声称真机结束后又重跑。临时真机入口与补清理入口均已删除，未提交推送、未修改PR草稿状态、未合并或关闭issue。
+
+## T28 唯一 Mastra Agent 装配（2026-09-11）
+
+### 可调用入口与业务边界
+
+`mastra/index.ts::createKairoMastra({ config, customization, databaseUrl, logger })` 复用现有进程内运行时，只注册 `kairo` 一个 Agent；配置和定制内容由现有加载器提供。`mastra/agent.ts::createKairoAgent()` 使用 YAML 唯一模型与既有 `KAIRO_T12_MODEL_API_KEY`，主 Agent 与 T12 Memory 的 Observer/Reflector 共用同一个 `ModelRouterLanguageModel`。没有备用模型、第二个结构化 Agent、Workspace、Sandbox 或新的服务端执行路由。
+
+`modules/agent-runtime/run-agent.ts::runAgent(agent, input, dependencies)` 的输入直接复用 T25 TaskExecutor 的 task/attempt/context/signal 形状，依赖注入现有 chat/knowledge/tasks、真实 bootId、已加载配置及日志。它读取原始批次正文，以 Mastra 原生 RequestContext 隔离每次执行的知识 Tool，不在共享 Agent 上改写当前 task。只允许 YAML 中的 `knowledge-search` 和原生 filesystem Skills，Dataset 来自配置，检索环境复用 `loadRetrievalSettings()`。
+
+调用使用非流式 `generate()`：`runId=attempt.attemptId`、`resource=task.employeeId`、`thread=context.threadId`、`memory.options.readOnly=true`。T25 已有的独立日志 runId 保持不变，不创建新标识。只读执行可能建立空 thread 元数据，但本轮输入、草稿与 Tool 正文不写正式 Memory，不调用 delivered commit。
+
+整个生成与全部 Tool 使用原任务绝对 executionDeadline 和 task AbortSignal；maxSteps 只取 YAML 循环边界，不限制知识查询次数。成功、失败、取消均等待 `binding.settled()`，确保实际 Python 与证据事务收尾。知识账本新增 `getLastCallIndex(taskId)`，从既有最大调用序号继续；调用方仍须遵守 T25 同 task 独占、旧执行真实 settled 后再开始下一 attempt 的合同，不另建并发或恢复接口。
+
+`answer-schema.ts` 严格分开 answer、六类 answerType、evidenceIds、subQuestions 和 diagnostics。默认先检索规则属于最高服务端执行指令，明确要求通用知识才可跳过。结构化输出使用原生 `structuredOutput.schema` 与 strict 错误策略，不提供 model、fallbackValue 或自动参数切换。合法 JSON 仍须来自正常完成的 `finishReason=stop`；循环耗尽、截断、缺失或非法结构不能伪装成功。
+
+该结果尚未经过 T29 业务检查，不能直接作为 TaskExecutor 的已检查 answer 交给发送器。T28 不执行 IM 发送、结果采用、状态转换、员工确认、反馈或 Memory commit；T25/T26 继续拥有取消和迟到结果门禁。`createKairoMastra.close()` 只关闭自身 Memory/运行时；调用方须先取消并等待自己启动的普通 Agent 执行。正式 `startKairo()` 和 Studio 业务装配保持原状，T33 后续才接整体流程。
+
+### 实际执行命令
+
+以下命令均从仓库根目录执行。数据库由既有 `createTaskTestDatabase()` 创建并迁移随机临时库；不迁移 `.env` 中的配置库，不强制断开其他连接。
+
+```powershell
+pnpm --filter @kairo/app test:integration -- tests/integration/agent-runtime.test.ts
+pnpm --filter @kairo/app typecheck
+pnpm --filter @kairo/app build
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+node packages/driver/node_modules/tsx/dist/cli.mjs --env-file=.env apps/kairo/scripts/verify-agent-runtime.ts
+```
+
+另在该命令的进程环境显式设 `KAIRO_T12_REAL_MODEL=0`，执行相关集成；这是确定性 Memory 模型回归，不是重新放行 T12 真实模型：
+
+```powershell
+pnpm --filter @kairo/app test:integration -- tests/integration/knowledge-record-store.test.ts tests/integration/ragflow-connector.test.ts tests/integration/bot-customization.test.ts tests/integration/mastra-delayed-memory.spike.test.ts tests/integration/mastra-route-isolation.spike.test.ts
+```
+
+最终 Agent 定向 **15/15**、相关集成 **5 文件 33/33** 通过；根 build/typecheck/test/lint 全部通过，无 lint 错误或警告。根默认测试为 Driver **347**、App **409**，不包含上述集成测试。生产 Driver 未改，没有连接或操作真实 KK9。
+
+### 受控故障与审查修复
+
+- 真实 Mastra/Skills/Tool/Python/PostgreSQL 配合确定性模型和回环 HTTP，覆盖企业检索、通用零查询、未注册 Dataset 修改工具、非批准 Dataset 参数、非法 schema、旧 Memory 召回但草稿不写、Agent 请求取消、Python 挂起取消、新 attempt 序号延续及不同员工交错执行不串资料。
+- 多查询场景将隔离测试执行预算设为 8 秒：第一查询成功，第二查询收到受控 503 后重试并挂起，实际在原 deadline 结束，重试未获新预算；退出前各 Python PID 均已不存在。这证明同一绝对截止贯穿 Agent/多查询/重试，不声称本次受控用例实际等待了四分钟。正式配置仍为 240000ms。
+- 初轮集成 7/12，失败来自测试错误地要求只读不创建空 thread、OM 记录初始化遗漏以及把标准取消异常固定为 AppError；按 T12/T25 合同修正后 12/12。新增循环耗尽与知识落账失败回归后 14/14；未压制异常、清空 Memory 或放宽 schema。
+- 独立审查发现合法 JSON 草稿可与最后工具回合同时返回，原校验会假成功。先运行 `--testNamePattern=循环边界` 实际复现失败，再增加正常 finishReason 检查；最终完整 15/15 通过。回归允许第二回合产生合法答案并核对实际只调用一次，避免受控模型缺少下一回合所制造的假阳性。
+- 测试失败清理改为先取消并等待自己启动的全部 Agent，再关闭运行时/HTTP 和恢复 mock。新增“首个 Python 挂起、第二任务失败”的实际进程回归，确认关闭存储前取消账本完整且 PID 已退出。
+- 初次构建发现动态工具返回类型和 nullable deadline 闭包问题；初次根质量链的 build/typecheck/test 通过，但 lint 报测试冗余 async、拒绝值类型及工具返回注解问题。已最小修正，并完整重跑根四项命令通过。
+
+### 最终源码的真实模型、Python、ERP 证据
+
+最终正常完成检查落地后，完整四场景再次执行，脚本 **退出 0，总耗时 41.12 秒**。唯一模型为 `openai/gemini-3.7-flash-high`，地址与正式 YAML 一致；没有模型替身、伪装请求头或参数回退。下表是第二轮最终源码结果，不复用首轮 62.21 秒的通过记录：
+
+| 场景 | 模型结果与实际链路 | 耗时 |
+| --- | --- | --- |
+| 企业采购问题 | enterprise；1 次真实检索 found；Python PID 228472，退出码 0；证据关联通过 | 11059ms |
+| 明确通用知识 | general；0 次检索、无企业证据引用 | 5132ms |
+| 多子问题分别检索 | enterprise；2 次不同检索均 found；Python PID 224440、104420，退出码均 0；各子问题使用不同查询的实际证据 | 14079ms |
+| 自然语言读者体验 | general；原生 skill 实际加载 reader-sim，正文出现在后续模型上下文；0 次企业检索 | 8485ms |
+
+本轮随机库为 `kairo_t19_a68dc194197549718ee5ea3cefc96644`，隔离连接 PID 44817/44818，结束时按工装正常关闭并删除自身库。最后受控集成库为 `kairo_t19_15c4c916aa6b4f0fbacebbb1ac3677d2`，同样正常收尾。脚本只输出场景、模型、类型、耗时、查询/Python/工具及断言摘要；普通日志不含凭证、员工正文或知识片段。
+
+这些证据证明本轮样例的真实模型选择、工具链和结构合同，不代替 T29 语义/业务证据检查、T30 确认、T32 delivered 后提交或 T33/T35 完整 IM 链路。没有修改正式 YAML、数据库迁移或其他工作区，没有临时探针遗留；保留独立真实验收脚本以便模型变更后重跑。未合并分支、未关闭 issue。
+
+框架依据：[非流式 generate](https://mastra.ai/reference/agents/generate)、[结构化输出与工具共存](https://mastra.ai/docs/agents/structured-output)、[工具接口](https://mastra.ai/docs/agents/tools)、[Mastra 实例注册](https://mastra.ai/reference/core/mastra-class)；以锁定类型和上述实际运行结果为准。

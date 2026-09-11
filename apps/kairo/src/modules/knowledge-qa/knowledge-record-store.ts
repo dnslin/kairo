@@ -200,6 +200,16 @@ export class PostgresKnowledgeRecordStore {
     return result.rows.map(mapQuery);
   }
 
+  /** 调用方保证同 task 的旧执行已经 settled；恢复 attempt 不重置查询次序。 */
+  public async getLastCallIndex(taskId: string): Promise<number> {
+    const result = await this.pool.query<{ callIndex: number }>(
+      `SELECT COALESCE(MAX(call_index), 0) AS "callIndex"
+       FROM kairo.knowledge_queries WHERE task_id=$1`,
+      [taskId]
+    );
+    return result.rows[0]!.callIndex;
+  }
+
   public async getEvidence(evidenceId: string): Promise<KnowledgeEvidence | null> {
     const result = await this.pool.query<KnowledgeEvidence>(
       `SELECT ${evidenceColumns} FROM kairo.knowledge_evidence e WHERE e.evidence_id=$1`,
