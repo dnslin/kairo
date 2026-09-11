@@ -46,34 +46,37 @@ export async function runAgent(
   const errors: unknown[] = [];
   try {
     checkExecution();
+    const knowledgeEnabled = config.tools.includes('knowledge-search');
     let messages;
     let callIndex: number;
     try {
       [messages, callIndex] = await Promise.all([
         dependencies.chat.getBatchMessages(task.batchId),
-        knowledge.getLastCallIndex(task.taskId),
+        knowledgeEnabled ? knowledge.getLastCallIndex(task.taskId) : 0,
       ]);
     } catch (cause) {
       throw new AppError('storage', { cause });
     }
     checkExecution();
-    binding = createKnowledgeTool(
-      loadRetrievalSettings(config.datasetId),
-      {
-        taskId: task.taskId,
-        attemptId: attempt.attemptId,
-        inputVersion: task.inputVersion,
-        contextVersion: context.version,
-        bootId: dependencies.bootId,
-        executionDeadline: deadline,
-        nextCallIndex: () => ++callIndex,
-      },
-      knowledge,
-      logger,
-      dependencies.tasks
-    );
     const requestContext = new RequestContext<AgentRequestContext>();
-    requestContext.set('knowledgeTool', binding.tool);
+    if (knowledgeEnabled) {
+      binding = createKnowledgeTool(
+        loadRetrievalSettings(config.datasetId),
+        {
+          taskId: task.taskId,
+          attemptId: attempt.attemptId,
+          inputVersion: task.inputVersion,
+          contextVersion: context.version,
+          bootId: dependencies.bootId,
+          executionDeadline: deadline,
+          nextCallIndex: () => ++callIndex,
+        },
+        knowledge,
+        logger,
+        dependencies.tasks
+      );
+      requestContext.set('knowledgeTool', binding.tool);
+    }
     // 同一个原始 deadline 覆盖模型、循环和所有 Tool；不使用新的相对执行预算。
     // 官方合同：https://mastra.ai/reference/agents/generate
     const response = await agent.generate(messages.map(message => message.text).join('\n'), {

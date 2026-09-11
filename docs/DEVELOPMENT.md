@@ -1765,3 +1765,11 @@ pnpm --filter @kairo/app test:integration -- tests/integration/knowledge-record-
 这些证据证明本轮样例的真实模型选择、工具链和结构合同，不代替 T29 语义/业务证据检查、T30 确认、T32 delivered 后提交或 T33/T35 完整 IM 链路。没有修改正式 YAML、数据库迁移或其他工作区，没有临时探针遗留；保留独立真实验收脚本以便模型变更后重跑。未合并分支、未关闭 issue。
 
 框架依据：[非流式 generate](https://mastra.ai/reference/agents/generate)、[结构化输出与工具共存](https://mastra.ai/docs/agents/structured-output)、[工具接口](https://mastra.ai/docs/agents/tools)、[Mastra 实例注册](https://mastra.ai/reference/core/mastra-class)；以锁定类型和上述实际运行结果为准。
+
+### PR270 审查修复：禁用知识 Tool 不要求检索凭证
+
+`runAgent()` 仅在 `config.tools` 启用 `knowledge-search` 时读取知识查询序号、加载检索配置并创建任务绑定。合法 `tools: []` 配置不再依赖 `RAGFLOW_API_KEY`；启用工具时仍要求原有检索配置，不增加凭证回退或忽略配置错误。
+
+将已有通用知识集成用例扩为启用/禁用两种配置，禁用用例通过 `vi.stubEnv` 移除测试进程凭证，结束后恢复。修复前以 `pnpm --filter @kairo/app test:integration -- tests/integration/agent-runtime.test.ts --testNamePattern=显式通用知识回答` 得到启用通过、禁用因缺少凭证失败；修复后运行完整同文件集成 **16/16 通过**，均检查完整答案、零 HTTP/检索账本及模型可见工具与配置一致。
+
+本次 `pnpm --filter @kairo/app typecheck`、`pnpm --filter @kairo/app build`、对修改的 run-agent.ts 与 agent-runtime.test.ts 执行 ESLint 均通过；`pnpm test` 为 Driver **347/347**、App **409/409**。独立 Node 构建产物探针在无检索凭证且查询账本读取会抛错的条件下成功返回通用答案，模型边界为确定性替身。未修改 `.env`、正式 YAML 或 Driver，未重跑真实模型、ERP 或 KK9；探针通过内联脚本执行，没有新增临时文件。

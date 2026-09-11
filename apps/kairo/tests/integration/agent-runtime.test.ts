@@ -392,23 +392,32 @@ describe('T28 唯一 Agent 受控集成（模型决策为脚本，不是真实�
       expect(fixture.logs()).not.toContain(secret);
   }, 30_000);
 
-  it('显式通用知识回答保持零 HTTP、零检索账本', async () => {
-    const question = '请明确使用通用知识回答：二加二等于几，不需要企业资料。';
-    const fixture = await createAgentTask(database, question);
-    const http = await localRetrieval((_request, response) => {
-      response.end('{}');
-    });
-    const runtime = assemble(fixture);
-    controlledModel([{ question, turns: [() => json(answer('general', '二加二等于四。'))] }]);
-    expect(await runTestAgent(runtime.agent, fixture.input, fixture.dependencies)).toEqual(
-      answer('general', '二加二等于四。')
-    );
-    expect(http.requests).toEqual([]);
-    expect(await queries(fixture)).toEqual([]);
-    expect(
-      await fixture.dependencies.knowledge.listEvidence(fixture.input.task.taskId, page)
-    ).toEqual([]);
-  }, 30_000);
+  it.each([true, false])(
+    '显式通用知识回答保持零 HTTP、零检索账本（知识工具启用：%s）',
+    async enabled => {
+      const question = '请明确使用通用知识回答：二加二等于几，不需要企业资料。';
+      const fixture = await createAgentTask(database, question);
+      if (!enabled) {
+        fixture.dependencies.config.tools = [];
+        vi.stubEnv('RAGFLOW_API_KEY', undefined);
+      }
+      const http = await localRetrieval((_request, response) => {
+        response.end('{}');
+      });
+      const runtime = assemble(fixture);
+      controlledModel([{ question, turns: [() => json(answer('general', '二加二等于四。'))] }]);
+      expect(await runTestAgent(runtime.agent, fixture.input, fixture.dependencies)).toEqual(
+        answer('general', '二加二等于四。')
+      );
+      expect(http.requests).toEqual([]);
+      expect(advertisedTools.has('knowledge-search')).toBe(enabled);
+      expect(await queries(fixture)).toEqual([]);
+      expect(
+        await fixture.dependencies.knowledge.listEvidence(fixture.input.task.taskId, page)
+      ).toEqual([]);
+    },
+    30_000
+  );
 
   it.each([
     {
