@@ -21,6 +21,10 @@ export interface SchedulerOptions {
   executionMs: number;
   progressMs: number;
   logger: AppLogger;
+  /** 正式单Bot装配限定扫描范围；通用调度合同仍允许共享全局名额。 */
+  botId?: string;
+  /** 依赖探测尚未就绪时只推进原截止，不领取或消耗执行尝试。 */
+  canExecute?(): boolean;
 }
 
 /** 一个应用进程只装配一个实例，所有 Bot/会话共用实际执行名额。 */
@@ -157,6 +161,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     const current: Array<{ task: Task; wait: UserWait | null }> = [];
     let nextDeadline = Infinity;
     for (const task of rows) {
+      if (options.botId !== undefined && task.botId !== options.botId) continue;
       const wait = task.status === 'waiting_for_user' ? await tasks.getTaskWait(task.taskId) : null;
       if (closed || paused) return;
       if (
@@ -182,6 +187,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     const occupied = new Set([...executions.values()].map(item => item.session));
     for (const { task, wait } of current) {
       if (closed || paused || executions.size >= options.concurrency.global) break;
+      if (options.canExecute?.() === false) break;
       const key = sessionKey(task);
       if (occupied.has(key) || visited.has(key)) continue;
       const owner = owners.get(key);

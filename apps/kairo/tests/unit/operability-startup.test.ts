@@ -3,13 +3,21 @@ import type { Socket } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
+import * as dependencyModule from '../../src/modules/operability/dependency-checks.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
 
 beforeEach(() => {
-  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '');
+  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '合成启动模型凭证');
   vi.stubEnv('RAGFLOW_API_KEY', '');
+  vi.spyOn(dependencyModule, 'startDependencyChecks').mockReturnValue({
+    read: () => ({ model: 'unknown', ragflow: 'unknown' }),
+    close: () => Promise.resolve(),
+  });
 });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe('T17 正式入口的真实健康路径', () => {
   it('数据库握手挂起时健康请求有界失败，live 不受影响且未接入依赖保持未知', async () => {

@@ -6,6 +6,7 @@ import { startKairo } from '../../src/index.js';
 import type { KairoApplication } from '../../src/index.js';
 import { createStudioMastra } from '../../src/mastra/dev-server.js';
 import { createPostgresPool } from '../../src/db/pool.js';
+import * as dependencyModule from '../../src/modules/operability/dependency-checks.js';
 import { migrateDatabase } from '../../src/db/migrate.js';
 import { ApplicationTestDriver } from '../helpers/application-driver.js';
 import { createTaskTestDatabase, type TaskTestDatabase } from '../helpers/task-database.js';
@@ -15,11 +16,16 @@ if (!databaseUrl) throw new Error('缺少 KAIRO_TEST_DATABASE_URL，不能执行
 
 const applications: KairoApplication[] = [];
 beforeEach(() => {
-  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '');
+  vi.stubEnv('KAIRO_T12_MODEL_API_KEY', '合成启动模型凭证');
   vi.stubEnv('RAGFLOW_API_KEY', '');
+  vi.spyOn(dependencyModule, 'startDependencyChecks').mockReturnValue({
+    read: () => ({ model: 'unknown', ragflow: 'unknown' }),
+    close: () => Promise.resolve(),
+  });
 });
 afterEach(async () => {
   await Promise.all(applications.splice(0).map(application => application.close()));
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
