@@ -1,19 +1,26 @@
 import EventEmitter from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { KK9EventBridge } from '../src/bridge/event-bridge.js';
+import { extractRecalledEventsFromPayload } from '../src/bridge/converter.js';
+import { SUBMIT_NATIVE_MESSAGE_SCRIPT } from '../src/bridge/renderer-script.js';
 import { CdpClient } from '../src/cdp/client.js';
-import type { CdpConnectionIdentity, ConnectionStatus, KK9Message } from '../src/types/index.js';
+import type {
+  CdpConnectionIdentity,
+  ConnectionStatus,
+  KK9Message,
+  KK9RecalledEvent,
+} from '../src/types/index.js';
 import { createRendererRuntime, runRendererScript } from './helpers/renderer-runtime.js';
 
 const bindingName = '__kairo_native_bridge';
 const cdpConfig = { url: 'http://127.0.0.1:1', pageMatch: '离线生命周期' };
 
-function createPage() {
+function createPage(sessionId = '会话') {
   const bus = new EventEmitter();
   const rendererBus = { $on: bus.on.bind(bus), $off: bus.off.bind(bus) };
   const runtime = createRendererRuntime({
     main: { $bus: rendererBus },
-    sessions: [{ id: '会话', sesUUID: '会话' }],
+    sessions: [{ id: sessionId, sesUUID: sessionId }],
   });
   const windowObject = runtime.context['window'] as Record<string, unknown>;
   const ipc = new EventEmitter();
@@ -21,11 +28,11 @@ function createPage() {
   const originalRevoke = vi.fn();
   const chat: {
     addRevokeMsg: (data: unknown) => void;
-    sesInfo: { sesUUID: string };
+    sesInfo: { sesUUID?: string; id?: number; type?: number; typeID?: number };
     __kairo_revoke_active?: boolean;
   } = {
     addRevokeMsg: originalRevoke,
-    sesInfo: { sesUUID: '会话' },
+    sesInfo: { sesUUID: sessionId },
   };
   const observers = new Set<object>();
   runtime.context['MutationObserver'] = class {
@@ -95,9 +102,152 @@ function createPage() {
   };
 }
 
+const nativeSubmissionScript = `(async () => {
+  ${SUBMIT_NATIVE_MESSAGE_SCRIPT}
+  const callIpc = window.nativeSubmitIpc;
+  const waitForPersistedMessage = window.confirmNativeSend;
+  if (window.beforeNativeSubmit) await window.beforeNativeSubmit();
+  return submitNativeMessage({ sessionID: 716791, sender: 5761, receiver: 3585,
+    contentType: 4, content: '请求正文', msgFlag: '本次原生标识' },
+    { id: 716791, sesUUID: '0-3585', type: 0, typeID: 3585 });
+})()`;
+
+function configureNativeSubmission(windowObject: Record<string, unknown>) {
+  const confirmed = {
+    id: '136000001',
+    sessionID: 716791,
+    sender: 5761,
+    contentType: 4,
+    content: { content: [{ type: 0, text: '原生确认正文' }] },
+    msgIdx: 10,
+  };
+  windowObject['nativeSubmitIpc'] = (channel: string) =>
+    Promise.resolve(
+      channel === 'insertSendBefoeMsg' ? { code: 0, data: { id: -1, msgIdx: 9 } } : { code: 0 }
+    );
+  windowObject['confirmNativeSend'] = () => Promise.resolve(confirmed);
+  return confirmed;
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe('EventBridge 渲染资源所有权关闭', () => {
+  it('只有原生确认后才在调用返回前回显真实记录，其他来源重复与Vue历史不再派发', async () => {
+    const page = createPage('0-3585');
+    const { bridge } = page.createBridge('发送代次', '连接', '5761');
+    const confirmed = configureNativeSubmission(page.windowObject);
+    let release!: (value: typeof confirmed) => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    const gate = new Promise<typeof confirmed>(resolve => {
+      release = resolve;
+    });
+    page.windowObject['confirmNativeSend'] = () => {
+      entered();
+      return gate;
+    };
+    const messages: KK9Message[] = [];
+    let returned = false;
+    const beforeReturn: boolean[] = [];
+    bridge.on('message', message => {
+      beforeReturn.push(!returned);
+      messages.push(message);
+    });
+    await bridge.connect();
+    try {
+      const work = runRendererScript(nativeSubmissionScript, page.runtime.context);
+      await started;
+      expect(messages).toEqual([]);
+      release(confirmed);
+      await work;
+      returned = true;
+      const envelope = { session: { id: 716791, type: 0, typeID: 3585 }, message: [confirmed] };
+      page.ipc.emit('message', {}, { args: envelope });
+      page.bus.emit('receive-message', envelope);
+      page.bus.emit('0-3585-msg', [confirmed]);
+      expect(
+        messages.map(message => ({
+          id: message.id,
+          sessionId: message.sessionId,
+          content: message.content,
+          direction: message.direction,
+        }))
+      ).toEqual([
+        { id: confirmed.id, sessionId: '0-3585', content: '原生确认正文', direction: 'outbound' },
+      ]);
+      expect(beforeReturn).toEqual([true]);
+    } finally {
+      release(confirmed);
+      await bridge.disconnect();
+    }
+  });
+
+  it.each(['发送ack失败', '没有确认记录'])('%s不得根据请求正文伪造成功回显', async failure => {
+    const page = createPage('0-3585');
+    const { bridge } = page.createBridge('发送失败', '连接', '5761');
+    configureNativeSubmission(page.windowObject);
+    if (failure === '发送ack失败')
+      page.windowObject['nativeSubmitIpc'] = (channel: string) =>
+        Promise.resolve(
+          channel === 'insertSendBefoeMsg' ? { code: 0, data: { id: -1 } } : { code: 1 }
+        );
+    else page.windowObject['confirmNativeSend'] = () => Promise.resolve(null);
+    const messages: KK9Message[] = [];
+    bridge.on('message', message => messages.push(message));
+    await bridge.connect();
+    try {
+      const result = await runRendererScript<{ failure: { success: boolean } }>(
+        nativeSubmissionScript,
+        page.runtime.context
+      );
+      expect(result.failure.success).toBe(false);
+      expect(messages).toEqual([]);
+    } finally {
+      await bridge.disconnect();
+    }
+  });
+
+  it('发送脚本预处理跨越换代也只能持有旧回调，旧实例关闭不破坏新回显', async () => {
+    const page = createPage('0-3585');
+    configureNativeSubmission(page.windowObject);
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    page.windowObject['beforeNativeSubmit'] = () => {
+      entered();
+      return gate;
+    };
+    const older = page.createBridge('旧发送代次', '旧连接', '5761');
+    await older.bridge.connect();
+    const oldWork = runRendererScript(nativeSubmissionScript, page.runtime.context);
+    await started;
+    await older.cdp.disconnect();
+    const newer = page.createBridge('新发送代次', '新连接', '5761');
+    const messages: KK9Message[] = [];
+    newer.bridge.on('message', message => messages.push(message));
+    try {
+      await newer.bridge.connect();
+      await older.bridge.disconnect();
+      delete page.windowObject['beforeNativeSubmit'];
+      release();
+      await oldWork;
+      expect(messages).toEqual([]);
+      await runRendererScript(nativeSubmissionScript, page.runtime.context);
+      expect(messages.map(message => message.id)).toEqual(['136000001']);
+    } finally {
+      release();
+      await oldWork;
+      await newer.bridge.disconnect();
+    }
+  });
+
   it('关闭释放本实例订阅、撤回方法、观察器和binding，重复关闭不再清理', async () => {
     const page = createPage();
     const { bridge } = page.createBridge('当前代', '当前连接');
@@ -262,6 +412,150 @@ describe('EventBridge 渲染资源所有权关闭', () => {
       direction: 'inbound',
     });
     await bridge.disconnect();
+  });
+
+  it.each([
+    { name: '顶层事件', data: { event: 'CancelMessage', msgID: '待撤回' } },
+    {
+      name: '正文内事件',
+      data: {
+        message: [{ sessionID: 716791, content: { event: 'CancelMessage', msgID: '待撤回' } }],
+      },
+    },
+    {
+      name: '消息内事件',
+      data: { message: [{ sessionID: 716791, event: 'CancelMessage', msgID: '待撤回' }] },
+    },
+  ])('原生撤回$name沿用普通消息会话，与Vue来源重复事件只派发一次', async ({ data }) => {
+    const page = createPage();
+    const { bridge } = page.createBridge('撤回载荷', '连接', '5761');
+    const messages: KK9Message[] = [];
+    const recalls: KK9RecalledEvent[] = [];
+    bridge.on('message', message => messages.push(message));
+    bridge.on('recalled', event => recalls.push(event));
+    await bridge.connect();
+    try {
+      const envelope = { sessionID: 716791, session: { id: 716791, type: 0, typeID: 3585 } };
+      page.ipc.emit(
+        'message',
+        {},
+        { args: { ...envelope, message: [{ id: '待撤回', sender: 3585, content: '测试问题' }] } }
+      );
+      expect(messages[0]?.sessionId).toBe('0-3585');
+      page.ipc.emit('message', {}, { args: { ...envelope, ...data } });
+      page.bus.emit('receive-message', { ...envelope, ...data });
+      page.bus.emit('CancelMessage', { ...envelope, msgID: '待撤回' });
+      page.bus.emit('CancelMessage', { msgID: '待撤回', sessionId: '0-3585' });
+      expect(
+        recalls.map(event => ({ messageId: event.messageId, sessionId: event.sessionId }))
+      ).toEqual([{ messageId: messages[0]?.id, sessionId: messages[0]?.sessionId }]);
+    } finally {
+      await bridge.disconnect();
+    }
+  });
+
+  it.each(['msg', 'revokeMsg'])('会话%s通道的公开范围不被消息内数据库编号覆盖', async channel => {
+    const page = createPage('0-3585');
+    const { bridge } = page.createBridge('会话撤回', '连接');
+    const recalls: KK9RecalledEvent[] = [];
+    bridge.on('recalled', event => recalls.push(event));
+    await bridge.connect();
+    try {
+      const payload = { sessionID: 716791, event: 'CancelMessage', msgID: '待撤回' };
+      page.bus.emit(`0-3585-${channel}`, channel === 'msg' ? [payload] : payload);
+      expect(
+        recalls.map(event => ({ messageId: event.messageId, sessionId: event.sessionId }))
+      ).toEqual([{ messageId: '待撤回', sessionId: '0-3585' }]);
+    } finally {
+      await bridge.disconnect();
+    }
+  });
+
+  it('聊天组件保留原生会话范围供统一解析，仍调用原撤回方法', async () => {
+    const page = createPage();
+    page.chat.sesInfo = { id: 716791, type: 0, typeID: 3585 };
+    const { bridge } = page.createBridge('聊天撤回', '连接');
+    const recalls: KK9RecalledEvent[] = [];
+    bridge.on('recalled', event => recalls.push(event));
+    await bridge.connect();
+    try {
+      page.chat.addRevokeMsg({ sessionID: 716791, msgID: '待撤回' });
+      expect(
+        recalls.map(event => ({ messageId: event.messageId, sessionId: event.sessionId }))
+      ).toEqual([{ messageId: '待撤回', sessionId: '0-3585' }]);
+      expect(page.originalRevoke).toHaveBeenCalledOnce();
+    } finally {
+      await bridge.disconnect();
+    }
+  });
+
+  it('携带msgID的普通Vue历史消息不会误派发为撤回或新入站', async () => {
+    const page = createPage('0-3585');
+    const { bridge } = page.createBridge('普通历史', '连接');
+    const messages: KK9Message[] = [];
+    const recalls: KK9RecalledEvent[] = [];
+    bridge.on('message', message => messages.push(message));
+    bridge.on('recalled', event => recalls.push(event));
+    await bridge.connect();
+    try {
+      const payload = {
+        sessionID: 716791,
+        session: { id: 716791, type: 0, typeID: 3585 },
+        msgID: '普通历史',
+        sender: 3585,
+        content: '普通问题',
+      };
+      page.bus.emit('receive-message', payload);
+      page.bus.emit('0-3585-msg', [payload]);
+      expect(messages).toEqual([]);
+      expect(recalls).toEqual([]);
+    } finally {
+      await bridge.disconnect();
+    }
+  });
+
+  it('撤回消息内数据库编号不能覆盖外层显式公开编号', () => {
+    const events = extractRecalledEventsFromPayload({
+      sessionId: '0-3585',
+      message: [{ sessionID: 716791, content: { event: 'CancelMessage', msgID: '待撤回' } }],
+    });
+    expect(events.map(event => event.sessionId)).toEqual(['0-3585']);
+  });
+
+  it('撤回消息内数据库编号不能覆盖调用方已提供的会话范围', () => {
+    const events = extractRecalledEventsFromPayload(
+      { message: [{ sessionID: 716791, event: 'CancelMessage', msgID: '待撤回' }] },
+      { id: '0-3585' }
+    );
+    expect(events.map(event => event.sessionId)).toEqual(['0-3585']);
+  });
+
+  it('无外层范围的撤回数组保留各条会话，相同消息ID不跨会话误去重', async () => {
+    const page = createPage();
+    const { bridge } = page.createBridge('多会话撤回', '连接');
+    const recalls: KK9RecalledEvent[] = [];
+    bridge.on('recalled', event => recalls.push(event));
+    await bridge.connect();
+    try {
+      page.ipc.emit(
+        'message',
+        {},
+        {
+          args: [
+            { event: 'CancelMessage', msgID: '相同编号', sessionId: '0-3585', sessionID: 716791 },
+            { event: 'CancelMessage', msgID: '相同编号', sessionID: '1-7783' },
+          ],
+        }
+      );
+      expect(
+        recalls.map(event => ({ messageId: event.messageId, sessionId: event.sessionId }))
+      ).toEqual([
+        { messageId: '相同编号', sessionId: '0-3585' },
+        { messageId: '相同编号', sessionId: '1-7783' },
+      ]);
+    } finally {
+      await bridge.disconnect();
+    }
   });
 
   it('新代只接收原生IPC新事件，断线旧消息的迟到总线转发不补做', async () => {

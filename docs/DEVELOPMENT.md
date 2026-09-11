@@ -1541,3 +1541,82 @@ Advisor指出的缺陷已用真实PostgreSQL、正式调度/发送组件及Drive
 - 新任务唯一最终消息136022199由真实Driver确认delivered，确认耗时520ms；该Bot消息已撤回，未撤回名单为空。探针退出0，自有业务、连接和数据库资源完成关闭；未关闭KK9、未撤回员工消息。
 
 本轮补齐T26自有连接断开、自动新代次、断线消息不补做、旧结果丢弃与新消息实际交付的真机证据。原生会话编号修复后的根四项命令已在前一轮完整通过（Driver333、App405），此后生产代码未改，不重复宣称本轮重跑。既有e2e-stage1-contract完整合同脚本仍未取得整轮通过结果，需另行协调；不能用本轮专项通过替代其全部检查。真机重连临时入口验证完成后移除，保留生产回归与本节证据。未合并、未关闭issue。
+
+### PR269后续：原生撤回会话编号一致性修复
+
+Advisor指出的撤回路径遗漏已复现：同一原生envelope普通消息为0-3585，三种现有CancelMessage载荷仍为数据库行ID716791；消息内sessionID还能覆盖外层公开编号或调用方上下文。原生与Vue来源产生不同去重键，实际桥接会派发两次撤回事件。
+
+修复限于 `packages/driver/src/bridge/converter.ts`：抽取文件内 `resolvePublicSessionId`，普通消息和撤回外层共用相同优先级。撤回以外层/调用方已确定的会话范围为准，消息内数据库编号不再覆盖；没有外层范围时逐条解析，保留不同会话及已有公开编号。无新增公开接口、迁移或发送门禁变化。
+
+`event-bridge-lifecycle.test.ts` 新增6项回归，均先失败后通过：顶层/正文内/消息内原生撤回与Vue重复事件只派发一次，外层公开编号和调用方上下文不被覆盖，无外层的多会话数组不跨会话误去重。定向4文件57项通过，随后完整 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 通过（Driver339项、App405项）。LSP进程退出，调用方改用明确范围文本查询核对；未声称语言服务成功。
+
+真机验证分层记录：
+
+- 只读KK9缓存检查未找到原生撤回样本（匹配0），不算通过。
+- 使用授权Bot5761/员工3585/0-3585，运行临时 `t26-recall-real.ts`，仅发送并撤回本探针消息136027307，operationId=`f71c2389-1259-48e7-9b23-5f908f9b4676`。真实撤回成功，公开recalled事件恰好1条且sessionId=0-3585，未撤回名单为空，自有Driver完成关闭，未退出KK9。
+- 该轮未捕获原生receive-message中承载的CancelMessage，脚本按更严格的目标路径断言退出1。因此只能证明真实发送/撤回操作与公开事件正常，不能冒称原生IPC撤回分支已真机通过。需要员工侧新发并撤回一条测试消息，另行协调，不自动反复发送。
+
+临时只读取证和自身消息探针已清理。当前代码与受控回归已修复；员工原生撤回以及既有整套Driver合同真机验收仍未放行。本轮修复尚未提交推送，不把此前PR269提交当作已包含该修复。
+
+### PR269后续：渲染侧原始Vue撤回转发修复
+
+前一轮共用解析只覆盖Node侧。追加原始Vue receive-message后，原生撤回已派发0-3585，渲染侧parseRecallFromMsg又丢弃外层范围并派发716791；此前只测已归一化的Vue CancelMessage不足以证明这条路径正确。临时副本中的三种载荷均失败，随后正式强化回归。
+
+本轮删除渲染侧parseRecallFromMsg，改为保留原始会话字段和候选消息交Node侧统一解析。候选置于message内，防止普通历史消息只因含msgID就被当成显式撤回；Vue历史仍不派发普通message。全局CancelMessage保留原始范围，会话专用通道仅附加其已知公开范围，聊天组件保留原生sesInfo；不再把用于显示名查询的提示编号写成事件会话编号。原生typeID已存在时，不把数据库sessionID注册为会话通道。显示名查询与原聊天组件方法继续保留，DOM明确data属性路径未扩大推断。
+
+验证覆盖新增4项并强化既有3项：原生后接原始Vue receive-message及全局CancelMessage的三种载荷只派发一次；会话msg/revokeMsg、聊天组件原生范围均保持0-3585；普通Vue历史消息含msgID也不派发撤回或新入站。修复前生命周期文件20项中5项失败，修复后相关4文件43项通过。最后完整 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 通过（Driver343项、App405项），无lint错误或警告。
+
+本轮使用受控渲染环境执行实际注入脚本，未新启动KK9真机测试，不借此前Bot自身撤回结果冒称原生分支通过。员工侧原生撤回与既有整套Driver合同仍需协调。本地修复与文档尚未提交推送到PR269。
+
+### 整套Driver合同复验：首条入站等待超时
+
+用户要求启动整套复验后，先只读确认登录UID5761、无其他Driver Hook占用，再运行既有 `packages/driver/examples/e2e-stage1-contract.ts`，未修改合同脚本。09:39:35建立基线并等待目标员工新入站，09:41:35因120秒内未观察到符合条件的消息退出1。汇总7项、6项通过、1项失败，cleanupMissing为空；尚未进入后续发送三态、重试及中断恢复步骤。自有Driver已断开，KK9未退出。不能标记整套合同完成，等待重新协调员工窗口后再启动，不重放历史消息。
+
+### 整套Driver合同复验：真实入站与发送通过，实时Bot回显失败
+
+用户重新准备并发送后，既有合同脚本接收到真实员工消息136054373（0-3585/inbound），员工档案核对通过。方向unknown使用脚本明示的controlled-real-payload-shape样本，不称为真实未知方向消息。Bot文本136054375真实delivered，确认耗时566ms；随后15秒内未观察到EventBridge实时回显，脚本退出1，汇总13项、12项通过、1项失败。测试Bot消息已撤回，cleanupMissing为空，自有primary连接关闭；尚未执行后续查询只读、安全重试和post-trigger unknown步骤。
+
+源码定位：合同createManagedDriver直接订阅EventBridge的message，轮询不会加入该实时观察集合。BridgeMessageOps在真实原生确认后通过Vue会话-msg发布本机发送回显；T26切换后该通道仅转发撤回候选，普通出站回显不再进入EventBridge。因此不能以发送成功或轮询读到消息替代此项合同通过，也不能恢复普通Vue历史入站来掩盖问题。需要另行修复具有明确新旧代次边界的实时出站事件来源，再重新运行整套合同。本轮仅定位，未修改发送实现或放宽合同断言。
+
+### PR269后续：从原生确认记录恢复实时出站回显
+
+统一原生提交脚本在发送脚本开始时捕获EventBridge观察回调，早于图片预处理等await；取得confirmedMessage后才发布真实原生记录。EventBridge沿用已有代次封闭、会话规范化和消息去重，关闭时仅清理自己安装的观察回调。旧发送即使跨越换代后确认，也不能借用新连接回显。图片入口补传已有targetSes，其余原生发送入口继续共用同一提交脚本。未恢复Vue普通历史消息派发，未改变发送次数、确认预算、T21发送策略或App恢复账本。
+
+新增4项受控回归：确认前不回显，确认后使用真实ID及正文并在调用返回前观察到一次outbound；原生及Vue重复来源不重复派发；发送ack失败、缺少确认记录均不伪造回显；发送预处理跨代次完成不污染新连接，旧实例关闭后新回显仍有效。修复前定向4项中2项失败、2项通过；修复后生命周期文件24项全通过。
+
+实际执行：
+
+```powershell
+pnpm exec vitest run packages/driver/tests/event-bridge-lifecycle.test.ts --testNamePattern "回显|发送脚本"
+pnpm exec prettier --write packages/driver/src/bridge/renderer-script.ts packages/driver/src/bridge/event-bridge.ts packages/driver/src/bridge/image-ops.ts packages/driver/tests/event-bridge-lifecycle.test.ts
+pnpm exec vitest run packages/driver/tests/event-bridge-lifecycle.test.ts packages/driver/tests/native-media.test.ts packages/driver/tests/send-operation.test.ts
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+相关3文件52项通过；完整根四项门禁通过，Driver347项、App405项，无lint错误或警告。语言服务查询引用时退出，随后按源码核对了全部5处原生提交调用；没有依赖语言服务的未验证重命名。审查后保留最小观察接入，无新增依赖、重试、兼容分支或通用框架。
+
+上述证据为受控渲染环境执行实际注入与提交脚本，不是真机通过。本轮未操作KK9，也未修改整套合同脚本或放宽断言。仍需协调员工窗口，重跑既有整套Driver合同和员工侧原生撤回；post-trigger unknown必须由真实连接中断产生，不硬改状态或增加生产延时。此前真实合同仍是12/13失败，不能因本轮单元测试通过改记为通过。本地后续修复尚未提交推送，未合并或关闭issue。
+
+### 原生出站回显修复后真机复验：回显通过，中断注入未产生unknown
+
+用户授权开始真机测试后，只读确认登录UID5761，页面没有EventBridge清理Hook或原生发送观察回调占用。首次从仓库根使用node --import tsx启动，因tsx仅安装在Driver包目录而在加载脚本前失败，没有连接或发送；随后切换Driver包目录运行原有脚本：`node --env-file=../../.env --import tsx examples/e2e-stage1-contract.ts`。未修改脚本或断言。
+
+真实员工入站136059371（0-3585、senderId3585）通过；Bot消息136059373返回delivered（606ms），EventBridge实时outbound回显及晚于员工入站的顺序均通过。双来源消息键、getSendStatus只读、同operationId重试不双发、不同内容复用被拒绝、无效目标pre-trigger failed均通过。unknown方向样本仍是脚本明示的controlled-real-payload-shape，不是真实未知方向消息。
+
+后续post-trigger场景收到真实原生回显136059383，并调用Driver.disconnect，但发送结果已返回delivered（453ms），未产生预期unknown。脚本退出1，汇总23项、22项通过、1项失败；尚未执行unknown重连查询及其安全重试。专用清理连接回查并撤回136059383和136059373，cleanupMissing为空，所有本轮Driver连接关闭，未退出KK9。
+
+时序依据：脚本在EventBridge回显中调用unknown.driver.disconnect；Driver委托EventBridge.closeOwnedResources，后者先await远端清理及Runtime.removeBinding，再关闭CDP。日志中delivered先于连接down，说明本次优雅关闭未截断发送响应，不能据此判定delivered本身错误。下一步建议仅修正测试故障注入：在已观察到本次真实原生回显后，直接断开测试实例自己的CDP连接，仍由原有发送实现处理连接错误并保持unknown断言；不硬改状态、不添加生产延时、不关闭KK9或其他连接。本轮仅取证，未实施该脚本调整。员工侧原生撤回亦未验证。
+
+### 员工侧原生撤回真机通过
+
+用户授权后，在Driver包目录执行一次性只监听探针：`node --env-file=../../.env live-employee-recall.mjs`。使用已构建的真实Driver，先核对Bot5761、员工3585、私聊0-3585/int2024以及无其他Driver Hook占用。探针只附加原生IPC和Vue来源观察，不伪造事件、不调用发送或撤回API。员工按提示发送“T26员工撤回验证”，确认入站messageId136060545后，再由员工本人在KK9执行撤回。
+
+真实原生IPC/message收到1个撤回包：外层sessionID716791，session.type=0、typeID3585；撤回通知自身id136060597，正文为`{"event":"CancelMessage","msgID":136060545,"msgIdex":478,"byAdmin":0}`。Driver正确指向被撤回的136060545，而不是通知自身136060597，并解析为公开会话0-3585。
+
+同一撤回随后经过Vue/0-3585-msg和Vue/receive-message两次真实转发。继续观察5秒，Driver对外recalled仅1次：messageId136060545、sessionId0-3585、sender3585。探针对裸Vue会话数组直接解析时记录的716791是未附加通道范围的原始诊断结果，不是Driver公开事件；生产路径保留通道的0-3585范围并正确去重。本轮证明真实原生通知、目标消息关联、公开会话编号和跨来源去重均通过，不再仅凭Bot自身撤回推断员工原生路径。
+
+进程退出0，汇总passed=true、nativePackets=1、vuePackets=2、publicEvents=1、errors为空、sentByProbe=0、recalledByProbe=0。原始事件监听与Driver连接均已释放；随后只读检查真实页面，bridge=false、sender=false、probeKeys=[]，无本轮Hook残留。一次性探针运行后删除，KK9未退出。未修改生产代码或重跑根质量门禁；最近一次四项通过记录仍见前文。本项通过不代表整套Driver合同完成，post-trigger unknown故障注入及其后续重连查询仍待处理。
+
+### 后续修复提交范围
+
+用户授权提交代码并更新PR269。本次后续提交包含普通消息与撤回共用会话解析、渲染侧原始撤回转发、代次绑定的原生确认出站回显、图片会话传递，以及对应回归和上述真机证据。引用最近一次根四项门禁通过结果（Driver347、App405），不冒称本次提交动作重新运行过门禁。PR保持草稿：员工原生撤回与实时出站回显已有真机通过证据，但整套合同仍为22/23，post-trigger unknown故障注入及后续重连查询尚未完成；不合并或关闭issue。
