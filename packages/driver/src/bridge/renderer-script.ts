@@ -119,8 +119,10 @@ export const CONFIRM_SENT_MESSAGE_SCRIPT = `
   }
 `;
 
-// 内容准备、操作登记与 UI 通知由调用方负责；这里只执行一次原生提交。
+// 内容准备、操作登记与UI通知由调用方负责；这里执行原生提交并观察已确认的本次发送。
 export const SUBMIT_NATIVE_MESSAGE_SCRIPT = `
+  // 在脚本开始时捕获，早于图片预处理等await，旧发送不能借用新Hook发布回显。
+  const observeNativeSend = window.__kairo_native_send_observer;
   async function submitNativeMessage(msgObj, targetSession) {
     const insertRes = await callIpc('insertSendBefoeMsg', msgObj);
     if (!insertRes || insertRes.code !== 0 || !insertRes.data) {
@@ -171,6 +173,13 @@ export const SUBMIT_NATIVE_MESSAGE_SCRIPT = `
           isPreTrigger: false
         }
       };
+    }
+    if (typeof observeNativeSend === 'function') {
+      observeNativeSend({
+        sessionId: targetSession?.sesUUID,
+        session: targetSession,
+        message: [confirmedMessage]
+      });
     }
     return { confirmedMessage };
   }

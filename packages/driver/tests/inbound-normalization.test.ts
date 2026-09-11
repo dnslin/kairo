@@ -11,14 +11,11 @@ import { KK9EventBridge } from '../src/bridge/event-bridge.js';
 import type { CdpClient } from '../src/cdp/client.js';
 import { KK9Driver } from '../src/driver.js';
 import type { ConnectionStatus, KK9Message } from '../src/types/index.js';
-import {
-  getDriverTestInternals,
-  getMessageOpsTestInternals,
-} from './helpers/driver-internals.js';
+import { getDriverTestInternals, getMessageOpsTestInternals } from './helpers/driver-internals.js';
 
 class MockCdpClient extends EventEmitter {
   private status: ConnectionStatus = 'connected';
-  public evaluateResult: unknown = { ok: true, busFound: true };
+  public evaluateResult: unknown = { ok: true, busFound: true, nativeAttached: true };
   public sendCommandMock = vi.fn().mockImplementation(() => Promise.resolve({}));
   public evaluateMock = vi.fn().mockImplementation(() => Promise.resolve(this.evaluateResult));
 
@@ -572,9 +569,7 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
         currentUserId
       );
       Object.assign(internals.bridgeMessageOps, {
-        getRecentMessagesResult: vi
-          .fn()
-          .mockResolvedValue({ kind: 'ok', value: parsedMessages }),
+        getRecentMessagesResult: vi.fn().mockResolvedValue({ kind: 'ok', value: parsedMessages }),
       });
 
       await internals.collectAndEmitMessages(pollingSession, 10);
@@ -632,8 +627,18 @@ describe('Driver 入站消息标准化与身份收敛测试 (TDD Red -> Green)',
       driver.on('message', message => emittedMessages.push(message));
       const sessionA = { id: 'session-a', name: '会话 A', type: 'private' as const, unread: true };
       const sessionB = { id: 'session-b', name: '会话 B', type: 'private' as const, unread: true };
-      const messagesA = await internals.domMessageOps.getRecentMessages(10, sessionA, undefined, currentUserId);
-      const messagesB = await internals.domMessageOps.getRecentMessages(10, sessionB, undefined, currentUserId);
+      const messagesA = await internals.domMessageOps.getRecentMessages(
+        10,
+        sessionA,
+        undefined,
+        currentUserId
+      );
+      const messagesB = await internals.domMessageOps.getRecentMessages(
+        10,
+        sessionB,
+        undefined,
+        currentUserId
+      );
       Object.assign(internals.bridgeMessageOps, {
         getRecentMessagesResult: vi
           .fn()

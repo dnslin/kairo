@@ -1,3 +1,4 @@
+import EventEmitter from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CdpClient } from '../src/cdp/client.js';
 import { KK9EventBridge } from '../src/bridge/event-bridge.js';
@@ -155,6 +156,8 @@ describe('Driver日志真实行为回归', () => {
       error: (...args: unknown[]) => diagnostics.push(args),
     };
     const windowObject = runtime.context['window'] as Record<string, unknown>;
+    const ipc = new EventEmitter();
+    windowObject['ipcRenderer'] = ipc;
     const handlers: Record<string, (payload: unknown) => void> = {};
     Object.assign(windowObject['vueBus'] as object, {
       $on: (event: string, handler: (payload: unknown) => void) => {
@@ -179,16 +182,23 @@ describe('Driver日志真实行为回归', () => {
     const bridge = new KK9EventBridge(config, cdp);
     await bridge.connect();
     expect(bridge.isAttached()).toBe(true);
-    handlers['receive-message']!({
-      sessionID: '0-3585',
-      message: [{ id: 'msg-1', content: '测试秘密正文' }],
-    });
+    ipc.emit(
+      'message',
+      {},
+      {
+        args: {
+          sessionID: '0-3585',
+          message: [{ id: 'msg-1', content: '测试秘密正文' }],
+        },
+      }
+    );
     expect(diagnostics).toEqual([
       ['[KairoDriver] 前序Hook清理异常'],
       ['[KairoDriver] 事件派发到CDP binding失败'],
     ]);
     (windowObject['__kairo_bridge_cleanup'] as () => void)();
     expect(handlers['receive-message']).toBeUndefined();
+    expect(ipc.listenerCount('message')).toBe(0);
   });
 
   it('Vue会话读取失败保留DOM降级并仅打印固定诊断', async () => {

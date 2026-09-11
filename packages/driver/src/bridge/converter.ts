@@ -356,6 +356,25 @@ function isCancelMessageItem(item: Record<string, unknown>): boolean {
   return false;
 }
 
+/** 普通消息和撤回共用公开会话编号；原生sessionID可能只是KK9数据库行ID。 */
+function resolvePublicSessionId(raw: Record<string, unknown>, fallbackId?: string): string {
+  const session =
+    raw['session'] && typeof raw['session'] === 'object'
+      ? (raw['session'] as Record<string, unknown>)
+      : undefined;
+  const id =
+    raw['sessionId'] ??
+    raw['sesUUID'] ??
+    (session?.['type'] != null && session['typeID'] != null
+      ? `${toSafeString(session['type'])}-${toSafeString(session['typeID'])}`
+      : undefined) ??
+    raw['sessionID'] ??
+    session?.['id'] ??
+    session?.['sesUUID'] ??
+    fallbackId;
+  return toSafeString(id, '').trim();
+}
+
 export function normalizeNativeMessage(
   payload: unknown,
   context?: NormalizeNativeMessageContext
@@ -370,14 +389,7 @@ export function normalizeNativeMessage(
     rawObj['session'] && typeof rawObj['session'] === 'object' ? rawObj['session'] : {}
   ) as Record<string, unknown>;
 
-  const rawSessionId =
-    rawObj['sessionId'] ??
-    rawObj['sessionID'] ??
-    rawObj['sesUUID'] ??
-    sessionObj['id'] ??
-    sessionObj['sesUUID'] ??
-    context?.session?.id;
-  const sessionId = toSafeString(rawSessionId, '').trim();
+  const sessionId = resolvePublicSessionId(rawObj, context?.session?.id);
 
   const rawSessionName =
     rawObj['sessionName'] ??
@@ -725,14 +737,7 @@ export function extractRecalledEventsFromPayload(
   const rawObj = payload as Record<string, unknown>;
   const events: KK9RecalledEvent[] = [];
 
-  const rawSessionId =
-    rawObj['sessionId'] ??
-    rawObj['sessionID'] ??
-    rawObj['sesUUID'] ??
-    (rawObj['session'] as Record<string, unknown> | undefined)?.['id'] ??
-    (rawObj['session'] as Record<string, unknown> | undefined)?.['sesUUID'] ??
-    sessionContext?.id;
-  const defaultSessionId = toSafeString(rawSessionId, '');
+  const defaultSessionId = resolvePublicSessionId(rawObj, sessionContext?.id);
 
   if (
     rawObj['messageId'] ||
@@ -786,7 +791,7 @@ export function extractRecalledEventsFromPayload(
       if (messageId) {
         events.push({
           messageId,
-          sessionId: toSafeString(item['sessionID'] ?? item['sessionId'] ?? defaultSessionId),
+          sessionId: defaultSessionId || resolvePublicSessionId(item),
           sender: toSafeString(
             item['sender'] ?? item['senderName'] ?? contentObj['sender'],
             '某人'
@@ -801,7 +806,7 @@ export function extractRecalledEventsFromPayload(
       if (messageId) {
         events.push({
           messageId,
-          sessionId: toSafeString(item['sessionID'] ?? item['sessionId'] ?? defaultSessionId),
+          sessionId: defaultSessionId || resolvePublicSessionId(item),
           sender: toSafeString(item['sender'] ?? item['senderName'], '某人'),
           time: toSafeString(item['time'] ?? item['sendTime'], new Date().toLocaleTimeString()),
           timestamp: typeof item['timestamp'] === 'number' ? item['timestamp'] : Date.now(),

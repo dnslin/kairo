@@ -28,6 +28,10 @@ export interface Scheduler {
   enqueue(batch: CollectedBatch, recovery?: boolean): Promise<boolean>;
   /** 读取持久状态并推进可领取工作；不等待 Agent 或发送回执。 */
   tick(): Promise<void>;
+  /** 旧 running 恢复仍由同一个调度器分配实际名额。 */
+  recover(running: Task[], signal: AbortSignal): Promise<void>;
+  pause(): Promise<void>;
+  resume(signal: AbortSignal): Promise<void>;
   /** 决定来自上层语义处理；只消费原始回答，不在这里判断自然语言。 */
   resolveUserWait(input: ResolveUserWaitInput): Promise<boolean>;
   /** 等待已开始的执行与通知，报告后台错误；不等待尚未到期的队列。 */
@@ -55,6 +59,9 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   let closing: Promise<void> | undefined;
   let dirty = false;
   let closed = false;
+  let paused = false;
+  let connectionSignal: AbortSignal | undefined;
+  const recovering = new Set<string>();
   const runner = createTaskRunner({ ...options, onTaskChange: wake });
 
   function checkOpen(): void {
@@ -79,18 +86,19 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   }
 
   function notify(request: SendRequest): void {
-    void track(sender.send(request)).catch(error => report(error));
+    if (!connectionSignal?.aborted) void track(sender.send(request)).catch(error => report(error));
   }
 
   function wake(): void {
-    if (closed) return;
+    if (closed || paused) return;
     dirty = true;
     if (!pumping) void tick().catch(error => report(error));
   }
 
   function launch(task: Task): void {
     // 同步登记 runner 的取消控制器和实际名额，不留 close 可越过的微任务窗口。
-    const work = runner.run(task);
+    const recovery = recovering.delete(task.taskId);
+    const work = runner.run(task, recovery, connectionSignal);
     executions.set(task.taskId, { session: sessionKey(task), work });
     const release = (): void => {
       executions.delete(task.taskId);
@@ -104,9 +112,11 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     const deadline =
       task.status === 'queued'
         ? task.queueDeadline
-        : wait?.closedAt === null
-          ? wait.deadline
-          : null;
+        : task.status === 'running'
+          ? task.executionDeadline
+          : wait?.closedAt === null
+            ? wait.deadline
+            : null;
     if (deadline === null || Date.now() < deadline) return false;
     if (
       await tasks.transitionTask({
@@ -124,6 +134,14 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
           text: notices.queueTimeout,
         });
       }
+      if (task.status === 'running') {
+        recovering.delete(task.taskId);
+        notify({
+          subject: { kind: 'task', taskId: task.taskId, inputVersion: task.inputVersion },
+          purpose: 'notice:execution_timeout',
+          text: '本次查询超时，请稍后重试',
+        });
+      }
       return true;
     }
     // 与 /new、员工回答或其他状态推进竞争失败后，重新读取而不是用旧快照领取。
@@ -135,14 +153,16 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     clearTimeout(timer);
     timer = undefined;
     const rows = await tasks.listActiveTasks();
-    if (closed) return;
+    if (closed || paused) return;
     const current: Array<{ task: Task; wait: UserWait | null }> = [];
     let nextDeadline = Infinity;
     for (const task of rows) {
       const wait = task.status === 'waiting_for_user' ? await tasks.getTaskWait(task.taskId) : null;
-      if (closed) return;
+      if (closed || paused) return;
       if (
-        (task.status === 'queued' || task.status === 'waiting_for_user') &&
+        (task.status === 'queued' ||
+          task.status === 'waiting_for_user' ||
+          recovering.has(task.taskId)) &&
         (await expire(task, wait))
       )
         continue;
@@ -150,8 +170,10 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       if (task.status === 'queued') nextDeadline = Math.min(nextDeadline, task.queueDeadline);
       if (task.status === 'waiting_for_user' && wait?.closedAt === null)
         nextDeadline = Math.min(nextDeadline, wait.deadline);
+      if (recovering.has(task.taskId) && task.executionDeadline !== null)
+        nextDeadline = Math.min(nextDeadline, task.executionDeadline);
     }
-    // 非排队阶段仍拥有本会话顺序；已同意的等待只能恢复自己，不能放行后项。
+    // 非排队阶段仍拥有本会话顺序；恢复不能把原 running 退回队尾。
     const owners = new Map<string, Task>();
     for (const { task } of current) {
       if (task.status !== 'queued') owners.set(sessionKey(task), task);
@@ -159,27 +181,30 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     const visited = new Set<string>();
     const occupied = new Set([...executions.values()].map(item => item.session));
     for (const { task, wait } of current) {
-      if (closed || executions.size >= options.concurrency.global) break;
+      if (closed || paused || executions.size >= options.concurrency.global) break;
       const key = sessionKey(task);
       if (occupied.has(key) || visited.has(key)) continue;
       const owner = owners.get(key);
       if (owner && owner.taskId !== task.taskId) continue;
       visited.add(key);
       const acceptedWait = task.status === 'waiting_for_user' && wait?.resolution === 'accepted';
-      if (task.status !== 'queued' && !acceptedWait) continue;
-      const running = acceptedWait
-        ? await tasks.resumeTask({
-            taskId: task.taskId,
-            inputVersion: task.inputVersion,
-            now: Date.now,
-          })
-        : await tasks.claimTask({
-            taskId: task.taskId,
-            inputVersion: task.inputVersion,
-            now: Date.now,
-            executionMs: options.executionMs,
-          });
-      if (closed) {
+      const recovery = task.status === 'running' && recovering.has(task.taskId);
+      if (task.status !== 'queued' && !acceptedWait && !recovery) continue;
+      const running = recovery
+        ? task
+        : acceptedWait
+          ? await tasks.resumeTask({
+              taskId: task.taskId,
+              inputVersion: task.inputVersion,
+              now: Date.now,
+            })
+          : await tasks.claimTask({
+              taskId: task.taskId,
+              inputVersion: task.inputVersion,
+              now: Date.now,
+              executionMs: options.executionMs,
+            });
+      if (closed || paused) {
         if (running?.status === 'running')
           await tasks.transitionTask({
             taskId: running.taskId,
@@ -195,20 +220,21 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
         launch(running);
       }
     }
-    if (!closed && Number.isFinite(nextDeadline)) {
+    if (!closed && !paused && Number.isFinite(nextDeadline)) {
       timer = setTimeout(wake, Math.max(0, nextDeadline - Date.now()));
     }
   }
 
   function tick(): Promise<void> {
     if (closed) return Promise.reject(new AppError('cancelled'));
+    if (paused) return Promise.resolve();
     dirty = true;
     if (pumping) return pumping;
     const work = (async (): Promise<void> => {
       do {
         dirty = false;
         await pump();
-      } while (dirty && !closed);
+      } while (dirty && !closed && !paused);
     })();
     pumping = work;
     const release = (): void => {
@@ -301,6 +327,27 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   return {
     enqueue: (batch, recovery = false) => track(enqueue(batch, recovery)),
     tick,
+    recover(running, signal): Promise<void> {
+      checkOpen();
+      signal.throwIfAborted();
+      connectionSignal = signal;
+      for (const task of running) recovering.add(task.taskId);
+      return tick();
+    },
+    async pause(): Promise<void> {
+      paused = true;
+      clearTimeout(timer);
+      recovering.clear();
+      runner.cancel();
+      if (pumping) await pumping;
+    },
+    resume(signal): Promise<void> {
+      checkOpen();
+      signal.throwIfAborted();
+      connectionSignal = signal;
+      paused = false;
+      return tick();
+    },
     resolveUserWait: input => track(resolveUserWait(input)),
     settled,
     close(): Promise<void> {

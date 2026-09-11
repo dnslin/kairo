@@ -38,8 +38,10 @@ export interface TaskRunnerOptions {
 
 export interface TaskRunner {
   /** 已领取的 running 任务；释放实际名额不等待最终发送。 */
-  run(task: Task): Promise<void>;
+  run(task: Task, recovery?: boolean, signal?: AbortSignal): Promise<void>;
   settled(): Promise<void>;
+  /** 取消当前执行但保留执行器；真实执行退出前不释放实际名额。 */
+  cancel(): void;
   /** 停止接纳并等待真实执行与通知；不关闭共享 sender/连接池。 */
   close(): Promise<void>;
 }
@@ -70,14 +72,21 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
     }
   }
 
-  function notify(task: Task, runId: string, purpose: SendPurpose, text: string): void {
-    const sent = Promise.resolve().then(() =>
-      options.sender.send({
+  function notify(
+    task: Task,
+    runId: string,
+    purpose: SendPurpose,
+    text: string,
+    signal?: AbortSignal
+  ): void {
+    const sent = Promise.resolve().then(() => {
+      if (signal?.aborted) return;
+      return options.sender.send({
         subject: { kind: 'task', taskId: task.taskId, inputVersion: task.inputVersion },
         purpose,
         text,
-      })
-    );
+      });
+    });
     const observed = sent
       .then(
         () => {
@@ -102,7 +111,9 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
   async function executeTask(
     task: Task,
     controller: AbortController,
-    runId: string
+    runId: string,
+    recovery: boolean,
+    signal?: AbortSignal
   ): Promise<void> {
     const { tasks } = options;
     const errors: unknown[] = [];
@@ -158,7 +169,8 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         }
         if (changed) {
           options.onTaskChange();
-          if (timeout) notify(task, runId, 'notice:execution_timeout', '本次查询超时，请稍后重试');
+          if (timeout)
+            notify(task, runId, 'notice:execution_timeout', '本次查询超时，请稍后重试', signal);
         }
       })();
       return stopping;
@@ -242,7 +254,13 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
       if (changed) {
         options.onTaskChange();
         if (owned)
-          notify(task, runId, 'notice:execution_failure', getFailureMessage(getErrorType(error)));
+          notify(
+            task,
+            runId,
+            'notice:execution_failure',
+            getFailureMessage(getErrorType(error)),
+            signal
+          );
       }
     }
 
@@ -274,10 +292,12 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
       }
       attempt = await tasks.startAttempt({
         ...version(),
+        now: Date.now,
         attemptId,
         runId,
         configDigest: options.configDigest,
         expectedAttemptId: task.currentAttemptId,
+        recovery,
       });
       controller.signal.throwIfAborted();
       if (!attempt) {
@@ -303,7 +323,7 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
         task.executionDeadline - task.executionBudgetMs + options.progressMs + 1,
         () => {
           if (!controller.signal.aborted && !overdue()) {
-            notify(task, runId, 'progress', '正在查询企业知识，请稍候');
+            notify(task, runId, 'progress', '正在查询企业知识，请稍候', signal);
           }
         }
       );
@@ -338,14 +358,19 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
           stopDeadline();
           stopProgress();
           options.onTaskChange();
-          notify(task, runId, `notice:user_wait:${waitId}`, result.question);
+          notify(task, runId, `notice:user_wait:${waitId}`, result.question, signal);
         } else if (overdue()) expire();
         else await endFailed(new AppError('cancelled'));
       } else {
-        const adopted = await tasks.adoptAttempt({ ...version(), attemptId });
+        const adopted = await tasks.adoptAttempt({
+          ...version(),
+          attemptId,
+          answerText: result.text,
+        });
         if (adopted) options.onTaskChange();
         if (overdue()) expire();
-        if (adopted && !controller.signal.aborted) notify(task, runId, 'final', result.text);
+        if (adopted && !controller.signal.aborted)
+          notify(task, runId, 'final', result.text, signal);
         else if (!adopted && !controller.signal.aborted) await endFailed(new AppError('cancelled'));
       }
     } catch (error) {
@@ -388,19 +413,24 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
   }
 
   return {
-    run(task): Promise<void> {
+    run(task, recovery = false, signal): Promise<void> {
       if (closed) return Promise.reject(new AppError('cancelled'));
       if (active.has(task.taskId)) return Promise.reject(new Error('任务已有未退出的真实执行'));
       const controller = new AbortController();
       const runId = randomUUID();
-      const promise = executeTask(task, controller, runId);
+      const cancel = (): void => controller.abort(new AppError('cancelled'));
+      signal?.addEventListener('abort', cancel, { once: true });
+      if (signal?.aborted) cancel();
+      const promise = executeTask(task, controller, runId, recovery, signal);
       active.set(task.taskId, { controller, promise });
       void promise.then(
         () => {
           active.delete(task.taskId);
+          signal?.removeEventListener('abort', cancel);
         },
         error => {
           active.delete(task.taskId);
+          signal?.removeEventListener('abort', cancel);
           failures.push(error);
           report(task, runId, error);
         }
@@ -408,6 +438,9 @@ export function createTaskRunner(options: TaskRunnerOptions): TaskRunner {
       return promise;
     },
     settled,
+    cancel(): void {
+      for (const { controller } of active.values()) controller.abort(new AppError('cancelled'));
+    },
     close(): Promise<void> {
       closed = true;
       for (const { controller } of active.values()) controller.abort(new AppError('cancelled'));

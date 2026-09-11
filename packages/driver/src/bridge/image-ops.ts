@@ -281,7 +281,7 @@ export async function sendNativeImage(
         deviceID: main?.deviceID || editor?.deviceID || ''
       };
 
-      const submission = await submitNativeMessage(msgObj);
+      const submission = await submitNativeMessage(msgObj, targetSes);
       if (submission.failure) {
         // 旧图片入口的预插入失败分类保持不变，操作登记入口使用实际触发证据。
         if (submission.insertFailed && !data.operationAware) submission.failure.isPreTrigger = true;

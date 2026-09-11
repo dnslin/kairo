@@ -92,6 +92,8 @@ describe('T19 任务账本', () => {
       executionDeadline: null,
       currentAttemptId: null,
       currentWaitId: null,
+      answerText: null,
+      recoveryUsed: false,
       endedAt: null,
     };
     expect(await context.storeB.getTask(fixture.taskId)).toEqual(expected);
@@ -217,9 +219,13 @@ describe('T19 任务账本', () => {
   it('合法状态边 running → ready_to_send', async () => {
     const fixture = await context.runningWithSuccessfulAttempt();
     const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 700 };
-    expect(await context.storeB.adoptAttempt({ ...version, attemptId: fixture.attemptId })).toBe(
-      true
-    );
+    expect(
+      await context.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
+        ...version,
+        attemptId: fixture.attemptId,
+      })
+    ).toBe(true);
     expect((await context.storeA.getTask(fixture.taskId))?.status).toBe('ready_to_send');
   });
 
@@ -422,6 +428,7 @@ describe('T19 任务账本', () => {
       expect(await context.storeB.getAttempt(attemptId), status).toBeNull();
       expect(
         await context.storeB.adoptAttempt({
+          answerText: '已检查答案：按当前资料处理问题。',
           ...version,
           attemptId: fixture.attemptId ?? attemptId,
         }),
@@ -486,6 +493,7 @@ describe('T19 任务账本', () => {
       expect(await context.storeB.getAttempt(attemptId), status).toBeNull();
       expect(
         await context.storeB.adoptAttempt({
+          answerText: '已检查答案：按当前资料处理问题。',
           ...version,
           attemptId: fixture.attemptId ?? attemptId,
         }),
@@ -510,9 +518,13 @@ describe('T19 任务账本', () => {
     const borrower = await context.runningWithSuccessfulAttempt();
     const version = { taskId: borrower.taskId, inputVersion: 1, now: now + 700 };
     const waitId = randomUUID();
-    expect(await context.storeB.adoptAttempt({ ...version, attemptId: owner.attemptId })).toBe(
-      false
-    );
+    expect(
+      await context.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
+        ...version,
+        attemptId: owner.attemptId,
+      })
+    ).toBe(false);
     expect(
       await context.storeB.waitForUser({
         ...version,

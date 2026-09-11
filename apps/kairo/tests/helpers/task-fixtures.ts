@@ -177,6 +177,7 @@ export async function createTaskTestContext() {
     const fixture = await runningWithSuccessfulAttempt(scope, store);
     expect(
       await store.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
         taskId: fixture.taskId,
         inputVersion: 1,
         now: now + 400,

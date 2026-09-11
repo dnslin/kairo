@@ -116,6 +116,7 @@ describe('双连接上下文事务竞争', () => {
     await Promise.all([
       fixtures.chat.prepareContext(f.scope, () => now + 500, { reset: true, idleMs }),
       fixtures.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
         taskId: f.taskId,
         inputVersion: 1,
         attemptId: f.attemptId,

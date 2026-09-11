@@ -54,10 +54,15 @@ describe('T19 任务账本-attempts', () => {
       if (oldAttempt) {
         const waitId = randomUUID();
         expect(
-          await context.storeA.adoptAttempt({ ...version, attemptId: oldAttempt.attemptId })
+          await context.storeA.adoptAttempt({
+            answerText: '已检查答案：按当前资料处理问题。',
+            ...version,
+            attemptId: oldAttempt.attemptId,
+          })
         ).toBe(false);
         expect(
           await context.storeA.adoptAttempt({
+            answerText: '已检查答案：按当前资料处理问题。',
             ...version,
             inputVersion: 2,
             attemptId: oldAttempt.attemptId,
@@ -87,6 +92,7 @@ describe('T19 任务账本-attempts', () => {
         ).toBe(true);
         expect(
           await context.storeB.adoptAttempt({
+            answerText: '已检查答案：按当前资料处理问题。',
             taskId: fixture.taskId,
             inputVersion: 2,
             attemptId: fresh.attemptId,
@@ -149,6 +155,7 @@ describe('T19 任务账本-attempts', () => {
     });
     expect(
       await context.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
         taskId: fixture.taskId,
         inputVersion: 1,
         now: now + 500,
@@ -177,6 +184,7 @@ describe('T19 任务账本-attempts', () => {
     ).toBe(true);
     expect(
       await context.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
         taskId: fixture.taskId,
         inputVersion: 1,
         now: now + 700,
@@ -230,6 +238,7 @@ describe('T19 任务账本-attempts', () => {
     ).toBe(true);
     expect(
       await context.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
         taskId: fixture.taskId,
         inputVersion: 1,
         now: now + 600,
@@ -321,6 +330,7 @@ describe('T19 任务账本-attempts', () => {
     const fixture = await context.runningFixture();
     const attempt = await context.startAttempt(fixture);
     const adoption = {
+      answerText: '当前问题的已检查答案',
       taskId: fixture.taskId,
       inputVersion: 1,
       now: now + 500,
@@ -406,6 +416,7 @@ describe('T19 任务账本-attempts', () => {
       ).toBe(false);
       expect(
         await context.storeB.adoptAttempt({
+          answerText: '已检查答案：按当前资料处理问题。',
           taskId: fixture.taskId,
           inputVersion: 1,
           attemptId: attempt.attemptId,
@@ -430,7 +441,11 @@ describe('T19 任务账本-attempts', () => {
     const version = { taskId: fixture.taskId, inputVersion: 1, now: now + 500 };
     const [cancelled, adopted] = await Promise.all([
       context.storeA.transitionTask({ ...version, from: 'running', to: 'cancelled' }),
-      context.storeB.adoptAttempt({ ...version, attemptId: attempt.attemptId }),
+      context.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
+        ...version,
+        attemptId: attempt.attemptId,
+      }),
     ]);
     expect([cancelled, adopted].filter(Boolean)).toHaveLength(1);
     expect(await context.storeA.getAttempt(attempt.attemptId)).toMatchObject({ adopted });
@@ -451,6 +466,7 @@ describe('T19 任务账本-attempts', () => {
     const terminal = await context.storeA.getTask(fixture.taskId);
     expect(
       await context.storeB.adoptAttempt({
+        answerText: '已检查答案：按当前资料处理问题。',
         ...version,
         now: now + 600,
         attemptId: attempt.attemptId,

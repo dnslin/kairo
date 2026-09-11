@@ -160,6 +160,8 @@ export function fixture(
       executionDeadline: START + 60_000,
       currentAttemptId: '执行一',
       currentWaitId: null,
+      answerText: '已检查的最终答案',
+      recoveryUsed: false,
       endedAt: null,
     },
     context: {

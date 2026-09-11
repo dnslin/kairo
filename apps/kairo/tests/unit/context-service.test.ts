@@ -84,6 +84,8 @@ function serviceFixture() {
     executionDeadline: Date.now() + 100000,
     currentAttemptId: '执行',
     currentWaitId: null,
+    answerText: null,
+    recoveryUsed: false,
     endedAt: null,
   };
   const store: Pick<PrivateChatStore, 'prepareContext'> = {

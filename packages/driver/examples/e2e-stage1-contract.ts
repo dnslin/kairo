@@ -799,7 +799,8 @@ async function main(): Promise<void> {
     let interruptionObservation: KK9Message | undefined;
     const interruptConnection = (): void => {
       if (interruption) return;
-      interruption = unknown.driver.disconnect().catch(error => {
+      // 截断本测试连接的在途响应；Driver优雅关闭会先清理页面，可能让发送确认先返回。
+      interruption = getCdp(unknown.driver).disconnect().catch(error => {
         interruptionError = error instanceof Error ? error : new Error(String(error));
       });
     };

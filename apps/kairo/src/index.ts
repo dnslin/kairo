@@ -27,6 +27,8 @@ import { startDependencyChecks } from './modules/operability/dependency-checks.j
 import type { DependencyChecks } from './modules/operability/dependency-checks.js';
 import { PostgresRuntimeBootStore } from './modules/operability/runtime-boot-store.js';
 import { knowledgeTools } from './modules/tool-integration/knowledge-tool.js';
+import { createDriverSupervisor } from './modules/im-transport/driver-supervisor.js';
+import type { DriverSupervisor } from './modules/im-transport/driver-supervisor.js';
 
 const logger = createLogger();
 const execFileAsync = promisify(execFile);
@@ -39,7 +41,8 @@ export interface KairoApplication extends MastraRuntime, LoadedBotConfig {
   /** 启动账本失败时保留诊断接口；本代次不能 ready，原始原因仅供程序内诊断。 */
   bootError: AppError | null;
   customization: BotCustomization;
-  driver: IKK9Driver;
+  readonly driver: IKK9Driver | null;
+  driverSupervisor: DriverSupervisor;
 }
 
 export async function startKairo(
@@ -55,11 +58,10 @@ export async function startKairo(
   setDriverLogSink(createDriverLogSink(logger));
   let stage: AppErrorType = 'configuration';
   let runtime: MastraRuntime | undefined;
-  let driver: IKK9Driver | undefined;
+  let driverSupervisor: DriverSupervisor | undefined;
   let health: HealthServer | undefined;
   let external: DependencyChecks | undefined;
   let closing: Promise<void> | undefined;
-  let driverInvalidated = false;
   const bootId = randomUUID();
   const bootStartedAt = Date.now();
   let bootPool: Pool | undefined;
@@ -74,14 +76,15 @@ export async function startKairo(
     logger.error({ event: '运行失败', runId: bootId, errorType: 'storage', status: 'not_ready' });
   };
   const close = (): Promise<void> => {
-    closing ??= (async (): Promise<void> => {
-      driverInvalidated = true;
+    if (closing) return closing;
+    let driverClosing: Promise<void> | undefined;
+    closing = Promise.resolve().then(async (): Promise<void> => {
       const failures: AppError[] = [];
       // 逐一回收属于本应用的资源；某一步失败不能跳过后续步骤。
       for (const [resource, errorType] of [
         [external?.close.bind(external), 'internal'],
         [health?.close.bind(health), 'configuration'],
-        [driver?.disconnect.bind(driver), 'driver'],
+        [driverClosing ? (): Promise<void> | undefined => driverClosing : undefined, 'driver'],
         [runtime?.close.bind(runtime), 'storage'],
         [
           async (): Promise<void> => {
@@ -108,7 +111,10 @@ export async function startKairo(
       if (failures.length === 1) throw failures[0]!;
       if (failures.length > 1) throw new AggregateError(failures, '应用资源关闭失败');
       logger.info({ event: '应用已关闭', status: 'closed' });
-    })();
+    });
+    // 共享 Promise 先登记；代次门禁仍在当前调用栈同步关闭。
+    driverClosing = driverSupervisor?.close();
+    void driverClosing?.catch(() => undefined);
     return closing;
   };
   try {
@@ -157,50 +163,12 @@ export async function startKairo(
       failBoot(error);
     }
     stage = 'driver';
-    const activeDriver = options.driverFactory
-      ? options.driverFactory({ cdp })
-      : new KK9Driver({ cdp });
-    driver = activeDriver;
-    const generationId = activeDriver.getStartupGenerationId();
-    let driverConnecting = true;
-    const invalidateDriver = (): void => {
-      if (driverInvalidated) return;
-      driverInvalidated = true;
-      logger.error({
-        event: 'Driver运行异常',
-        status: 'down',
-        errorType: 'driver',
-        runId: generationId,
-      });
-    };
-    // 必须在 connect 前订阅，覆盖连接期间同步发出的 error 和关键失效事实。
-    activeDriver.on('health', invalidateDriver);
-    activeDriver.on('error', invalidateDriver);
-    const readDriverStatus = (): HealthDependencies['driver'] => {
-      if (driverInvalidated || closing) return 'down';
-      if (driverConnecting) return 'unknown';
-      try {
-        const snapshot = activeDriver.getHealthSnapshot();
-        const cdpIdentity = snapshot.cdpConnectionIdentity;
-        const bridgeIdentity = snapshot.eventBridgeConnectionIdentity;
-        if (
-          snapshot.cdpStatus === 'connected' &&
-          snapshot.eventBridgeAttached &&
-          snapshot.startupGenerationId === generationId &&
-          cdpIdentity !== null &&
-          bridgeIdentity !== null &&
-          cdpIdentity.startupGenerationId === generationId &&
-          bridgeIdentity.startupGenerationId === generationId &&
-          cdpIdentity.connectionId === bridgeIdentity.connectionId
-        ) {
-          return 'up';
-        }
-      } catch {
-        // 无法取得自身健康事实也不能冒充可用；后续伪恢复不会解锁本实例。
-      }
-      invalidateDriver();
-      return 'down';
-    };
+    const supervisor = createDriverSupervisor({
+      createDriver: () =>
+        options.driverFactory ? options.driverFactory({ cdp }) : new KK9Driver({ cdp }),
+      logger,
+    });
+    driverSupervisor = supervisor;
     stage = 'configuration';
     health = await startHealthServer({
       port: options.port,
@@ -213,7 +181,7 @@ export async function startKairo(
             !closing && initialized.mastra.getStorage()?.id === initialized.storage.id
               ? 'up'
               : 'down',
-          driver: readDriverStatus(),
+          driver: supervisor.readStatus(),
           ...(external?.read() ?? { model: 'unknown', ragflow: 'unknown' }),
         };
         if (closing || pool.ending || pool.ended || !bootReady || bootError) {
@@ -252,12 +220,9 @@ export async function startKairo(
     external = startDependencyChecks(configuration.config, logger);
     stage = 'driver';
     try {
-      await activeDriver.connect();
+      await supervisor.connect();
     } catch {
-      // 初次连接失败仍提供存活与依赖诊断；不换替身、不重试失效实例。
-      invalidateDriver();
-    } finally {
-      driverConnecting = false;
+      // 首次连接失败仍提供 live 与诊断；监督器保存原因，并仅用新实例重试。
     }
     if (bootRecorded && !bootError) {
       try {
@@ -277,14 +242,17 @@ export async function startKairo(
         return bootError;
       },
       customization,
-      driver: activeDriver,
+      get driver(): IKK9Driver | null {
+        return supervisor.current;
+      },
+      driverSupervisor: supervisor,
       url: health.url,
       close,
     };
   } catch (error) {
     startupFailed = true;
     try {
-      if (health || driver || runtime) await close();
+      if (health || driverSupervisor || runtime) await close();
     } catch (closeError) {
       // 启动主因与关闭错误都保留给程序内调用方，日志仍只记录稳定分类。
       throw new AppError(getErrorType(error, stage), {

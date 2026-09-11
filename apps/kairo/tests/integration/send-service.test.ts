@@ -73,7 +73,13 @@ async function fixture(purpose: SendRequest['purpose'] = 'final', existingScope?
         expectedAttemptId: null,
       });
       await tasks.finishAttempt({ attemptId, finishedAt: now, errorType: null });
-      await tasks.adoptAttempt({ taskId, inputVersion: 1, now, attemptId });
+      await tasks.adoptAttempt({
+        taskId,
+        inputVersion: 1,
+        now,
+        attemptId,
+        answerText: '发送集成测试答案',
+      });
     }
   }
   const request: SendRequest = {
@@ -467,7 +473,13 @@ describe('T21 真实 PostgreSQL 发送协调', () => {
       expectedAttemptId: null,
     });
     await tasks.finishAttempt({ attemptId, finishedAt: Date.now(), errorType: null });
-    await tasks.adoptAttempt({ taskId: f.taskId, inputVersion: 1, now: Date.now(), attemptId });
+    await tasks.adoptAttempt({
+      taskId: f.taskId,
+      inputVersion: 1,
+      now: Date.now(),
+      attemptId,
+      answerText: '最终答案',
+    });
     const final = await a.send({ ...f.request, purpose: 'final', text: '最终答案' });
     expect(new Set([queued.operationId, progress.operationId, final.operationId]).size).toBe(3);
     expect((await tasks.getTask(f.taskId))?.status).toBe('completed');
