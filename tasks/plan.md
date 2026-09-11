@@ -883,3 +883,38 @@ Optional已实现并实际通过上述调用路径的真实PostgreSQL70项、App
 实施进度（2026-09-11）：上述两项最小修复及5项新增回归已完成；监督器相关48项、真实PG相关48项通过，新增故障用例均有修复前失败证据。原生时钟/真实PG/正式组件联合烟测通过，Driver明确为替身，临时入口已删除；最终根build/typecheck/test/lint全部通过（Driver347、App409）。本次真实KK9重连验证待用户协调窗口，不使用历史27/27替代；详细证据见DEVELOPMENT本次审查修复段落。未纳入可选结构重构，未提交推送。
 
 真机补验完成（2026-09-11）：真实KK9首条136072661入站后只中断探针自有WebSocket；旧消费者AbortError退出，取消等连接期间新建的员工等待成功关闭，原任务cancelled。自动新代1bfa027b-0f91-449b-b050-9762db246803随后接收真实第二条136072751。进程退出0，零发送/零撤回，随机库、自有连接及页面Hook清理完成，临时探针已删除。前两轮入站超时和主动disconnect错误注入、定向残留清理均保留在DEVELOPMENT，不计作通过；生产实现未因此扩大修改。此验证不含正式Agent、真实出站或新的断线历史专项，不替代T34/T35。两处审查修复的既定自动化和本轮真机验收已完成，仍未提交推送。
+
+## 23. T28 唯一 Mastra Agent 装配（2026-09-11）
+
+### 依据与边界
+
+issue233 最新正文已读取，GitHub 评论列表为空。当前工作树基于默认主分支 d029c7b，已经包含 T26 PR269；只复用本树的既有执行合同，不访问其他工作区，不重复验收用户确认的前置任务。
+
+唯一批准模型来自 bot.yaml：openai/gemini-3.7-flash-high，地址沿用既有配置，凭证沿用 KAIRO_T12_MODEL_API_KEY。主 Agent、Observer、Reflector 共用同一模型对象，不提供模型覆盖、fallback 或第二个结构化 Agent。官方 generate/structured-output、Tools、Mastra 文档与锁定 @mastra/core 1.63.2 类型共同作为参数依据；首先采用原生结构化输出，接口不支持时直接向用户报告，不静默改参数。
+
+T28 返回未经 T29 业务检查的结构化结果，不实现 TaskExecutor 的已检查 answer，不接 sender、scheduler、recovery 或正式业务启动。TaskExecutor 输入类型直接复用；Agent 的 runId 使用 attempt.attemptId，保留 T25 已有的独立日志 runId，不另造标识。resource 使用 task.employeeId，thread 使用现有 context.threadId。
+
+### 实施顺序
+
+1. 新建严格 answer-schema：正文、企业/通用/追问/无资料/冲突/服务错误类型、当前证据引用、各子问题和内部诊断分别保存。只检验结构，不提前实现证据归属、自然语言授权或发送清洗。
+2. mastra/agent.ts 创建唯一具体 Agent，复用 T12 Memory、T16 instructions 与原生 filesystem Skills；业务工具按 YAML 仅允许 knowledge-search。mastra/index.ts 复用现有进程内运行时并注册 Agent，不改变 Studio 或健康路由。
+3. run-agent.ts 读取原批次正文，以每次执行的 RequestContext 绑定 T27 Tool，复用原 task/context/attempt/boot 标识。原 deadline 与 task signal 贯穿模型与工具；generate 结束或异常后均等待 binding.settled，不能以取消先返回假装 Python 已退出。
+4. 同 task 检索调用次序从既有知识账本最大 callIndex 延续，执行内分配开始顺序；必要时仅为该账本增加最大序号读取方法，不改 T27 scope 或公共调度接口。
+5. 默认先检索规则放入既有权威顺序下的 Agent 服务端指令；只有当前员工明确要求通用知识才可跳过。maxSteps 仅使用 YAML 循环边界，不限制知识查询次数。
+
+### 完整验收
+
+- 定向集成：企业问题调用实际知识 Tool；明确通用问题零检索；未注册 Tool 与 Dataset 额外参数不产生越权请求；多次查询和重试共享原绝对截止。
+- 取消：在模型等待与实际 Python HTTP 等待分别取消；等待本地进程 close、Tool 审计收尾后才结束执行，迟到结果仍受 T25/T26 既有门禁约束。
+- 真实 filesystem Skill：自然语言选择已启用 reader-sim，并实际读取正文；未启用能力不进入工具集合。
+- 非法输出：畸形结构、缺失结构和循环耗尽不能修补为成功；错误保持明确系统错误，普通日志不输出员工正文或凭证。
+- 真实放行：使用最终生产装配及批准模型，分别运行企业问题、明确通用问题、多次检索问题和真实 Skill 问题；企业与多检索走实际 Python/RAGFlow。与本地受控 HTTP、确定性模型故障测试分开记录，不用替身代替放行。
+- 数据库沿用 createTaskTestDatabase，创建并迁移独立随机库，只关闭与删除本次资源。不接 KK9、不干扰其他工作区数据库、进程或远端知识服务。
+- 最终运行 pnpm --filter @kairo/app test:integration -- tests/integration/agent-runtime.test.ts，相关 Memory/路由/Skill/知识回归，以及根 build/typecheck/test/lint。记录命令真实结果，不把未执行项记作通过。
+- 验证后审查不必要复杂度，更新开发证据与 Orca 工作区 comment。未经进一步授权不合并、不关闭 issue、不做破坏性操作。
+
+### 实施与验收结果
+
+上述装配已实现，未修改 T25/T26 执行接口或正式启动流程。审查补充正常 finishReason 检查，防止合法 JSON 草稿与最后 Tool 回合同时返回时假成功；该缺陷先以真实 Mastra 回归复现失败，再通过修复后完整 15 项定向集成。测试失败收尾同样先取消并等待实际 Agent/Python，再回收自有资源。
+
+最终根 build/typecheck/test/lint 通过（Driver347、App409）；相关 Memory/路由/Skill/知识集成 5 文件33项通过。最终源码使用唯一批准模型完成四类真实样例，41.12秒退出0：企业1次found、多问题2次found、通用0查询、原生reader-sim实际加载；详细命令、PID、测试失败与修复证据见 DEVELOPMENT 的 T28 节。受控截止用例使用8秒隔离预算，正式仍为240000ms，不声称本次重新实等四分钟。未合并分支、未关闭issue。
