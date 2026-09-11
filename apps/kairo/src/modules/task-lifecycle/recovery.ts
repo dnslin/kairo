@@ -152,7 +152,7 @@ export async function cancelConnectionWork(options: {
     if (result.status === 'rejected') errors.push(result.reason as unknown);
   // 旧聚合与领取事务结束后再取消，避免其在取消扫描之后创建遗留任务。
   try {
-    await options.tasks.cancelUnfinished(options.botId, Date.now());
+    await options.tasks.cancelUnfinished(options.botId, Date.now);
   } catch (error) {
     errors.push(error);
   }

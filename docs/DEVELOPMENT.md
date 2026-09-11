@@ -1620,3 +1620,86 @@ pnpm build && pnpm typecheck && pnpm test && pnpm lint
 ### 后续修复提交范围
 
 用户授权提交代码并更新PR269。本次后续提交包含普通消息与撤回共用会话解析、渲染侧原始撤回转发、代次绑定的原生确认出站回显、图片会话传递，以及对应回归和上述真机证据。引用最近一次根四项门禁通过结果（Driver347、App405），不冒称本次提交动作重新运行过门禁。PR保持草稿：员工原生撤回与实时出站回显已有真机通过证据，但整套合同仍为22/23，post-trigger unknown故障注入及后续重连查询尚未完成；不合并或关闭issue。
+
+### 整套合同故障注入调整：首轮等待入站超时
+
+用户表示可以配合补齐必验场景后，仅将既有e2e-stage1-contract.ts的中断调用从unknown.driver.disconnect改为getCdp(unknown.driver).disconnect，并注明优雅关闭可能让发送确认先返回。该调用立即拒绝本测试连接的在途命令并终止其WebSocket；没有修改生产发送实现、状态账本、发送预算、断言或添加延时。后续仍要求unknown、重连查询同一原生消息delivered及相同operationId重试不双发。
+
+只读预检确认Bot5761、bridge=false、sender=false。在Driver包目录执行`node --env-file=../../.env --import tsx examples/e2e-stage1-contract.ts`，真实连接、账号和目标会话检查及历史基线通过。120秒内未观察到符合条件的目标员工新入站，脚本退出1，汇总7项、6项通过、1项失败，cleanupMissing为空，primary已关闭。本轮未进入发送或post-trigger场景，不能称作unknown再次失败或已验证通过；不重放历史消息、不自动反复启动等待，需重新协调员工发送窗口。
+
+随后实际执行`pnpm build && pnpm typecheck && pnpm test && pnpm lint`，全部通过（Driver29文件347项、App26文件405项）。此次仅测试入口中断方式改变，既有断言完整保留；该本地门禁结果不能替代尚未执行到的真机unknown路径。脚本和本段证据尚未提交推送。
+
+### 整套Driver合同最终真机通过：27/27，退出0
+
+用户重新确认准备就绪后，只读核对Bot5761、bridge=false、sender=false，再以相同命令运行修正中断方式后的既有合同。员工发送新消息136064571（0-3585、inbound、senderId3585）；普通Bot消息136064575真实delivered（692ms），实时outbound顺序、双来源消息键、查询只读、同operationId重试不双发、不同内容复用被拒绝及pre-trigger failed均通过。未知方向样本仍为脚本明示的controlled-real-payload-shape，不冒称真实未知方向消息。
+
+本轮必验链路完整通过：
+
+1. 在观察到本次真实原生发送回显后，直接断开本测试实例CDP，发送API返回unknown（446ms），success=false、isPreTrigger=false及operationId一致性断言通过；没有硬改状态或添加生产延时。
+2. 新Driver连接重新核对Bot和员工会话，getSendStatus确认最终delivered，消息ID136064591与中断前原生回显相同。
+3. 使用原operationId和同一正文重试，复用delivered及同一native messageId；真实历史中该测试正文仅1条，防双发通过。
+4. 回查并撤回136064591和136064575，cleanupMissing为空，全部本轮Driver连接关闭。
+
+实际汇总：total=27、passed=27、failed=0、failures=[]，进程退出0。结束后另作只读页面检查，bridge=false、sender=false，无本轮EventBridge和原生出站观察回调残留，未关闭KK9进程。此前6/7超时、12/13回显失败及22/23故障注入失败记录均保留，不改写为成功。
+
+至此，既有整套Driver合同与员工侧原生撤回均有真机通过证据，之前T26剩余必验项已补齐。本次只修正测试故障注入，生产Driver逻辑与原有断言未改；最近一次根四项门禁为本次脚本调整后实际重跑通过（Driver347、App405），有效真机复验后未再改执行代码。此结论不代替T34跨进程故障矩阵或T35正式Agent整体放行。脚本调整和本轮证据尚未提交推送，未改变PR草稿状态、未合并或关闭issue。
+
+### PR269审查修复：正常取消与锁后时间（2026-09-11）
+
+本轮仅修改App监督器、取消账本接口/调用方及两份现有回归，不改Driver生产逻辑、数据库约束或任务预算。两个问题是受控组件/真实PG已复现缺陷，不代表已在真实KK9或正式业务入口观察到故障。
+
+- 监督器消息消费与连接装配按同一代次signal确认正常取消，不将其加入永久failures；同步消息取消同样处理。无关业务/存储错误、disconnect与onInvalidate失败仍保留原传播及停止重连策略。主动close继续不重连。
+- cancelUnfinished沿用任务模块number或时钟函数的既有约定，在context/task锁取得后只采样一次；正式cancelConnectionWork传Date.now函数，避免锁前时间早于竞争创建的user_wait。既有数字时间测试无需兼容包装；无表迁移、重试、错误吞噬或时间修饰。
+- cancelUnfinished的LSP引用查询因服务器退出失败，随后限定apps/kairo搜索全部引用；正式调用仅recovery，其他为恢复账本测试，已核对。没有修改其他未提交真机脚本。
+
+修复前后实际命令与结果：
+
+```bash
+pnpm --filter @kairo/app exec vitest run tests/unit/driver-supervisor.test.ts
+pnpm --filter @kairo/app exec vitest run tests/unit/driver-supervisor.test.ts tests/unit/driver-supervisor-cdp.test.ts tests/unit/application-driver.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/recovery-store.test.ts
+pnpm --filter @kairo/app test:integration -- tests/integration/recovery-store.test.ts tests/integration/recovery.test.ts tests/integration/new-context-concurrency.test.ts tests/integration/scheduler.test.ts
+pnpm build && pnpm typecheck && pnpm test && pnpm lint
+```
+
+监督器新增4项：消息取消后新代可消费、装配取消后重连、取消后的无关错误仍阻止重连、主动close取消不重连。修复前17/20通过、3项因AbortError失败；修复后监督器/CDP/应用3文件48项通过。PG新增1项通过正式cancelConnectionWork触发等连接竞争，修复前14/15通过、1项返回23514；修复后相关4文件48项通过，等待与任务共同取消并沿用原上下文。
+
+首轮根门禁build/typecheck/test通过，lint指出新增测试直接reject(signal.reason)的any类型；改用Node原生once与throwIfAborted保留原始取消原因，不关规则、不强转类型。随后完整重跑根四命令全部通过：Driver29文件347项，App26文件409项。最后一轮之后没有修改执行代码。
+
+另在Driver目录实际执行临时入口：`pnpm --filter @kairo/driver exec tsx --env-file-if-exists=../../.env ../../apps/kairo/tmp/pr269-cancellation-smoke.mts`。本地.env不存在，测试库配置来自进程环境；只使用自建随机库。入口不运行Vitest，使用原生时钟、正式监督器/取消函数/调度器/Collector/发送服务/入站门禁与真实PG；Driver是明确测试替身，不执行Agent。旧消息消费被signal取消、取消等连接期间另一连接创建员工等待，最终任务与等待均取消，新Driver创建并接受新入站，旧代迟到消息未被采用。
+
+首次烟测在前置造批次时用了早于入站observedAt的quietDeadline，触发message_batches约束，并未运行到修复路径；仅修正临时工装截止后重跑通过。成功输出created=2、taskStatus=cancelled、waitClosedAfterCreation=true、newIngressAccepted=true、oldMessageAccepted=false，退出0。探针文件已删除，随机库和连接均由工装关闭清理。
+
+本次真机重连验证尚未执行，等待用户确认窗口与操作范围；此前Driver27/27记录不替代此次App取消修复的真机证据。拟仅断开本探针自有CDP、不终止KK9或其他进程，以真实新入站验证换代；任何发送/撤回均需授权。未提交推送、未修改PR状态、未关闭issue。
+
+#### 真机取消修复验证首轮：入站等待超时
+
+用户批准零发送/零撤回范围后，通过受监督进程执行`node --import ./packages/driver/node_modules/tsx/dist/loader.mjs apps/kairo/tmp/pr269-real-cancellation.mts`。初次启动因临时探针的CDP模块相对路径多一层而在导入阶段退出，未连接KK9；仅修正探针路径后启动成功。只读预检Bot5761且bridge/sender均false，真实Driver进一步核对员工3585、唯一私聊0-3585（int2024），代次614f5963-09db-499c-b710-bcb1af84ebf6。数据库使用本轮随机库kairo_t19_c2823bfa1cdd4f43845dac8f243bbeb8，连接PID44424/44425。
+
+监听就绪后180秒内未观察到符合第一条标记“T26修复验证一”的目标员工新入站，因等待超时退出1；未进入计划中的断线/等锁竞争/自动重连验收，不据此判断修复失败或通过。退出收尾完成取消、释放本轮连接和随机库；独立只读核对Bot5761、bridge=false、sender=false。本轮没有发送、撤回消息或关闭KK9。临时真机探针保留待重新协调，不自动重启等待，不把历史消息补作新入站；生产代码未改。
+
+#### 真机探针中断方式修正：主动关闭不等于意外断线
+
+用户准备好后的下一轮收到真实新入站136072361，T22 accepted；原代次13c57572-d8f3-4bd6-8b8a-e419e78c4b64。探针随后调用CdpClient.disconnect()，该方法设置isIntentionallyClosed，WebSocket close回调因此不发connection_lost；探针又在等取消事务而未调用readStatus，15秒内没有进入目标取消竞争。此轮是测试故障注入错误，不是两处生产修复再次失败，不能把已主动关闭的CDP当作真实意外断线事件。
+
+失败收尾还发现旧页面Hook未释放（bridge/sender=true），最终清理断言掩盖了等待超时主因。随后通过新的只读CDP连接，仅在cleanup.generationId精确等于该轮代次时调用原清理函数；实际返回bridge=false、sender=false，未触碰其他代次。临时探针改为记录主因，并在收尾时只清理本次创建代次留下的Hook；专用补清理入口已删除。
+
+仅调整临时探针：直接terminate本实例当前持有的真实WebSocket，让现有CDP原生close→connection_lost→Driver health→监督器取消路径运行；不调用生产disconnect来模拟故障，不手工emit健康事件、不修改生产代码或验收断言。随后重新核对页面无占用并启动，通知用户发送新的第一条，不重放136072361。
+
+#### 真机取消修复最终通过：退出0，零发送、零撤回
+
+同一受监督命令运行修正探针，Bot5761、员工3585、唯一私聊0-3585（int2024）在两代连接均实际核验。使用真实KK9Driver、正式监督器/取消函数/任务账本/入站门禁、正式Scheduler和Collector关闭入口，以及随机PostgreSQL库kairo_t19_aa663b49c7db482b92048e8725bf4c10（连接PID44481/44482）。未运行FakeDriver或正式Agent；任务领取、尝试完成与进入员工等待由探针推进，不冒充模型执行。发送边界拒绝任何意外发送，实际sendAttempts=0；没有撤回调用。
+
+| 验收步骤 | 实际结果 |
+| --- | --- |
+| 第一条真实新入站 | 136072661，0-3585，T22 accepted；旧代81d690a7-0336-456f-a5b8-fc25bb026eff |
+| 真实连接中断 | 只terminate探针旧WebSocket；收到真实失效事件，generation.signal取消，旧消费者以标准AbortError退出 |
+| 取消与员工等待竞争 | poolA取消等连接期间，由poolB创建等待；createdAt=1789093377887，closedAt=1789093377893，取消成功而非23514 |
+| 旧账本收尾 | 任务42562d0e-c317-493a-8b4b-c2df5e57b5be为cancelled，员工等待resolution=cancelled |
+| 自动重连 | 创建新Driver，代次1bfa027b-0f91-449b-b050-9762db246803；身份与健康就绪后开放消息，Driver累计创建2次 |
+| 第二条真实新入站 | 用户按重连就绪提示发送136072751，0-3585，T22 accepted，确由新代接收 |
+| 副作用与清理 | sendAttempts=0、recallAttempts=0；关闭自有连接、随机库与池，最终独立页面核验Bot5761、bridge=false、sender=false |
+
+监督进程pr269-real-cancel最终exit=0。真实首条处理取消后没有继续执行业务，原任务没有复活；新代收到的是用户随后发送的新消息，不是历史补偿。本轮没有额外发送断线期间消息，因此不把它计作新的“断线历史不补做”专项；也不证明正式Agent、实际出站、T34跨进程或T35完整链路。
+
+真机期间只改临时故障注入与清理，生产修复和永久回归未改；最近一次根四项门禁仍为前述实际通过的Driver347/App409，不声称真机结束后又重跑。临时真机入口与补清理入口均已删除，未提交推送、未修改PR草稿状态、未合并或关闭issue。

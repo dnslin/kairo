@@ -41,6 +41,14 @@ interface OwnedDriver {
   health: (event: DriverHealthEvent) => void;
 }
 
+function isGenerationCancellation(error: unknown, signal: AbortSignal): boolean {
+  return (
+    signal.aborted &&
+    (error === signal.reason ||
+      ((error instanceof Error || error instanceof DOMException) && error.name === 'AbortError'))
+  );
+}
+
 export function createDriverSupervisor(options: {
   createDriver: () => IKK9Driver;
   logger: Pick<AppLogger, 'error'>;
@@ -194,6 +202,7 @@ export function createDriverSupervisor(options: {
           try {
             result = consumer(message, record.generation);
           } catch (error) {
+            if (isGenerationCancellation(error, controller.signal)) break;
             failures.push(error);
             invalidate(record, error);
             break;
@@ -201,6 +210,7 @@ export function createDriverSupervisor(options: {
           if (result) {
             const work = track(
               Promise.resolve(result).catch(error => {
+                if (isGenerationCancellation(error, controller.signal)) return;
                 failures.push(error);
                 if (record.valid) invalidate(record, error);
                 else report(error, record.generation.id);
@@ -259,6 +269,7 @@ export function createDriverSupervisor(options: {
                 Promise.resolve()
                   .then(() => consumer(record.driver, record.generation))
                   .catch(error => {
+                    if (isGenerationCancellation(error, record.controller.signal)) return;
                     failures.push(error);
                     report(error, record.generation.id);
                     invalidate(record, error);

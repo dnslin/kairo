@@ -172,7 +172,7 @@ export interface TaskStore {
   enqueueTask(input: EnqueueTaskInput): Promise<EnqueueTaskResult>;
   listActiveTasks(): Promise<Task[]>;
   /** 仅取消本 Bot 有效上下文内的未完成工作，不切换上下文或覆盖终态。 */
-  cancelUnfinished(botId: string, now: number): Promise<void>;
+  cancelUnfinished(botId: string, now: number | (() => number)): Promise<void>;
   getTask(taskId: string): Promise<Task | null>;
   claimTask(input: ClaimTaskInput): Promise<Task | null>;
   /** 已同意的等待只有实际取得执行名额后才恢复预算。 */

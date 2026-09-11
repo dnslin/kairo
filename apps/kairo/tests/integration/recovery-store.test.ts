@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { cancelConnectionWork } from '../../src/modules/task-lifecycle/recovery.js';
 import type { StartAttemptInput } from '../../src/modules/task-lifecycle/types.js';
 import {
   createTaskTestContext,
@@ -436,6 +437,60 @@ describe('T26 恢复账本', () => {
         executionDeadline,
         recoveryUsed: action === 'fail',
       });
+    }
+  });
+
+  it('断线取消等连接期间旧任务进入员工等待，仍按取得锁后的时间完整取消', async () => {
+    const fixture = await context.runningWithSuccessfulAttempt();
+    const waitId = randomUUID();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now + 350);
+    const reserved = await context.database.poolA.connect();
+    const cancellation = cancelConnectionWork({
+      botId: fixture.scope.botId,
+      tasks: context.storeA,
+      scheduler: { pause: () => Promise.resolve() },
+      collector: { close: () => Promise.resolve() },
+      sender: { close: () => undefined },
+    }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    try {
+      try {
+        await expect.poll(() => context.database.poolA.waitingCount).toBe(1);
+        clock.mockReturnValue(now + 400);
+        expect(
+          await context.storeB.waitForUser({
+            taskId: fixture.taskId,
+            inputVersion: 1,
+            attemptId: fixture.attemptId,
+            now: Date.now,
+            waitId,
+            question: '是否继续当前问题',
+            allowedQuestionIds: ['当前问题'],
+          })
+        ).toBe(true);
+        clock.mockReturnValue(now + 500);
+      } finally {
+        reserved.release();
+      }
+      expect(await cancellation).toBeNull();
+      expect(await context.storeB.getUserWait(waitId)).toMatchObject({
+        createdAt: now + 400,
+        closedAt: now + 500,
+        resolution: 'cancelled',
+      });
+      expect(await context.storeB.getTask(fixture.taskId)).toMatchObject({
+        status: 'cancelled',
+        endedAt: now + 500,
+      });
+      expect(await context.chat.getCurrentContext(fixture.scope)).toMatchObject({
+        threadId: fixture.context.threadId,
+        idleSince: now + 500,
+      });
+    } finally {
+      await cancellation;
+      clock.mockRestore();
     }
   });
 

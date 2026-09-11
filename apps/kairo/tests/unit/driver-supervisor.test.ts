@@ -1,3 +1,5 @@
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import type { DriverHealthEvent, KK9Message } from '@kairo/driver';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -320,6 +322,94 @@ describe('应用自有 Driver 监督器', () => {
     await vi.advanceTimersByTimeAsync(20);
     expect(supervisor.current).toBe(next);
     expect(supervisor.readStatus()).toBe('up');
+  });
+
+  it('消息消费按代次signal取消后仍自动重连，只接收新代消息', async () => {
+    const first = new ApplicationTestDriver();
+    const next = new ApplicationTestDriver();
+    let created = 0;
+    const { supervisor } = fixture(() => (created++ === 0 ? first : next));
+    const received = vi.fn();
+    supervisor.onMessage(async (message, generation) => {
+      if (generation.id === first.getStartupGenerationId()) {
+        await delay(60000, undefined, { signal: generation.signal });
+      }
+      received(message, generation);
+    });
+    await supervisor.connect();
+    first.emit('message', input);
+    first.emit('health', failureEvent(first));
+    await supervisor.settled();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(supervisor.current).toBe(next);
+    expect(supervisor.readStatus()).toBe('up');
+    expect(received).not.toHaveBeenCalled();
+    first.emit('message', input);
+    next.emit('message', input);
+    await supervisor.settled();
+    expect(received).toHaveBeenCalledExactlyOnceWith(input, supervisor.generation);
+  });
+
+  it('装配按代次reason取消后旧connect拒绝，新连接仍能装配并接收消息', async () => {
+    const first = new ApplicationTestDriver();
+    const next = new ApplicationTestDriver();
+    let created = 0;
+    const { supervisor } = fixture(() => (created++ === 0 ? first : next));
+    const started = deferredSignal();
+    supervisor.onConnected(async (driver, generation) => {
+      if (driver !== first) return;
+      const cancelled = once(generation.signal, 'abort');
+      started.resolve();
+      await cancelled;
+      generation.signal.throwIfAborted();
+    });
+    const received = vi.fn();
+    supervisor.onMessage(received);
+    const lost = failureEvent(first);
+    const rejected = expect(supervisor.connect()).rejects.toBe(lost.cause);
+    await started.promise;
+    first.emit('health', lost);
+    await rejected;
+    await supervisor.settled();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(supervisor.current).toBe(next);
+    next.emit('message', input);
+    await supervisor.settled();
+    expect(received).toHaveBeenCalledExactlyOnceWith(input, supervisor.generation);
+  });
+
+  it('代次取消后的无关入站错误仍传播并阻止重连', async () => {
+    const driver = new ApplicationTestDriver();
+    const { supervisor, factory } = fixture(() => driver);
+    const gate = deferredSignal();
+    const failure = new Error('入站存储失败');
+    supervisor.onMessage(async () => {
+      await gate.promise;
+      throw failure;
+    });
+    await supervisor.connect();
+    driver.emit('message', input);
+    driver.emit('health', failureEvent(driver));
+    gate.resolve();
+    await expect(supervisor.settled()).rejects.toBe(failure);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(factory).toHaveBeenCalledTimes(1);
+    await expect(supervisor.close()).rejects.toBe(failure);
+  });
+
+  it('主动关闭可取消消息消费且不创建新连接', async () => {
+    const driver = new ApplicationTestDriver();
+    const { supervisor, factory } = fixture(() => driver);
+    supervisor.onMessage(async (_message, generation) => {
+      await delay(60000, undefined, { signal: generation.signal });
+    });
+    await supervisor.connect();
+    driver.emit('message', input);
+    await supervisor.close();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(supervisor.current).toBeNull();
+    expect(driver.getStatus()).toBe('disconnected');
+    expect(factory).toHaveBeenCalledTimes(1);
   });
 
   it('异步onInvalidate错误不被吞掉，settled和close传播且禁止带病换代', async () => {

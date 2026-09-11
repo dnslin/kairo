@@ -829,3 +829,57 @@ Optional已实现并实际通过上述调用路径的真实PostgreSQL70项、App
 先补实际提交脚本与EventBridge联合回归：确认后outbound且使用真实确认记录、Vue历史不补发、重复原生来源去重、无成功ack或无确认记录时不回显、旧发送跨代次完成不进入新连接。再检查全部调用方并运行根四项门禁。最后真实出站回显与整套合同另行复验，post-trigger unknown必须来自真实连接中断，不硬改状态或在生产代码中增加测试延时。
 
 执行结果：新增4项受控回归先见2项失败，修复后通过；生命周期、原生媒体及发送操作合计52项通过。完整根build/typecheck/test/lint通过（Driver347、App405）。观察接入复用已有封闭及去重；图片已补传目标会话，全部5处原生提交调用已核对。本轮未操作KK9或修改合同断言，整套Driver合同和员工侧原生撤回仍待协调真机窗口；后续本地修复未提交推送。
+
+### T26最后必验项：整套Driver合同通过
+
+真实出站回显与员工原生撤回已分别通过。最后将合同的故障注入从Driver优雅关闭改为直接断开测试实例自身CDP，保留unknown断言及所有后续步骤，不改生产发送实现或预算。一次入站等待超时后重新协调，最终员工136064571入站、Bot136064575正常送达，发送中断返回unknown，新连接查询136064591为delivered且与中断前消息相同，同operationId重试不双发。整套27/27、退出0，两条Bot消息全撤回，页面Hook无残留。脚本调整后根四项门禁通过（Driver347、App405）；全部T26既定必验项已有证据，不替代T34/T35整体验收。本轮脚本及证据尚未提交推送，PR仍保持草稿，未合并或关闭issue。
+
+### T26 PR269审查后：两处断线取消竞态的最小修复计划（2026-09-11）
+
+本节仅规划，未修改生产代码。执行归属仍为 [T26 #231](https://github.com/dnslin/kairo/issues/231) 与 [PR #269](https://github.com/dnslin/kairo/pull/269)，不另建平行任务状态，不改 tasks/todo.md 验收快照；本轮未发布远端评论或更新 issue。以下为该任务内的有序修复步骤。
+
+#### 真实性与证据边界
+
+- 两个独立审查 agent 基于 PR 提交 eafd4a2197b3f8cb0ff54e68bbbed45c70f4b92a 得出相同结论，Main 已用临时探针实际复现；不是依据文件大小、抽象偏好或假想攻击提出防御设计。
+- 正常取消：正式 createDriverSupervisor 配合测试 Driver，消息消费者等待 Node timers/promises 并传入 generation.signal。健康失效触发 AbortError，监督器将其写入永久 failures；retryMs=10，80ms后仍只创建一次 Driver且状态down。
+- 锁前时间：真实 PostgreSQL 随机临时库，取消请求等待 poolA 连接时，由 poolB 创建更晚的员工等待。取消使用较早时间，返回 SQLSTATE 23514，事务回滚后任务仍为 waiting_for_user。正式 runner 的 waitForUser 使用锁后时钟，pause 不等待全部 runner 状态事务，因此存在同类合法竞争路径。
+- 上述结果证明组件缺陷存在，不证明真实 KK9 或已部署应用发生过同样事故。正式入口尚未装配完整业务消费链；本轮未运行真机。两项临时探针已删除，测试库由原工装清理。
+- 现有 App 定向92项、Driver定向65项、真实PG恢复组合62项及Driver构建通过，说明原回归遗漏这两条路径，不说明缺陷已修复。
+
+#### 修复一：正常代次取消不阻止重连
+
+范围：apps/kairo/src/modules/im-transport/driver-supervisor.ts、apps/kairo/tests/unit/driver-supervisor.test.ts。无前置依赖。
+
+1. 在现有测试中补消息消费与连接装配两条取消回归：消费者使用传入代次的signal，断线后按取消合同拒绝；先证明当前实现不再创建新Driver。
+2. 沿用TaskRunner已有confirmedCancellation的判定语义，在监督器内部区分本代次signal已取消且异常为其reason或标准AbortError的正常退出。只从永久failures中排除可确认的取消；消息和装配两处使用一致判定，必要时仅抽文件内小函数，不增加公共错误框架。
+3. 保留connect对被中断连接尝试的拒绝语义、同步封闭旧代次、旧工作退出前不开放新代、真实错误传播及收尾失败不自动重连。不能按record失效或signal.aborted就忽略任意异常，不能清空failures掩盖错误。
+
+验收：正常取消后实际创建新Driver且新消息可消费，旧消息与旧结果不进入新代；装配中取消也能恢复；同时发生的无关数据库/业务错误与disconnect/onInvalidate失败仍可观察并保留既有失败策略。覆盖主动close不再重连，复用已有回归而非重复建测试。
+
+验证：pnpm --filter @kairo/app exec vitest run tests/unit/driver-supervisor.test.ts tests/unit/driver-supervisor-cdp.test.ts tests/unit/application-driver.test.ts。新取消用例修复前失败、修复后通过；使用原生计时的临时组件烟测证明换实例及新消息交付，不仅检查内部failures数组。
+
+#### 修复二：取得锁后采样取消时间
+
+范围：task-lifecycle/types.ts、store.ts、recovery.ts、tests/integration/recovery-store.test.ts，以及实际受影响调用方/测试工装。无修复一依赖；修改前通过LSP references列全调用方，若服务器不可用再做限定范围搜索。
+
+1. 复用new-context-concurrency的双连接阻塞工装，在recovery-store补取消等待连接/锁时旧任务进入waitForUser的回归，要求最终任务与等待都成功取消。保留CHECK约束，先观察当前23514失败。
+2. cancelUnfinished的now参数采用本模块现有number | (() => number)合同；正式cancelConnectionWork传Date.now函数，不在调用前求值。取得context与task锁后、写入关闭状态前只采样一次，所有相关写入共用该时间；固定时间测试继续按已有惯例注入数字。
+3. 不改表结构、锁顺序、事务范围、任务预算或历史终态；不使用GREATEST修饰错误时间，不吞23514，不增加事务重试或等待所有执行退出的全局屏障。
+
+验收：竞争后取消事务成功，waiting记录closed_at不早于created_at，目标任务cancelled且无开放等待；本Bot其他旧未完成工作按既有合同收尾，其他Bot与已报告终态不受影响。取消失败的真实存储异常仍传播。
+
+验证：pnpm --filter @kairo/app test:integration -- tests/integration/recovery-store.test.ts tests/integration/recovery.test.ts tests/integration/new-context-concurrency.test.ts。全部使用既有随机临时数据库与双连接工装，不迁移正式库。
+
+#### 联合验证与真机边界
+
+依赖：上述两个修复完成。先运行App监督器/recovery/scheduler/task-runner定向单元和PG恢复/调度组合，再执行根pnpm build、pnpm typecheck、pnpm test、pnpm lint。补一个正式监督器、正式取消组件与真实PG的联合运行场景，证明正常取消后账本收尾成功、新Driver可接收消息；受控Driver/执行器明确标注，不冒充正式Agent或真机。
+
+真实KK9另做一次针对本修复的应用监督器重连验证：先协调测试窗口和账号/会话授权，只断开探针自有CDP连接，不结束KK9或其他应用进程。使用真实Driver、正式监督器和取消组件、随机测试库；旧代存在可取消消息处理与员工等待时断线，验证等待/任务取消、新generation健康恢复以及恢复后新入站正常处理。数据库精确等锁竞争由确定性PG回归证明，不依赖人工时机碰撞。若涉及真实发送/撤回，仅操作已授权测试消息；不调用正式Agent或把本轮算作T34/T35整体放行。
+
+既有Driver整套合同通过记录不代替本次App取消重连验证；packages/driver生产代码计划保持不变。如定位迫使修改Driver，须扩展对应packages/driver/tests并执行相关真机脚本，不能用原通过记录放行。真机不可用时只交付明确的受控验证结果，不声明真机通过。
+
+修复通过后更新DEVELOPMENT实际命令、失败到通过的证据及真机边界，并删除本次临时探针。保留必要回归，不纳入三布尔phase重构、sender跨代所有权重设计、通用错误/恢复框架或额外数据库迁移；这些不解决本次已复现的最小根因。
+
+实施进度（2026-09-11）：上述两项最小修复及5项新增回归已完成；监督器相关48项、真实PG相关48项通过，新增故障用例均有修复前失败证据。原生时钟/真实PG/正式组件联合烟测通过，Driver明确为替身，临时入口已删除；最终根build/typecheck/test/lint全部通过（Driver347、App409）。本次真实KK9重连验证待用户协调窗口，不使用历史27/27替代；详细证据见DEVELOPMENT本次审查修复段落。未纳入可选结构重构，未提交推送。
+
+真机补验完成（2026-09-11）：真实KK9首条136072661入站后只中断探针自有WebSocket；旧消费者AbortError退出，取消等连接期间新建的员工等待成功关闭，原任务cancelled。自动新代1bfa027b-0f91-449b-b050-9762db246803随后接收真实第二条136072751。进程退出0，零发送/零撤回，随机库、自有连接及页面Hook清理完成，临时探针已删除。前两轮入站超时和主动disconnect错误注入、定向残留清理均保留在DEVELOPMENT，不计作通过；生产实现未因此扩大修改。此验证不含正式Agent、真实出站或新的断线历史专项，不替代T34/T35。两处审查修复的既定自动化和本轮真机验收已完成，仍未提交推送。

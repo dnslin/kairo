@@ -432,7 +432,7 @@ export class PostgresTaskStore implements TaskStore {
     });
   }
 
-  public async cancelUnfinished(botId: string, now: number): Promise<void> {
+  public async cancelUnfinished(botId: string, now: number | (() => number)): Promise<void> {
     await withTransaction(this.pool, async client => {
       // 先按稳定顺序锁住本 Bot 的全部有效 context，再锁任务；不创建或切换 context。
       const contexts = await client.query<{ thread_id: string }>(
@@ -450,7 +450,7 @@ export class PostgresTaskStore implements TaskStore {
         [threadIds]
       );
       const taskIds = tasks.rows.map(row => row.task_id);
-      const at = new Date(now);
+      const at = new Date(typeof now === 'function' ? now() : now);
       if (taskIds.length > 0) {
         await client.query(
           `UPDATE kairo.user_waits SET closed_at = $2, resolution = 'cancelled'
